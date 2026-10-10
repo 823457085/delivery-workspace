@@ -8,6 +8,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { EXECUTION_STAGES, emptyArtifacts, executionStartSchema, isCurrentStepResult, type DesignExecution, type StageResult, type ToolProof, type ExecutionStage } from '../shared/design-execution.js';
 import { createDesignExecutor } from '../server/design-executor/service.js';
+import { desktopHealth } from '../server/design-executor/desktop.js';
 import { createCodexExecutor, phaseArguments, codexFailureMessage, extractToolProof, type PhaseExecutor, type PhaseContext } from '../server/design-executor/codex.js';
 import { allowedTools, stagePrompt, validateStage } from '../server/design-executor/policy.js';
 import { emptyInput, emptyReview, buildDesignCards, cardLane, stageChecks } from '../src/features/tech-design-delivery/domain.js';
@@ -39,6 +40,22 @@ async function fixture(executor?: PhaseExecutor) {
   const service = await createDesignExecutor(path.join(root, 'executor'), executor);
   return { root, workspace, service };
 }
+
+test('desktop uses bundled support without a Codex home and blocks missing explicit support packages', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'design-support-test-'));
+  try {
+    const environment = { CODEX_HOME: root };
+    const available = await desktopHealth(environment);
+    assert.equal(available.ready, true);
+    assert.equal(available.skillsReady, true);
+    for (const setting of ['DELIVERY_SKILLS_ROOT', 'AI_DELIVERY_KIT_ROOT']) {
+      const missing = await desktopHealth({ ...environment, [setting]: path.join(root, setting) });
+      assert.equal(missing.ready, false);
+      assert.equal(missing.skillsReady, false);
+      assert.equal(missing.message, 'Skill / 规范包缺失');
+    }
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
 
 test('default execution waits for desktop claim; six stages are ordered, bound and idempotent without CLI', async () => {
   const f = await fixture();
@@ -334,14 +351,17 @@ test('CLI failures explain configuration errors without exposing raw diagnostic 
 
 test('real CLI parses native-tool overrides with an unavailable Code Mode host without starting a model', async (t) => {
   try { await fs.access(cliBinary); } catch { t.skip('Local Codex CLI is not installed'); return; }
-  const args = phaseArguments({ stage: 'design', directory: '/tmp/test', run: { ...emptyRun(), threadId: randomUUID() } }, [{ name: 'atlassian', enabled: true }], '/tmp/schema', '/tmp/result');
-  const overrides = args.flatMap((value, index) => args[index - 1] === '-c' ? ['-c', value] : []);
-  const result = await promisify(execFile)(cliBinary, ['features', 'list', '-c', 'features.code_mode=true', '-c', 'features.code_mode_only=true', '-c', 'features.code_mode_host=true', ...overrides], { timeout: 10_000 });
-  for (const name of ['code_mode', 'code_mode_only', 'code_mode_host']) assert.match(result.stdout, new RegExp(`^${name}\\s+.+\\s+false$`, 'm'));
+  const isolatedHome = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-config-test-'));
+  try {
+    const args = phaseArguments({ stage: 'design', directory: '/tmp/test', run: { ...emptyRun(), threadId: randomUUID() } }, [{ name: 'atlassian', enabled: true }], '/tmp/schema', '/tmp/result');
+    const overrides = args.flatMap((value, index) => args[index - 1] === '-c' ? ['-c', value] : []);
+    const result = await promisify(execFile)(cliBinary, ['features', 'list', '-c', 'mcp_servers.atlassian={command="false"}', '-c', 'features.code_mode=true', '-c', 'features.code_mode_only=true', '-c', 'features.code_mode_host=true', ...overrides],
+      { timeout: 10_000, env: { ...process.env, CODEX_HOME: isolatedHome } });
+    for (const name of ['code_mode', 'code_mode_only', 'code_mode_host']) assert.match(result.stdout, new RegExp(`^${name}\\s+.+\\s+false$`, 'm'));
+  } finally { await fs.rm(isolatedHome, { recursive: true, force: true }); }
 });
 
 test('busy original session waits before a turn starts, supports stop, and never retries a started turn', async (t) => {
-  t.mock.method(fs, 'access', async () => undefined);
   for (const mode of ['wait', 'abort', 'started', 'timeout'] as const) {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-session-wait-'));
     const binary = path.join(root, 'fake-codex');
@@ -350,6 +370,7 @@ test('busy original session waits before a turn starts, supports stop, and never
     const controller = new AbortController();
     const events: string[] = [], threads: string[] = [];
     try {
+      if (mode === 'timeout') t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
       await fs.writeFile(binary, `#!${process.execPath}
 const fs = require('node:fs');
 const args = process.argv.slice(2);
@@ -371,7 +392,14 @@ fs.writeFileSync(args[args.indexOf('--output-last-message') + 1], ${JSON.stringi
       const executor = createCodexExecutor({ binary, timeoutMs: 5000, sessionRetryMs: 1, sessionWaitMs: mode === 'timeout' ? 1 : 2000 });
       const execute = executor.execute({ stage: 'design', run, directory: root, signal: controller.signal,
         onThread: async id => { threads.push(id); },
-        onEvent: message => { events.push(message); if (mode === 'abort' && message.includes('短暂等待释放')) controller.abort(); },
+        onEvent: message => {
+          events.push(message);
+          if (message.includes('短暂等待释放')) {
+            if (mode === 'abort') controller.abort();
+            // Advance only the deadline clock; child processes and retry delays keep their real timers.
+            if (mode === 'timeout') t.mock.timers.tick(2);
+          }
+        },
       });
       if (mode === 'wait') {
         const result = await execute;
@@ -385,21 +413,29 @@ fs.writeFileSync(args[args.indexOf('--output-last-message') + 1], ${JSON.stringi
         assert.equal(await fs.readFile(countFile, 'utf8'), '1');
         assert.equal(threads.length, 0);
       }
-    } finally { controller.abort(); await fs.rm(root, { recursive: true, force: true }); }
+    } finally {
+      controller.abort();
+      if (mode === 'timeout') t.mock.timers.reset();
+      await fs.rm(root, { recursive: true, force: true });
+    }
   }
 });
 
 test('plugin-only MCP entries can be disabled without creating an invalid transport in real CLI config', async (t) => {
   try { await fs.access(cliBinary); } catch { t.skip('Local Codex CLI is not installed'); return; }
-  const ctx = { stage: 'intake' as const, directory: os.tmpdir(), run: emptyRun() };
-  const plugin = `test-plugin-${randomUUID()}`;
-  const args = phaseArguments(ctx, [{ name: 'atlassian', enabled: true }, { name: plugin, enabled: true }], '/tmp/schema', '/tmp/result');
-  const overrides = args.flatMap((value, index) => args[index - 1] === '-c' ? ['-c', value] : []);
-  // Only parses configuration; no MCP process or model is started and no user config is written.
-  const result = await promisify(execFile)(cliBinary, ['mcp', 'list', '--json', '-c', 'mcp_servers.atlassian={command="false"}', ...overrides], { timeout: 10_000 });
-  const servers = JSON.parse(result.stdout) as { name: string; enabled: boolean }[];
-  assert.equal(servers.find((server) => server.name === plugin)?.enabled, false);
-  assert.equal(servers.find((server) => server.name === 'atlassian')?.enabled, true);
+  const isolatedHome = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-config-test-'));
+  try {
+    const ctx = { stage: 'intake' as const, directory: os.tmpdir(), run: emptyRun() };
+    const plugin = `test-plugin-${randomUUID()}`;
+    const args = phaseArguments(ctx, [{ name: 'atlassian', enabled: true }, { name: plugin, enabled: true }], '/tmp/schema', '/tmp/result');
+    const overrides = args.flatMap((value, index) => args[index - 1] === '-c' ? ['-c', value] : []);
+    // Only parses isolated configuration; no MCP process or model is started.
+    const result = await promisify(execFile)(cliBinary, ['mcp', 'list', '--json', '-c', 'mcp_servers.atlassian={command="false"}', ...overrides],
+      { timeout: 10_000, env: { ...process.env, CODEX_HOME: isolatedHome } });
+    const servers = JSON.parse(result.stdout) as { name: string; enabled: boolean }[];
+    assert.equal(servers.find((server) => server.name === plugin)?.enabled, false);
+    assert.equal(servers.find((server) => server.name === 'atlassian')?.enabled, true);
+  } finally { await fs.rm(isolatedHome, { recursive: true, force: true }); }
 });
 
 test('publication and Jira identities cannot drift outside the authorized directory, site or frozen project', () => {

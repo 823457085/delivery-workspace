@@ -1,15 +1,13 @@
 /** 当前 Codex 会话领取阶段；服务端不启动模型、不读取账号凭据。 */
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
 import { desktopClaimSchema, desktopSubmissionSchema, type DesignExecution, type ExecutorHealth } from '../../shared/design-execution.js';
 import { stagePrompt } from './policy.js';
+import { resolveDesignSupportPaths } from './support.js';
 
-const home = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
-const skillRoot = path.resolve(process.env.DELIVERY_SKILLS_ROOT || path.join(home, 'skills'));
-const kitRoot = path.resolve(process.env.AI_DELIVERY_KIT_ROOT || path.join(home, 'ai-delivery-kit'));
-export async function desktopHealth(): Promise<ExecutorHealth> {
+export async function desktopHealth(environment: NodeJS.ProcessEnv = process.env): Promise<ExecutorHealth> {
+  const { skillRoot, kitRoot } = resolveDesignSupportPaths(environment);
   let skillsReady = true;
   try {
     for (const name of ['apex-frontend-tech-design-delivery', 'apex-jira-feature-development', 'delivery-gate-docs', 'confluence-markdown-publish', 'jira-task-compliance']) await fs.access(path.join(skillRoot, name, 'SKILL.md'));
@@ -20,6 +18,7 @@ export async function desktopHealth(): Promise<ExecutorHealth> {
     checkedAt: new Date().toISOString(), message: skillsReady ? 'Codex 会话执行；本机领取与回写接口就绪。账号、工具与远端权限由执行会话核实，不启动 CLI。' : 'Skill / 规范包缺失' };
 }
 export function desktopPacket(run: DesignExecution) {
+  const { skillRoot, kitRoot } = resolveDesignSupportPaths();
   const stage = run.steps.find(step => step.status !== 'passed')?.id;
   return { run: structuredClone(run), stage: stage ?? null,
     prompt: stage ? stagePrompt(stage, run, skillRoot, kitRoot) : '',

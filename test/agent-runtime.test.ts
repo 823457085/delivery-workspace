@@ -948,23 +948,42 @@ test('基于已完成的 Codex 会话创建独立分叉，不归入原会话链'
     return context.forkSessionId ? '分叉完成' : '原会话完成';
   } };
   const service = await createAgentRuntimeService(directory, { adapters: [adapter] });
+  const waitForCompleted = (runId: string) => new Promise<AgentRun>((resolve, reject) => {
+    const settle = (run?: AgentRun, error?: unknown) => {
+      clearTimeout(timer);
+      unsubscribe();
+      if (error) reject(error); else resolve(run!);
+    };
+    const observe = async () => {
+      try {
+        const dashboard = await service.dashboard();
+        const run = dashboard.runs.find(item => item.id === runId);
+        // completed 通知早于 Git 变更收尾；锁释放后才可安全分叉。
+        if (run?.status === 'completed' && !dashboard.activeWorkspaceLocks.some(lock => lock.runId === runId)) settle(run);
+        else if (run && ['failed', 'cancelled', 'interrupted'].includes(run.status)) settle(undefined, new Error(run.error || run.status));
+      } catch (error) { settle(undefined, error); }
+    };
+    const unsubscribe = service.subscribe(() => { void observe(); });
+    const timer = setTimeout(() => settle(undefined, new Error(`等待 ${runId} 完成并释放工作区锁超时`)), 10_000);
+    void observe();
+  });
   try {
     const source = await service.start({ provider: 'codex', mode: 'agent', model: 'test-model', reasoningEffort: 'high', serviceTier: 'priority',
       objective: '原会话任务', workspacePath: repository });
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitForCompleted(source.id);
     const forked = await service.fork(source.id, '新会话继续处理');
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitForCompleted(forked.id);
     assert.equal(forked.parentRunId, undefined);
     assert.equal(forked.sessionId, 'forked-session-5678');
     assert.match(forked.branch, /^feature\//);
     assert.notEqual(forked.workspacePath, source.workspacePath);
     assert.equal(forked.serviceTier, 'priority');
     const standard = await service.resume(source.id, '常速继续', undefined, undefined, [], undefined, 'append', 'default');
+    await waitForCompleted(standard.id);
     assert.equal(standard.serviceTier, 'default');
     const stored = JSON.parse(await fs.readFile(path.join(directory, 'agent-runs.json'), 'utf8')) as AgentRun[];
     assert.equal(stored.find(run => run.id === source.id)?.serviceTier, 'priority');
     assert.equal(stored.find(run => run.id === standard.id)?.serviceTier, 'default');
-    for (let i = 0; i < 50 && executions.length < 3; i++) await new Promise(resolve => setTimeout(resolve, 10));
     assert.deepEqual(executions, [
       { resumeSessionId: '', forkSessionId: '', forkLastTurnId: '' },
       { resumeSessionId: '', forkSessionId: 'source-session-1234', forkLastTurnId: sourceTurnId },

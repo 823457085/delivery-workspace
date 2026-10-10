@@ -8,7 +8,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
 import { stageResultSchema, type DesignExecution, type ExecutionStage, type ExecutorHealth, type StageResult, type ToolProof } from '../../shared/design-execution.js';
 import { allowedTools, stagePrompt } from './policy.js';
-import { cliBinary, codexHome } from '../cli-runtime.js';
+import { cliBinary } from '../cli-runtime.js';
+import { resolveDesignSupportPaths } from './support.js';
 
 const exec = promisify(execFile);
 export function isSessionBusyDiagnostic(diagnostic: string) {
@@ -89,9 +90,7 @@ export function extractToolProof(event: Record<string, unknown>): ToolProof | un
 
 export function createCodexExecutor(options: { binary?: string; timeoutMs?: number; sessionRetryMs?: number; sessionWaitMs?: number } = {}): PhaseExecutor {
   const binary = options.binary || cliBinary;
-  const codexDirectory = codexHome;
-  const skillRoot = path.resolve(process.env.DELIVERY_SKILLS_ROOT || path.join(codexDirectory, 'skills'));
-  const kitRoot = path.resolve(process.env.AI_DELIVERY_KIT_ROOT || path.join(codexDirectory, 'ai-delivery-kit'));
+  const { skillRoot, kitRoot } = resolveDesignSupportPaths();
   let cachedHealth: ExecutorHealth | undefined;
   async function inventory(): Promise<McpInfo[]> {
     const result = await exec(binary, ['mcp', 'list', '--json'], { timeout: 15_000, maxBuffer: 1_000_000 });
