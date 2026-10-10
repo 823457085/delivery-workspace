@@ -1,0 +1,12 @@
+# skill	targets	role	summary
+delivery-gate-docs	codex,cursor	all	AI Delivery Kit 总入口，覆盖 PRD、Gate、AI Delivery Hub Work Item 和交付文档。
+prd-prototype-challenge	codex,cursor	dev,qa	R1a/R1b PRD 与原型挑刺，生成 dev-prd-review 或 qa-prd-review。
+tech-design-coverage-review	codex,cursor	dev	G2a 技术方案对 PRD 覆盖度审核。
+test-plan-coverage-review	codex,cursor	qa	G2b 测试方案对 PRD、边界和技术改动点覆盖度审核。
+self-test-coverage-check	codex,cursor	dev,qa	G3 开发自测报告对 P0 测试用例覆盖度检查。
+codex-cursor-handoff	codex,cursor	dev	开发工程师可选便利 skill：Codex 规划、Cursor 执行、Codex 验收。
+long-running-project-handoff	codex,cursor	all	长任务工作记忆维护：沉淀 next-thread brief、session state 和验收清单，避免上下文压缩丢失。
+ai-delivery-local-bridge-diagnostics	codex,cursor	dev	诊断 AI Delivery Hub、Local Bridge、Codex MCP、AI 修订任务和 Draft Revision 链路问题。
+confluence-markdown-publish	codex,cursor	all	将 Markdown/交付产物通过 Confluence Markdown 宏发布或归档，保留 Mermaid、表格和代码块。
+jira-task-compliance	codex,cursor	all	检查、补全或创建符合团队规范的 Jira PRD/DEV/TEST/RELEASE 任务。
+go-service-code-review	codex,cursor	dev	按 团队 Go 服务工程规范审查 DDD、Bootstrap、Nacos、Docker、测试和部署就绪度。

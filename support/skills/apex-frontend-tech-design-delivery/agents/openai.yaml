@@ -1,0 +1,4 @@
+interface:
+  display_name: "Apex 前端技术方案交付"
+  short_description: "从 Jira 和 PRD 产出前端技术方案并创建交付任务"
+  default_prompt: "Use $apex-frontend-tech-design-delivery to inspect a Jira requirement and PRD, publish an Apex frontend technical design, and create the compliant Jira delivery hierarchy."

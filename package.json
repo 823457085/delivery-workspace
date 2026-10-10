@@ -1,0 +1,34 @@
+{
+  "name": "delivery-workspace",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": { "node": ">=22.13.0" },
+  "packageManager": "pnpm@12.3.4",
+  "scripts": {
+    "setup": "node scripts/bootstrap.mjs",
+    "doctor": "node --env-file-if-exists=.env --import tsx scripts/doctor.mjs",
+    "dev": "node scripts/start.mjs --dev",
+    "start": "node scripts/start.mjs",
+    "build": "vue-tsc --noEmit && tsc --noEmit -p tsconfig.server.json && vite build",
+    "test": "node --import tsx --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@lucide/vue": "1.41.0",
+    "@mastra/core": "1.64.0",
+    "@mastra/libsql": "1.22.3",
+    "@tanstack/vue-query": "5.102.8",
+    "element-plus": "2.14.5",
+    "vue": "3.5.42",
+    "vue-router": "5.3.1",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "26.4.1",
+    "@vitejs/plugin-vue": "6.0.8",
+    "tsx": "4.23.13",
+    "typescript": "5.9.3",
+    "vite": "8.2.2",
+    "vue-tsc": "3.3.11"
+  }
+}

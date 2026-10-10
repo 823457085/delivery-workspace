@@ -1,0 +1,4 @@
+interface:
+  display_name: "Apex Jira 功能开发"
+  short_description: "从 Jira 创建月度工作区、分支并完成 Apex 前端开发"
+  default_prompt: "Use $apex-jira-feature-development 根据我提供的 Jira 创建当月 Apex 工作区、功能分支并完成开发与验证。"

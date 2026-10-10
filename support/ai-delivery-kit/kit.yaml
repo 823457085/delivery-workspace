@@ -1,0 +1,28 @@
+id: delivery-workspace/ai-delivery-kit
+name: AI Delivery Kit
+version: 1.0.0
+status: experimental
+description: Public AI rules, templates, prompts, skills, and tool adapters for product, development, and QA collaboration.
+compatibility:
+  codex: true
+  cursor: true
+  review_hub: true
+  gate_engine: true
+owners:
+  product:
+    - TBD
+  development:
+    - TBD
+  qa:
+    - TBD
+entrypoints:
+  core: core/
+  templates: artifacts/templates/
+  prompts: prompts/
+  skills: skills/
+  codex_adapter: adapters/codex/
+  cursor_adapter: adapters/cursor/
+  gate_engine_adapter: adapters/gate-engine/
+install:
+  default_target: both
+  script: install.sh

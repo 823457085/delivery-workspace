@@ -1,0 +1,43 @@
+{
+  "source": "用户配置或中性示例",
+  "sourceSheet": "",
+  "contractSnapshot": "",
+  "items": [
+    {
+      "id": "example-1",
+      "sourceRow": 1,
+      "module": "示例模块",
+      "pageModule": "示例列表",
+      "platform": "Web",
+      "priority": "",
+      "name": "示例列表",
+      "path": "/api/v1/examples/list",
+      "planNote": "未测试的示例数据",
+      "completion": "",
+      "remark": "",
+      "contract": {
+        "method": "GET",
+        "status": "example",
+        "operationId": "exampleList"
+      }
+    },
+    {
+      "id": "example-2",
+      "sourceRow": 2,
+      "module": "示例模块",
+      "pageModule": "示例详情",
+      "platform": "Web",
+      "priority": "",
+      "name": "示例详情",
+      "path": "/api/v1/examples/detail",
+      "planNote": "未测试的示例数据",
+      "completion": "",
+      "remark": "",
+      "contract": {
+        "method": "GET",
+        "status": "example",
+        "operationId": "exampleDetail"
+      }
+    }
+  ]
+}

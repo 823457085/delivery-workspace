@@ -1,0 +1,50 @@
+---
+description: AI Delivery Kit rules for delivery documents, review checkpoints, AI Delivery Hub work items, and optional Codex-to-Cursor development handoff.
+alwaysApply: true
+---
+
+# AI Delivery Kit
+
+This workspace can use AI Delivery Kit for shared AI-native delivery rules, templates, prompts, and skills.
+
+AI Delivery Kit package root:
+
+```text
+__AI_DELIVERY_KIT_PACKAGE__
+```
+
+Apply the detailed AI Delivery Kit workflow only when the task involves PRD, requirements, `prd-self-check.md`, review minutes, tech design, test plan, implementation plan, self-test report, PR checklist, test report, acceptance record, review checkpoints, AI Delivery Hub Work Items, AI document revision, or checkpoint stages R0/R1/G2/G3/G5/G8/G9.
+
+When AI Delivery Kit applies:
+
+1. Read relevant files from the AI Delivery Kit package root before writing.
+2. Treat `core/gates.md` and `core/gate-policy.md` as the review checkpoint authority.
+3. Treat `artifacts/templates/` as the artifact structure authority.
+4. Treat `prompts/` as the task execution prompt authority.
+5. Do not invent review rules, template sections, or pass criteria from memory.
+6. Keep IDs stable and traceable: US -> AC -> TC -> CL.
+7. Report unmet review items with evidence, impact, and suggested action.
+
+When the task involves development quality, PR/MR review, API contracts, database migrations, unit tests, self-test evidence, or frontend interaction quality:
+
+1. Read the relevant `core/*-standard.md` files from the AI Delivery Kit package root.
+2. Use `core/code-review-standard.md` for code review dimensions and severity.
+3. Use `core/unit-test-standard.md` for unit test scope, coverage, exceptions, and GitLab Hook review.
+4. Use `core/api-contract-standard.md` for HTTP/gRPC/Webhook contracts, errors, auth, idempotency, and compatibility.
+5. Use `core/db-change-standard.md` for migrations, SQL, schema compatibility, data repair, and rollback.
+6. Use `core/self-test-evidence-standard.md` for G3/self-test/PR evidence quality.
+7. Use `core/frontend-quality-standard.md` for loading/empty/error/disabled states, task progress, pagination, and UI evidence.
+
+For AI Delivery Hub or MCP work items:
+
+1. Follow the task instruction exactly.
+2. Submit only Draft Revision unless explicitly asked otherwise.
+3. Do not publish official documents.
+4. Do not write Confluence unless explicitly asked and the workflow permits it.
+
+For development engineers using the optional Codex-to-Cursor handoff:
+
+1. Read `.ai-handoff/current-task.md` and `.ai-handoff/acceptance-checklist.md`.
+2. Only modify files allowed by the plan.
+3. Do not run `git commit`, `git push`, or merge branches unless explicitly asked.
+4. Write `.ai-handoff/cursor-result.md` when finished, including changed files, validation results, and remaining risks.

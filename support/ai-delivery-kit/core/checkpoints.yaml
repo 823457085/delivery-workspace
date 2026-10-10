@@ -1,0 +1,199 @@
+# AI Delivery Kit checkpoint metadata for product UI and Hub integration.
+# Gate codes remain stable internal rule IDs; use `name` fields in user-facing surfaces.
+
+stages:
+  - key: product_requirement
+    name: 产品需求设计
+    order: 1
+  - key: technical_design
+    name: 技术方案设计
+    order: 2
+  - key: coding_execution
+    name: 编码执行
+    order: 3
+  - key: acceptance_release
+    name: 验收发布
+    order: 4
+
+checkpoints:
+  - code: R0
+    gate: R0
+    name: 需求完整性检查
+    stage_key: product_requirement
+    owner_roles:
+      - development_lead
+      - qa_lead
+    required_artifacts:
+      - PRD.md
+      - prd-self-check.md
+    revision_target_artifacts:
+      - PRD.md
+      - prd-self-check.md
+    next_action: 研发与测试确认 PRD 完整、可测、可交付后继续流转
+    description: PRD 是否完整、可测、可交付
+
+  - code: R1a
+    gate: R1a
+    name: 研发预审
+    stage_key: product_requirement
+    owner_roles:
+      - product_owner
+    required_artifacts:
+      - PRD.md
+      - dev-prd-review.md
+    revision_target_artifacts:
+      - PRD.md
+      - dev-prd-review.md
+    next_action: 产品负责人关闭研发预审问题后继续流转
+    description: 研发是否看懂、是否有技术疑问
+
+  - code: R1b
+    gate: R1b
+    name: 测试预审
+    stage_key: product_requirement
+    owner_roles:
+      - product_owner
+      - qa_lead
+    required_artifacts:
+      - PRD.md
+      - qa-prd-review.md
+    revision_target_artifacts:
+      - PRD.md
+      - qa-prd-review.md
+    next_action: 产品负责人与测试负责人关闭测试预审问题后继续流转
+    description: 测试是否可测、边界是否清楚
+
+  - code: G1
+    gate: G1
+    name: 需求共识评审
+    stage_key: product_requirement
+    owner_roles:
+      - product_owner
+      - development_lead
+      - qa_lead
+    required_artifacts:
+      - PRD.md
+      - dev-prd-review.md
+      - qa-prd-review.md
+      - review-minutes.md
+    revision_target_artifacts:
+      - PRD.md
+      - review-minutes.md
+    next_action: 产品、研发、测试确认进入技术方案设计
+    description: 产品/研发/测试确认进入方案
+
+  - code: G2a
+    gate: G2a
+    name: 技术方案审核
+    stage_key: technical_design
+    owner_roles:
+      - development_lead
+      - product_owner
+    required_artifacts:
+      - PRD.md
+      - review-minutes.md
+      - tech-design.md
+    revision_target_artifacts:
+      - tech-design.md
+    next_action: 研发负责人确认方案覆盖需求且风险清楚
+    description: 方案是否覆盖需求、风险是否清楚
+
+  - code: G2b
+    gate: G2b
+    name: 测试方案审核
+    stage_key: technical_design
+    owner_roles:
+      - qa_lead
+      - development_lead
+    required_artifacts:
+      - PRD.md
+      - tech-design.md
+      - test-plan.md
+    review_context_artifacts:
+      - PRD.md
+      - tech-design.md
+      - test-plan.md
+      - test-cases.md
+    revision_target_artifacts:
+      - test-plan.md
+      - test-cases.md
+    next_action: 测试负责人确认测试方案覆盖需求与技术变更
+    description: 测试方案是否覆盖需求和技术变更
+
+  - code: G3
+    gate: G3
+    name: 提测准入
+    stage_key: coding_execution
+    owner_roles:
+      - development_lead
+      - qa_lead
+    required_artifacts:
+      - implementation-plan.md
+      - self-test-report.md
+      - pr-checklist.md
+    review_context_artifacts:
+      - PRD.md
+      - test-plan.md
+      - test-cases.md
+      - tech-design.md
+      - implementation-plan.md
+      - self-test-report.md
+      - pr-checklist.md
+    revision_target_artifacts:
+      - implementation-plan.md
+      - self-test-report.md
+      - pr-checklist.md
+    next_action: 确认自测与提测材料满足提测要求
+    description: 实施计划、自测证据和 PR 准备是否够用
+
+  - code: G5
+    gate: G5
+    name: 验收准出
+    stage_key: acceptance_release
+    owner_roles:
+      - qa_lead
+      - product_owner
+    required_artifacts:
+      - test-report.md
+      - acceptance-record.md
+    review_context_artifacts:
+      - PRD.md
+      - test-plan.md
+      - test-cases.md
+      - self-test-report.md
+      - test-report.md
+      - acceptance-record.md
+    revision_target_artifacts:
+      - test-report.md
+      - acceptance-record.md
+    next_action: 确认满足验收标准后进入发布准备
+    description: 测试结论和验收记录是否满足准出标准
+
+  - code: G8
+    gate: G8
+    name: 发布准备检查
+    stage_key: acceptance_release
+    owner_roles:
+      - release_owner
+      - development_lead
+    required_artifacts:
+      - release-plan.md
+    revision_target_artifacts:
+      - release-plan.md
+    next_action: 确认灰度、回滚、监控就绪后发布
+    description: 灰度、回滚、监控是否就绪
+
+  - code: G9
+    gate: G9
+    name: 上线效果复盘
+    stage_key: acceptance_release
+    owner_roles:
+      - product_owner
+      - development_lead
+      - qa_lead
+    required_artifacts:
+      - outcome-review.md
+    revision_target_artifacts:
+      - outcome-review.md
+    next_action: 复盘目标达成情况并回流经验
+    description: 目标是否达成、经验是否回流

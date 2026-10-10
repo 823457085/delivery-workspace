@@ -1,0 +1,28 @@
+owners:
+  product:
+    - TBD
+  development:
+    - TBD
+  qa:
+    - TBD
+  platform:
+    - TBD
+review_rules:
+  core:
+    required:
+      - product
+      - development
+      - qa
+  artifacts:
+    required:
+      - owning_role
+  prompts:
+    required:
+      - owning_role
+  skills:
+    required:
+      - owning_role
+      - platform
+  adapters:
+    required:
+      - platform

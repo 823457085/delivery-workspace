@@ -1,0 +1,75 @@
+# Standard delivery artifacts grouped by workflow stage.
+# Templates live under artifacts/templates/{path} in AI Delivery Kit.
+
+artifacts:
+  # 产品需求设计
+  - path: PRD.md
+    name: 产品需求文档
+    stage_key: product_requirement
+    template: artifacts/templates/PRD.md
+  - path: prd-self-check.md
+    name: PRD 自检报告
+    stage_key: product_requirement
+    template: artifacts/templates/prd-self-check.md
+  - path: prototype-notes.md
+    name: 原型说明
+    stage_key: product_requirement
+    template: artifacts/templates/prototype-notes.md
+  - path: dev-prd-review.md
+    name: 研发预审报告
+    stage_key: product_requirement
+    template: artifacts/templates/dev-prd-review.md
+  - path: qa-prd-review.md
+    name: 测试预审报告
+    stage_key: product_requirement
+    template: artifacts/templates/qa-prd-review.md
+  - path: review-minutes.md
+    name: 需求评审纪要
+    stage_key: product_requirement
+    template: artifacts/templates/review-minutes.md
+
+  # 技术方案设计
+  - path: tech-design.md
+    name: 技术方案
+    stage_key: technical_design
+    template: artifacts/templates/tech-design.md
+  - path: test-plan.md
+    name: 测试方案
+    stage_key: technical_design
+    template: artifacts/templates/test-plan.md
+  - path: test-cases.md
+    name: 测试用例
+    stage_key: technical_design
+    template: artifacts/templates/test-cases.md
+  - path: implementation-plan.md
+    name: 实施计划
+    stage_key: coding_execution
+    template: artifacts/templates/implementation-plan.md
+
+  # 编码执行
+  - path: self-test-report.md
+    name: 自测报告
+    stage_key: coding_execution
+    template: artifacts/templates/self-test-report.md
+  - path: pr-checklist.md
+    name: PR 检查清单
+    stage_key: coding_execution
+    template: artifacts/templates/pr-checklist.md
+
+  # 验收发布
+  - path: test-report.md
+    name: 测试报告
+    stage_key: acceptance_release
+    template: artifacts/templates/test-report.md
+  - path: acceptance-record.md
+    name: 验收记录
+    stage_key: acceptance_release
+    template: artifacts/templates/acceptance-record.md
+  - path: release-plan.md
+    name: 发布计划
+    stage_key: acceptance_release
+    template: artifacts/templates/release-plan.md
+  - path: outcome-review.md
+    name: 上线效果复盘
+    stage_key: acceptance_release
+    template: artifacts/templates/outcome-review.md

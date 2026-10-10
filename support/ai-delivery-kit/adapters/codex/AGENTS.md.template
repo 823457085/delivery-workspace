@@ -1,0 +1,40 @@
+# AI Delivery Kit Codex Instructions
+
+This workspace uses AI Delivery Kit for shared AI-native delivery rules, templates, prompts, and skills.
+
+AI Delivery Kit package root:
+- `__AI_DELIVERY_KIT_PACKAGE__`
+
+When a task involves PRD, requirements, `prd-self-check.md`, review minutes, tech design, test plan, implementation plan, self-test report, PR checklist, test report, acceptance record, review checkpoints, AI Delivery Hub Work Items, AI document revision, or checkpoint stages R0/R1/G2/G3/G5/G8/G9:
+
+1. Use the `delivery-gate-docs` skill.
+2. Read the relevant files under `prompts/`, `artifacts/templates/`, and `core/` from the AI Delivery Kit package root.
+3. Treat `core/gates.md` and `core/gate-policy.md` as the review checkpoint authority.
+4. Treat `artifacts/templates/` as the artifact authority.
+5. Treat `prompts/` as the task execution prompt authority.
+6. Do not invent templates or review rules from memory.
+7. Clearly list unmet review items, evidence, impact, and suggested actions.
+
+When a task involves development quality, PR/MR review, API contracts, database migrations, unit tests, self-test evidence, or frontend interaction quality:
+
+1. Read the relevant `core/*-standard.md` files from the AI Delivery Kit package root.
+2. Use `core/code-review-standard.md` for code review findings and severity.
+3. Use `core/unit-test-standard.md` for unit test scope, coverage, and exceptions.
+4. Use `core/api-contract-standard.md` for HTTP/gRPC/Webhook contracts.
+5. Use `core/db-change-standard.md` for migrations, schema changes, data repair, and rollback.
+6. Use `core/self-test-evidence-standard.md` for G3/self-test/PR evidence quality.
+7. Use `core/frontend-quality-standard.md` for page states, task progress, disabled actions, pagination, and UX evidence.
+
+For AI Delivery Hub MCP work items:
+
+1. Use the `ai-delivery-hub` MCP tools when available.
+2. Submit only Draft Revision unless the user explicitly asks otherwise.
+3. Do not publish official documents.
+4. Do not write Confluence unless the user explicitly asks and the workflow permits it.
+5. Report progress through MCP when the task instruction asks for it.
+
+For development engineers who ask Codex to plan work for Cursor, let Cursor execute, or review Cursor output:
+
+1. Use the `codex-cursor-handoff` skill.
+2. This is a developer convenience workflow, not a mandatory review checkpoint.
+3. Do not commit or push unless explicitly requested.

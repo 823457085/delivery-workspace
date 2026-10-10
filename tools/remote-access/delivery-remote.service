@@ -1,0 +1,26 @@
+[Unit]
+Description=Delivery private authenticated HTTPS gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=delivery-gateway
+Group=delivery-gateway
+ExecStart=/opt/delivery-remote/node/bin/node /opt/delivery-remote/gateway.mjs /etc/delivery-remote/config.json
+ExecReload=/bin/kill -USR2 $MAINPID
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

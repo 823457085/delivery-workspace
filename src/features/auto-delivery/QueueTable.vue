@@ -1,0 +1,8 @@
+<script setup lang="ts">
+import type { Job } from '../../../shared/hub';
+import { safeUrl, dateTime } from '../../shared/format';
+import StatusPill from '../../shared/ui/StatusPill.vue';
+defineProps<{ items: Job[] }>();
+defineEmits<{ inspect: [item: Job] }>();
+</script>
+<template><el-table :data="items"><el-table-column label="队列任务" min-width="310"><template #default="{ row }"><a :href="safeUrl(row.issueUrl)" target="_blank" class="hub-link">{{ row.issueKey }}</a><strong class="row-title">{{ row.title || row.categoryLabel }}</strong><span class="row-secondary">{{ row.categoryLabel }} · {{ row.model }}</span></template></el-table-column><el-table-column label="状态" width="125"><template #default="{ row }"><StatusPill :value="row.status" /><span class="row-secondary">尝试 {{ row.attempts }} 次</span></template></el-table-column><el-table-column label="工作区 / 当前结果" min-width="300"><template #default="{ row }"><span class="row-mono">{{ row.workspacePath || '未创建工作区' }}</span><span class="row-secondary">{{ row.branch }}</span><p class="row-secondary row-clamp">{{ row.error || row.result || row.workspaceEvidence?.label || '等待回传结果' }}</p></template></el-table-column><el-table-column label="会话 / 更新时间" width="180"><template #default="{ row }"><span class="row-mono">{{ row.threadId || row.clientThreadId || '未创建会话' }}</span><span class="row-secondary">{{ dateTime(row.updatedAt) }}</span></template></el-table-column><el-table-column label="详情" width="72" fixed="right"><template #default="{ row }"><el-button link type="primary" @click="$emit('inspect', row)">查看</el-button></template></el-table-column></el-table></template>

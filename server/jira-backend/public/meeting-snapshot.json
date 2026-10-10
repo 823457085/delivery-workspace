@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "localDate": "",
+  "scannedAt": "",
+  "schedule": "",
+  "expectedTitle": "",
+  "assignee": {
+    "name": "",
+    "userKeys": []
+  },
+  "source": {
+    "pageId": "",
+    "title": "",
+    "url": "",
+    "version": 0
+  },
+  "sectionTitle": "",
+  "todayTasks": [],
+  "tomorrowTasks": [],
+  "warnings": []
+}

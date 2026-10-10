@@ -1,0 +1,5 @@
+interface:
+  display_name: "AI Delivery Bridge Diagnostics"
+  short_description: "诊断 Hub、Bridge、Codex MCP 链路问题"
+  default_prompt: "Use $ai-delivery-local-bridge-diagnostics to diagnose why my AI Delivery Hub local Codex task is stuck."
+

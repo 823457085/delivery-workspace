@@ -1,0 +1,200 @@
+# Role deliverables grouped by workflow stage.
+# Consumed by AI Delivery Hub for role workbenches and requirement delivery board.
+# Artifact paths must exist in core/artifacts.yaml.
+
+stages:
+  - stage_key: product_requirement
+    stage_name: 产品需求设计
+    order: 1
+    roles:
+      - role: product
+        role_name: 产品
+        deliverables:
+          - key: prd
+            path: PRD.md
+            name: 产品需求文档
+            required: true
+            template: artifacts/templates/PRD.md
+            prompt: prompts/S0-PRD.md
+            skill: delivery-gate-docs
+            review_checkpoints:
+              - R0
+              - G1
+          - key: prd-self-check
+            path: prd-self-check.md
+            name: PRD 自检报告
+            required: true
+            template: artifacts/templates/prd-self-check.md
+            prompt: prompts/R0-prd-self-check.md
+            skill: delivery-gate-docs
+            review_checkpoints:
+              - R0
+          - key: prototype-notes
+            path: prototype-notes.md
+            name: 原型说明
+            required: false
+            template: artifacts/templates/prototype-notes.md
+            prompt: prompts/S0-prototype-notes.md
+            skill: delivery-gate-docs
+            review_checkpoints:
+              - R0
+              - R1a
+              - R1b
+          - key: review-minutes
+            path: review-minutes.md
+            name: 需求评审纪要
+            required: true
+            template: artifacts/templates/review-minutes.md
+            prompt: prompts/S1-review-minutes.md
+            skill: delivery-gate-docs
+            review_checkpoints:
+              - G1
+      - role: development
+        role_name: 研发
+        deliverables:
+          - key: dev-prd-review
+            path: dev-prd-review.md
+            name: 研发预审报告
+            required: true
+            template: artifacts/templates/dev-prd-review.md
+            prompt: prompts/R1a-dev-prd-review.md
+            skill: prd-prototype-challenge
+            review_checkpoints:
+              - R1a
+              - G1
+      - role: qa
+        role_name: 测试
+        deliverables:
+          - key: qa-prd-review
+            path: qa-prd-review.md
+            name: 测试预审报告
+            required: true
+            template: artifacts/templates/qa-prd-review.md
+            prompt: prompts/R1b-qa-prd-review.md
+            skill: prd-prototype-challenge
+            review_checkpoints:
+              - R1b
+              - G1
+
+  - stage_key: technical_design
+    stage_name: 技术方案设计
+    order: 2
+    roles:
+      - role: development
+        role_name: 研发
+        deliverables:
+          - key: tech-design
+            path: tech-design.md
+            name: 技术方案
+            required: true
+            template: artifacts/templates/tech-design.md
+            prompt: prompts/S2a-tech-design.md
+            skill: tech-design-coverage-review
+            review_checkpoints:
+              - G2a
+      - role: qa
+        role_name: 测试
+        deliverables:
+          - key: test-plan
+            path: test-plan.md
+            name: 测试方案
+            required: true
+            template: artifacts/templates/test-plan.md
+            prompt: prompts/S2b-test-plan.md
+            skill: test-plan-coverage-review
+            review_checkpoints:
+              - G2b
+          - key: test-cases
+            path: test-cases.md
+            name: 测试用例
+            required: true
+            template: artifacts/templates/test-cases.md
+            prompt: prompts/S2b-test-cases.md
+            skill: test-plan-coverage-review
+            review_checkpoints:
+              - G2b
+              - G5
+
+  - stage_key: coding_execution
+    stage_name: 编码执行
+    order: 3
+    roles:
+      - role: development
+        role_name: 研发
+        deliverables:
+          - key: implementation-plan
+            path: implementation-plan.md
+            name: 实施计划
+            required: true
+            template: artifacts/templates/implementation-plan.md
+            prompt: prompts/G3-implementation-plan.md
+            skill: delivery-gate-docs
+            review_checkpoints:
+              - G3
+          - key: self-test-report
+            path: self-test-report.md
+            name: 自测报告
+            required: true
+            template: artifacts/templates/self-test-report.md
+            prompt: prompts/S3-self-test-report.md
+            skill: self-test-coverage-check
+            review_checkpoints:
+              - G3
+          - key: pr-checklist
+            path: pr-checklist.md
+            name: PR 检查清单
+            required: true
+            template: artifacts/templates/pr-checklist.md
+            skill: go-service-code-review
+            review_checkpoints:
+              - G3
+
+  - stage_key: acceptance_release
+    stage_name: 验收发布
+    order: 4
+    roles:
+      - role: product
+        role_name: 产品
+        deliverables:
+          - key: outcome-review
+            path: outcome-review.md
+            name: 上线效果复盘
+            required: false
+            template: artifacts/templates/outcome-review.md
+            prompt: prompts/G9-outcome-review.md
+            skill: delivery-gate-docs
+            review_checkpoints:
+              - G9
+      - role: development
+        role_name: 研发
+        deliverables:
+          - key: release-plan
+            path: release-plan.md
+            name: 发布计划
+            required: true
+            template: artifacts/templates/release-plan.md
+            prompt: prompts/G8-release-plan.md
+            skill: delivery-gate-docs
+            review_checkpoints:
+              - G8
+      - role: qa
+        role_name: 测试
+        deliverables:
+          - key: test-report
+            path: test-report.md
+            name: 测试报告
+            required: true
+            template: artifacts/templates/test-report.md
+            prompt: prompts/S4-test-report.md
+            skill: delivery-gate-docs
+            review_checkpoints:
+              - G5
+          - key: acceptance-record
+            path: acceptance-record.md
+            name: 验收记录
+            required: true
+            template: artifacts/templates/acceptance-record.md
+            prompt: prompts/S5-acceptance-record.md
+            skill: delivery-gate-docs
+            review_checkpoints:
+              - G5

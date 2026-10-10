@@ -1,0 +1,5 @@
+interface:
+  display_name: "Long Project Handoff"
+  short_description: "为长任务保存可续接的工作记忆"
+  default_prompt: "Use $long-running-project-handoff to preserve the current project state before continuing in a new thread."
+

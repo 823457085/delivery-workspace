@@ -1,0 +1,7 @@
+[Unit]
+Description=Renew Delivery IP TLS certificate
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/delivery-remote/certbot/bin/certbot renew --cert-name delivery-remote-ip --quiet

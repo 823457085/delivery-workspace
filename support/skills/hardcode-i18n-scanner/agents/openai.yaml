@@ -1,0 +1,4 @@
+interface:
+  display_name: "Hardcode I18n Scanner"
+  short_description: "Hardcode Chinese i18n scanner"
+  default_prompt: "Use $hardcode-i18n-scanner to scan hardcoded Chinese text and export the i18n Excel."

@@ -1,0 +1,59 @@
+{
+  "title": "接口联调计划（示例）",
+  "updatedAt": "",
+  "apiBaseUrl": "",
+  "contractUrl": "",
+  "contractBranch": "",
+  "contractCommit": "",
+  "frontendCommit": "",
+  "workspace": "",
+  "verified": 0,
+  "environmentEvidence": "示例数据尚未进行真实联调",
+  "stages": [
+    {
+      "id": "01",
+      "title": "示例模块",
+      "tags": [
+        "example"
+      ],
+      "dependencies": [],
+      "files": [],
+      "work": "导入自己的接口计划后进行联调",
+      "acceptance": "真实接口、页面和人工审核分别记录",
+      "status": "待联调",
+      "total": 2,
+      "draft": 0,
+      "implemented": 0,
+      "formal": 0,
+      "testCase": "",
+      "operations": [
+        {
+          "method": "GET",
+          "path": "/api/v1/examples/list",
+          "summary": "示例列表",
+          "operationId": "exampleList",
+          "contractStatus": "example",
+          "status": "待联调",
+          "upstreamRequired": []
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/examples/detail",
+          "summary": "示例详情",
+          "operationId": "exampleDetail",
+          "contractStatus": "example",
+          "status": "待联调",
+          "upstreamRequired": []
+        }
+      ]
+    }
+  ],
+  "risks": [],
+  "completion": [],
+  "total": 2,
+  "tagCount": 1,
+  "draft": 0,
+  "implemented": 0,
+  "formal": 0,
+  "unmarked": 2
+}
