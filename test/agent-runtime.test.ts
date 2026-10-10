@@ -40,6 +40,35 @@ function controlledAdapter(provider: 'codex' | 'cursor') {
   return { adapter, finish };
 }
 
+type RuntimeService = Awaited<ReturnType<typeof createAgentRuntimeService>>;
+type RuntimeDashboard = Awaited<ReturnType<RuntimeService['dashboard']>>;
+function waitForAgentState(service: RuntimeService, predicate: (dashboard: RuntimeDashboard) => boolean, description: string) {
+  return new Promise<RuntimeDashboard>((resolve, reject) => {
+    let settled = false;
+    const finish = (dashboard?: RuntimeDashboard, error?: unknown) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      unsubscribe();
+      if (error) reject(error); else resolve(dashboard!);
+    };
+    const observe = async () => {
+      try {
+        const dashboard = await service.dashboard();
+        if (predicate(dashboard)) finish(dashboard);
+      } catch (error) { finish(undefined, error); }
+    };
+    const unsubscribe = service.subscribe(() => { void observe(); });
+    const timer = setTimeout(() => finish(undefined, new Error(`等待 ${description} 超时`)), 10_000);
+    void observe();
+  });
+}
+function waitForSettledRun(service: RuntimeService, runId: string, status: AgentRun['status'] = 'completed') {
+  // 完成通知早于 Git 变更收尾；会话锁释放后才能继续分叉、删除或核对最终结果。
+  return waitForAgentState(service, dashboard => dashboard.runs.find(run => run.id === runId)?.status === status
+    && !dashboard.activeWorkspaceLocks.some(lock => lock.runId === runId), `${runId} ${status} 并释放会话锁`);
+}
+
 test('Cursor 信任只绑定确认后的实际隔离目录；旧失败会话可确认重试，不向新目录继承', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'cursor-trust-'));
   const received: AgentRun[] = [];
@@ -317,13 +346,13 @@ test('两种 CLI 都接收纯图片，Cursor 使用验证后的文件路径且�
   try {
     const run = await service.start({ provider: 'codex', mode: 'ask', model: 'test-model', objective: '', workspacePath: '/selected',
       attachmentIds: [attachment.id] });
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitForSettledRun(service, run.id);
     assert.equal(run.objective, '请分析已附加的图片。');
     assert.deepEqual(run.attachments, [attachment]);
     assert.deepEqual(receivedImages, [['/private/validated-image.png']]);
     const cursorRun = await service.start({ provider: 'cursor', mode: 'ask', model: 'test-model', objective: '',
       workspacePath: '/selected', attachmentIds: [attachment.id] });
-    await new Promise(resolve => setTimeout(resolve, 20));
+    await waitForSettledRun(service, cursorRun.id);
     assert.equal(cursorRun.objective, '请分析已附加的图片。');
     assert.deepEqual(cursorFiles, [[{ name: attachment.name, path: '/private/validated-image.png' }]]);
     assert.deepEqual(await service.removeConversation(run.id), { deleted: 1 });
@@ -349,7 +378,7 @@ test('XLSX 附件作为本地文件路径传给 Codex，不混入图片输入', 
   try {
     const run = await service.start({ provider: 'codex', mode: 'ask', model: 'test-model', objective: '',
       workspacePath: '/selected', attachmentIds: [attachment.id] });
-    await new Promise(resolve => setTimeout(resolve, 20));
+    await waitForSettledRun(service, run.id);
     assert.equal(run.objective, '请分析已附加的文件。');
     assert.deepEqual(run.attachments, [attachment]);
     assert.deepEqual(received, [{ images: [], files: [{ name: '报表.xlsx', path: '/private/validated-report.xlsx' }] }]);
@@ -510,7 +539,7 @@ test('新会话从所选分支创建隔离工作区，不切换或覆盖源仓�
     assert.equal(await fs.readFile(path.join(repository, 'README.md'), 'utf8'), '# dirty main\n');
     assert.match((await exec('git', ['-C', repository, 'status', '--porcelain'])).stdout, /README\.md/);
 
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitForSettledRun(service, first.id);
     const resumed = await service.resume(first.id, '继续同一会话');
     assert.equal(resumed.workspacePath, first.workspacePath);
     assert.equal(resumed.sourceWorkspacePath, first.sourceWorkspacePath);
@@ -538,18 +567,18 @@ test('同一工作区的不同 Agent 会话并行执行，分支切换仍受保�
   try {
     const run = await service.start({ provider: 'codex', mode: 'agent', model: 'test-model', objective: '审查并修改当前模块', workspacePath: '/selected' });
     assert.equal(run.status, 'running');
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitForAgentState(service, dashboard => dashboard.runs.find(item => item.id === run.id)?.sessionId === 'codex-session-1234', 'Codex 会话启动');
     assert.equal((await service.dashboard()).runs.find((item) => item.id === run.id)?.sessionId, 'codex-session-1234');
     assert.equal((await service.dashboard()).activeWorkspaceLocks.length, 1);
     const parallel = await service.start({ provider: 'cursor', mode: 'agent', model: '', objective: '新开第二个 Agent', workspacePath: '/selected' });
     assert.equal(parallel.status, 'running');
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitForAgentState(service, dashboard => dashboard.runs.find(item => item.id === parallel.id)?.sessionId === 'cursor-session-1234', 'Cursor 会话启动');
     assert.equal(parallel.sessionId, 'cursor-session-1234');
     assert.equal((await service.dashboard()).activeWorkspaceLocks.length, 2);
     await assert.rejects(service.start({ provider: 'cursor', mode: 'agent', model: '', objective: '并发时切换分支',
       workspacePath: '/selected', branch: 'feature/other' }), /已有 Agent 运行或排队/);
     await service.stop(run.id);
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitForSettledRun(service, run.id, 'cancelled');
     const stopped = (await service.dashboard()).runs.find((item) => item.id === run.id)!;
     assert.equal(stopped.status, 'cancelled');
     assert.equal(stopped.pid, null);
@@ -559,7 +588,7 @@ test('同一工作区的不同 Agent 会话并行执行，分支切换仍受保�
     assert.equal(stillRunning.sessionId, 'cursor-session-1234');
     assert.equal((await service.dashboard()).activeWorkspaceLocks[0]?.runId, parallel.id);
     await service.stop(parallel.id);
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitForSettledRun(service, parallel.id, 'cancelled');
     assert.equal((await service.dashboard()).activeWorkspaceLocks.length, 0);
   } finally { codex.finish('done'); cursor.finish('done'); await service.close(); await fs.rm(directory, { recursive: true, force: true }); }
 });
@@ -915,10 +944,10 @@ test('运行成功后保存结果，并按精确 session id 创建续接运行',
   const service = await createAgentRuntimeService(directory, { adapters: [adapter], resolveWorkspace: async () => workspace });
   try {
     const first = await service.start({ provider: 'cursor', mode: 'agent', model: 'test-model', objective: '解释并修改模块', workspacePath: '/selected' });
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitForSettledRun(service, first.id);
     assert.equal((await service.dashboard()).runs[0].result, '初次结果');
     const resumed = await service.resume(first.id, '继续解释边界', 'second-model');
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitForSettledRun(service, resumed.id);
     const runs = (await service.dashboard()).runs;
     assert.equal(resumed.parentRunId, first.id);
     assert.equal(runs[0].sessionId, 'cursor-session-5678');
@@ -948,38 +977,19 @@ test('基于已完成的 Codex 会话创建独立分叉，不归入原会话链'
     return context.forkSessionId ? '分叉完成' : '原会话完成';
   } };
   const service = await createAgentRuntimeService(directory, { adapters: [adapter] });
-  const waitForCompleted = (runId: string) => new Promise<AgentRun>((resolve, reject) => {
-    const settle = (run?: AgentRun, error?: unknown) => {
-      clearTimeout(timer);
-      unsubscribe();
-      if (error) reject(error); else resolve(run!);
-    };
-    const observe = async () => {
-      try {
-        const dashboard = await service.dashboard();
-        const run = dashboard.runs.find(item => item.id === runId);
-        // completed 通知早于 Git 变更收尾；锁释放后才可安全分叉。
-        if (run?.status === 'completed' && !dashboard.activeWorkspaceLocks.some(lock => lock.runId === runId)) settle(run);
-        else if (run && ['failed', 'cancelled', 'interrupted'].includes(run.status)) settle(undefined, new Error(run.error || run.status));
-      } catch (error) { settle(undefined, error); }
-    };
-    const unsubscribe = service.subscribe(() => { void observe(); });
-    const timer = setTimeout(() => settle(undefined, new Error(`等待 ${runId} 完成并释放工作区锁超时`)), 10_000);
-    void observe();
-  });
   try {
     const source = await service.start({ provider: 'codex', mode: 'agent', model: 'test-model', reasoningEffort: 'high', serviceTier: 'priority',
       objective: '原会话任务', workspacePath: repository });
-    await waitForCompleted(source.id);
+    await waitForSettledRun(service, source.id);
     const forked = await service.fork(source.id, '新会话继续处理');
-    await waitForCompleted(forked.id);
+    await waitForSettledRun(service, forked.id);
     assert.equal(forked.parentRunId, undefined);
     assert.equal(forked.sessionId, 'forked-session-5678');
     assert.match(forked.branch, /^feature\//);
     assert.notEqual(forked.workspacePath, source.workspacePath);
     assert.equal(forked.serviceTier, 'priority');
     const standard = await service.resume(source.id, '常速继续', undefined, undefined, [], undefined, 'append', 'default');
-    await waitForCompleted(standard.id);
+    await waitForSettledRun(service, standard.id);
     assert.equal(standard.serviceTier, 'default');
     const stored = JSON.parse(await fs.readFile(path.join(directory, 'agent-runs.json'), 'utf8')) as AgentRun[];
     assert.equal(stored.find(run => run.id === source.id)?.serviceTier, 'priority');
@@ -1519,14 +1529,14 @@ test('同步的历史 Codex 会话可按原 session id 续接并保留来源关�
   try {
     await service.syncCodexSessions();
     const first = await service.resumeCodexSession(session.id, '继续处理', 'test-model', 'high', [], 'workspace', 'default');
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitForSettledRun(service, first.id);
     assert.equal(resumedIds[0], session.id);
     assert.equal(first.originSessionId, session.id);
     assert.equal(first.sessionId, session.id);
     assert.equal(first.mode, 'agent');
     assert.equal(first.serviceTier, 'default');
     const second = await service.resume(first.id, '再次继续', 'second-model', 'high');
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitForSettledRun(service, second.id);
     assert.equal(second.parentRunId, first.id);
     assert.equal(second.serviceTier, 'default');
     assert.equal(second.originSessionId, session.id);
@@ -1549,14 +1559,14 @@ test('Agent 运行变化会通知已订阅的实时客户端，取消订阅后�
   const revisions: number[] = [];
   const unsubscribe = service.subscribe((revision) => revisions.push(revision));
   try {
-    await service.start({ provider: 'codex', mode: 'ask', model: '', objective: '验证实时更新', workspacePath: '/selected' });
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    const first = await service.start({ provider: 'codex', mode: 'ask', model: '', objective: '验证实时更新', workspacePath: '/selected' });
+    await waitForSettledRun(service, first.id);
     assert.ok(revisions.length >= 4);
     assert.deepEqual(revisions, [...revisions].sort((left, right) => left - right));
     unsubscribe();
     const received = revisions.length;
-    await service.start({ provider: 'codex', mode: 'ask', model: '', objective: '取消订阅后的运行', workspacePath: '/selected' });
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    const second = await service.start({ provider: 'codex', mode: 'ask', model: '', objective: '取消订阅后的运行', workspacePath: '/selected' });
+    await waitForSettledRun(service, second.id);
     assert.equal(revisions.length, received);
   } finally { unsubscribe(); await service.close(); await fs.rm(directory, { recursive: true, force: true }); }
 });
@@ -1821,7 +1831,7 @@ test('服务重启把未完成运行标为 interrupted，绝不自动重复派�
     assert.match(recovered.error, /未自动重复执行/);
     assert.equal(executions, 0);
     const resumed = await service.retry(recovered.id);
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waitForSettledRun(service, resumed.id);
     assert.equal(resumed.parentRunId, recovered.id);
     assert.equal((await service.dashboard()).runs.find((run) => run.id === resumed.id)?.status, 'completed');
     assert.equal(executions, 1);
