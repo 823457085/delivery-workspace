@@ -1,6 +1,6 @@
 /** 日报只负责构造独立只读任务；沿用会话的保存、复制和导出，不另建报告存储或调度器。 */
 import type { AgentRuntimeHealth, StartAgentRunInput } from '../../../shared/agent-runtime';
-import { workbenchRuntime } from '../../../shared/agent-runtime';
+import { codexWorkbenchDefaults, workbenchRuntime } from '../../../shared/agent-runtime';
 
 export function dailyReportDate(now = new Date()): string {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
@@ -18,7 +18,7 @@ export function createDailyReportInput(date: string, workspacePath: string, runt
   if (!isDailyReportDate(date, now) || !workspacePath.trim() || runtime?.provider !== 'codex'
     || !runtime.ready || !runtime.modes.includes('ask') || !model) return undefined;
   return {
-    provider: 'codex', mode: 'ask', accessMode: 'workspace', model: model.id,
+    provider: 'codex', mode: 'ask', accessMode: 'workspace', model: model.id, serviceTier: codexWorkbenchDefaults.serviceTier,
     reasoningEffort: model.defaultEffort || model.efforts?.[0] || '', workspacePath,
     objective: `生成 ${date} 工作日报草稿（Computer History）
 

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { AgentRun, CodexSessionDetail, CodexSessionSummary } from '../shared/agent-runtime.js';
-import { agentRunErrorText, buildAgentConversationList, buildAgentConversations, findAgentConversation,
+import { agentConversationStatus, agentRunErrorText, agentRunStatus, buildAgentConversationList, buildAgentConversations, findAgentConversation,
   isRestartableAgentRun, isRetryableSessionBusyRun, reconcileAgentConversation, resumedConversationId } from '../src/features/agent-workbench/conversation.js';
 
 function run(id: string, parentRunId = '', createdAt = '2026-09-16T00:00:00.000Z'): AgentRun {
@@ -32,6 +32,8 @@ test('乱序执行时以活跃或最后更新的运行作为会话最新轮次�
   assert.deepEqual(active.runs.map((item) => item.id), ['356142ee', '75998ef8']);
   assert.equal(active.latest.id, '356142ee');
   assert.equal(active.latest.status, 'running');
+  assert.equal(agentConversationStatus(active).label, '执行中');
+  assert.equal(agentRunStatus(later).label, '本轮完成', '旧轮完成不覆盖会话的活跃状态');
   assert.equal(active.title, 'message-356142ee');
   assert.equal(active.updatedAt, earlier.updatedAt);
 
@@ -39,12 +41,44 @@ test('乱序执行时以活跃或最后更新的运行作为会话最新轮次�
   const [stillActive] = buildAgentConversations([earlier, queued]);
   assert.equal(stillActive.latest.id, '356142ee');
   assert.equal(stillActive.updatedAt, queued.updatedAt);
+  assert.equal(agentConversationStatus(stillActive).value, 'running');
+  const [waiting] = buildAgentConversations([later, { ...earlier, status: 'queued' }]);
+  assert.equal(agentConversationStatus(waiting).label, '排队中');
 
   const completed = { ...earlier, status: 'completed' as const, updatedAt: '2026-10-09T04:10:00.000Z' };
   const [finished] = buildAgentConversations([later, completed]);
   assert.equal(finished.latest.id, '356142ee');
   assert.equal(finished.latest.status, 'completed');
   assert.equal(finished.updatedAt, completed.updatedAt);
+  assert.equal(agentConversationStatus(finished).label, '本轮完成');
+});
+
+test('最后更新轮次的完成、失败、停止和中断相互区分，保留各轮原状态', () => {
+  const previous = { ...run('previous'), conversationId: 'conversation', status: 'failed' as const };
+  for (const [status, label] of [['completed', '本轮完成'], ['failed', '执行失败'], ['cancelled', '已停止'], ['interrupted', '已中断']] as const) {
+    const latest = { ...run('latest', '', '2026-09-16T00:01:00.000Z'), conversationId: 'conversation', status };
+    const [conversation] = buildAgentConversations([latest, previous]);
+    assert.equal(agentConversationStatus(conversation).value, status);
+    assert.equal(agentConversationStatus(conversation).label, label);
+    assert.deepEqual(agentRunStatus(latest), agentConversationStatus(conversation));
+    assert.equal(agentRunStatus(conversation.runs[0]).label, '执行失败');
+    assert.equal(latest.status, status);
+  }
+});
+
+test('等待编辑保留会话优先级，单条消息仍显示各自状态', () => {
+  const paused = { ...run('paused'), conversationId: 'conversation', status: 'cancelled' as const, pausedForEdit: true };
+  const running = { ...run('running', '', '2026-09-16T00:01:00.000Z'), conversationId: 'conversation', status: 'running' as const };
+  const queued = { ...run('queued', '', '2026-09-16T00:02:00.000Z'), conversationId: 'conversation', status: 'queued' as const };
+  const [conversation] = buildAgentConversations([paused, running, queued]);
+  assert.equal(conversation.latest.status, 'running');
+  assert.equal(agentConversationStatus(conversation).value, 'paused');
+  assert.equal(agentConversationStatus(conversation).label, '等待编辑');
+  assert.equal(agentRunStatus(paused).label, '等待编辑');
+  assert.equal(agentRunStatus(running).label, '执行中');
+  assert.equal(agentRunStatus(queued).label, '排队中');
+  paused.pausedForEdit = false;
+  assert.equal(agentConversationStatus(conversation).label, '执行中');
 });
 
 test('父运行不在当前窗口时保留为独立会话，不猜测跨 Session 关系', () => {
@@ -157,6 +191,11 @@ test('历史 Codex 会话续接后保留原消息并合并本地新轮次', () =
   assert.deepEqual(conversations[0].runs.map((item) => item.objective), ['原问题', '继续处理']);
   assert.equal(conversations[0].latest.id, continued.id);
   assert.equal(conversations[0].source, 'workspace');
+  assert.equal(agentConversationStatus(conversations[0]).label, '本轮完成');
+  assert.equal(agentRunStatus(conversations[0].runs[0]).value, 'history');
+  assert.equal(agentRunStatus(conversations[0].runs[0]).label, '历史记录');
+  assert.equal(agentRunStatus(conversations[0].runs[1]).label, '本轮完成');
+  assert.equal('syncedHistory' in continued, false);
 });
 
 test('两个本地会话共享原 Codex session 时不复制完整同步历史到每一行', () => {
@@ -197,6 +236,9 @@ test('历史详情未读取时先显示会话摘要，不以空白骨架屏遮�
   const [conversation] = buildAgentConversationList([], [session], {});
   assert.equal(conversation.loaded, false);
   assert.equal(conversation.runs[0].result, session.preview);
+  assert.equal(agentConversationStatus(conversation).value, 'history');
+  assert.equal(agentConversationStatus(conversation).label, '已同步');
+  assert.equal(agentRunStatus(conversation.runs[0]).label, '历史记录');
 });
 
 test('已读取的 Codex 历史会话使用最后一次用户提问作为标题', () => {
@@ -204,11 +246,13 @@ test('已读取的 Codex 历史会话使用最后一次用户提问作为标题'
     workspacePath: '/repo', branch: 'feature/test', headSha: 'abc', model: 'test-model', reasoningEffort: 'high', archived: false,
     createdAt: '2026-09-16T00:00:00.000Z', updatedAt: '2026-09-16T00:02:00.000Z' };
   const detail: CodexSessionDetail = { ...session, turns: [
-    { id: 'turn-1', userMessage: '最初问题', agentMessage: '最初回答', createdAt: session.createdAt, updatedAt: session.createdAt },
-    { id: 'turn-2', userMessage: '最后提问', agentMessage: '最后回答', createdAt: session.updatedAt, updatedAt: session.updatedAt },
+    { id: 'turn-1', userMessage: '最初问题', agentMessage: '最初回答', createdAt: session.createdAt, updatedAt: session.createdAt, completedAt: session.createdAt },
+    { id: 'turn-2', userMessage: '最后提问', agentMessage: '最后回答', createdAt: session.updatedAt, updatedAt: session.updatedAt, completedAt: null },
   ] };
   const [conversation] = buildAgentConversationList([], [session], { [session.id]: detail });
   assert.equal(conversation.title, '最后提问');
+  assert.equal(agentConversationStatus(conversation).label, '已同步');
+  assert.deepEqual(conversation.runs.map(item => agentRunStatus(item).value), ['history', 'history']);
 });
 
 test('手动会话标题覆盖最新消息生成的标题', () => {

@@ -2,7 +2,7 @@
 import { computed, readonly, shallowRef } from 'vue';
 import { CUSTOM_THEME_STORAGE_KEY, DEFAULT_CUSTOM_THEME, deleteCustomWallpaper, normalizeCustomTheme, readCustomTheme, readCustomWallpaper, saveCustomTheme, saveCustomWallpaper, type CustomThemeSettings } from './customTheme';
 import { normalizeTheme, readTheme, resolveTheme, saveTheme, THEME_STORAGE_KEY, themeOptions, type ThemePreference } from './theme';
-const preference = shallowRef<ThemePreference>('cobalt');
+const preference = shallowRef<ThemePreference>('studio');
 const storageAvailable = shallowRef(true);
 const systemDark = shallowRef(false);
 const customTheme = shallowRef<CustomThemeSettings>({ ...DEFAULT_CUSTOM_THEME });
@@ -59,7 +59,7 @@ async function resetCustomTheme() {
 export function initializeTheme() {
   const media = window.matchMedia('(prefers-color-scheme: dark)');
   systemDark.value = media.matches;
-  try { preference.value = readTheme(window.localStorage); } catch { preference.value = 'cobalt'; }
+  try { preference.value = readTheme(window.localStorage); } catch { preference.value = 'studio'; }
   customTheme.value = readCustomTheme(window.localStorage);
   applyTheme();
   void readCustomWallpaper().then((blob) => { replaceWallpaperUrl(blob); applyCustomVariables(); });

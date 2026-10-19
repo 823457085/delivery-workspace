@@ -57,14 +57,18 @@ test('失败后新请求可重试，独立克隆指定基准，重复请求不�
     await exec('git', ['-C', original, 'switch', '-c', 'feature/existing']);
     await fs.writeFile(path.join(original, 'draft.txt'), 'preserve');
     let preparations = 0;
-    service = await createJiraFixService(path.join(directory, 'records'), runtime, source, async (value, id, signal) => {
+    const prepare: Parameters<typeof createJiraFixService>[3] = async (value, id, signal) => {
       preparations++;
       if (preparations === 1) throw new Error('ssh: connect to host example.test port 22: Operation timed out');
       return prepareRequirementWorkspace({ ...value, repository: original }, id, signal);
-    });
+    };
+    service = await createJiraFixService(path.join(directory, 'records'), runtime, source, prepare);
     const payload = request({ ...input, parentDirectory: directory });
     const failed = service.start(payload);
     await waitFor(() => service!.list()[0]?.status === 'failed');
+    // 公开关闭屏障等待失败记录落盘及 pending 释放，再验证重启后的新请求重试。
+    await service.close();
+    service = await createJiraFixService(path.join(directory, 'records'), runtime, source, prepare);
     assert.equal(executions, 0);
     assert.equal(service.start(payload).status, 'failed');
     assert.equal(preparations, 1);

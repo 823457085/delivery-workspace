@@ -15,7 +15,7 @@ export const catalog: ReviewCatalogItem[] = [
 export const records: ApexBffReviewState = Object.fromEntries(catalog.map(item => [item.id, {
   assignee: { name: assignee, displayName: '测试负责人' }, evidence: '', blocker: '', confirmedAt: '', updatedAt: '',
 }]));
-export const runtime = { provider: 'codex', ready: true, models: [{ id: 'gpt-6.1-sol', efforts: ['max'], defaultEffort: 'max' }] } as AgentRuntimeHealth;
+export const runtime = { provider: 'codex', ready: true, models: [{ id: 'gpt-6-astra', efforts: ['ultra'], defaultEffort: 'ultra' }] } as AgentRuntimeHealth;
 export const requestId = '11111111-1111-4111-8111-111111111111';
 export function progress(taskId = 'merchant'): ExecutionProgress {
   const task = buildExecutionTasks(catalog, records, assignee).find(item => item.id === taskId)!;

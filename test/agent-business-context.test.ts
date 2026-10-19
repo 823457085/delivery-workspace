@@ -5,6 +5,7 @@ import type { CatchupRequirement, JiraIssue, Job, LocalProject, MergeItem } from
 import type { AgentBusinessSnapshot } from '../src/features/agent-workbench/agent-business-context.js';
 import { buildAgentBusinessContext, buildAgentBusinessMentions } from '../src/features/agent-workbench/agent-business-context.js';
 import type { AgentConversation } from '../src/features/agent-workbench/conversation.js';
+import { projectQuickPrompt } from '../src/features/agent-workbench/agent-quick-actions.js';
 
 function conversation(objective: string, workspacePath = '/repo/admin', branch = 'feature/APEX-263'): AgentConversation {
   const run: AgentRun = { id: 'run-1', provider: 'codex', mode: 'agent', accessMode: 'workspace', model: 'gpt-test', reasoningEffort: 'high', objective,
@@ -149,4 +150,45 @@ test('一个会话展示全部明确引用的 Jira，空合入 ID 不会匹配',
   const result = buildAgentBusinessContext(conversation('APEX-263 和 APEX-264 一起检查'), snapshot);
   assert.deepEqual(result.jiraIssues.map(item => item.key), ['APEX-263', 'APEX-264']);
   assert.deepEqual(result.merges, []);
+});
+
+test('同仓库 worktree 引用精确路径，保留路径和分支且不改变会话工作目录', () => {
+  const selected = { ...project, path: '/repo/工作区 A@50%', branch: 'feature/selected' };
+  const snapshot: AgentBusinessSnapshot = { projects: { projects: [project, selected], roots: [],
+    directoryCount: 2, durationMs: 1, limited: false, unreadableCount: 0 } };
+  const current = conversation(projectQuickPrompt(selected));
+  assert.equal(buildAgentBusinessContext(current, snapshot).project, selected);
+  assert.equal(current.latest.workspacePath, project.path);
+  assert.equal(current.latest.branch, project.branch);
+  const mentions = buildAgentBusinessMentions(snapshot).filter(item => item.type === 'project');
+  assert.equal(new Set(mentions.map(item => item.id)).size, 2);
+  assert.notEqual(mentions[0]!.value, mentions[1]!.value);
+  assert.ok(mentions[1]!.value.includes(JSON.stringify(selected.path)));
+  assert.ok(mentions[1]!.value.includes(JSON.stringify(selected.branch)));
+  assert.equal(buildAgentBusinessContext(conversation(mentions[1]!.value), snapshot).project, selected);
+});
+
+
+test('旧项目引用多工作区时只匹配当前目录，歧义或失效工作区不回退首条', () => {
+  const second = { ...project, path: '/repo/second' };
+  const snapshot: AgentBusinessSnapshot = { projects: { projects: [project, second], roots: [],
+    directoryCount: 2, durationMs: 1, limited: false, unreadableCount: 0 } };
+  assert.equal(buildAgentBusinessContext(conversation(`@项目:${project.projectId}`, second.path), snapshot).project, second);
+  assert.equal(buildAgentBusinessContext(conversation(`@项目:${project.projectId}`, '/elsewhere'), snapshot).project, undefined);
+  assert.equal(buildAgentBusinessContext(conversation('检查当前工作区', second.path), snapshot).project, second);
+  assert.equal(buildAgentBusinessContext(conversation(`@项目:${project.projectId} @工作区:%broken`), snapshot).project, undefined);
+  assert.equal(buildAgentBusinessContext(conversation(projectQuickPrompt({ ...second, path: '/removed' })), snapshot).project, undefined);
+  assert.equal(buildAgentBusinessContext(conversation(`@项目:other @工作区:${encodeURIComponent(second.path)}`), snapshot).project, undefined);
+});
+
+
+test('最新用户工作区引用覆盖旧轮次和会话标题，不采用 Agent 回复里的另一个引用', () => {
+  const second = { ...project, path: '/repo/second' };
+  const current = conversation(projectQuickPrompt(project));
+  const latest = { ...current.latest, id: 'run-2', objective: projectQuickPrompt(second), result: projectQuickPrompt(project) };
+  current.runs.push(latest); current.latest = latest;
+  const snapshot: AgentBusinessSnapshot = { projects: { projects: [project, second], roots: [],
+    directoryCount: 2, durationMs: 1, limited: false, unreadableCount: 0 } };
+  assert.equal(buildAgentBusinessContext(current, snapshot).project, second);
+  assert.equal(buildAgentBusinessContext(conversation(`${projectQuickPrompt(project)}\n\n${projectQuickPrompt(second)}`), snapshot).project, second);
 });

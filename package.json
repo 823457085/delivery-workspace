@@ -3,7 +3,9 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "engines": { "node": ">=22.13.0" },
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "packageManager": "pnpm@12.3.4",
   "scripts": {
     "setup": "node scripts/bootstrap.mjs",
@@ -11,7 +13,8 @@
     "dev": "node scripts/start.mjs --dev",
     "start": "node scripts/start.mjs",
     "build": "vue-tsc --noEmit && tsc --noEmit -p tsconfig.server.json && vite build",
-    "test": "node --import tsx --test test/*.test.ts"
+    "test": "node --import tsx --test test/*.test.ts tools/remote-access/gateway.test.mjs",
+    "state:backup": "node --env-file-if-exists=.env --import tsx scripts/state-backup.ts"
   },
   "dependencies": {
     "@lucide/vue": "1.41.0",

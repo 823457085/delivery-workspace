@@ -5,7 +5,7 @@ import AgentAvatar from './AgentAvatar.vue';
  * 它不直接请求后端，发送、停止和详情操作全部通过显式事件交给容器，避免隐藏副作用。
  */
 import { computed, nextTick, onBeforeUnmount, shallowRef, useTemplateRef, watch } from 'vue';
-import { Check, CircleStop, CornerUpLeft, Copy, Download, File, Folder, GitBranch, GitFork, Info, PanelLeftClose, PanelLeftOpen,
+import { Activity, PackageCheck, Check, ChevronRight, CircleStop, CornerUpLeft, Copy, Download, Ellipsis, File, Folder, GitBranch, GitFork, Info, PanelLeftClose, PanelLeftOpen,
   PanelRightClose, PanelRightOpen, Pencil, Pin, RotateCcw, Search, Trash2 } from '@lucide/vue';
 import { ElMessage } from 'element-plus';
 import { isAgentImageAttachment, type AgentAccessMode, type AgentAttachment, type AgentProvider, type AgentQueuePlacement, type AgentReasoningEffort, type AgentRun, type AgentRuntimeHealth, type AgentServiceTier } from '../../../shared/agent-runtime';
@@ -14,14 +14,16 @@ import StatusPill from '../../shared/ui/StatusPill.vue';
 import AgentComposer from './AgentComposer.vue';
 import AgentTerminalButton from './AgentTerminalButton.vue';
 import AgentChangedFiles from './AgentChangedFiles.vue';
+import AgentExecutionPanel from './AgentExecutionPanel.vue';
 import AgentMarkdown from './AgentMarkdown.vue';
 import AgentMessageText from './AgentMessageText.vue';
-import { agentRunErrorText, agentRunProjectPath, isRestartableAgentRun, isRetryableSessionBusyRun, type AgentConversation } from './conversation';
+import { agentConversationStatus, agentRunErrorText, agentRunProjectPath, agentRunStatus, isRestartableAgentRun, isRetryableSessionBusyRun, type AgentConversation } from './conversation';
 import { downloadConversation } from './conversation-export';
 import type { AgentBusinessMention } from './agent-business-context';
+import type { AgentAttachmentDraft } from './useAgentAttachments';
 
 const props = defineProps<{ conversation?: AgentConversation; changing: string; runtimes: AgentRuntimeHealth[];
-  pinned: boolean; leftCollapsed: boolean; rightCollapsed: boolean; businessOptions: AgentBusinessMention[] }>();
+  pinned: boolean; leftCollapsed: boolean; rightCollapsed: boolean; businessOptions: AgentBusinessMention[]; attachmentDraft?: AgentAttachmentDraft }>();
 const draft = defineModel<string>({ default: '' });
 const attachments = defineModel<AgentAttachment[]>('attachments', { default: () => [] });
 const emit = defineEmits<{ send: [selection: { provider: AgentProvider; model: string; reasoningEffort: AgentReasoningEffort | ''; accessMode: AgentAccessMode;
@@ -29,11 +31,14 @@ const emit = defineEmits<{ send: [selection: { provider: AgentProvider; model: s
 const messageViewport = useTemplateRef<HTMLDivElement>('messageViewport');
 const composer = useTemplateRef<InstanceType<typeof AgentComposer>>('composer');
 const searchQuery = shallowRef('');
+const conversationView = shallowRef<'chat' | 'execution' | 'delivery'>('chat');
+watch(() => props.conversation?.id, () => { conversationView.value = 'chat'; });
 const copiedMessageId = shallowRef('');
 const searchQueries = new Map<string, string>();
 const scrollPositions = new Map<string, number>();
 let copyTimer: ReturnType<typeof setTimeout> | undefined;
 const latest = computed(() => props.conversation?.latest);
+const status = computed(() => props.conversation && agentConversationStatus(props.conversation));
 const runtime = computed(() => props.runtimes.find((item) => item.provider === latest.value?.provider));
 const running = computed(() => !!latest.value && ['queued', 'running'].includes(latest.value.status));
 const activeRun = computed(() => props.conversation?.runs.find((run) => run.status === 'running'));
@@ -59,14 +64,21 @@ const visibleRuns = computed(() => {
 });
 
 watch(() => props.conversation?.id, async (id, previousId) => {
-  if (previousId && messageViewport.value) scrollPositions.set(previousId, messageViewport.value.scrollTop);
+  if (previousId && messageViewport.value?.clientHeight) scrollPositions.set(previousId, messageViewport.value.scrollTop);
   searchQuery.value = id ? searchQueries.get(id) || '' : '';
   await nextTick();
   if (!id || !messageViewport.value) return;
   messageViewport.value.scrollTop = scrollPositions.get(id) ?? messageViewport.value.scrollHeight;
 }, { immediate: true });
+watch(conversationView, async (view, previous) => {
+  if (previous === 'chat') rememberScroll();
+  await nextTick();
+  const id = props.conversation?.id;
+  if (view === 'chat' && id && messageViewport.value) messageViewport.value.scrollTop = scrollPositions.get(id) ?? messageViewport.value.scrollHeight;
+});
 watch(searchQuery, (value) => { if (props.conversation?.id) searchQueries.set(props.conversation.id, value); });
-watch(() => props.conversation?.runs.map(run => `${run.id}:${run.updatedAt}:${run.result.length}`).join('|'), async () => {
+watch(() => [props.conversation?.id, props.conversation?.runs.map(run => `${run.id}:${run.updatedAt}:${run.result.length}`).join('|')] as const, async ([id], [previousId]) => {
+  if (id !== previousId) return;
   const viewport = messageViewport.value;
   if (!viewport || !viewport.clientHeight || searchQuery.value) return;
   const followsLatest = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 72;
@@ -75,7 +87,7 @@ watch(() => props.conversation?.runs.map(run => `${run.id}:${run.updatedAt}:${ru
 });
 
 function rememberScroll() {
-  if (props.conversation?.id && messageViewport.value) scrollPositions.set(props.conversation.id, messageViewport.value.scrollTop);
+  if (props.conversation?.id && messageViewport.value?.clientHeight) scrollPositions.set(props.conversation.id, messageViewport.value.scrollTop);
 }
 
 async function copyMessage(id: string, content: string) {
@@ -103,10 +115,31 @@ defineExpose({ focusComposer });
 <template>
   <section class="conversation-pane" aria-label="Agent 会话窗口">
     <template v-if="conversation">
-      <header class="conversation-header">
-        <div class="conversation-tabs"><strong>启元</strong><span>{{ conversation.latest.provider === 'codex' ? 'Codex CLI' : 'Cursor CLI' }}</span><span>{{ modeLabel }}</span><span>{{ selectedModelLabel }}</span></div>
-        <div class="conversation-actions"><StatusPill :value="pausedRun ? 'paused' : conversation.latest.status" /><el-button v-if="stoppableRun && !pausedRun" link type="danger" :loading="changing === stoppableRun.id" @click="emit('stop', stoppableRun)"><CircleStop :size="14" /> 停止</el-button><el-button v-if="conversation.latest.provider === 'codex' && conversation.latest.sessionId" link type="primary" :disabled="running || !!changing" :loading="changing === `fork:${conversation.latest.id}`" @click="emit('fork', conversation.latest)"><GitFork :size="14" /> 基于此会话新建</el-button><el-dropdown trigger="click" @command="exportConversation"><el-button link type="primary" title="导出会话"><Download :size="14" /> 导出</el-button><template #dropdown><el-dropdown-menu><el-dropdown-item command="markdown">导出 Markdown</el-dropdown-item><el-dropdown-item command="json">导出 JSON</el-dropdown-item></el-dropdown-menu></template></el-dropdown><el-button link type="primary" :loading="changing === `title:${conversation.id}`" @click="emit('rename', conversation)"><Pencil :size="14" /> 修改标题</el-button><el-button link type="primary" @click="emit('inspect', conversation.latest)"><Info :size="14" /> 会话信息</el-button><el-button link type="primary" :aria-pressed="pinned" @click="emit('pin', conversation)"><Pin :size="14" /> {{ pinned ? '取消置顶' : '置顶会话' }}</el-button><el-button link type="danger" :disabled="!!changing" :loading="changing === conversation.id" @click="emit('remove', conversation)"><Trash2 :size="14" /> 删除会话</el-button><el-button link type="primary" :title="leftCollapsed ? '展开会话列表' : '收起会话列表'" @click="emit('toggleLeft')"><component :is="leftCollapsed ? PanelLeftOpen : PanelLeftClose" :size="14" /></el-button><el-button link type="primary" :title="rightCollapsed ? '展开执行过程' : '收起执行过程'" @click="emit('toggleRight')"><component :is="rightCollapsed ? PanelRightOpen : PanelRightClose" :size="14" /></el-button></div>
+      <header class="conversation-header studio-conversation-header">
+        <button type="button" class="studio-panel-toggle" :aria-label="leftCollapsed ? '展开会话列表' : '收起会话列表'" :title="leftCollapsed ? '展开会话列表' : '收起会话列表'" @click="emit('toggleLeft')"><component :is="leftCollapsed ? PanelLeftOpen : PanelLeftClose" :size="17" /></button>
+        <div class="conversation-title-copy">
+          <div class="conversation-meta"><span>{{ workspaceLabel }}</span><ChevronRight :size="12" /><span>{{ conversation.latest.provider === 'codex' ? 'Codex CLI' : 'Cursor CLI' }}</span><span>{{ modeLabel }}</span><span :title="selectedModelLabel">{{ selectedModelLabel }}</span></div>
+          <h1 :title="conversation.title">{{ conversation.title }}</h1>
+        </div>
+        <div class="conversation-actions">
+          <StatusPill v-bind="status" />
+          <el-button v-if="stoppableRun && !pausedRun" link type="danger" :loading="changing === stoppableRun.id" @click="emit('stop', stoppableRun)"><CircleStop :size="14" /> 停止</el-button>
+          <el-dropdown trigger="click" popper-class="studio-conversation-menu">
+            <button type="button" class="studio-panel-toggle" aria-label="更多会话操作" title="更多会话操作"><Ellipsis :size="19" /></button>
+            <template #dropdown><el-dropdown-menu>
+              <el-dropdown-item v-if="conversation.latest.provider === 'codex' && conversation.latest.sessionId" :disabled="running || !!changing" @click="emit('fork', conversation.latest)"><GitFork :size="14" />基于此会话新建</el-dropdown-item>
+              <el-dropdown-item :disabled="!!changing" @click="emit('rename', conversation)"><Pencil :size="14" />修改标题</el-dropdown-item>
+              <el-dropdown-item @click="emit('pin', conversation)"><Pin :size="14" />{{ pinned ? '取消置顶' : '置顶会话' }}</el-dropdown-item>
+              <el-dropdown-item @click="emit('inspect', conversation.latest)"><Info :size="14" />会话信息</el-dropdown-item>
+              <el-dropdown-item divided @click="exportConversation('markdown')"><Download :size="14" />导出 Markdown</el-dropdown-item>
+              <el-dropdown-item @click="exportConversation('json')"><Download :size="14" />导出 JSON</el-dropdown-item>
+              <el-dropdown-item divided :disabled="!!changing" class="studio-delete-conversation" @click="emit('remove', conversation)"><Trash2 :size="14" />删除会话</el-dropdown-item>
+            </el-dropdown-menu></template>
+          </el-dropdown>
+          <button type="button" class="studio-panel-toggle" :aria-label="rightCollapsed ? '展开执行过程' : '收起执行过程'" :title="rightCollapsed ? '展开执行过程' : '收起执行过程'" @click="emit('toggleRight')"><component :is="rightCollapsed ? PanelRightOpen : PanelRightClose" :size="17" /></button>
+        </div>
       </header>
+      <div class="conversation-toolbar">
       <div class="conversation-context">
         <div class="context-block project-context" :title="agentRunProjectPath(conversation.latest)"><Folder :size="14" /><span><small>当前项目</small><strong>{{ workspaceLabel }}</strong></span></div>
         <div class="context-block branch-context" :title="conversation.latest.branch || '普通文件夹'"><GitBranch :size="14" /><span><small>{{ conversation.latest.isolatedWorkspace ? '基线分支' : conversation.latest.branch ? '当前分支' : '工作区类型' }}</small><strong>{{ conversation.latest.baseBranch || conversation.latest.branch || '普通文件夹' }}</strong></span></div>
@@ -114,7 +147,19 @@ defineExpose({ focusComposer });
         <AgentTerminalButton :workspace-path="conversation.latest.workspacePath" />
         <label class="message-search"><Search :size="12" /><input v-model="searchQuery" type="search" placeholder="搜索当前会话" /></label>
       </div>
-      <div ref="messageViewport" class="message-viewport" aria-live="polite" @scroll.passive="rememberScroll">
+      <nav class="studio-conversation-tools" aria-label="会话视图">
+        <button type="button" :class="{ active: conversationView === 'chat' }" :aria-pressed="conversationView === 'chat'" @click="conversationView = 'chat'">对话</button>
+        <button type="button" :class="{ active: conversationView === 'execution' }" :aria-pressed="conversationView === 'execution'" @click="conversationView = 'execution'"><Activity :size="14" />执行记录</button>
+        <button type="button" :class="{ active: conversationView === 'delivery' }" :aria-pressed="conversationView === 'delivery'" @click="conversationView = 'delivery'"><PackageCheck :size="14" />本轮交付<span>{{ conversation.latest.changedFiles?.length || 0 }}</span></button>
+      </nav>
+      </div>
+      <AgentExecutionPanel v-if="conversationView === 'execution'" class="studio-main-execution" :conversation="conversation" @inspect="emit('inspect', $event)" />
+      <section v-if="conversationView === 'delivery'" class="studio-main-delivery" aria-label="本轮交付成果">
+        <h2>本轮交付</h2>
+        <AgentChangedFiles v-if="conversation.latest.changedFiles?.length" :files="conversation.latest.changedFiles" :run-id="conversation.latest.id" />
+        <el-empty v-else description="本轮暂无改动文件或本地产物" :image-size="56" />
+      </section>
+      <div v-show="conversationView === 'chat'" ref="messageViewport" class="message-viewport" aria-live="polite" @scroll.passive="rememberScroll">
         <div class="message-list">
           <div v-for="run in visibleRuns" :key="run.id" class="message-turn">
             <article class="chat-message user-message"><AgentAvatar user class="message-avatar" /><div><header><strong>你</strong><time>{{ dateTime(run.createdAt) }}</time></header><div v-if="run.attachments?.length" class="message-images"><a v-for="attachment in run.attachments" :key="attachment.id" :href="attachment.url" target="_blank" rel="noopener"><img v-if="isAgentImageAttachment(attachment)" :src="attachment.url" :alt="attachment.name" /><span v-else class="message-file"><File :size="24" /></span><span>{{ attachment.name }}</span></a></div><p><AgentMessageText :source="run.objective" /></p>
@@ -134,14 +179,14 @@ defineExpose({ focusComposer });
                 <div v-if="supplement.attachments.length" class="message-images"><a v-for="attachment in supplement.attachments" :key="attachment.id" :href="attachment.url" target="_blank" rel="noopener"><img v-if="isAgentImageAttachment(attachment)" :src="attachment.url" :alt="attachment.name" /><span v-else class="message-file"><File :size="24" /></span><span>{{ attachment.name }}</span></a></div><p><AgentMessageText :source="supplement.objective" /></p>
               </div>
             </article>
-            <article class="chat-message agent-message"><AgentAvatar class="message-avatar" /><div><header><strong>{{ run.provider === 'codex' ? '启元' : 'Cursor Agent' }}</strong><StatusPill :value="run.pausedForEdit ? 'paused' : run.status" /><time>{{ dateTime(run.updatedAt) }}</time></header><AgentMarkdown v-if="run.result" class="agent-result" :source="run.result" /><p v-if="run.error" class="agent-error">{{ agentRunErrorText(run) }}</p><p v-else-if="!run.result" class="agent-progress">{{ run.events.length ? latestActivity(run) : '该轮没有保存最终回复' }}</p><AgentChangedFiles v-if="run.changedFiles" :files="run.changedFiles" :run-id="run.id" /><div class="message-tools"><button v-if="run.result || run.error" type="button" class="message-copy" title="复制消息" @click="copyMessage(`agent:${run.id}`, run.result || agentRunErrorText(run))"><Check v-if="copiedMessageId === `agent:${run.id}`" :size="12" /><Copy v-else :size="12" /></button><button v-if="run.status === 'queued' && activeRun" type="button" class="event-link" :disabled="!!changing" title="停止当前轮，并提前执行此消息" @click="emit('steer', run)"><CornerUpLeft :size="12" /> 调整方向</button><button v-if="conversation.source !== 'codex' && run.status === 'queued' && run.parentRunId" type="button" class="event-link danger-link" :disabled="!!changing" title="从当前会话删除这条排队消息" @click="emit('removeQueued', run)"><Trash2 :size="12" /> {{ changing === `delete:${run.id}` ? '删除中' : '删除' }}</button><button v-if="isRestartableAgentRun(run) && !pausedRun" type="button" class="event-link" :disabled="!!changing" :title="isRetryableSessionBusyRun(run) ? '尝试续接原会话；真实运行中的任务不会被中断' : '从已保存状态重新执行该任务'" @click="emit('retry', run)"><RotateCcw :size="12" /> 重新执行</button><button v-if="run.events.length" type="button" class="event-link" @click="emit('inspect', run)">{{ run.events.length }} 条运行事件</button></div></div></article>
+            <article class="chat-message agent-message"><AgentAvatar class="message-avatar" /><div><header><strong>{{ run.provider === 'codex' ? '启元' : 'Cursor Agent' }}</strong><StatusPill v-bind="agentRunStatus(run)" /><time>{{ dateTime(run.updatedAt) }}</time></header><AgentMarkdown v-if="run.result" class="agent-result" :source="run.result" /><p v-if="run.error" class="agent-error">{{ agentRunErrorText(run) }}</p><p v-else-if="!run.result" class="agent-progress">{{ run.events.length ? latestActivity(run) : '该轮没有保存最终回复' }}</p><AgentChangedFiles v-if="run.changedFiles" :files="run.changedFiles" :run-id="run.id" /><div class="message-tools"><button v-if="run.result || run.error" type="button" class="message-copy" title="复制消息" @click="copyMessage(`agent:${run.id}`, run.result || agentRunErrorText(run))"><Check v-if="copiedMessageId === `agent:${run.id}`" :size="12" /><Copy v-else :size="12" /></button><button v-if="run.status === 'queued' && activeRun" type="button" class="event-link" :disabled="!!changing" title="停止当前轮，并提前执行此消息" @click="emit('steer', run)"><CornerUpLeft :size="12" /> 调整方向</button><button v-if="conversation.source !== 'codex' && run.status === 'queued' && run.parentRunId" type="button" class="event-link danger-link" :disabled="!!changing" title="从当前会话删除这条排队消息" @click="emit('removeQueued', run)"><Trash2 :size="12" /> {{ changing === `delete:${run.id}` ? '删除中' : '删除' }}</button><button v-if="isRestartableAgentRun(run) && !pausedRun" type="button" class="event-link" :disabled="!!changing" :title="isRetryableSessionBusyRun(run) ? '尝试续接原会话；真实运行中的任务不会被中断' : '从已保存状态重新执行该任务'" @click="emit('retry', run)"><RotateCcw :size="12" /> 重新执行</button><button v-if="run.events.length" type="button" class="event-link" @click="emit('inspect', run)">{{ run.events.length }} 条运行事件</button></div></div></article>
           </div>
           <div v-if="!conversation.loaded" class="history-loading"><el-skeleton :rows="2" animated /></div>
           <el-empty v-if="searchQuery && !visibleRuns.length" description="当前会话没有匹配内容" :image-size="56" />
         </div>
       </div>
       <AgentComposer v-if="!pausedRun" ref="composer" v-model="draft" v-model:attachments="attachments" :conversation="conversation" :runtimes="runtimes" :changing="changing" :running="running" :can-insert="!!activeRun?.liveInputReady"
-        :business-options="businessOptions"
+        :business-options="businessOptions" :attachment-draft="attachmentDraft"
         @send="emit('send', $event)" @stop="stoppableRun && emit('stop', stoppableRun)" @configure-models="emit('configureModels')" />
       <div v-if="pausedRun" class="paused-editor"><span>会话已暂停，等待编辑后继续</span><el-button type="primary" :disabled="!!changing" @click="emit('edit', pausedRun)"><Pencil :size="14" /> 编辑消息</el-button></div>
     </template>
@@ -150,6 +195,7 @@ defineExpose({ focusComposer });
 </template>
 
 <style scoped>
+.conversation-toolbar{display:contents}
 .paused-editor{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:18px 24px;border-top:1px solid var(--agent-border);background:var(--agent-panel);color:var(--agent-muted);font-size:12px}
 .user-message-tools{justify-content:flex-end;flex-wrap:wrap}.user-message .user-message-tools .message-copy{position:static}
 .danger-link{border-color:color-mix(in srgb,var(--el-color-danger) 56%,var(--agent-border));background:color-mix(in srgb,var(--el-color-danger) 10%,var(--agent-panel-strong));color:color-mix(in srgb,var(--el-color-danger) 68%,#fff)}
@@ -159,7 +205,7 @@ defineExpose({ focusComposer });
 .message-images{display:flex;flex-wrap:wrap;gap:7px;margin:0 0 9px}.message-images a{display:grid;gap:3px;width:92px;color:#fff;text-decoration:none}.message-images img{display:block;width:92px;height:72px;border:1px solid #ffffff4d;border-radius:7px;object-fit:cover}.message-images span{overflow:hidden;font-size:8px;opacity:.8;text-overflow:ellipsis;white-space:nowrap}
 .user-message p:deep(a){color:#fff;text-decoration:underline;text-underline-offset:3px}
 .history-loading{width:min(100%,980px);margin:0 auto}.history-loading:deep(.el-skeleton__item){background:var(--agent-panel-strong)}
-.conversation-pane:deep(.el-empty){margin:auto}.conversation-pane:deep(.el-empty__description p){color:var(--agent-muted)}.conversation-pane:deep(.status-pill){padding:3px 8px;background:#1d342d;color:#69ddb2;font-size:9px}
+.conversation-pane:deep(.el-empty){margin:auto}.conversation-pane:deep(.el-empty__description p){color:var(--agent-muted)}.conversation-pane:deep(.status-pill){padding:3px 8px;font-size:9px}
 @media(max-width:1440px){.workspace-context{display:none}.project-context{width:130px}.branch-context{width:auto;flex:1}.message-search{width:150px}}
 @media(max-width:1600px){.conversation-header{flex-wrap:wrap;gap:8px;padding:12px 16px}.conversation-tabs{flex-wrap:wrap;gap:5px}.conversation-actions{flex-wrap:wrap;gap:4px;max-width:100%}.conversation-context{flex-wrap:wrap;padding:8px 16px}.message-search{flex:1;min-width:140px}.branch-context{flex:1;min-width:160px}.workspace-context{min-width:160px}}
 </style>

@@ -12,7 +12,7 @@ import { createAgentRuntimeService } from './agent-runtime.js';
 import { agentAccessSchema, agentAttachmentIdsSchema, agentReasoningSchema, agentServiceTierSchema, agentStartSchema } from './agent-runtime-input.js';
 import { createAgentRuntimeStream } from './agent-runtime-stream.js';
 import { createAgentAttachmentStore } from './agent-attachments.js';
-import { isAgentImageAttachment } from '../shared/agent-runtime.js';
+import { isAgentImageAttachment, maxAgentAttachmentBytes } from '../shared/agent-runtime.js';
 import { listCodexSkills } from './codex-skills.js';
 import { createWorkspacePickerRoute } from './workspace-picker.js';
 import { createWorkspaceTerminalRoute } from './workspace-terminal.js';
@@ -27,10 +27,22 @@ import { createJiraFixService } from './jira-fix.js';
 import { createJiraFixHandoffService } from './jira-fix-handoff.js';
 import { createJiraHandoffClient } from './jira-handoff-client.js';
 import { jiraReferenceSchema } from '../shared/jira-fix.js';
+import { acquireStateServiceLease, createStateBackupStore, startPeriodicStateBackup } from './state-backup.js';
+import { createDeliveryAcceptanceStore } from './delivery-acceptance.js';
+import { createDeliveryAcceptanceSourceResolver } from './delivery-acceptance-source.js';
+import type { MergeData } from '../shared/hub.js';
+import { createWorkspaceVersionReader, workspaceStaticCacheControl } from './workspace-version.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const distDirectory = path.resolve(process.env.DELIVERY_DIST_DIR || path.join(root, 'dist'));
+const readWorkspaceVersion = await createWorkspaceVersionReader(root, distDirectory);
 const port = Number(process.env.PORT ?? 5199);
 const dataDirectory = process.env.DELIVERY_DATA_DIR ?? path.join(root, '.data');
+const releaseStateLease = await acquireStateServiceLease(dataDirectory);
+const stateBackup = await createStateBackupStore(dataDirectory);
+const initialBackup = await stateBackup.snapshot();
+for (const entry of initialBackup.entries.filter(entry => entry.status === 'failed')) console.error(`关键状态备份失败：${entry.path}：${entry.error}`);
+const stopStateBackup = startPeriodicStateBackup(stateBackup);
 const sourceBackend = await createSourceBackend(port);
 const service = await createService(dataDirectory, {
   model: process.env.DELIVERY_MODEL || undefined,
@@ -41,18 +53,29 @@ const cliQueue = await createCliQueue(dataDirectory);
 const agentAttachments = await createAgentAttachmentStore(path.join(dataDirectory, 'agent-runtimes', 'attachments'));
 const agentNotes = await createAgentNoteStore(path.join(dataDirectory, 'agent-notes'));
 const agentRuntimes = await createAgentRuntimeService(path.join(dataDirectory, 'agent-runtimes'), {
+  stateBackup,
   resolveKnowledge: agentNotes.resolveReferences,
   resolveAttachments: agentAttachments.resolve,
   removeAttachments: agentAttachments.remove,
 });
 const workspacePicker = createWorkspacePickerRoute();
 const workspaceTerminal = createWorkspaceTerminalRoute();
-const requirementDevelopment = await createRequirementDevelopmentService(path.join(dataDirectory, 'requirement-development'), agentRuntimes);
+const requirementDevelopment = await createRequirementDevelopmentService(path.join(dataDirectory, 'requirement-development'), agentRuntimes,
+  undefined, { writeJson: stateBackup.writeJson });
 const jiraFix = await createJiraFixService(path.join(dataDirectory, 'jira-fix'), agentRuntimes, sourceBackend);
+const deliveryAcceptance = await createDeliveryAcceptanceStore(path.join(dataDirectory, 'delivery-acceptance'),
+  createDeliveryAcceptanceSourceResolver(async () => {
+    const [automation, catchup, merge, design, runtime] = await Promise.all([
+      sourceBackend.readAutomation(), sourceBackend.readCatchup(), sourceBackend.readMergePlan(false),
+      designExecutor.dashboard(), agentRuntimes.dashboard(),
+    ]);
+    return { automation, catchup, merge: merge as MergeData, design, runs: runtime.runs,
+      requirements: requirementDevelopment.list(), fixes: jiraFix.list() };
+  }), { writeJson: stateBackup.writeJson });
 const jiraFixHandoff = await createJiraFixHandoffService(path.join(dataDirectory, 'jira-fix-handoffs'), id => {
   const record = jiraFix.list().find(item => item.id === id);
   return record ? { record, run: agentRuntimes.findJiraFix(id), history: agentRuntimes.jiraFixResults(id) } : undefined;
-}, createJiraHandoffClient(sourceBackend.jiraFixHandoffRequest));
+}, createJiraHandoffClient(sourceBackend.jiraFixHandoffRequest), undefined, agentRuntimes);
 const integration = await createIntegrationStore(dataDirectory);
 const apexBffReview = await createApexBffReviewStore(dataDirectory);
 await initializeExecutionProgress(root);
@@ -75,9 +98,10 @@ const agentTaskWorkflowSchema = z.object({ templateId: z.literal('implement-revi
   objective: z.string().trim().min(1).max(200_000), model: z.string().trim().max(100).optional(),
   reasoningEffort: agentReasoningSchema.optional(), serviceTier: agentServiceTierSchema.optional(), accessMode: agentAccessSchema.optional(),
   attachmentIds: agentAttachmentIdsSchema }).strict();
+const maxAgentAttachmentBase64Length = Math.ceil(maxAgentAttachmentBytes / 3) * 4;
 const agentAttachmentUploadSchema = z.object({ name: z.string().trim().min(1).max(200),
   mimeType: z.string().trim().min(3).max(100).regex(/^[a-z0-9.+-]+\/[a-z0-9.+-]+$/),
-  data: z.string().min(1).max(14_000_000) }).strict();
+  data: z.string().min(1).max(maxAgentAttachmentBase64Length) }).strict();
 const agentCustomModelSchema = z.object({ provider: z.enum(['codex', 'cursor']), modelId: z.string().trim().min(1).max(100),
   label: z.string().trim().min(1).max(80) }).strict();
 const agentConversationTitleSchema = z.object({ title: z.string().trim().min(1).max(120) }).strict();
@@ -116,6 +140,17 @@ const server = http.createServer(async (request, response) => {
       if (url.pathname.startsWith('/api/integration-wecom')) {
         if (![`localhost:${port}`, `127.0.0.1:${port}`].includes(request.headers.host || '')) { json(response, 403, { message: '仅接受本机看板请求' }); return; }
         if (request.method === 'POST' && ![`http://localhost:${port}`, `http://127.0.0.1:${port}`].includes(request.headers.origin || '')) { json(response, 403, { message: '请求来源不匹配' }); return; }
+        if (url.pathname === '/api/integration-wecom/messages/history' && request.method === 'GET') { json(response, 200, wecomIntegration.messageHistory()); return; }
+        if (url.pathname === '/api/integration-wecom/messages/library') {
+          if (request.method === 'GET') { json(response, 200, wecomIntegration.messageLibrary()); return; }
+          if (request.method === 'POST') { json(response, 200, await wecomIntegration.saveMessage(await body(request, 60_000))); return; }
+        }
+        if (url.pathname === '/api/integration-wecom/messages/library/delete' && request.method === 'POST') { json(response, 200, await wecomIntegration.deleteMessage(await body(request, 1000))); return; }
+        if (url.pathname === '/api/integration-wecom/messages/preview' && request.method === 'POST') { json(response, 200, wecomIntegration.messagePreview(await body(request, 60_000))); return; }
+        if (url.pathname === '/api/integration-wecom/messages/send' && request.method === 'POST') {
+          if (request.headers['x-delivery-confirmed'] !== 'yes') { json(response, 403, { message: '请先预览并确认发送到企业微信群' }); return; }
+          json(response, 200, await wecomIntegration.sendMessage(await body(request, 60_000))); return;
+        }
         if (url.pathname === '/api/integration-wecom/config') {
           if (request.method === 'GET') { json(response, 200, wecomIntegration.config()); return; }
           if (request.method === 'POST') { json(response, 200, await wecomIntegration.configure(await body(request, 30_000))); return; }
@@ -154,6 +189,13 @@ const server = http.createServer(async (request, response) => {
         if (request.method === 'POST' && (![`http://localhost:${port}`, `http://127.0.0.1:${port}`].includes(request.headers.origin || '') || request.headers['x-delivery-confirmed'] !== 'yes')) {
           json(response, 403, { message: '请在当前面板确认本机 Agent 操作' }); return;
         }
+        if (url.pathname === '/api/agent-runtimes/recovery') {
+          if (request.method === 'GET') { json(response, 200, { runs: agentRuntimes.recoveryRuns() }); return; }
+          if (request.method === 'POST') {
+            z.object({}).strict().parse(await body(request));
+            json(response, 200, { runs: await agentRuntimes.reconcileRecovery() }); return;
+          }
+        }
         if (url.pathname === '/api/agent-runtimes/jira-fix/resolve' && request.method === 'POST') {
           const input = z.object({ issueKey: jiraReferenceSchema }).strict().parse(await body(request));
           json(response, 200, await jiraFix.resolve(input.issueKey)); return;
@@ -183,6 +225,16 @@ const server = http.createServer(async (request, response) => {
         if (url.pathname === '/api/agent-runtimes/requirement-development') {
           if (request.method === 'GET') { json(response, 200, { records: requirementDevelopment.list() }); return; }
           if (request.method === 'POST') { json(response, 202, await requirementDevelopment.start(await body(request))); return; }
+        }
+        if (url.pathname === '/api/agent-runtimes/delivery-acceptance') {
+          if (request.method === 'GET') { json(response, 200, { records: deliveryAcceptance.list() }); return; }
+          if (request.method === 'POST') { json(response, 200, await deliveryAcceptance.save(await body(request))); return; }
+        }
+        const requirementProgress = url.pathname.match(/^\/api\/agent-runtimes\/requirement-development\/([0-9a-f-]{36})\/progress(\/import)?$/);
+        if (requirementProgress && request.method === 'POST') {
+          const [, id, importing] = requirementProgress;
+          json(response, 200, importing ? await requirementDevelopment.importProgress(id, await body(request))
+            : await requirementDevelopment.updateProgress(id, await body(request))); return;
         }
         if (url.pathname === '/api/agent-runtimes/obsidian/config') {
           if (request.method === 'GET') { json(response, 200, await agentNotes.config()); return; }
@@ -217,7 +269,7 @@ const server = http.createServer(async (request, response) => {
           response.end(item.content); return;
         }
         if (request.method === 'POST' && url.pathname === '/api/agent-runtimes/attachments') {
-          const input = agentAttachmentUploadSchema.parse(await body(request, 14_100_000));
+          const input = agentAttachmentUploadSchema.parse(await body(request, maxAgentAttachmentBase64Length + 100_000));
           json(response, 201, await agentAttachments.upload(input)); return;
         }
         const removeAgentAttachment = url.pathname.match(/^\/api\/agent-runtimes\/attachments\/([0-9a-f-]{36})\/delete$/);
@@ -388,7 +440,7 @@ const server = http.createServer(async (request, response) => {
       if (request.method === 'POST' && url.pathname === '/api/source/refresh') { json(response, 200, await service.refreshSource()); return; }
       if (url.pathname.startsWith('/api/source/')) { await proxySource(request, response, url, sourceBackend); return; }
       if (sourceBackend.handles(url.pathname)) { await sourceBackend.dispatch(request, response, `${url.pathname}${url.search}`); return; }
-      if (request.method === 'GET' && url.pathname === '/api/health') { json(response, 200, { ok: true, app: 'Delivery Workspace', source: 'embedded', labEngine: 'Mastra', labDemoOnly: true, designExecutor: 'Codex desktop session' }); return; }
+      if (request.method === 'GET' && url.pathname === '/api/health') { json(response, 200, { ok: true, app: 'Delivery Workspace', source: 'embedded', labEngine: 'Mastra', labDemoOnly: true, designExecutor: 'Codex desktop session', version: await readWorkspaceVersion() }); return; }
       if (request.method === 'GET' && url.pathname === '/api/dashboard') { json(response, 200, await service.dashboard()); return; }
       if (request.method === 'GET' && url.pathname === '/api/workflow/events') {
         response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform',
@@ -422,16 +474,18 @@ const server = http.createServer(async (request, response) => {
     if (sourceBackend.handles(url.pathname)) { await sourceBackend.dispatch(request, response, `${url.pathname}${url.search}`); return; }
     if (vite) { vite.middlewares(request, response); return; }
     const relative = decodeURIComponent(url.pathname).replace(/^\/+/, '');
-    const file = path.resolve(root, 'dist', relative || 'index.html');
-    if (!file.startsWith(`${path.join(root, 'dist')}${path.sep}`)) { response.writeHead(404); response.end(); return; }
+    const file = path.resolve(distDirectory, relative || 'index.html');
+    if (!file.startsWith(`${distDirectory}${path.sep}`)) { response.writeHead(404); response.end(); return; }
     try {
       const spa = !path.extname(relative);
-      const content = await fs.readFile(spa ? path.join(root, 'dist', 'index.html') : file);
+      const content = await fs.readFile(spa ? path.join(distDirectory, 'index.html') : file);
       const mime: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
-      response.writeHead(200, { 'Content-Type': spa ? mime['.html'] : mime[path.extname(file)] ?? 'application/octet-stream' }); response.end(content);
+      response.writeHead(200, { 'Content-Type': spa ? mime['.html'] : mime[path.extname(file)] ?? 'application/octet-stream',
+        'Cache-Control': workspaceStaticCacheControl(spa ? 'index.html' : relative) }); response.end(content);
     } catch { response.writeHead(404); response.end('Not found'); }
   } catch (error) {
-    json(response, 400, { message: error instanceof z.ZodError ? '输入格式不正确' : error instanceof Error ? error.message : String(error) });
+    const status = error && typeof error === 'object' && 'statusCode' in error && [404, 409].includes(Number(error.statusCode)) ? Number(error.statusCode) : 400;
+    json(response, status, { message: error instanceof z.ZodError ? '输入格式不正确' : error instanceof Error ? error.message : String(error) });
   }
 });
 server.listen(port, '127.0.0.1', () => {
@@ -439,5 +493,5 @@ server.listen(port, '127.0.0.1', () => {
   console.log(`Delivery Workspace: http://localhost:${port} · unified backend · Mastra lab /lab`);
 });
 for (const signal of ['SIGTERM', 'SIGINT'] as const) process.once(signal, async () => {
-  server.close(); sourceBackend.close(); await Promise.all([requirementDevelopment.close(), jiraFix.close(), jiraFixHandoff.close()]); await Promise.all([cliQueue.close(), agentRuntimes.close(), designExecutor.close(), integration.close(), apexBffReview.close(), wecomIntegration.close()]); await vite?.close(); await service.close(); process.exit(0);
+  server.close(); sourceBackend.close(); await stopStateBackup(); await Promise.all([requirementDevelopment.close(), deliveryAcceptance.close(), jiraFix.close(), jiraFixHandoff.close()]); await Promise.all([cliQueue.close(), agentRuntimes.close(), designExecutor.close(), integration.close(), apexBffReview.close(), wecomIntegration.close()]); await vite?.close(); await service.close(); await stateBackup.close(); await releaseStateLease(); process.exit(0);
 });

@@ -4,6 +4,7 @@
  */
 import { computed, shallowRef, type Ref } from 'vue';
 import type { AgentAttachment } from '../../../shared/agent-runtime';
+import { AgentAttachmentDraft } from './useAgentAttachments';
 
 export interface AgentConversationDraft {
   text: string;
@@ -12,9 +13,11 @@ export interface AgentConversationDraft {
 
 export function useAgentConversationDrafts(conversationId: Readonly<Ref<string>>) {
   const drafts = shallowRef<Record<string, AgentConversationDraft>>({});
+  const attachmentDrafts = shallowRef<Record<string, AgentAttachmentDraft>>({});
+  let disposed = false;
 
   function update(id: string, patch: Partial<AgentConversationDraft>) {
-    if (!id) return;
+    if (!id || disposed) return;
     const current = drafts.value[id] || { text: '', attachments: [] };
     drafts.value = { ...drafts.value, [id]: { ...current, ...patch } };
   }
@@ -28,7 +31,25 @@ export function useAgentConversationDrafts(conversationId: Readonly<Ref<string>>
     set: (value: AgentAttachment[]) => update(conversationId.value, { attachments: value }),
   });
 
+  function attachmentDraftFor(id: string) {
+    if (!id || disposed) return undefined;
+    if (!attachmentDrafts.value[id]) {
+      const value = computed({
+        get: () => drafts.value[id]?.attachments || [],
+        set: (items: AgentAttachment[]) => update(id, { attachments: items }),
+      });
+      attachmentDrafts.value = { ...attachmentDrafts.value, [id]: new AgentAttachmentDraft(value) };
+    }
+    return attachmentDrafts.value[id];
+  }
+  const attachmentDraft = computed(() => attachmentDraftFor(conversationId.value));
+  function attachmentsPending(id: string) { return !!attachmentDrafts.value[id]?.pending; }
+
   function clear(id: string) {
+    attachmentDrafts.value[id]?.discard();
+    const targets = { ...attachmentDrafts.value };
+    delete targets[id];
+    attachmentDrafts.value = targets;
     const cleared = drafts.value[id];
     if (!cleared) return;
     const next = { ...drafts.value };
@@ -52,7 +73,18 @@ export function useAgentConversationDrafts(conversationId: Readonly<Ref<string>>
 
   function move(from: string, to: string) {
     if (from === to) return;
-    const pending = clear(from);
+    const pending = drafts.value[from];
+    const target = attachmentDrafts.value[from];
+    if (target) {
+      const destination = attachmentDraftFor(to);
+      if (destination) target.moveTo(destination);
+      const targets = { ...attachmentDrafts.value };
+      delete targets[from];
+      attachmentDrafts.value = targets;
+    }
+    const next = { ...drafts.value };
+    delete next[from];
+    drafts.value = next;
     if (pending) restore(to, pending);
   }
 
@@ -60,5 +92,11 @@ export function useAgentConversationDrafts(conversationId: Readonly<Ref<string>>
     return Object.values(drafts.value).flatMap((item) => item.attachments);
   }
 
-  return { draft, attachments, clear, restoreText, restore, move, pendingAttachments };
+  function dispose() {
+    disposed = true;
+    Object.values(attachmentDrafts.value).forEach(target => target.discard());
+    attachmentDrafts.value = {};
+  }
+
+  return { draft, attachments, attachmentDraft, attachmentDraftFor, attachmentsPending, clear, restoreText, restore, move, pendingAttachments, dispose };
 }

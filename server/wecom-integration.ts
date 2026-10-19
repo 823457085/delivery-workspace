@@ -1,6 +1,6 @@
 /**
- * 设计说明：联调问题通过一个服务端出口发送，集中保护 Webhook、脱敏与群消息回执。
- * 边界是通知及回执，不修改接口审核、Jira 或运行 Agent；本机文件和串行发送足够承接当前两人联调。
+ * 设计说明：联调反馈和通用消息共用机器人配置、脱敏、限额与串行发送，避免两个入口重复刷群。
+ * 边界是手动预览发送、本机草稿模板及回执，不修改接口审核、Jira 或运行 Agent；无需额外消息队列。
  * 不引入消息队列或自动重试：超时可能已经送达，重复提醒须先核对群消息。
  */
 import fs from 'node:fs/promises';
@@ -9,6 +9,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { loadIntegrationCatalog } from './integration-catalog.js';
 import type { BackendFeedbackPreview, BackendFeedbackRecord, WecomPublicConfig } from '../shared/wecom-integration.js';
+import { wecomMessageLimits, type WecomMessageInput, type WecomMessagePreview, type WecomMessageRecord, type WecomMessageSaved } from '../shared/wecom-messages.js';
 
 const configurationSchema = z.object({ groupName: z.string().trim().min(1).max(80), webhook: z.string().trim().max(500).optional() }).strict();
 const requiredText = z.string().trim().min(1).max(12_000);
@@ -19,6 +20,12 @@ const inputSchema = z.object({
   traceId: z.string().trim().max(200).default(''),
 }).strict();
 const sendSchema = z.object({ input: inputSchema, hash: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
+const messageInputSchema = z.object({
+  title: z.string().trim().min(1).max(160), msgtype: z.enum(['text', 'markdown_v2']),
+  content: z.string().refine(value => value.trim().length > 0, '请输入消息正文'),
+}).strict();
+const messageSendSchema = z.object({ input: messageInputSchema, previewId: z.uuid(), hash: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
+const messageSavedSchema = messageInputSchema.extend({ id: z.uuid().optional(), kind: z.enum(['draft', 'template']) }).strict();
 const sensitiveKey = /^(authorization|cookie|set-cookie|.*password|.*passwd|.*token|.*secret|.*api[-_]?key|webhook|key|.*phone|.*mobile|.*email|.*idcard|.*bankcard)$/i;
 const secretField = '(?:authorization|cookie|set-cookie|[\\w-]*password|[\\w-]*passwd|[\\w-]*token|[\\w-]*secret|[\\w-]*api[-_]?key|webhook|key|[\\w-]*phone|[\\w-]*mobile|[\\w-]*email|[\\w-]*idcard|[\\w-]*bankcard)';
 
@@ -67,6 +74,8 @@ export async function createWecomIntegration(directory: string, options: { confi
   const { inventory, plan } = await loadIntegrationCatalog();
   const configFile = options.configFile || process.env.DELIVERY_WECOM_CONFIG_FILE || path.join(directory, 'credentials', 'wecom-integration.json');
   const reportsFile = path.join(directory, 'wecom-integration-reports.json');
+  const messageHistoryFile = path.join(directory, 'wecom-messages-history.json');
+  const messageLibraryFile = path.join(directory, 'wecom-messages-library.json');
   const operations = new Map(plan.stages.flatMap(stage => stage.operations).map(item => [item.path, item]));
   const catalog = new Map([
     ...inventory.items.map(item => [item.id, { path: item.path, method: item.contract?.method || operations.get(item.path)?.method || '', name: item.name }] as const),
@@ -83,6 +92,21 @@ export async function createWecomIntegration(directory: string, options: { confi
   try { reports = JSON.parse(await fs.readFile(reportsFile, 'utf8')) as BackendFeedbackRecord[]; }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   await fs.mkdir(directory, { recursive: true });
+  async function persistMessages(file: string, value: unknown) {
+    await fs.writeFile(`${file}.tmp`, JSON.stringify(value, null, 2) + '\n', { mode: 0o600 });
+    await fs.chmod(`${file}.tmp`, 0o600);
+    await fs.rename(`${file}.tmp`, file);
+  }
+  let messages: WecomMessageRecord[] = [];
+  let library: WecomMessageSaved[] = [];
+  try { messages = JSON.parse(await fs.readFile(messageHistoryFile, 'utf8')) as WecomMessageRecord[]; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  try { library = JSON.parse(await fs.readFile(messageLibraryFile, 'utf8')) as WecomMessageSaved[]; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  if (messages.some(record => record.status === 'sending')) {
+    messages = messages.map(record => record.status === 'sending' ? { ...record, status: 'unknown', message: '服务中断，群内是否送达待确认；不会自动重发' } : record);
+    await persistMessages(messageHistoryFile, messages);
+  }
   async function persistReports() {
     await fs.writeFile(`${reportsFile}.tmp`, JSON.stringify(reports, null, 2) + '\n', { mode: 0o600 });
     await fs.rename(`${reportsFile}.tmp`, reportsFile);
@@ -93,13 +117,35 @@ export async function createWecomIntegration(directory: string, options: { confi
   }
   // ponytail: 当前联调串行写入及发送，防止并发双击重复提醒；多群高吞吐时再按 Webhook 拆队列。
   let writes = Promise.resolve();
+  const pendingMessages = new Map<string, Promise<{ record: WecomMessageRecord; message: string }>>();
   function serial<T>(task: () => Promise<T>) {
     const next = writes.then(task);
     writes = next.then(() => {}, () => {});
     return next;
   }
   function config(): WecomPublicConfig {
-    return structuredClone({ hasWebhook: !!configuration.webhook, groupName: configuration.groupName });
+    return structuredClone({ hasWebhook: !!configuration.webhook, groupName: redactMessage(configuration.groupName) });
+  }
+  function redactMessage(value: string): string {
+    const key = configuration.webhook ? new URL(configuration.webhook).searchParams.get('key') : '';
+    return redactFeedback(key ? value.replaceAll(key, '[密钥已隐藏]') : value);
+  }
+  function messageInput(value: unknown): WecomMessageInput {
+    const raw = messageInputSchema.parse(value);
+    const limit = wecomMessageLimits[raw.msgtype];
+    if (Buffer.byteLength(raw.content, 'utf8') > limit) throw new Error(`消息正文超过 ${limit} 字节，请精简后重新预览`);
+    const input = messageInputSchema.parse({ ...raw, title: redactMessage(raw.title), content: redactMessage(raw.content) });
+    if (Buffer.byteLength(input.content, 'utf8') > limit) throw new Error(`消息正文超过 ${limit} 字节，请精简后重新预览`);
+    return input;
+  }
+  function messageSnapshot(value: unknown, previewId: string): WecomMessagePreview {
+    const input = messageInput(value);
+    const snapshot = { input, previewId, groupName: redactMessage(configuration.groupName), content: input.content,
+      bytes: Buffer.byteLength(input.content, 'utf8'), limit: wecomMessageLimits[input.msgtype], canSend: !!configuration.webhook };
+    return { ...snapshot, hash: hash({ snapshot, webhook: hash(configuration.webhook), groupName: configuration.groupName }) };
+  }
+  function checkRateLimit() {
+    if ([...reports, ...messages].filter(record => Date.parse(record.attemptedAt) > Date.now() - 60_000).length >= 10) throw new Error('本机器人每分钟最多提交 10 条消息或反馈，请稍后发送');
   }
   function preview(value: unknown): BackendFeedbackPreview {
     const raw = inputSchema.parse(value);
@@ -115,7 +161,7 @@ export async function createWecomIntegration(directory: string, options: { confi
     const content = sections.map(([label, text, size]) => `${label}：${clip(text, size)}`).join('\n');
     const bytes = Buffer.byteLength(content, 'utf8');
     if (bytes > 1850) throw new Error('消息摘要过长，请精简后重新预览');
-    const snapshot = { input, request, groupName: configuration.groupName, content, bytes, truncated: sections.some(([, text, size]) => Buffer.byteLength(text) > size), canSend: !!configuration.webhook };
+    const snapshot = { input, request, groupName: config().groupName, content, bytes, truncated: sections.some(([, text, size]) => Buffer.byteLength(text) > size), canSend: !!configuration.webhook };
     return { ...snapshot, hash: hash({ snapshot, webhook: hash(configuration.webhook) }) };
   }
   return {
@@ -132,6 +178,65 @@ export async function createWecomIntegration(directory: string, options: { confi
     }),
     preview,
     history: (interfaceId: string) => structuredClone(reports.filter(record => !interfaceId || record.preview.input.interfaceId === interfaceId).slice(-100).reverse()),
+    messagePreview: (value: unknown): WecomMessagePreview => messageSnapshot(value, randomUUID()),
+    messageHistory: (): WecomMessageRecord[] => structuredClone(messages.slice(-100).reverse()),
+    messageLibrary: (): WecomMessageSaved[] => structuredClone([...library].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))),
+    saveMessage: (value: unknown): Promise<WecomMessageSaved> => serial(async () => {
+      const data = messageSavedSchema.parse(value);
+      const input = messageInput({ title: data.title, msgtype: data.msgtype, content: data.content });
+      if (data.id && !library.some(item => item.id === data.id)) throw new Error('草稿或模板不存在，请刷新后重试');
+      const saved = { ...input, id: data.id || randomUUID(), kind: data.kind, updatedAt: new Date().toISOString() };
+      const next = [...library.filter(item => item.id !== saved.id), saved];
+      await persistMessages(messageLibraryFile, next);
+      library = next;
+      return structuredClone(saved);
+    }),
+    deleteMessage: (value: unknown) => serial(async () => {
+      const data = z.object({ id: z.uuid() }).strict().parse(value);
+      if (!library.some(item => item.id === data.id)) throw new Error('草稿或模板不存在，请刷新后重试');
+      const next = library.filter(item => item.id !== data.id);
+      await persistMessages(messageLibraryFile, next);
+      library = next;
+      return { message: '草稿或模板已删除' };
+    }),
+    sendMessage: async (value: unknown) => {
+      const data = messageSendSchema.parse(value);
+      const submission = hash(data);
+      const pending = pendingMessages.get(submission);
+      if (pending) return pending;
+      const attempt = serial(async () => {
+        const snapshot = messageSnapshot(data.input, data.previewId);
+        if (!snapshot.canSend) throw new Error('请配置群机器人');
+        if (snapshot.hash !== data.hash) throw new Error('消息内容或机器人配置已变化，请重新预览');
+        const duplicate = messages.find(record => record.fingerprint === snapshot.hash && record.status !== 'failed');
+        if (duplicate) return { record: structuredClone(duplicate), message: '此预览已提交过，未重复发送；请核对群内消息' };
+        checkRateLimit();
+        const record: WecomMessageRecord = { id: randomUUID(), fingerprint: snapshot.hash, preview: snapshot, status: 'sending', attemptedAt: new Date().toISOString(), finishedAt: '', message: '' };
+        messages.push(record);
+        await persistMessages(messageHistoryFile, messages);
+        try {
+          const response = await (options.fetch || fetch)(configuration.webhook, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, redirect: 'error', signal: AbortSignal.timeout(10_000),
+            body: JSON.stringify({ msgtype: snapshot.input.msgtype, [snapshot.input.msgtype]: { content: snapshot.content } }),
+          });
+          if (!response.ok) {
+            record.status = 'unknown'; record.message = `机器人 HTTP ${response.status}，群内送达情况待确认；不会自动重发`;
+          } else {
+            const reply = z.object({ errcode: z.number(), errmsg: z.string().optional() }).parse(await response.json());
+            record.status = reply.errcode === 0 ? 'sent' : 'failed';
+            record.message = reply.errcode === 0 ? '机器人已接收消息，请到群内核对' : `企业微信返回 ${reply.errcode}：${redactMessage(reply.errmsg || '未提供说明')}`;
+          }
+        } catch {
+          record.status = 'unknown'; record.message = '发送异常或超时，群内是否送达待确认；不会自动重发';
+        }
+        record.finishedAt = new Date().toISOString();
+        await persistMessages(messageHistoryFile, messages);
+        return { record: structuredClone(record), message: record.message };
+      });
+      pendingMessages.set(submission, attempt);
+      try { return await attempt; }
+      finally { pendingMessages.delete(submission); }
+    },
     send: (value: unknown) => serial(async () => {
       const data = sendSchema.parse(value);
       const snapshot = preview(data.input);
@@ -139,7 +244,7 @@ export async function createWecomIntegration(directory: string, options: { confi
       if (snapshot.hash !== data.hash) throw new Error('反馈内容或机器人配置已变化，请重新预览');
       const duplicate = reports.find(record => record.fingerprint === snapshot.hash && record.status !== 'failed');
       if (duplicate) return { record: structuredClone(duplicate), message: '相同反馈已提交过，未重复发送；请核对群内消息' };
-      if (reports.filter(record => Date.parse(record.attemptedAt) > Date.now() - 60_000).length >= 10) throw new Error('本机器人每分钟最多提交 10 条反馈，请稍后发送');
+      checkRateLimit();
       const record: BackendFeedbackRecord = { id: randomUUID(), fingerprint: snapshot.hash, preview: snapshot, status: 'sending', attemptedAt: new Date().toISOString(), finishedAt: '', message: '' };
       reports.push(record);
       await persistReports();

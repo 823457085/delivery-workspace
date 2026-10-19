@@ -17,7 +17,8 @@ export function createRuntimeStreamState() {
       else locks.delete(run.id);
     }
     return { ...snapshot, revision: Math.max(snapshot.revision || 0, ...fresh.map(item => item.revision)),
-      runs: [...runs.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 50),
+      // HTTP 快照已限制历史数量，并额外保留每个会话的最新运行；SSE 不能再次截掉这些记录。
+      runs: [...runs.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
       activeWorkspaceLocks: [...locks.values()] };
   }
   return {

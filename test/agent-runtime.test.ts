@@ -1513,11 +1513,17 @@ test('一支预分叉后另一支发送仍从自身历史轮次分叉，不续�
   } finally { await service.close(); await fs.rm(directory, { recursive: true, force: true }); }
 });
 
-test('同步的历史 Codex 会话可按原 session id 续接并保留来源关系', async () => {
+test('已关联的历史 Codex 会话可按原 session id 续接并保留来源关系', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-history-resume-test-'));
   const session: CodexSessionSummary = { id: '77777777-7777-7777-7777-777777777777', title: '历史任务', preview: '历史回答',
     workspacePath: '/repo', branch: 'feature/test', headSha: 'abc', model: 'test-model', reasoningEffort: 'high', archived: false,
     createdAt: '2026-09-16T00:00:00.000Z', updatedAt: '2026-09-16T00:01:00.000Z' };
+  const imported: AgentRun = { id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', provider: 'codex', mode: 'agent',
+    accessMode: 'workspace', model: session.model, reasoningEffort: session.reasoningEffort, objective: '已导入的历史任务',
+    workspacePath: session.workspacePath, branch: session.branch, headSha: session.headSha, status: 'completed',
+    sessionId: session.id, originSessionId: session.id, pid: null, result: '已接入工作台', error: '', events: [],
+    createdAt: session.createdAt, updatedAt: session.updatedAt };
+  await fs.writeFile(path.join(directory, 'agent-runs.json'), JSON.stringify([imported]));
   const source: CodexSessionSource = { listSessions: async () => [session], session: async () => ({ ...session, turns: [] }) };
   const resumedIds: string[] = [];
   const adapter: AgentRuntimeAdapter = { id: 'codex', health: async () => health('codex'), execute: async (context) => {
@@ -1528,7 +1534,7 @@ test('同步的历史 Codex 会话可按原 session id 续接并保留来源关�
   const service = await createAgentRuntimeService(directory, { adapters: [adapter], resolveWorkspace: async () => workspace, codexSessionSource: source });
   try {
     await service.syncCodexSessions();
-    const first = await service.resumeCodexSession(session.id, '继续处理', 'test-model', 'high', [], 'workspace', 'default');
+    const first = await service.resume(imported.id, '继续处理', 'test-model', 'high', [], 'workspace', 'append', 'default');
     await waitForSettledRun(service, first.id);
     assert.equal(resumedIds[0], session.id);
     assert.equal(first.originSessionId, session.id);
@@ -1541,7 +1547,7 @@ test('同步的历史 Codex 会话可按原 session id 续接并保留来源关�
     assert.equal(second.serviceTier, 'default');
     assert.equal(second.originSessionId, session.id);
     assert.equal(resumedIds[1], session.id);
-    assert.deepEqual(await service.removeConversation(first.id), { deleted: 2 });
+    assert.deepEqual(await service.removeConversation(first.id), { deleted: 3 });
     assert.deepEqual((await service.dashboard()).codexSessions, []);
     assert.equal((await service.dashboard()).codexSync.hidden, 1);
   } finally { await service.close(); await fs.rm(directory, { recursive: true, force: true }); }
@@ -1734,6 +1740,12 @@ test('Codex 会话同步排除归档记录，重复执行且删除后不会再�
       branch: 'main', headSha: 'def', model: 'gpt-5.5', reasoningEffort: 'xhigh', archived: true,
       createdAt: '2026-09-15T00:00:00.000Z', updatedAt: '2026-09-15T01:00:00.000Z' },
   ];
+  const stored: AgentRun[] = sessions.map((session) => ({ id: session.id, provider: 'codex', mode: 'ask',
+    accessMode: 'workspace', model: session.model, reasoningEffort: session.reasoningEffort, objective: session.title,
+    workspacePath: session.workspacePath, branch: session.branch, headSha: session.headSha, status: 'completed',
+    sessionId: session.id, pid: null, result: session.preview, error: '', events: [],
+    createdAt: session.createdAt, updatedAt: session.updatedAt }));
+  await fs.writeFile(path.join(directory, 'agent-runs.json'), JSON.stringify(stored));
   const source: CodexSessionSource = { listSessions: async () => sessions, session: async (id) => ({
     ...sessions.find((item) => item.id === id)!, turns: [{ id: 'turn-1', userMessage: '问题', agentMessage: '回答',
       createdAt: '2026-09-16T00:00:00.000Z', updatedAt: '2026-09-16T00:01:00.000Z' }],
@@ -1769,6 +1781,12 @@ test('Codex 会话同步会持久化完整对话并在服务重启后读取本�
     branch: 'feature/detail', headSha: '789', model: 'gpt-5.6-sol', reasoningEffort: 'high', archived: false,
     createdAt: '2026-09-17T00:00:00.000Z', updatedAt: '2026-09-17T01:00:00.000Z',
   };
+  const stored: AgentRun = { id: session.id, provider: 'codex', mode: 'ask', accessMode: 'workspace',
+    model: session.model, reasoningEffort: session.reasoningEffort, objective: session.title,
+    workspacePath: session.workspacePath, branch: session.branch, headSha: session.headSha, status: 'completed',
+    sessionId: session.id, pid: null, result: session.preview, error: '', events: [],
+    createdAt: session.createdAt, updatedAt: session.updatedAt };
+  await fs.writeFile(path.join(directory, 'agent-runs.json'), JSON.stringify([stored]));
   const adapter: AgentRuntimeAdapter = { id: 'codex', health: async () => health('codex'), execute: async () => '' };
   const source: CodexSessionSource = { listSessions: async () => [session], session: async () => ({
     ...session,
@@ -1869,4 +1887,86 @@ test('浏览器仅打开本轮记录中的 HTML/SVG 文件', async () => {
       await fs.realpath(path.join(workspacePath, 'outputs', 'drawing.SVG')),
     ]);
   } finally { await service.close(); await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('Codex 同步仅保留已关联线程，启动清理旧摘要及孤立正文且重启不复活', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-codex-owned-sync-test-'));
+  const ids = {
+    session: '11111111-1111-1111-1111-111111111111', origin: '22222222-2222-2222-2222-222222222222',
+    continuation: '33333333-3333-3333-3333-333333333333', personal: '44444444-4444-4444-4444-444444444444',
+    orphan: '55555555-5555-5555-5555-555555555555', cursor: '66666666-6666-6666-6666-666666666666',
+    archived: '77777777-7777-7777-7777-777777777777', hidden: '88888888-8888-8888-8888-888888888888',
+    detailOnly: '99999999-9999-9999-9999-999999999999', cursorOrigin: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+    cursorContinuation: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+  };
+  const sessions: CodexSessionSummary[] = Object.entries(ids).filter(([kind]) => kind !== 'detailOnly')
+    .map(([kind, id]) => ({ id, title: kind === 'session' || kind === 'orphan'
+      ? '你由 Delivery Workspace 以 Agent 模式调用。' : kind, preview: '测试预览',
+      ...workspace, model: 'test-model', reasoningEffort: 'high', archived: kind === 'archived',
+      createdAt: '2026-10-15T00:00:00.000Z', updatedAt: '2026-10-15T00:01:00.000Z' }));
+  const base: AgentRun = { id: 'managed-run', provider: 'codex', mode: 'ask', accessMode: 'workspace',
+    ...workspace, model: 'test-model', reasoningEffort: 'high', objective: '工作台任务', status: 'completed',
+    sessionId: ids.session, pid: null, result: '已完成', error: '', events: [],
+    createdAt: sessions[0].createdAt, updatedAt: sessions[0].updatedAt };
+  const continuation = { sessionId: ids.continuation, workspacePath: '/isolated', sourceWorkspacePath: workspace.workspacePath,
+    branch: 'feature/isolated', baseBranch: workspace.branch, headSha: 'def', isolatedWorkspace: true as const };
+  const stored: AgentRun[] = [
+    { ...base, originSessionId: ids.origin, continuation },
+    { ...base, id: 'archived-run', sessionId: ids.archived },
+    { ...base, id: 'hidden-run', sessionId: ids.hidden },
+    { ...base, id: 'cursor-run', provider: 'cursor', sessionId: ids.cursor, originSessionId: ids.cursorOrigin,
+      continuation: { ...continuation, sessionId: ids.cursorContinuation } },
+  ];
+  const oldDetails = Object.fromEntries([...sessions, { ...sessions[0], id: ids.detailOnly }].map(session => [session.id,
+    { ...session, turns: [{ id: 'old-turn', userMessage: '旧缓存问题', agentMessage: '旧缓存回答',
+      createdAt: session.createdAt, updatedAt: session.updatedAt }] }]));
+  const cacheFile = path.join(directory, 'codex-sessions.json');
+  await fs.writeFile(path.join(directory, 'agent-runs.json'), JSON.stringify(stored));
+  await fs.writeFile(path.join(directory, 'hidden-codex-sessions.json'), JSON.stringify([ids.hidden]));
+  await fs.writeFile(cacheFile, JSON.stringify({ syncedAt: sessions[0].updatedAt, sessions, details: oldDetails }));
+  const expected = [ids.session, ids.origin, ids.continuation].sort();
+  let listReads = 0;
+  const detailReads: string[] = [];
+  const source: CodexSessionSource = { listSessions: async () => { listReads++; return sessions; }, session: async id => {
+    detailReads.push(id);
+    const session = sessions.find(item => item.id === id)!;
+    return { ...session, turns: [{ id: 'new-turn', userMessage: '已关联会话问题', agentMessage: '已关联会话回答',
+      createdAt: session.createdAt, updatedAt: session.updatedAt }] };
+  } };
+  let service: Awaited<ReturnType<typeof createAgentRuntimeService>> | undefined;
+  try {
+    service = await createAgentRuntimeService(directory, { adapters: [], codexSessionSource: source });
+    assert.deepEqual((await service.dashboard()).codexSessions.map(session => session.id).sort(), expected);
+    assert.equal((await service.dashboard()).codexSync.total, expected.length);
+    assert.equal(listReads, 0);
+    assert.deepEqual(detailReads, []);
+    const cleaned = JSON.parse(await fs.readFile(cacheFile, 'utf8'));
+    assert.deepEqual(cleaned.sessions.map((session: CodexSessionSummary) => session.id).sort(), expected);
+    assert.deepEqual(Object.keys(cleaned.details).sort(), expected);
+    await assert.rejects(service.codexSession(ids.personal), /尚未同步/);
+    await assert.rejects(service.codexSession(ids.detailOnly), /尚未同步/);
+
+    await service.syncCodexSessions();
+    assert.equal(listReads, 1);
+    assert.deepEqual(detailReads.sort(), expected);
+    assert.deepEqual((await service.dashboard()).codexSessions.map(session => session.id).sort(), expected);
+    assert.equal((await service.codexSession(ids.origin)).turns[0].agentMessage, '已关联会话回答');
+    const synced = JSON.parse(await fs.readFile(cacheFile, 'utf8'));
+    assert.deepEqual(synced.sessions.map((session: CodexSessionSummary) => session.id).sort(), expected);
+    assert.deepEqual(Object.keys(synced.details).sort(), expected);
+    await service.close();
+    service = undefined;
+
+    const unavailableSource: CodexSessionSource = {
+      listSessions: async () => { throw new Error('重启不应扫描本机历史'); },
+      session: async () => { throw new Error('重启不应重新读取正文'); },
+    };
+    service = await createAgentRuntimeService(directory, { adapters: [], codexSessionSource: unavailableSource });
+    assert.deepEqual((await service.dashboard()).codexSessions.map(session => session.id).sort(), expected);
+    assert.equal((await service.codexSession(ids.origin)).turns[0].agentMessage, '已关联会话回答');
+    await assert.rejects(service.codexSession(ids.orphan), /尚未同步/);
+    const restarted = JSON.parse(await fs.readFile(cacheFile, 'utf8'));
+    assert.deepEqual(restarted.sessions.map((session: CodexSessionSummary) => session.id).sort(), expected);
+    assert.deepEqual(Object.keys(restarted.details).sort(), expected);
+  } finally { await service?.close(); await fs.rm(directory, { recursive: true, force: true }); }
 });

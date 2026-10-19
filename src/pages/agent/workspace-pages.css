@@ -1,0 +1,423 @@
+/* 工作室与并排布局的业务页面共用阅读密度；仅作用于工作面板，不进入会话和旧主题。 */
+.studio-layout .workspace-panel { background: var(--ui-surface); font-size: 13px; line-height: 1.65; }
+.studio-layout .workspace-panel-header { min-height: 50px; align-items: center; gap: 20px; padding: 0 24px; border-color: var(--ui-divider); background: var(--ui-surface); }
+.studio-layout .workspace-panel-header nav { flex: 1 1 auto; align-self: stretch; align-items: center; flex-wrap: nowrap; min-width: 0; gap: 20px; overflow-x: auto; scrollbar-width: thin; }
+.studio-layout .workspace-panel-header nav button { align-self: stretch; flex-shrink: 0; padding: 0 1px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--ui-muted); font-size: 13px; white-space: nowrap; }
+.studio-layout .workspace-panel-header nav button.active { border-bottom-color: var(--ui-accent); background: transparent; color: var(--ui-text); font-weight: 550; }
+.studio-layout .workspace-panel-header nav button:hover { color: var(--ui-accent); }
+.studio-layout .workspace-panel-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; min-width: 0; max-width: 100%; }
+.studio-layout #workspace-panel-toolbar { min-width: 0; }
+.studio-layout #workspace-panel-toolbar:empty { display: none; }
+.studio-layout .workspace-panel-header .workspace-back { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; padding: 6px 0 6px 10px; color: var(--ui-muted); font-size: 12px; white-space: nowrap; }
+.studio-layout .workspace-panel-content { container: workspace-page / inline-size; padding: 16px 24px 24px; }
+.studio-layout .workspace-page-body { width: 100%; max-width: 1480px; min-width: 0; margin: 0 auto; }
+.studio-layout .workspace-panel .page-heading { min-height: 0; margin: 0; }
+.studio-layout .workspace-panel .heading-actions { gap: 6px; }
+.studio-layout .workspace-panel .el-button { min-height: 32px; border-radius: 6px; font-size: 12px; font-weight: 450; }
+.studio-layout .workspace-panel .el-button + .el-button { margin-left: 0; }
+.studio-layout .workspace-panel .el-button.is-link { min-height: 24px; padding: 2px 0; }
+.studio-layout .workspace-panel .el-button-group > .el-button + .el-button { margin-left: -1px; }
+.studio-layout .workspace-panel-actions .heading-actions .el-button { min-height: 30px; padding: 5px 10px; font-size: 12px; }
+.studio-layout .workspace-panel-actions .heading-actions .el-button:not(.is-link):not(.el-button--primary) { border: 1px solid var(--ui-border); background: var(--ui-surface); }
+.studio-layout .workspace-panel .el-input__wrapper,
+.studio-layout .workspace-panel .el-select__wrapper { min-height: 34px; border-radius: 6px; font-size: 12px; }
+.studio-layout .workspace-panel .el-input__inner,
+.studio-layout .workspace-panel .el-select__selected-item { font-size: 12px; }
+.studio-layout .workspace-panel .el-textarea__inner { font-size: 13px; line-height: 1.75; }
+.studio-layout .workspace-panel .hub-metrics { gap: 0; margin: 0 0 12px; border-block: 1px solid var(--ui-divider); }
+.studio-layout .workspace-panel .hub-metrics > .metric-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: auto auto; align-content: center; align-items: center; gap: 2px 12px; min-width: 0; min-height: 72px; padding: 9px 16px; border: 0; border-right: 1px solid var(--ui-divider); border-radius: 0; background: transparent; box-shadow: none; }
+.studio-layout .workspace-panel .hub-metrics > .metric-card:last-child { border-right: 0; }
+.studio-layout .workspace-panel .hub-metrics > .metric-card::after { display: none; }
+.studio-layout .workspace-panel .hub-metrics > .metric-card > span { grid-column: 1; color: var(--ui-secondary); font-size: 12px; font-weight: 450; }
+.studio-layout .workspace-panel .hub-metrics > .metric-card strong { grid-column: 2; grid-row: 1; margin: 0; font: 550 24px/1.25 var(--sans); font-variant-numeric: tabular-nums; letter-spacing: -.5px; }
+.studio-layout .workspace-panel .hub-metrics > .metric-card small { grid-column: 1 / -1; min-height: 0; font-size: 12px; line-height: 1.5; }
+.studio-layout .workspace-panel .surface { margin-bottom: 14px; border: 0; border-radius: 0; background: var(--ui-surface); box-shadow: none; }
+.studio-layout .workspace-panel .surface-header { min-height: 44px; padding: 10px 0; gap: 12px; border-bottom: 1px solid var(--ui-divider); background: var(--ui-surface); }
+.studio-layout .workspace-panel .surface-header > div { min-width: 0; }
+.studio-layout .workspace-panel .surface-header h2 { font-size: 15px; line-height: 1.5; font-weight: 550; letter-spacing: 0; }
+.studio-layout .workspace-panel .surface-header p { margin-top: 2px; color: var(--ui-muted); font-size: 12px; line-height: 1.6; }
+.studio-layout .workspace-panel .surface-body { padding: 12px 0; }
+.studio-layout .workspace-panel .filter-bar { gap: 8px; padding: 10px 0; background: var(--ui-surface); border-color: var(--ui-divider); }
+.studio-layout .workspace-panel .filter-bar .el-input { width: 270px; max-width: 100%; }
+.studio-layout .workspace-panel .filter-bar .el-select { width: 156px; max-width: 100%; }
+.studio-layout .workspace-panel .filter-count { padding: 0; background: transparent; font-size: 12px; }
+.studio-layout .workspace-panel .el-table { font-size: 13px; --el-table-header-bg-color: var(--ui-raised); --el-table-header-text-color: var(--ui-secondary); --el-table-border-color: var(--ui-divider); --el-table-row-hover-bg-color: var(--ui-hover); }
+.studio-layout .workspace-panel .el-table th.el-table__cell { padding: 8px 0; font-size: 12px; font-weight: 500; }
+.studio-layout .workspace-panel .el-table td.el-table__cell { padding: 10px 0; vertical-align: top; }
+.studio-layout .workspace-panel .el-table .cell { padding: 0 12px; line-height: 1.65; overflow-wrap: anywhere; }
+.studio-layout .workspace-panel .row-title { font-size: 13px; line-height: 1.7; font-weight: 500; }
+.studio-layout .workspace-panel .row-secondary { margin-top: 2px; color: var(--ui-muted); font-size: 12px; line-height: 1.6; }
+.studio-layout .workspace-panel .row-mono { color: var(--ui-muted); font-size: 12px; line-height: 1.6; }
+.studio-layout .workspace-panel .hub-link { font-size: 12px; font-weight: 500; }
+.studio-layout .workspace-panel .table-footer { padding: 10px 0; border-color: var(--ui-divider); background: var(--ui-surface); font-size: 12px; }
+.studio-layout .workspace-panel .el-pagination { min-width: 0; flex-wrap: wrap; gap: 4px; }
+.studio-layout .workspace-panel .section-alert { margin-bottom: 12px; }
+.studio-layout .workspace-panel .source-footnote { margin: 10px 0; color: var(--ui-muted); font-size: 12px; line-height: 1.7; }
+.studio-layout .workspace-panel .el-empty { padding: 24px 12px; }
+.studio-layout .workspace-panel .el-empty__description p { font-size: 13px; }
+.studio-layout .workspace-panel .loading-panel { padding: 16px 0; }
+
+/* 联调保留模块导航和完整表格，按面板可用宽度收拢筛选区。 */
+.studio-layout .workspace-panel .review-layout { grid-template-columns: 220px minmax(0, 1fr); gap: 16px; }
+.studio-layout .workspace-panel .review-overview { grid-template-columns: minmax(0, 1.4fr) repeat(2, minmax(0, 1fr)); margin-bottom: 12px; border-block: 1px solid var(--ui-divider); }
+.studio-layout .workspace-panel :is(.overview-main, .overview-stat) { grid-column: auto; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 2px 12px; min-height: 72px; padding: 9px 16px; border-color: var(--ui-divider); }
+.studio-layout .workspace-panel .review-overview strong { grid-column: 2; grid-row: 1; font: 550 24px/1.25 var(--sans); font-variant-numeric: tabular-nums; }
+.studio-layout .workspace-panel .review-overview span { grid-column: 1 / -1; font-size: 12px; }
+.studio-layout .workspace-panel .review-navigation { border-right: 1px solid var(--ui-divider); border-radius: 0; padding-block: 0; }
+.studio-layout .workspace-panel .module-item { min-height: 36px; padding: 8px 12px; font-size: 13px; }
+.studio-layout .workspace-panel .page-list button { min-height: 32px; font-size: 12px; }
+.studio-layout .workspace-panel .review-toolbar { padding: 10px 0; gap: 10px; }
+.studio-layout .workspace-panel .review-toolbar h2 { font-size: 15px; font-weight: 550; }
+.studio-layout .workspace-panel .review-filters { min-width: 0; width: 100%; gap: 8px; }
+.studio-layout .workspace-panel .review-filters .el-select { flex: 1 1 145px; min-width: 0; }
+.studio-layout .workspace-panel .review-filters .el-input { flex: 1 1 200px; min-width: 0; }
+.studio-layout .workspace-panel .interface-title { font-size: 13px; font-weight: 500; }
+.studio-layout .workspace-panel .review-resource-link { min-height: 34px; border-radius: 6px; background: var(--ui-surface); }
+.studio-layout .workspace-panel .review-pagination { margin: 0; padding: 10px 0; border-top: 1px solid var(--ui-divider); }
+.studio-layout .workspace-panel .execution-heading { gap: 12px; margin-bottom: 12px; }
+.studio-layout .workspace-panel .execution-heading h2 { font-size: 20px; font-weight: 550; }
+.studio-layout .workspace-panel :is(.execution-tasks, .execution-history) { padding: 12px 0; }
+
+@container workspace-page (max-width: 1000px) {
+  .studio-layout .workspace-panel .hub-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+  .studio-layout .workspace-panel .hub-metrics > .metric-card:nth-child(2n) { border-right: 0; }
+  .studio-layout .workspace-panel .hub-metrics > .metric-card:nth-child(n + 3) { border-top: 1px solid var(--ui-divider); }
+  .studio-layout .workspace-panel .review-layout { grid-template-columns: minmax(0, 1fr); }
+  .studio-layout .workspace-panel .review-navigation { max-height: 200px; border-right: 0; border-bottom: 1px solid var(--ui-divider); }
+}
+@container workspace-page (max-width: 620px) {
+  .studio-layout .workspace-panel .surface-header { flex-wrap: wrap; gap: 8px; padding: 10px 0; }
+  .studio-layout .workspace-panel .surface-body { padding: 12px 0; }
+  .studio-layout .workspace-panel .heading-actions { justify-content: flex-start; }
+  .studio-layout .workspace-panel .filter-bar { padding: 10px 0; }
+  .studio-layout .workspace-panel .filter-bar :is(.el-input, .el-select) { width: 100%; }
+  .studio-layout .workspace-panel .filter-count { margin-left: 0; }
+  .studio-layout .workspace-panel .table-footer { flex-wrap: wrap; gap: 8px; padding: 10px 0; }
+  .studio-layout .workspace-panel .el-table .cell { padding-inline: 10px; }
+  .studio-layout .workspace-panel .hub-metrics { margin-bottom: 10px; }
+  .studio-layout .workspace-panel .hub-metrics > .metric-card { gap: 2px 8px; padding: 9px 12px; }
+  .studio-layout .workspace-panel .review-overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .studio-layout .workspace-panel .overview-main { grid-column: 1 / -1; border-right: 0; border-bottom: 1px solid var(--ui-divider); }
+  .studio-layout .workspace-panel .review-filters :is(.el-select, .el-input) { flex-basis: 100%; }
+  .studio-layout .workspace-panel .review-toolbar { padding: 10px 0; }
+  .studio-layout .workspace-panel .execution-heading { flex-direction: column; align-items: flex-start; }
+  .studio-layout .workspace-panel .tasks-title { flex-wrap: wrap; }
+  .studio-layout .workspace-panel :is(.execution-tasks, .execution-history) { padding: 10px 0; }
+}
+@container workspace-page (max-width: 360px) {
+  .studio-layout .workspace-panel .hub-metrics { grid-template-columns: minmax(0, 1fr) !important; }
+  .studio-layout .workspace-panel .hub-metrics > .metric-card { min-height: 64px; border-right: 0; }
+  .studio-layout .workspace-panel .hub-metrics > .metric-card:nth-child(n + 2) { border-top: 1px solid var(--ui-divider); }
+}
+@media (max-width: 1079px) {
+  .studio-layout .workspace-panel-header { gap: 12px; padding-inline: 16px; }
+  .studio-layout .workspace-panel-header nav { gap: 18px; }
+  .studio-layout .workspace-panel-content { padding: 14px 16px 20px; }
+}
+@media (max-width: 550px) {
+  .studio-layout .workspace-panel-header { flex-wrap: wrap; gap: 0 12px; padding-inline: 12px; }
+  .studio-layout .workspace-panel-header nav { order: 1; flex: 1 1 0; min-height: 50px; }
+  .studio-layout .workspace-panel-actions { display: contents; }
+  .studio-layout #workspace-panel-toolbar { order: 3; flex: 1 0 100%; padding: 7px 0; border-top: 1px solid var(--ui-divider); }
+  .studio-layout .workspace-panel-header .workspace-back { order: 2; padding: 8px 2px; }
+  .studio-layout .workspace-panel-header .workspace-back span { display: none; }
+  .studio-layout .workspace-panel-content { padding: 12px 12px 18px; }
+}
+
+/* 工作台、总览、任务与本地项目的局部布局；共享卡片、表格和指标由主样式维护。 */
+.studio-layout .workspace-panel :is(.workbench-top, .overview-grid, .task-stats) {
+  min-width: 0;
+  gap: 14px;
+}
+.studio-layout .workspace-panel :is(.workbench-top, .overview-grid, .task-stats) > * { min-width: 0; }
+.studio-layout .workspace-panel .workbench-page { min-width: 0; }
+.studio-layout .workspace-panel .workbench-top .el-empty { flex-direction: row; justify-content: flex-start; gap: 14px; min-height: 70px; padding: 12px 0; }
+.studio-layout .workspace-panel .workbench-top .el-empty__image { flex-shrink: 0; }
+.studio-layout .workspace-panel .workbench-top .el-empty__description { margin: 0; text-align: left; }
+.studio-layout .workspace-panel .workbench-records { margin-bottom: 0; }
+.studio-layout .workspace-panel .workbench-support { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--ui-divider); }
+.studio-layout .workspace-panel .workbench-support > * { min-width: 0; margin-bottom: 0; }
+.studio-layout .workspace-panel .workbench-support .surface-header { flex-wrap: wrap; align-items: flex-start; min-height: 0; padding: 0; border: 0; }
+.studio-layout .workspace-panel .workbench-support .jira-sync-status { flex-wrap: wrap; padding: 0; }
+.studio-layout .workspace-panel .jira-sync-status { gap: 10px; padding: 12px 0; align-items: flex-start; }
+.studio-layout .workspace-panel .jira-sync-status strong { font-size: 13px; line-height: 1.65; font-weight: 550; }
+.studio-layout .workspace-panel .jira-sync-status p { margin-top: 4px; line-height: 1.7; overflow-wrap: anywhere; }
+.studio-layout .workspace-panel .jira-sync-status > .hub-link { flex-shrink: 0; padding-top: 2px; }
+.studio-layout .workspace-panel .today-list > button { padding: 9px 0; gap: 12px; border-color: var(--ui-divider); }
+.studio-layout .workspace-panel .today-list > button:hover { background: var(--ui-hover); }
+.studio-layout .workspace-panel .today-list strong { margin-top: 2px; line-height: 1.65; }
+.studio-layout .workspace-panel .records-header .el-input { width: 280px; max-width: 40%; flex-shrink: 0; }
+.studio-layout .workspace-panel .record-filters { padding: 8px 0; gap: 6px; border-bottom: 1px solid var(--ui-divider); }
+.studio-layout .workspace-panel .record-filters button { min-height: 30px; padding: 4px 9px; border-color: transparent; border-radius: 5px; color: var(--ui-secondary); }
+.studio-layout .workspace-panel .record-filters button:hover { background: var(--ui-hover); }
+.studio-layout .workspace-panel .record-filters button.active { background: var(--ui-accent-soft); color: var(--ui-accent); border-color: transparent; }
+.studio-layout .workspace-panel .record-filters button span { background: var(--ui-raised); }
+.studio-layout .workspace-panel .record-filters button.active span { background: var(--ui-surface); }
+.studio-layout .workspace-panel .workbench-shortcuts > a { padding: 12px 0; gap: 12px; border-color: var(--ui-divider); }
+.studio-layout .workspace-panel .workbench-shortcuts > a:hover { background: var(--ui-hover); }
+
+/* 总览保持原有信息顺序与状态色，缩小重复的装饰和留白。 */
+.studio-layout .workspace-panel .overview-grid { grid-template-columns: minmax(0, 1.7fr) minmax(260px, 1fr); }
+.studio-layout .workspace-panel .attention-list > a { padding: 10px 0; gap: 10px; border-color: var(--ui-divider); }
+.studio-layout .workspace-panel .attention-list > a:hover { background: var(--ui-hover); }
+.studio-layout .workspace-panel .attention-list > a > .status-pill { display: inline-flex; }
+.studio-layout .workspace-panel .attention-list strong { line-height: 1.6; }
+.studio-layout .workspace-panel .attention-list small { margin-top: 4px; line-height: 1.6; }
+.studio-layout .workspace-panel .attention-icon { width: 32px; height: 32px; border-radius: 6px; }
+.studio-layout .workspace-panel .delivery-progress { margin: 0 0 12px; }
+.studio-layout .workspace-panel .delivery-progress strong { font-size: 30px; letter-spacing: -1px; }
+.studio-layout .workspace-panel .delivery-progress strong small { font-size: 15px; }
+.studio-layout .workspace-panel .progress-legend { margin-top: 12px; }
+.studio-layout .workspace-panel .progress-legend > div { margin: 10px 0; }
+.studio-layout .workspace-panel .target-note { padding: 10px 12px; margin-top: 12px; background: var(--ui-raised); border-color: var(--ui-divider); }
+.studio-layout .workspace-panel .quick-entry-grid { gap: 12px; }
+.studio-layout .workspace-panel .quick-entry-grid > a { min-width: 0; padding: 12px; }
+.studio-layout .workspace-panel .quick-entry-grid > a > div { min-width: 0; }
+.studio-layout .workspace-panel .source-statuses { padding: 0 0 12px; }
+.studio-layout .workspace-panel .source-statuses > div { padding: 10px 0; border-color: var(--ui-divider); }
+.studio-layout .workspace-panel .source-statuses b { text-align: right; overflow-wrap: anywhere; }
+
+/* 筛选条件依据面板宽度重排，保留全部字段与选项。 */
+.studio-layout .workspace-panel .task-filters { padding: 10px 0; }
+.studio-layout .workspace-panel .task-filter-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0 14px; }
+.studio-layout .workspace-panel .task-filter-grid .el-form-item { min-width: 0; margin-bottom: 10px; }
+.studio-layout .workspace-panel .task-filter-grid .el-form-item__label { font-size: 12px; line-height: 1.5; margin-bottom: 6px; }
+.studio-layout .workspace-panel .task-filter-grid :is(.el-input, .el-select, .el-date-editor) { width: 100%; min-width: 0; }
+.studio-layout .workspace-panel .task-filter-bottom { gap: 8px 16px; padding-top: 2px; }
+.studio-layout .workspace-panel .task-filter-bottom .el-checkbox { min-width: 0; }
+.studio-layout .workspace-panel .task-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.studio-layout .workspace-panel .stat-row { gap: 12px; margin: 12px 0; }
+.studio-layout .workspace-panel .stat-row > span { width: 112px; overflow-wrap: anywhere; }
+.studio-layout .workspace-panel .stat-row .el-progress { min-width: 0; }
+.studio-layout .workspace-panel .calendar-note { padding: 0 0 10px; }
+
+/* 七列日历保留自身横向滚动，不把最小宽度传给整个页面。 */
+.studio-layout .workspace-panel .task-calendar { min-width: 0; overflow: hidden; }
+.studio-layout .workspace-panel .calendar-scroll { width: 100%; max-width: 100%; overflow-x: auto; overscroll-behavior-x: contain; }
+.studio-layout .workspace-panel .workday-calendar { min-width: 840px; }
+.studio-layout .workspace-panel .calendar-header { padding: 10px 0; gap: 12px; border-color: var(--ui-divider); }
+.studio-layout .workspace-panel .calendar-header h2 { font-size: 16px; line-height: 1.6; letter-spacing: 0; }
+.studio-layout .workspace-panel .calendar-weekdays { background: var(--ui-raised); border-color: var(--ui-divider); }
+.studio-layout .workspace-panel .calendar-weekdays span { padding: 10px 12px; font-size: 12px; }
+.studio-layout .workspace-panel .calendar-cell { min-height: 136px; padding: 10px; }
+.studio-layout .workspace-panel .calendar-cell.rest-day { background: color-mix(in srgb, var(--ui-raised) 65%, var(--ui-surface)); }
+.studio-layout .workspace-panel .calendar-cell.today { box-shadow: inset 0 2px 0 var(--ui-accent); }
+.studio-layout .workspace-panel .calendar-day { margin-bottom: 7px; }
+.studio-layout .workspace-panel .rest-band { background: var(--ui-divider); color: var(--ui-secondary); }
+.studio-layout .workspace-panel .calendar-task { padding: 4px 6px; line-height: 1.55; }
+
+/* 项目名称与仓库地址可换行，不挤占表格自身滚动范围。 */
+.studio-layout .workspace-panel .project-inventory { min-width: 0; }
+.studio-layout .workspace-panel .project-inventory .hub-metrics { margin-bottom: 0; }
+.studio-layout .workspace-panel .project-toolbar { margin-bottom: 0; }
+.studio-layout .workspace-panel .project-toolbar .filter-bar { padding: 10px 0; }
+.studio-layout .workspace-panel .project-group { margin-bottom: 16px; }
+.studio-layout .workspace-panel .project-group > .surface-header { min-height: 58px; padding: 9px 0; }
+.studio-layout .workspace-panel .project-group-title { min-width: 0; gap: 10px; align-items: flex-start; }
+.studio-layout .workspace-panel .project-group-title > span { width: 28px; height: 28px; flex-shrink: 0; border-radius: 5px; }
+.studio-layout .workspace-panel .project-group-title > div { min-width: 0; }
+.studio-layout .workspace-panel .project-group-title h2 { font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+.studio-layout .workspace-panel .project-group-title h2 small { display: inline-block; margin-left: 8px; font-size: 12px; white-space: nowrap; }
+.studio-layout .workspace-panel .project-group-title a { margin-top: 1px; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.studio-layout .workspace-panel .project-group .row-mono { display: block; margin-top: 2px; white-space: normal; overflow-wrap: anywhere; }
+.studio-layout .workspace-panel .project-branch-meta { display: flex; flex-wrap: wrap; gap: 0 10px; min-width: 0; }
+.studio-layout .workspace-panel .project-branch-meta > span { min-width: 0; }
+.studio-layout .workspace-panel .project-actions { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+.studio-layout .workspace-panel .project-actions .el-button { flex-shrink: 0; margin: 0; padding: 2px 0; }
+
+@container workspace-page (max-width: 980px) {
+  .studio-layout .workspace-panel :is(.workbench-top, .overview-grid) { grid-template-columns: minmax(0, 1fr); }
+  .studio-layout .workspace-panel .quick-entry-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .studio-layout .workspace-panel .task-filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .studio-layout .workspace-panel .progress-panel .surface-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px 24px; }
+  .studio-layout .workspace-panel .progress-panel .el-progress { align-self: center; }
+  .studio-layout .workspace-panel .progress-panel .progress-legend { margin: 0; }
+  .studio-layout .workspace-panel .progress-panel .target-note { align-self: center; margin: 0; }
+}
+
+@container workspace-page (max-width: 680px) {
+  .studio-layout .workspace-panel .workbench-support { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .studio-layout .workspace-panel .jira-sync-status { flex-direction: column; gap: 10px; }
+  .studio-layout .workspace-panel .records-header { align-items: stretch; flex-direction: column; gap: 12px; }
+  .studio-layout .workspace-panel .records-header .el-input { width: 100%; max-width: none; }
+  .studio-layout .workspace-panel .task-stats { grid-template-columns: minmax(0, 1fr); }
+  .studio-layout .workspace-panel .workbench-shortcuts { display: block; }
+  .studio-layout .workspace-panel .workbench-shortcuts > a { border-bottom: 1px solid var(--ui-divider); }
+  .studio-layout .workspace-panel .workbench-shortcuts > a:last-child { border-bottom: 0; }
+}
+
+@container workspace-page (max-width: 480px) {
+  .studio-layout .workspace-panel :is(.jira-sync-status, .task-filters) { padding: 10px 0; }
+  .studio-layout .workspace-panel .today-list > button { padding: 9px 0; }
+  .studio-layout .workspace-panel .record-filters { padding: 8px 0; }
+  .studio-layout .workspace-panel .task-filter-grid { grid-template-columns: minmax(0, 1fr); }
+  .studio-layout .workspace-panel .task-filter-bottom { gap: 6px 12px; }
+  .studio-layout .workspace-panel .task-filter-bottom > .el-button { width: 100%; margin-left: 0; }
+  .studio-layout .workspace-panel .quick-entry-grid { grid-template-columns: minmax(0, 1fr); }
+  .studio-layout .workspace-panel .progress-panel .surface-body { display: block; }
+  .studio-layout .workspace-panel .progress-panel .progress-legend { margin-top: 12px; }
+  .studio-layout .workspace-panel .progress-panel .target-note { margin-top: 12px; }
+  .studio-layout .workspace-panel .attention-list > a { display: grid; grid-template-columns: 32px minmax(0, 1fr) 14px; gap: 6px 10px; padding: 10px 0; }
+  .studio-layout .workspace-panel .attention-list > a > .attention-icon { grid-column: 1; grid-row: 1 / 3; }
+  .studio-layout .workspace-panel .attention-list > a > div { grid-column: 2; grid-row: 1; }
+  .studio-layout .workspace-panel .attention-list > a > .status-pill { display: inline-flex; grid-column: 2; grid-row: 2; justify-self: start; }
+  .studio-layout .workspace-panel .attention-list > a > svg { grid-column: 3; grid-row: 1 / 3; }
+  .studio-layout .workspace-panel .project-group-title h2 small { margin-left: 0; margin-right: 8px; }
+}
+
+/* Secondary page exceptions for the studio/split workbench.
+ * Shared surfaces, metrics, tables, filters and navigation belong in workspace-pages.css.
+ * Container queries use the named page content container supplied by that file.
+ */
+
+/* Automation is a full page here; its existing sidebar defaults are too compact. */
+.studio-layout .workspace-panel .workspace-panel-content .automation-panel {
+  height: auto;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  overflow: visible;
+  border-radius: 0;
+  background: transparent;
+}
+.studio-layout .workspace-panel :is(.daily-report, .weekly-card, .automation-summary, .automation-job) {
+  padding: 12px 0;
+  border: 0;
+  border-bottom: 1px solid var(--ui-divider);
+  border-radius: 0;
+  background: var(--ui-surface);
+  box-shadow: none;
+}
+.studio-layout .workspace-panel .daily-report { margin-bottom: 12px; padding-top: 0; }
+.studio-layout .workspace-panel .weekly-card { margin-top: 12px; }
+.studio-layout .workspace-panel :is(.daily-heading, .weekly-header span, .automation-summary span) {
+  color: var(--ui-secondary);
+  font-size: 13px;
+}
+.studio-layout .workspace-panel :is(.weekly-header strong, .automation-summary strong) {
+  margin-top: 4px;
+  color: var(--ui-text);
+  font-size: 16px;
+  font-weight: 550;
+}
+.studio-layout .workspace-panel :is(.daily-heading span, .daily-description, .daily-hint, .weekly-empty) {
+  color: var(--ui-muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.studio-layout .workspace-panel :is(.automation-facts, .weekly-facts) { gap: 8px; margin: 12px 0; }
+.studio-layout .workspace-panel :is(.automation-facts, .weekly-facts) :is(dt, dd) {
+  font-size: 12px;
+  line-height: 1.7;
+}
+.studio-layout .workspace-panel .daily-actions { gap: 8px; }
+.studio-layout .workspace-panel .daily-actions input {
+  min-height: 34px;
+  flex: 0 1 240px;
+  padding: 6px 10px;
+  background: var(--ui-surface);
+  color: var(--ui-text);
+  font: 13px var(--mono);
+  color-scheme: light;
+}
+.studio-layout .workspace-panel .daily-actions button { min-height: 34px; padding: 6px 12px; font-size: 13px; }
+.studio-layout .workspace-panel :is(.automation-actions, .automation-job footer) :is(button, a),
+.studio-layout .workspace-panel .weekly-action {
+  min-height: 32px;
+  color: var(--ui-accent);
+  font-size: 13px;
+}
+.studio-layout .workspace-panel .automation-actions { gap: 16px; padding: 2px 0 10px; }
+.studio-layout .workspace-panel .automation-heading { padding: 16px 0 8px; font-size: 14px; font-weight: 550; }
+.studio-layout .workspace-panel :is(.automation-scopes, .automation-filters) { flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.studio-layout .workspace-panel :is(.automation-scopes, .automation-filters) button {
+  min-height: 32px;
+  padding: 6px 11px;
+  border-color: var(--ui-border);
+  background: var(--ui-surface);
+  color: var(--ui-secondary);
+}
+.studio-layout .workspace-panel :is(.automation-scopes, .automation-filters) button.active {
+  border-color: var(--ui-accent-soft);
+  background: var(--ui-accent-soft);
+  color: var(--ui-accent);
+}
+.studio-layout .workspace-panel .automation-job { margin-bottom: 0; padding: 12px 0; }
+.studio-layout .workspace-panel .automation-job > strong { font-size: 13px; font-weight: 550; line-height: 1.7; }
+.studio-layout .workspace-panel .automation-panel .status-pill { font-size: 12px; }
+.studio-layout .workspace-panel .weekly-result { margin-top: 10px; font-size: 12px; }
+.studio-layout .workspace-panel .weekly-result summary { padding-top: 10px; line-height: 1.7; }
+.studio-layout .workspace-panel .weekly-result p { color: var(--ui-danger); }
+.studio-layout .workspace-panel .weekly-result pre {
+  max-height: 360px;
+  padding: 14px;
+  background: var(--ui-raised);
+  color: var(--ui-secondary);
+  font: 12px/1.75 var(--mono);
+}
+
+/* Keep the settings form and its read-only environment context visually balanced. */
+.studio-layout .workspace-panel .settings-grid { gap: 24px; }
+.studio-layout .workspace-panel .settings-grid > div { min-width: 0; }
+.studio-layout .workspace-panel .settings-switch { gap: 14px; margin-bottom: 14px; }
+.studio-layout .workspace-panel .settings-switch strong { color: var(--ui-text); font-size: 13px; font-weight: 550; }
+.studio-layout .workspace-panel .settings-switch p { margin-top: 3px; font-size: 12px; line-height: 1.6; }
+.studio-layout .workspace-panel .settings-facts dt { margin-top: 12px; font-size: 12px; }
+.studio-layout .workspace-panel .settings-facts dt:first-child { margin-top: 0; }
+.studio-layout .workspace-panel .settings-facts dd { margin-top: 3px; font-size: 13px; line-height: 1.6; }
+.studio-layout .workspace-panel :is(.settings-fields, .schedule-times) { gap: 10px; }
+.studio-layout .workspace-panel .settings-actions { flex-wrap: wrap; margin-top: 8px; padding-top: 12px; }
+.studio-layout .workspace-panel .settings-source { margin-top: 12px; }
+.studio-layout .workspace-panel .cli-card { margin-bottom: 14px; border-top: 0; }
+.studio-layout .workspace-panel :is(.cli-description, .cli-path) { font-size: 12px; line-height: 1.7; }
+.studio-layout .workspace-panel .cli-facts { gap: 8px 20px; font-size: 13px; }
+
+/* These forms use feature-local classes instead of the shared .surface wrapper. */
+.studio-layout .workspace-panel :is(.development-form, .fix-form) {
+  padding: 14px 0 0;
+  border: 0;
+  border-top: 1px solid var(--ui-divider);
+  border-radius: 0;
+  background: var(--ui-surface);
+  box-shadow: none;
+}
+.studio-layout .workspace-panel :is(.development-heading, .fix-heading) h2 { font-size: 20px; font-weight: 600; }
+.studio-layout .workspace-panel :is(.development-heading, .fix-heading) p { font-size: 13px; line-height: 1.7; }
+.studio-layout .workspace-panel .development-heading > span { font-size: 12px; line-height: 1.7; }
+.studio-layout .workspace-panel .development-flow { gap: 8px 12px; margin: 12px 0 0; padding: 10px 0; border-bottom: 0; font-size: 12px; line-height: 1.6; }
+.studio-layout .workspace-panel :is(.development-form, .fix-form) .form-grid { gap: 0 18px; }
+.studio-layout .workspace-panel :is(.development-form, .fix-form) :is(.el-form-item, .el-form-item__content) { min-width: 0; }
+.studio-layout .workspace-panel :is(.development-form, .fix-form) .el-form-item { margin-bottom: 16px; }
+.studio-layout .workspace-panel :is(.development-form, .fix-form) .el-date-editor { max-width: 100%; }
+.studio-layout .workspace-panel :is(.development-records, .fix-records) { margin-top: 20px; }
+.studio-layout .workspace-panel :is(.development-records, .records-heading) h3 { font-size: 15px; font-weight: 550; }
+.studio-layout .workspace-panel .development-records article { gap: 12px; padding: 12px 0; }
+.studio-layout .workspace-panel .development-records article > div { min-width: 0; }
+.studio-layout .workspace-panel .development-records article > .el-button { flex-shrink: 0; }
+.studio-layout .workspace-panel .development-records article strong { font-size: 13px; line-height: 1.7; }
+.studio-layout .workspace-panel .development-records article small { font-size: 12px; line-height: 1.7; }
+.studio-layout .workspace-panel .fix-records :is(.workspace-path, .el-table .cell > small) { font-size: 12px; line-height: 1.7; }
+
+/* Container width reflects the sidebar, unlike the existing viewport breakpoints. */
+@container workspace-page (min-width: 900px) {
+  .studio-layout .workspace-panel :is(.automation-facts, .weekly-facts) { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 28px; }
+}
+@container workspace-page (max-width: 900px) {
+  .studio-layout .workspace-panel .settings-grid { grid-template-columns: minmax(0, 1fr); }
+  .studio-layout .workspace-panel .development-flow { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .studio-layout .workspace-panel .development-heading { align-items: flex-start; flex-direction: column; gap: 6px; }
+}
+@container workspace-page (max-width: 700px) {
+  .studio-layout .workspace-panel :is(.development-form, .fix-form) .form-grid { grid-template-columns: minmax(0, 1fr); }
+  .studio-layout .workspace-panel :is(.development-form footer, .fix-actions, .development-records article, .target-branch) {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .studio-layout .workspace-panel .development-records article > .el-button { align-self: flex-start; }
+  .studio-layout .workspace-panel .target-branch > div:last-child { text-align: left; }
+}
+@container workspace-page (max-width: 520px) {
+  .studio-layout .workspace-panel :is(.settings-fields, .schedule-times) { grid-template-columns: minmax(0, 1fr); }
+  .studio-layout .workspace-panel .daily-actions input { flex: 1 1 160px; }
+}

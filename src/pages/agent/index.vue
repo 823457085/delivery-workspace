@@ -9,8 +9,12 @@ import { agentWorkspaceContext } from '../../shared/agent-workspace-context';
 import RequirementDevelopment from '../../features/requirement-development/RequirementDevelopment.vue';
 import JiraFix from '../../features/jira-fix/JiraFix.vue';
 import WorkspacePanelViewport from '../../shared/ui/WorkspacePanelViewport.vue';
+import { CircleCheck, FolderGit2, MessagesSquare, PackageCheck, Settings2, Sun, Terminal } from '@lucide/vue';
 
 const route = useRoute(), router = useRouter();
+const navigationIcons = { today: Sun, tasks: CircleCheck, projects: FolderGit2, execution: Terminal, delivery: PackageCheck, automation: Settings2 };
+const primarySections = workspaceSections.filter(group => ['today', 'tasks', 'projects'].includes(group.id));
+const secondarySections = workspaceSections.filter(group => !primarySections.includes(group));
 const workspace = ref<InstanceType<typeof AgentWorkspace>>();
 const panelStates = new Map<string, unknown>();
 const panelLocations = new Map<string, typeof route.query>();
@@ -75,17 +79,17 @@ function openThread(event: MouseEvent) {
 
 <template>
   <AgentWorkspace ref="workspace" :workbench-open="!!view" @chat="open()" @ready="ready">
-    <template #navigation>
-      <nav class="workspace-navigation" aria-label="统一工作入口">
-        <button type="button" :class="{ active: !view }" @click="open()">会话</button>
-        <button v-for="group in workspaceSections" :key="group.id" type="button" :class="{ active: section?.id === group.id }" @click="open(lastSectionViews.get(group.id) || group.items[0].id)">{{ group.label }}</button>
+    <template #navigation="context">
+      <nav class="workspace-navigation" :class="{ 'workspace-navigation-footer': context.placement === 'footer' }" :aria-label="context.placement === 'footer' ? '执行与设置' : '统一工作入口'">
+        <button v-if="context.placement !== 'footer'" type="button" :class="{ active: !view }" :aria-current="!view ? 'page' : undefined" @click="open(); context.closeNavigation()"><MessagesSquare :size="17" /><span>会话</span></button>
+        <button v-for="group in context.placement === 'footer' ? secondarySections : primarySections" :key="group.id" type="button" :class="{ active: section?.id === group.id, 'workspace-nav-settings': group.id === 'automation' }" :aria-label="group.label" :aria-current="section?.id === group.id ? 'page' : undefined" :title="group.label" @click="open(lastSectionViews.get(group.id) || group.items[0].id); context.closeNavigation()"><component :is="navigationIcons[group.id]" :size="17" /><span>{{ group.id === 'today' ? '今日' : group.id === 'automation' ? '设置' : group.label }}</span></button>
       </nav>
     </template>
     <template #workbench="context">
       <section v-if="view" class="workspace-panel" aria-label="工作面板">
         <header class="workspace-panel-header">
           <nav aria-label="工作面板视图"><button v-for="item in section?.items" :key="item.id" type="button" :class="{ active: view.id === item.id }" @click="open(item.id)">{{ item.label }}</button></nav>
-          <button type="button" @click="open()">返回会话</button>
+          <div class="workspace-panel-actions"><div id="workspace-panel-toolbar"></div><button class="workspace-back" type="button" aria-label="返回会话" title="返回会话" @click="open()"><MessagesSquare :size="14" /><span>返回会话</span></button></div>
         </header>
         <WorkspacePanelViewport :key="view.id" :view-id="view.id">
           <AgentAutomationPanel v-if="view.id === 'automation'" :scoped-jobs="[]" :daily-report-available="context.dailyReportAvailable" :daily-report-pending="context.dailyReportPending" @generate-daily-report="context.generateDailyReport" @compose="context.compose" />
@@ -106,4 +110,8 @@ function openThread(event: MouseEvent) {
 .workspace-panel{display:flex;flex-direction:column;height:100%;min-height:0;background:var(--ui-bg);color:var(--ui-text)}
 .workspace-panel-header{display:flex;justify-content:space-between;gap:12px;flex-shrink:0;padding:10px 18px;border-bottom:1px solid var(--agent-border);background:var(--agent-panel)}
 .workspace-panel-header nav{display:flex;gap:4px;flex-wrap:wrap}
+.workspace-panel-actions{display:flex;align-items:center;gap:8px;min-width:0}
+.workspace-panel-header .workspace-back{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
 </style>
+
+<style src="./workspace-pages.css"></style>

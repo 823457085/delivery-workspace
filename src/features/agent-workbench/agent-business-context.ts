@@ -9,6 +9,7 @@ import type { AgentConversation } from './conversation';
 import type { MenuPagePlan } from '../api-integration/page-plan';
 import { buildReviewCatalog, type ReviewCatalogItem } from '../api-integration/review-catalog';
 import { isDone } from '../../shared/format';
+import { normalizeWorkspacePath, projectWorkspaceReference, workspacePathFromReference } from './agent-project-reference';
 
 const reviewIdsByPath = new Map(buildReviewCatalog().map(item => [item.path, item.id]));
 
@@ -58,10 +59,6 @@ export interface AgentBusinessSnapshot {
   refactorRepository?: string;
 }
 
-function normalizePath(value = '') {
-  return value.replaceAll('\\', '/').replace(/\/$/, '');
-}
-
 function conversationText(conversation?: AgentConversation) {
   if (!conversation) return '';
   return [conversation.title, ...conversation.runs.flatMap(run => [run.objective, run.result, run.error])].filter(Boolean).join('\n');
@@ -70,6 +67,10 @@ function conversationText(conversation?: AgentConversation) {
 function explicitValue(text: string, name: string) {
   const match = text.match(new RegExp(`@${name}:([^\\s@]+)`, 'i'));
   return match?.[1] || '';
+}
+
+function lastExplicitValue(text: string, name: string) {
+  return [...text.matchAll(new RegExp(`@${name}:([^\\s@]+)`, 'gi'))].at(-1)?.[1] || '';
 }
 
 function referenceTokens(text: string) {
@@ -81,15 +82,29 @@ function matchesExecutionIdentity(threadId: string, conversation: AgentConversat
   return conversation.id === threadId || conversation.runs.some(run => run.id === threadId || run.sessionId === threadId || run.originSessionId === threadId);
 }
 
+function conversationProject(conversation: AgentConversation, projects: LocalProject[] = []) {
+  // 只由最近一条用户目标中的项目引用定位，不让旧轮次或 Agent 回复覆盖新选择。
+  const reference = [...conversation.runs].reverse().map(run => run.objective)
+    .find(value => /@(?:项目|工作区):[^\s@]+/.test(value)) || conversation.title;
+  const workspace = lastExplicitValue(reference, '工作区');
+  const projectId = lastExplicitValue(reference, '项目');
+  if (workspace) {
+    const workspacePath = workspacePathFromReference(workspace);
+    return workspacePath ? projects.find(project => normalizeWorkspacePath(project.path) === workspacePath
+      && (!projectId || project.projectId === projectId)) : undefined;
+  }
+  const candidates = projectId ? projects.filter(project => project.projectId === projectId) : projects;
+  const current = candidates.find(project => normalizeWorkspacePath(project.path) === normalizeWorkspacePath(conversation.latest.workspacePath));
+  return current || (projectId && candidates.length === 1 ? candidates[0] : undefined);
+}
+
 export function buildAgentBusinessContext(conversation: AgentConversation | undefined, snapshot: AgentBusinessSnapshot): AgentBusinessContext {
   if (!conversation) return { jiraIssues: [], jobs: [], catchup: [], merges: [] };
   const text = conversationText(conversation);
   const references = referenceTokens(text);
-  const explicitProject = explicitValue(text, '项目');
   const explicitInterface = explicitValue(text, '接口');
   const explicitMerge = explicitValue(text, '合入').toUpperCase();
-  const project = snapshot.projects?.projects.find(item => item.projectId === explicitProject)
-    || snapshot.projects?.projects.find(item => normalizePath(item.path) === normalizePath(conversation.latest.workspacePath));
+  const project = conversationProject(conversation, snapshot.projects?.projects);
   const page = snapshot.pages?.find(item => item.id === explicitInterface);
   const matchesThread = (...ids: (string | undefined)[]) => ids.some(id => matchesExecutionIdentity(id || '', conversation));
   const jobs = (snapshot.automation?.jobs || []).filter(job => references.has(job.issueKey.toUpperCase())
@@ -125,9 +140,9 @@ export function buildAgentBusinessMentions(snapshot: AgentBusinessSnapshot): Age
   return [
     ...issues.map(issue => ({ id: `jira:${issue.key}`, type: 'jira' as const, label: issue.key,
       detail: `${issue.status} · ${issue.summary}`, value: `@Jira:${issue.key}` })),
-    ...(snapshot.projects?.projects || []).map(project => ({ id: `project:${project.projectId}`, type: 'project' as const,
+    ...(snapshot.projects?.projects || []).map(project => ({ id: `project:${encodeURIComponent(normalizeWorkspacePath(project.path))}`, type: 'project' as const,
       label: project.displayName || project.projectName, detail: `${project.branch || '未识别分支'} · ${project.displayPath || project.path}`,
-      value: `@项目:${project.projectId}` })),
+      value: projectWorkspaceReference(project) })),
     ...(snapshot.pages || []).map(page => ({ id: `interface:${page.id}`, type: 'interface' as const, label: page.title,
       detail: `${page.menu} · ${page.operations.length} 个接口`, value: `@接口:${page.id}` })),
     ...(snapshot.merge?.items || []).map(item => ({ id: `merge:${item.requirementId}`, type: 'merge' as const,

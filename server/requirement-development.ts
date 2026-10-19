@@ -3,7 +3,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { requirementDevelopmentStartSchema, requirementDevelopmentPrompt, type RequirementDevelopmentRecord, type RequirementDevelopmentInput } from '../shared/requirement-development.js';
+import { requirementDevelopmentStartSchema, requirementDevelopmentPrompt, requirementProgressInputSchema, requirementProgressImportSchema, requirementProgressSchema,
+  readRequirementProgressReport, type RequirementDevelopmentRecord, type RequirementDevelopmentInput, type RequirementProgressData } from '../shared/requirement-development.js';
 import type { AgentRun, StartAgentRunInput } from '../shared/agent-runtime.js';
 import { createGeneratedWorkspace, resolveRenamedWorkspace } from './generated-workspace.js';
 
@@ -39,19 +40,24 @@ export async function prepareRequirementWorkspace(input: Pick<RequirementDevelop
 interface Runtime {
   startRequirementDevelopment(input: StartAgentRunInput, sourceId: string, title: string): Promise<AgentRun>;
   findRequirementDevelopment(sourceId: string): AgentRun | undefined;
+  subscribe?(subscriber: (revision: number, run?: AgentRun, finalized?: boolean) => void): () => void;
 }
 export async function createRequirementDevelopmentService(directory: string, runtime: Runtime,
-  prepare: (input: RequirementDevelopmentInput, id: string, signal?: AbortSignal) => ReturnType<typeof prepareRequirementWorkspace> = prepareRequirementWorkspace) {
+  prepare: (input: RequirementDevelopmentInput, id: string, signal?: AbortSignal) => ReturnType<typeof prepareRequirementWorkspace> = prepareRequirementWorkspace,
+  options: { writeJson?: (relative: string, value: unknown) => Promise<void> } = {}) {
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
   const records = new Map<string, RequirementDevelopmentRecord>();
   for (const name of await fs.readdir(directory)) {
     if (!/^[0-9a-f-]{36}\.json$/.test(name)) continue;
     const record = await resolveRenamedWorkspace(JSON.parse(await fs.readFile(path.join(directory, name), 'utf8')) as RequirementDevelopmentRecord);
+    if (record.progress !== undefined) record.progress = requirementProgressSchema.parse(record.progress);
     records.set(record.id, record);
   }
   const pending = new Map<string, Promise<RequirementDevelopmentRecord>>();
+  const progressWrites = new Map<string, Promise<RequirementDevelopmentRecord>>();
   const shutdown = new AbortController();
   async function save(record: RequirementDevelopmentRecord) {
+    if (options.writeJson) { await options.writeJson(`requirement-development/${record.id}.json`, record); return; }
     const file = path.join(directory, `${record.id}.json`);
     await fs.writeFile(`${file}.tmp`, JSON.stringify(record), { mode: 0o600 });
     await fs.rename(`${file}.tmp`, file);
@@ -106,8 +112,71 @@ export async function createRequirementDevelopmentService(directory: string, run
     pending.set(requestId, promise);
     return promise;
   }
-  return { start, close: async () => { shutdown.abort(); await Promise.allSettled([...pending.values()]); }, list: () => [...records.values()].map(record => {
+  function saveProgress(id: string, runId: string, expectedRevision: number | undefined,
+    data: RequirementProgressData | undefined): Promise<RequirementDevelopmentRecord> {
+    const automatic = expectedRevision === undefined;
+    const previous = progressWrites.get(id) || Promise.resolve();
+    const work = previous.catch(() => undefined).then(async () => {
+      const fail = (message: string, statusCode = 409) => Object.assign(new Error(message), { statusCode });
+      if (automatic) await pending.get(id);
+      else if (shutdown.signal.aborted) throw fail('服务正在退出，暂不能更新需求进度');
+      const record = records.get(id);
+      if (!record) throw fail('需求开发记录不存在', 404);
+      if (pending.has(id)) throw fail('开发会话仍在准备，请稍后再记录进度');
+      const run = runtime.findRequirementDevelopment(id);
+      // 人工进度始终优先；队列内复查当前轮，避免迟到的报告覆盖人工修改或新一轮。
+      if (automatic && (record.progress?.source === 'manual' || !run || run.id !== runId
+        || run.status !== 'completed' || run.pausedForEdit)) return structuredClone(reconcile(record));
+      if (!run || run.id !== runId) throw fail('需求关联的运行已变化，请刷新后核对进度');
+      const revision = record.progress?.revision || 0;
+      if (!automatic && revision !== expectedRevision) throw fail('需求进度已更新，请重新读取后再保存');
+      if (!data && run.status !== 'completed') throw fail('本轮尚未结束，不能导入未完成的结果；可手动记录当前进度');
+      let progress: RequirementProgressData;
+      try { progress = data || readRequirementProgressReport(run.result); }
+      catch (error) {
+        if (!automatic) throw error;
+        const next = { ...record, progressSyncError: '最近一次报告未能自动同步，请打开阶段记录核对或手动导入。' };
+        await save(next); records.set(id, next);
+        return structuredClone(reconcile(next));
+      }
+      const source = data ? 'manual' as const : 'agent-result' as const;
+      if (record.progress?.sourceRunId === runId && record.progress.source === source
+        && !record.progressSyncError
+        && JSON.stringify({ issueKeys: record.progress.issueKeys, stages: record.progress.stages }) === JSON.stringify(progress)) {
+        return structuredClone(reconcile(record));
+      }
+      const next: RequirementDevelopmentRecord = { ...record, progressSyncError: '', progress: { ...progress, source, sourceRunId: runId,
+        revision: revision + 1, updatedAt: new Date().toISOString() } };
+      await save(next);
+      records.set(id, next);
+      return structuredClone(reconcile(next));
+    });
+    progressWrites.set(id, work);
+    void work.finally(() => { if (progressWrites.get(id) === work) progressWrites.delete(id); }).catch(() => undefined);
+    return work;
+  }
+  function updateProgress(id: string, raw: unknown) {
+    const input = requirementProgressInputSchema.parse(raw);
+    return saveProgress(id, input.runId, input.expectedRevision, input.progress);
+  }
+  function importProgress(id: string, raw: unknown) {
+    const input = requirementProgressImportSchema.parse(raw);
+    return saveProgress(id, input.runId, input.expectedRevision, undefined);
+  }
+  // 复用本轮结构化报告和串行保存；仅订阅新完成事件，不扫描历史、不启动模型、不写验收结论。
+  const unsubscribe = runtime.subscribe?.((_revision, run, finalized) => {
+    const sourceId = run?.task?.sourceId;
+    if (!finalized || !run || run.status !== 'completed' || !sourceId?.startsWith('requirement:') || shutdown.signal.aborted) return;
+    const id = sourceId.slice('requirement:'.length);
+    if (!records.has(id)) return;
+    void saveProgress(id, run.id, undefined, undefined).catch(error => {
+      console.error(`需求 ${id} 的报告自动同步失败，原进度已保留：`, error instanceof Error ? error.message : error);
+    });
+  });
+  return { start, updateProgress, importProgress, close: async () => {
+    unsubscribe?.(); shutdown.abort(); await Promise.allSettled([...pending.values(), ...progressWrites.values()]);
+  }, list: () => [...records.values()].map(record => {
     const run = runtime.findRequirementDevelopment(record.id);
-    return { ...reconcile(record), runStatus: run?.status, runError: run?.error || '' };
+    return structuredClone({ ...reconcile(record), runStatus: run?.status, runError: run?.error || '' });
   }).sort((a, b) => b.createdAt.localeCompare(a.createdAt)) };
 }

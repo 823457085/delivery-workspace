@@ -131,6 +131,7 @@ export function useAgentMentions(draft: Ref<string>, context: () => AgentMention
   }
 
   function handleKeydown(event: KeyboardEvent) {
+    if (event.isComposing || event.keyCode === 229) return false;
     if (!open.value || !options.value.length) return false;
     if (event.key === 'ArrowDown') activeIndex.value = (activeIndex.value + 1) % options.value.length;
     else if (event.key === 'ArrowUp') activeIndex.value = (activeIndex.value - 1 + options.value.length) % options.value.length;

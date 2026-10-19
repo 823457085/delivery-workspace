@@ -1,6 +1,7 @@
 <script setup lang="ts">
 /** 同域编排执行与合入子视图，统一使用来源版本号；写操作仍由原服务端校验。 */
 import { computed, shallowRef, watch } from 'vue';
+import { useQuery } from '@tanstack/vue-query';
 import { useRoute } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { CatchupData, MergeData, CatchupRequirement, MergeItem } from '../../../shared/hub';
@@ -15,27 +16,32 @@ import MergeDetail from './MergeDetail.vue';
 import CodexQueue from './CodexQueue.vue';
 import type { QueueEntry } from './domain';
 import { directMergeReasonError } from './domain';
+import { displayCatchupBoard, readCatchupIncrement } from './increment';
 const props = defineProps<{ mode: string }>();
 const route = useRoute();
 const boardQuery = useSource<CatchupData>('catchup'), mergeQuery = useSource<MergeData>('merge');
 const { data: board } = boardQuery, { data: merge } = mergeQuery;
+const incrementQuery = useQuery({ queryKey: ['catchup-supplement', 'apex-930'],
+  queryFn: ({ signal }) => readCatchupIncrement(signal), enabled: computed(() => props.mode === 'execution'),
+  retry: false, staleTime: 20_000, refetchOnWindowFocus: false });
+const displayBoard = computed(() => board.value && displayCatchupBoard(board.value, incrementQuery.data.value));
 const actions = useSourceActions();
 const selectedRequirementId = shallowRef(''), selectedMergeId = shallowRef('');
 const requirementOpen = shallowRef(false), mergeOpen = shallowRef(false), jiraOpen = shallowRef(false), jiraLoading = shallowRef(false), acting = shallowRef(false);
 const jiraReport = shallowRef<unknown>();
-const selectedRequirement = computed(() => board.value?.requirements.find((item) => item.id === selectedRequirementId.value));
+const selectedRequirement = computed(() => displayBoard.value?.requirements.find((item) => item.id === selectedRequirementId.value));
 const selectedMerge = computed(() => merge.value?.items.find((item) => item.requirementId === selectedMergeId.value));
 const title = computed(() => props.mode === 'execution' ? '追平执行' : props.mode === 'merge' ? '合入审核' : '追平 Codex 队列');
-const loading = computed(() => boardQuery.isFetching.value || mergeQuery.isFetching.value);
-const currentError = computed(() => props.mode === 'execution' ? boardQuery.error.value : props.mode === 'merge' ? mergeQuery.error.value : boardQuery.error.value || mergeQuery.error.value);
-const hasData = computed(() => props.mode === 'execution' ? !!board.value : props.mode === 'merge' ? !!merge.value : !!board.value && !!merge.value);
+const loading = computed(() => boardQuery.isFetching.value || mergeQuery.isFetching.value || props.mode === 'execution' && incrementQuery.isFetching.value);
+const currentError = computed(() => props.mode === 'execution' ? boardQuery.error.value || incrementQuery.error.value : props.mode === 'merge' ? mergeQuery.error.value : boardQuery.error.value || mergeQuery.error.value);
+const hasData = computed(() => props.mode === 'execution' ? !!board.value && (!incrementQuery.isPending.value || !!incrementQuery.error.value) : props.mode === 'merge' ? !!merge.value : !!board.value && !!merge.value);
 const actionLabels: Record<string, string> = { start: '启动还原', pause: '暂停执行', resume: '恢复执行', finish: '结束本轮执行' };
-async function refresh() { await Promise.all([boardQuery.refetch(), mergeQuery.refetch()]); }
+async function refresh() { await Promise.all([boardQuery.refetch(), mergeQuery.refetch(), ...(props.mode === 'execution' ? [incrementQuery.refetch()] : [])]); }
 function inspectRequirement(item: CatchupRequirement) { selectedRequirementId.value = item.id; requirementOpen.value = true; }
 function inspectMerge(item: MergeItem) { selectedMergeId.value = item.requirementId; mergeOpen.value = true; }
 function inspectEntry(entry: QueueEntry) { if (entry.kind === 'execution') { const item = board.value?.requirements.find((item) => item.id === entry.requirementId); if (item) inspectRequirement(item); } else { const item = merge.value?.items.find((item) => item.requirementId === entry.requirementId); if (item) inspectMerge(item); } }
 async function executionAction(action: string) {
-  if (!selectedRequirement.value || !board.value || acting.value) return;
+  if (!selectedRequirement.value || selectedRequirement.value.sourceIncrement || !board.value || acting.value) return;
   acting.value = true;
   try { await actions.execute('catchup-action', { action, requirementIds: [selectedRequirement.value.id], expectedRevision: board.value.executionRevision }, `确认${actionLabels[action]}`, action === 'pause' ? board.value.executionSemantics.pause : action === 'finish' ? board.value.executionSemantics.finish : '这会改变原追平执行状态，现有调度器可能派发 Codex、修改对应工作区并更新 Jira。'); } finally { acting.value = false; }
 }
@@ -68,15 +74,15 @@ async function syncJira() {
   if (ok) await checkJira();
 }
 watch(() => props.mode, () => { requirementOpen.value = false; mergeOpen.value = false; });
-watch([() => route.query.requirement, () => props.mode, () => !!board.value, () => !!merge.value], () => {
+watch([() => route.query.requirement, () => props.mode, () => !!displayBoard.value?.requirements.some(item => item.id === route.query.requirement), () => !!merge.value], () => {
   const id = route.query.requirement;
-  if (props.mode === 'execution') { const item = board.value?.requirements.find(item => item.id === id); if (item) inspectRequirement(item); }
+  if (props.mode === 'execution') { const item = displayBoard.value?.requirements.find(item => item.id === id); if (item) inspectRequirement(item); }
   else { const item = merge.value?.items.find(item => item.requirementId === id); if (item) inspectMerge(item); }
 }, { immediate: true });
 </script>
 <template>
   <PageHeading :title="title" description="冻结需求 → 功能还原 → 合入自测 → 人工审核 → Git 交付；每个阶段保留独立状态与证据。" :loading="loading" @refresh="refresh" />
-  <QueryState :loading="loading" :error="currentError" :has-data="hasData" @retry="refresh"><ExecutionBoard v-if="mode === 'execution' && board" :board="board" @inspect="inspectRequirement" /><MergeBoard v-else-if="mode === 'merge' && merge" :merge="merge" @inspect="inspectMerge" @check-jira="checkJira" /><CodexQueue v-else-if="board && merge" :board="board" :merge="merge" @inspect="inspectEntry" @review="inspectMerge" /></QueryState>
+  <QueryState :loading="loading" :error="currentError" :has-data="hasData" @retry="refresh"><ExecutionBoard v-if="mode === 'execution' && displayBoard" :board="displayBoard" @inspect="inspectRequirement" /><MergeBoard v-else-if="mode === 'merge' && merge" :merge="merge" @inspect="inspectMerge" @check-jira="checkJira" /><CodexQueue v-else-if="board && merge" :board="board" :merge="merge" @inspect="inspectEntry" @review="inspectMerge" /></QueryState>
   <p v-if="jiraLoading" class="source-footnote">正在只读核对 Jira，没有同步或关闭事项…</p>
   <RecordDrawer v-model="requirementOpen" :title="selectedRequirement?.title || '需求详情'" :subtitle="selectedRequirement?.id" :record="selectedRequirement"><RequirementDetail v-if="selectedRequirement" :item="selectedRequirement" /><template #footer><el-button v-for="action in selectedRequirement?.execution.allowedActions || []" :key="action" :loading="acting" :disabled="acting" :type="action === 'finish' ? 'warning' : 'primary'" plain @click="executionAction(action)">{{ actionLabels[action] || action }}</el-button></template></RecordDrawer>
   <RecordDrawer v-model="mergeOpen" :title="selectedMerge?.title || '合入详情'" :subtitle="selectedMerge?.requirementId" :record="selectedMerge"><MergeDetail v-if="selectedMerge && merge" :key="selectedMerge.requirementId" :item="selectedMerge" :target-branch="merge.target.branch" /><template #footer><el-button v-if="selectedMerge?.directMergeAction?.enabled" type="warning" plain :disabled="acting" @click="directMerge">例外直接合入</el-button><el-button v-if="selectedMerge?.reviewRetryAction?.enabled" :disabled="acting" @click="mergeAction(selectedMerge.reviewRetryAction.action, selectedMerge.reviewRetryAction.label)">{{ selectedMerge.reviewRetryAction.label }}</el-button><el-button v-if="selectedMerge?.action?.enabled" type="primary" :loading="acting" @click="mergeAction(selectedMerge.action.action, selectedMerge.action.label)">{{ selectedMerge.action.label }}</el-button></template></RecordDrawer>

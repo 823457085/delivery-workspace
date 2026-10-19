@@ -6,13 +6,14 @@ import type { AgentKnowledgeMatch, AgentKnowledgeScope, AgentSkillOption } from 
 import type { RunView } from '../../../shared/types';
 import type { CatchupRequirement, JiraIssue, Job, LocalProject, MergeItem } from '../../../shared/hub';
 import type { AgentInterfaceContext } from './agent-business-context';
+import { projectWorkspaceReference } from './agent-project-reference';
 
 export function jiraQuickPrompt(issue: Pick<JiraIssue, 'key'>) {
   return `@Jira:${issue.key} 请检查该需求的当前实现范围、风险和下一步，先只读分析。`;
 }
 
-export function projectQuickPrompt(project: Pick<LocalProject, 'projectId'>) {
-  return `@项目:${project.projectId} 请检查当前分支、工作区变更和远端差异，给出下一步，先只读分析。`;
+export function projectQuickPrompt(project: Pick<LocalProject, 'projectId' | 'path' | 'branch'>) {
+  return `${projectWorkspaceReference(project)} 请检查该工作区的分支、工作区变更和远端差异，给出下一步，先只读分析。`;
 }
 
 export function interfaceQuickPrompt(context: Pick<AgentInterfaceContext, 'page'>) {

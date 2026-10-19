@@ -5,7 +5,7 @@ import AgentAvatar from './AgentAvatar.vue';
  * 将它从容器拆出可保持主面板只负责编排；表格方案不利于连续会话定位，因此不再作为主交互。
  */
 import { computed, shallowRef } from 'vue';
-import { ChevronDown, Folder, MessageSquarePlus, Pin, RotateCw, Search } from '@lucide/vue';
+import { ChevronDown, Folder, MessageSquarePlus, PanelLeftClose, Pin, RotateCw, Search } from '@lucide/vue';
 import type { AgentRuntimeHealth, AgentUsageLimits, CodexSyncState } from '../../../shared/agent-runtime';
 import { agentRunProjectPath, type AgentConversation } from './conversation';
 import AgentSessionItem from './AgentSessionItem.vue';
@@ -15,7 +15,7 @@ import ThemePicker from '../../shared/theme/ThemePicker.vue';
 
 const props = defineProps<{ conversations: AgentConversation[]; selectedId: string; runtimes: AgentRuntimeHealth[];
   syncState?: CodexSyncState; usage?: AgentUsageLimits; changing: string; pinnedIds: ReadonlySet<string> }>();
-const emit = defineEmits<{ select: [id: string]; create: []; refresh: []; sync: [] }>();
+const emit = defineEmits<{ select: [id: string]; create: []; refresh: []; sync: []; collapse: [] }>();
 const query = shallowRef('');
 const projectFilter = shallowRef('all');
 const expandedGroups = shallowRef(new Set<string>());
@@ -134,9 +134,9 @@ function toggleGroup(path: string) {
 
 <template>
   <aside class="session-sidebar" aria-label="Agent 会话列表">
-    <header class="agent-brand"><span><AgentAvatar :size="36" /></span><div><strong>启元</strong><small>本机 AI 开发工作台</small></div><ThemePicker class="agent-theme-picker" /></header>
+    <header class="agent-brand"><span><AgentAvatar :size="36" /></span><div><strong>启元</strong><small>本机 AI 开发工作台</small></div><ThemePicker class="agent-theme-picker" /><button type="button" class="studio-session-collapse" aria-label="收起会话列表" title="收起会话列表" @click="emit('collapse')"><PanelLeftClose :size="16" /></button></header>
     <button type="button" class="create-session" aria-label="新建 Agent 会话" @click="emit('create')"><MessageSquarePlus :size="16" /> 新对话</button>
-    <button type="button" class="sync-sessions" :disabled="!!changing" @click="emit('sync')"><RotateCw :size="13" :class="{ spinning: changing === 'codex:sync' }" /><span>同步本机会话</span><small v-if="syncState?.syncedAt">{{ recentConversations.length }}</small></button>
+    <slot name="navigation" />
     <label class="session-search"><Search :size="13" /><input v-model="query" type="search" placeholder="搜索会话、消息、分支或工作区" /></label>
     <label class="project-filter"><Folder :size="13" /><select v-model="projectFilter" aria-label="按项目目录筛选"><option value="all">全部项目目录（{{ projectGroups.length }}）</option><option v-for="group in projectGroups" :key="group.path" :value="group.path">{{ group.label }}（{{ group.conversations.length }}）</option></select><ChevronDown :size="13" /></label>
     <div class="session-sidebar-heading"><strong>置顶与最近 7 天</strong><span>{{ visibleConversationCount }} / {{ availableConversationCount }}</span></div>
@@ -156,6 +156,8 @@ function toggleGroup(path: string) {
       </section>
     </div>
     <el-empty v-else :description="recentConversations.length || pinnedIds.size ? '没有匹配的会话' : '最近 7 天没有会话'" :image-size="48" />
+    <button type="button" class="studio-sync-sessions" :disabled="!!changing" aria-label="同步本机会话" title="同步本机会话" @click="emit('sync')"><RotateCw :size="15" :class="{ spinning: changing === 'codex:sync' }" /><span>同步本机会话</span></button>
+    <slot name="navigation-footer" />
     <footer class="runtime-footer">
       <div v-for="runtime in runtimes" :key="runtime.provider"><i :class="{ ready: runtime.ready }"></i><span>{{ runtime.label }}</span><small>{{ runtime.ready ? '已连接' : '未连接' }}</small></div>
       <AgentUsageQuota :usage="usage" />

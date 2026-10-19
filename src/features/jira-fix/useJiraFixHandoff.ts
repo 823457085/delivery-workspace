@@ -1,5 +1,5 @@
-/** 只在点击交接时读取 Jira，确认前不写入；服务端记录各步骤，重试不再发已成功的评论。 */
-import { computed, onScopeDispose, ref, shallowRef } from 'vue';
+/** 只在点击交接时读取 Jira，确认前不写入；生成稿由服务端保存，手改稿按运行在本机浏览器保留，不继承旧运行的工作流选择。 */
+import { computed, onScopeDispose, ref, shallowRef, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { JiraFixRecord } from '../../../shared/jira-fix';
 import { jiraFixHandoffInputSchema, jiraCommentDraftSchema, type JiraFixHandoffContext, type JiraFixHandoffInput, type JiraFixHandoffState, type JiraStatusChangeState } from '../../../shared/jira-fix-handoff';
@@ -24,6 +24,13 @@ export function useJiraFixHandoff(refresh: () => Promise<unknown>) {
   let controller: AbortController | undefined;
   onScopeDispose(() => { controller?.abort(); generation?.abort(); });
   const locked = computed(() => !!context.value?.handoff);
+  const draftKey = () => `qiyuan:jira-handoff:${record.value?.id}:${context.value?.runId}`;
+  watch(form, value => {
+    if (!open.value || loading.value || locked.value || !context.value || !record.value) return;
+    const { cause, impact, suggestion, conclusion } = value;
+    try { localStorage.setItem(draftKey(), JSON.stringify({ result: context.value.result, draft: { cause, impact, suggestion, conclusion } })); }
+    catch { /* 浏览器存储不可用时仍可编辑，服务端生成稿不受影响。 */ }
+  }, { deep: true, flush: 'sync' });
   const statusUncertain = computed(() => context.value?.statusChange?.status === 'uncertain'
     && context.value.issue.status.id !== (context.value.statusChange.inFlightStatusId || context.value.statusChange.input.targetStatusId));
   const canApplyStatus = computed(() => !locked.value && !loading.value && !submitting.value && !generating.value
@@ -56,6 +63,15 @@ export function useJiraFixHandoff(refresh: () => Promise<unknown>) {
         transitionFields.value = { ...saved.transitionFields };
       }
       else {
+        const generated = context.value?.draft?.draft;
+        if (generated) Object.assign(form.value, generated);
+        try {
+          const saved = JSON.parse(localStorage.getItem(draftKey()) || 'null');
+          const keys = ['cause', 'impact', 'suggestion', 'conclusion'] as const;
+          if (saved?.result === context.value?.result && keys.every(key => typeof saved.draft?.[key] === 'string' && saved.draft[key].length <= 6000)) {
+            for (const key of keys) form.value[key] = saved.draft[key];
+          }
+        } catch { /* 损坏或被禁止的浏览器草稿不影响服务端生成稿。 */ }
         const preferred = (result as JiraFixHandoffContext).transitions.find(item => item.to.name === '待测试')
           || (result as JiraFixHandoffContext).transitions.find(item => item.to.name === '测试中');
         form.value.transitionId = ['测试中', '待测试'].includes((result as JiraFixHandoffContext).issue.status.name)
@@ -73,6 +89,7 @@ export function useJiraFixHandoff(refresh: () => Promise<unknown>) {
     if (!context.value || !record.value || loading.value || generating.value || submitting.value || applyingStatus.value || locked.value) return;
     const request = new AbortController(); generation = request; generating.value = true; error.value = '';
     const { cause, impact, suggestion, conclusion } = form.value;
+    const original = JSON.stringify({ cause, impact, suggestion, conclusion });
     const draft = Object.fromEntries(Object.entries({ cause, impact, suggestion, conclusion }).filter(([, text]) => text.trim()));
     try {
       const response = await fetch(`/api/agent-runtimes/jira-fix/${record.value.id}/handoff/draft`, {
@@ -84,6 +101,10 @@ export function useJiraFixHandoff(refresh: () => Promise<unknown>) {
       if (request.signal.aborted || generation !== request) return;
       const parsed = jiraCommentDraftSchema.safeParse(result);
       if (!parsed.success) throw new Error('生成结果格式不完整，原草稿已保留');
+      const current = form.value;
+      if (JSON.stringify({ cause: current.cause, impact: current.impact, suggestion: current.suggestion, conclusion: current.conclusion }) !== original) {
+        error.value = '生成期间草稿已修改，已保留当前编辑'; return;
+      }
       form.value = { ...form.value, ...parsed.data };
     } catch (cause) { if (!request.signal.aborted && generation === request) error.value = cause instanceof Error ? cause.message : '生成失败，原草稿已保留'; }
     finally { if (generation === request) { generating.value = false; generation = undefined; } }

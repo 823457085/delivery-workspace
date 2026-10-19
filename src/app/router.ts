@@ -17,6 +17,7 @@ export const router = createRouter({ history: createWebHistory(), scrollBehavior
     { path: 'delivery/:mode(plan|queue|runs)', component: () => import('../pages/delivery/index.vue'), props: true },
     { path: 'catchup/:mode(execution|merge|codex)', component: () => import('../pages/catchup/index.vue'), props: true },
     { path: 'settings', component: () => import('../pages/settings/index.vue') },
+    { path: 'messages', component: () => import('../pages/messages/index.vue') },
     { path: ':pathMatch(.*)*', redirect: '/overview' },
   ] },
 ] });

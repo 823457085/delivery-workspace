@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 import { computed, effectScope, nextTick, shallowRef, watch } from 'vue';
 import { useAgentConversationDrafts } from '../src/features/agent-workbench/useAgentConversationDrafts.js';
+import { AgentAttachmentDraft } from '../src/features/agent-workbench/useAgentAttachments.js';
 import { buildAgentConversations, findAgentConversation, reconcileAgentConversation, resumedConversationId,
   type AgentConversation as Conversation } from '../src/features/agent-workbench/conversation.js';
 import type { AgentProvider, AgentRun, StartAgentRunInput } from '../shared/agent-runtime.js';
@@ -40,6 +41,30 @@ function loadActions<T>(path: string, names: string[], dependencies: Record<stri
 }
 
 const panelPath = '../src/features/agent-workbench/AgentRuntimePanel.vue';
+test('输入框先放行输入法确认，上传期间 Enter 不发送，结束后恢复发送', () => {
+  const pending = shallowRef(true);
+  const emitted: string[] = [];
+  let handledMentions = 0;
+  const actions = loadActions<{ onKeydown: (event: KeyboardEvent) => void }>(
+    '../src/features/agent-workbench/AgentPromptEditor.vue', ['onKeydown'], {
+      props: { submitOnEnter: true, disabled: false }, attachedFiles: { pending },
+      mentions: { handleKeydown: () => { handledMentions++; return false; } }, emit: (event: string) => emitted.push(event),
+    });
+  const event = (input: Partial<KeyboardEvent> = {}) => ({ key: 'Enter', keyCode: 13, isComposing: false,
+    shiftKey: false, preventDefault() {}, ...input } as KeyboardEvent);
+  actions.onKeydown(event({ isComposing: true }));
+  actions.onKeydown(event({ keyCode: 229 }));
+  assert.equal(handledMentions, 0);
+  assert.deepEqual(emitted, []);
+  actions.onKeydown(event());
+  assert.deepEqual(emitted, []);
+  pending.value = false;
+  actions.onKeydown(event({ shiftKey: true }));
+  assert.deepEqual(emitted, []);
+  actions.onKeydown(event());
+  assert.deepEqual(emitted, ['submit']);
+});
+
 test('暂停编辑晚返回不抢回其他会话，不覆盖续聊草稿；保存失败保留编辑内容', async () => {
   const paused = deferred<AgentRun | undefined>();
   const selectedConversationId = shallowRef('a');
@@ -99,7 +124,7 @@ function run(id: string, parentRunId = ''): AgentRun {
     pid: null, result: '', error: '', events: [], createdAt: '2026-09-22T00:00:00Z', updatedAt: '2026-09-22T00:00:00Z' };
 }
 type Actions = {
-  sendMessage: (selection: { queuePlacement: 'append'; workflow?: boolean; provider?: AgentProvider; model?: string; reasoningEffort?: string; accessMode?: string }) => Promise<void>;
+  sendMessage: (selection: { queuePlacement: 'append' | 'next'; workflow?: boolean; provider?: AgentProvider; model?: string; reasoningEffort?: string; accessMode?: string }) => Promise<void>;
   startAgentWorkflow: (input: { templateId: 'implement-review'; objective: string }) => Promise<void>;
   retryRun: (run: { id: string }) => Promise<void>;
   selectConversation: (id: string) => void;
@@ -122,6 +147,11 @@ function sendingFixture(initial = buildAgentConversations([run('a'), run('b')]))
   const queryRefresh = deferred<void>();
   const dailyReportStarting = shallowRef(false);
   const reportInputs: unknown[] = [];
+  const newAttachments = shallowRef<typeof image[]>([]);
+  const newAttachmentDraft = shallowRef(new AgentAttachmentDraft(newAttachments));
+  const forkAttachments = shallowRef<typeof image[]>([]);
+  const forkAttachmentDraft = shallowRef(new AgentAttachmentDraft(forkAttachments));
+  const submittingNew = shallowRef(false);
   const actions = scope.run(() => loadActions<Actions>(panelPath, ['sendMessage', 'startAgentWorkflow', 'retryRun', 'selectConversation', 'openCreate', 'submit', 'forkConversation', 'generateDailyReport', 'openRun'], {
     selectedConversationId, creating, conversations, watch,
     selectedConversation: computed(() => findAgentConversation(conversations.value, selectedConversationId.value)),
@@ -129,17 +159,62 @@ function sendingFixture(initial = buildAgentConversations([run('a'), run('b')]))
     pendingConversationId: shallowRef(''), rememberedConversationId: '',
     draft: drafts.draft, draftAttachments: drafts.attachments,
     clearConversationDraft: drafts.clear, restoreConversationDraft: drafts.restore, moveConversationDraft: drafts.move,
+    attachmentsPending: drafts.attachmentsPending,
     resume: () => response.promise, resumeCodexSession: () => response.promise, retry: () => response.promise,
     orchestrate: (_parent: unknown, input: unknown) => { workflowInputs.push(input); return workflowResponse.promise; },
     resumedConversationId, reconcileAgentConversation, providerSwitchInput,
     query: { refetch: () => queryRefresh.promise }, findAgentConversation,
-    canStart: shallowRef(true), start: (input: unknown) => { reportInputs.push(input); return response.promise; }, form: {}, newAttachments: shallowRef([]), resetForm: () => {},
+    canStart: shallowRef(true), start: (input: unknown) => { reportInputs.push(input); return response.promise; }, form: {}, newAttachments, newAttachmentDraft, submittingNew, panelDisposed: false, resetForm: () => {},
     dailyReportStarting, changing: shallowRef(''), sideWorkspacePath: shallowRef('/repo'), dailyReportRuntime: shallowRef({}),
     createDailyReportInput: (date: string) => ({ objective: date, mode: 'ask' }),
-    fork: () => response.promise, forkSource: shallowRef({ id: 'a' }), forkObjective: shallowRef('基于此会话新建'), forkAttachments: shallowRef([]),
+    fork: () => response.promise, forkSource: shallowRef({ id: 'a' }), forkObjective: shallowRef('基于此会话新建'), forkAttachments, forkAttachmentDraft,
   }, true))!;
-  return { actions, selectedConversationId, conversations, drafts, creating, response, workflowResponse, workflowInputs, queryRefresh, dailyReportStarting, reportInputs, dispose: () => scope.stop() };
+  return { actions, selectedConversationId, conversations, drafts, creating, response, workflowResponse, workflowInputs, queryRefresh, dailyReportStarting, reportInputs, newAttachments, newAttachmentDraft, forkAttachmentDraft, submittingNew, dispose: () => scope.stop() };
 }
+
+test('附件上传或移除期间，普通发送、插入和实现复核均保留草稿且不提交', async () => {
+  for (const operation of ['upload', 'remove'] as const) {
+    const state = sendingFixture();
+    try {
+      state.drafts.draft.value = '等待附件后发送';
+      state.drafts.attachments.value = [image];
+      const finish = state.drafts.attachmentDraft.value!.begin(operation);
+      await state.actions.sendMessage({ queuePlacement: 'append' });
+      await state.actions.sendMessage({ queuePlacement: 'next' });
+      await state.actions.sendMessage({ queuePlacement: 'append', workflow: true });
+      await state.actions.startAgentWorkflow({ templateId: 'implement-review', objective: '等待附件后发送' });
+      assert.equal(state.workflowInputs.length, 0);
+      assert.equal(state.drafts.draft.value, '等待附件后发送');
+      assert.deepEqual(state.drafts.attachments.value, [image]);
+      finish();
+      state.response.resolve(undefined);
+      await state.actions.sendMessage({ queuePlacement: 'append' });
+      assert.equal(state.drafts.draft.value, '等待附件后发送', '上传结束后发送失败仍恢复原草稿');
+    } finally { state.dispose(); }
+  }
+});
+
+test('新建与分叉会话上传未完成不提交，新建确认期间也防止重复提交', async () => {
+  const state = sendingFixture();
+  try {
+    const finishNew = state.newAttachmentDraft.value.begin('upload');
+    const finishFork = state.forkAttachmentDraft.value.begin('upload');
+    await state.actions.submit();
+    await state.actions.forkConversation();
+    assert.equal(state.reportInputs.length, 0);
+    finishNew(); finishFork();
+    state.newAttachments.value = [image];
+    const pending = state.actions.submit();
+    assert.equal(state.submittingNew.value, true);
+    await state.actions.submit();
+    assert.equal(state.reportInputs.length, 1);
+    assert.deepEqual((state.reportInputs[0] as StartAgentRunInput).attachmentIds, [image.id]);
+    state.response.resolve(undefined);
+    await pending;
+    assert.equal(state.submittingNew.value, false);
+    assert.deepEqual(state.newAttachments.value, [image]);
+  } finally { state.dispose(); }
+});
 
 test('需求开发入口刷新后定位新建会话，期间手动切换时不抢回选中项', async () => {
   for (const switchAway of [false, true]) {

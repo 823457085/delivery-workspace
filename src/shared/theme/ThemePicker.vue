@@ -50,7 +50,7 @@ async function removeWallpaper() {
       <button ref="trigger" class="theme-trigger" aria-label="切换皮肤" :aria-expanded="visible" @keydown.esc.stop="closeWithKeyboard"><Palette :size="17" /><span>{{ current.name }}</span></button>
     </template>
     <div class="theme-content" @keydown.esc.stop="closeWithKeyboard">
-      <div class="theme-heading"><strong>选择主题颜色</strong><span>仅改变外观，不影响任务与数据</span></div>
+      <div class="theme-heading"><strong>选择主题颜色</strong><span>仅改变配色，布局与任务数据保持不变</span></div>
       <fieldset class="theme-options"><legend class="visually-hidden">面板皮肤</legend>
         <label v-for="option in displayedOptions" :key="option.id" class="theme-option" :class="{ selected: preference === option.id }">
           <input type="radio" name="workspace-theme" :value="option.id" :checked="preference === option.id" @change="setTheme(option.id)" />

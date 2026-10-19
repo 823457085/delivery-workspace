@@ -19,6 +19,7 @@ export const navigation = [
     { path: '/catchup/codex', title: '追平 Codex 队列', icon: 'code' },
   ] },
   { group: '协作与配置', items: [
+    { path: '/messages', title: '消息推送', icon: 'bot' },
     { path: '/settings', title: '交付设置', icon: 'settings' },
   ] },
 ];

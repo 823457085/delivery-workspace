@@ -13,31 +13,40 @@ import type { JiraFixRecord } from '../shared/jira-fix.js';
 import { jiraCommentArguments, jiraCommentPrompt, type JiraCommentGenerator } from '../server/jira-comment-generator.js';
 import { jiraCommentGenerateSchema, type JiraCommentDraft } from '../shared/jira-fix-handoff.js';
 
+function runtimeFixture() {
+  const listeners = new Set<(revision: number, run?: AgentRun, finalized?: boolean) => void>();
+  return { listeners, subscribe: (listener: (revision: number, run?: AgentRun, finalized?: boolean) => void) => {
+    listeners.add(listener); return () => { listeners.delete(listener); };
+  }, notify: (run: AgentRun, finalized = true) => { for (const listener of listeners) listener(1, run, finalized); } };
+}
 async function fixture(generator?: JiraCommentGenerator) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'jira-handoff-test-'));
   const id = randomUUID(), run = { id: randomUUID(), status: 'completed', result: '定向检查通过，浏览器未验证' } as AgentRun;
+  run.task = { parentConversationId: '', dependsOnConversationIds: [], role: 'main', title: '修复', source: 'workflow', sourceId: `jira-fix:${id}` };
   const record = { id, input: { issueKey: 'TEST-123' } } as JiraFixRecord;
   const issue: JiraHandoffIssue = { key: 'TEST-123', summary: '缺陷', status: { id: '1', name: '开发中' },
     reporter: { id: 'qa-name', name: '测试报告人', kind: 'name', active: true }, assignee: null };
   const input: JiraFixHandoffInput = { runId: run.id, transitionId: '21', targetStatusId: '2', reporterId: 'qa-name',
     cause: '校验遗漏，已补齐校验', impact: '编辑入口', suggestion: '验证空值和正常保存', conclusion: '定向检查通过，浏览器未验证', authorization: 'comment-transition-assign-reporter' };
-  const writes: string[] = []; let comment = '';
+  const writes: string[] = [], reads: string[] = []; let comment = '';
   const source: JiraHandoffSource = {
-    statuses: async () => [{ id: '1', name: '开发中' }, { id: '2', name: '待测试' }, { id: '3', name: '已完成' }],
-    readIssue: async () => structuredClone(issue),
-    transitions: async () => [{ id: '21', name: '提交测试', to: { id: '2', name: '待测试' } }],
+    statuses: async () => { reads.push('statuses'); return [{ id: '1', name: '开发中' }, { id: '2', name: '待测试' }, { id: '3', name: '已完成' }]; },
+    readIssue: async () => { reads.push('issue'); return structuredClone(issue); },
+    transitions: async () => { reads.push('transitions'); return [{ id: '21', name: '提交测试', to: { id: '2', name: '待测试' } }]; },
     comment: async (_key, body) => { writes.push('comment'); comment = body; return '101'; },
     transition: async () => { writes.push('transition'); issue.status = { id: '2', name: '待测试' }; },
     assign: async (_key, value) => { writes.push('assign'); issue.assignee = value; },
-    readComment: async () => comment,
+    readComment: async () => { reads.push('comment'); return comment; },
   };
   const find = () => ({ record, run });
-  const service = await createJiraFixHandoffService(directory, find, source, generator);
-  return { directory, id, run, record, input, issue, writes, source, service, find,
+  const runtime = runtimeFixture();
+  const service = await createJiraFixHandoffService(directory, find, source, generator, runtime);
+  return { directory, id, run, record, input, issue, writes, reads, source, service, find, runtime,
     close: async () => { await service.close(); await fs.rm(directory, { recursive: true, force: true }); } };
 }
 
 const draft: JiraCommentDraft = { cause: '缺少空值校验，已补齐', impact: '编辑页面', suggestion: '回归空值和正常值', conclusion: '定向检查通过，浏览器未验证' };
+function handoffReport(value = draft) { return `本轮修复结果\n\n\`\`\`delivery-report\n${JSON.stringify({ version: 1, jiraHandoff: value })}\n\`\`\``; }
 function statusInput(runId: string) {
   return { requestId: randomUUID(), runId, fromStatusId: '1', transitionId: '21', targetStatusId: '2', authorization: 'transition-jira-status' };
 }
@@ -189,7 +198,175 @@ test('明确拒绝可重新选择后重试；已有交接记录不允许单独�
     assert.deepEqual(f.writes, ['transition', 'comment', 'assign']);
   } finally { await f.close(); }
 });
-test('生成及按反馈重写携带证据和手改稿，不发布 Jira、不保存交接状态', async () => {
+test('新完成报告自动保存一次并在关闭时收尾，不调用模型或 Jira；重启不导入历史结果', async t => {
+  let generations = 0, renames = 0;
+  const f = await fixture(async () => { generations++; return draft; });
+  let restored: Awaited<ReturnType<typeof createJiraFixHandoffService>> | undefined;
+  const rename = fs.rename;
+  t.mock.method(fs, 'rename', async (...args: Parameters<typeof fs.rename>) => { renames++; return rename(...args); });
+  try {
+    f.run.result = handoffReport();
+    f.runtime.notify(f.run, false);
+    assert.deepEqual(await fs.readdir(f.directory), []);
+    f.runtime.notify(f.run); f.runtime.notify(f.run);
+    await f.service.close();
+    const file = path.join(f.directory, `${f.id}.${f.run.id}.draft.json`), original = await fs.readFile(file, 'utf8');
+    const saved = JSON.parse(original);
+    assert.deepEqual(saved.draft, draft); assert.equal(saved.runId, f.run.id);
+    assert.equal(saved.recordId, f.id); assert.match(saved.sourceFingerprint, /^[a-f0-9]{64}$/);
+    assert.equal(renames, 1); assert.equal(generations, 0); assert.deepEqual(f.reads, []); assert.deepEqual(f.writes, []);
+    assert.equal(f.service.state(f.id), undefined); assert.equal(f.runtime.listeners.size, 0);
+    f.run.result = handoffReport({ ...draft, impact: '新的历史结果' });
+    f.runtime.notify(f.run);
+    const runtime = runtimeFixture();
+    restored = await createJiraFixHandoffService(f.directory, f.find, f.source, async () => { generations++; return draft; }, runtime);
+    await restored.close();
+    assert.equal(await fs.readFile(file, 'utf8'), original);
+    assert.equal(renames, 1); assert.equal(generations, 0); assert.deepEqual(f.reads, []); assert.deepEqual(f.writes, []);
+  } finally { await restored?.close(); await f.close(); }
+});
+test('自动报告保留同轮显式生成稿，无报告和无效报告不改写已有文件', async () => {
+  const edited = { ...draft, cause: '用户已确认的补充原因' };
+  const f = await fixture(async () => edited);
+  try {
+    f.run.result = handoffReport();
+    await f.service.generate(f.id, { runId: f.run.id, draft: {}, feedback: '', authorization: 'generate-jira-comment' });
+    const file = path.join(f.directory, `${f.id}.${f.run.id}.draft.json`), original = await fs.readFile(file, 'utf8');
+    f.runtime.notify(f.run);
+    assert.deepEqual((await f.service.context(f.id)).draft?.draft, edited);
+    for (const result of ['只有普通结果', '```delivery-report\n{"version":1,"jiraHandoff":{}}\n```', `${handoffReport()}\n${handoffReport()}`]) {
+      f.run.result = result; f.runtime.notify(f.run);
+      await f.service.context(f.id);
+      assert.equal(await fs.readFile(file, 'utf8'), original);
+    }
+    assert.deepEqual(await fs.readdir(f.directory), [path.basename(file)]); assert.deepEqual(f.writes, []);
+  } finally { await f.close(); }
+});
+test('自动交接只接受当前未暂停修复轮次，错误来源和迟到轮次均不保存', async () => {
+  const f = await fixture(async () => { throw new Error('不能调用模型'); });
+  try {
+    f.run.result = handoffReport();
+    f.runtime.notify({ ...f.run, task: { ...f.run.task!, sourceId: `requirement:${f.id}` } });
+    f.runtime.notify({ ...f.run, task: { ...f.run.task!, sourceId: `jira-fix:${randomUUID()}` } });
+    f.runtime.notify({ ...f.run, id: randomUUID() });
+    f.run.pausedForEdit = true; f.runtime.notify(f.run);
+    await new Promise(resolve => setImmediate(resolve));
+    f.run.pausedForEdit = false; f.run.status = 'running'; f.runtime.notify(f.run);
+    f.run.status = 'completed'; f.runtime.notify(f.run); f.run.id = randomUUID();
+    await f.service.close();
+    assert.deepEqual(await fs.readdir(f.directory), []); assert.deepEqual(f.reads, []); assert.deepEqual(f.writes, []);
+  } finally { await f.close(); }
+});
+test('自动保存与显式生成、状态和提交互斥，打开交接及关闭服务等待落盘', async t => {
+  const f = await fixture(async () => { throw new Error('不能调用模型'); });
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; }), writing = new Promise<void>(resolve => { entered = resolve; });
+  const file = path.join(f.directory, `${f.id}.${f.run.id}.draft.json`), writeFile = fs.writeFile;
+  t.mock.method(fs, 'writeFile', async (...args: Parameters<typeof fs.writeFile>) => {
+    await writeFile(...args);
+    if (args[0] === `${file}.tmp`) { entered(); await gate; }
+  });
+  try {
+    f.run.result = handoffReport(); f.runtime.notify(f.run); await writing;
+    await assert.rejects(f.service.generate(f.id, { runId: f.run.id, draft: {}, feedback: '', authorization: 'generate-jira-comment' }), /自动同步/);
+    await assert.rejects(f.service.applyStatus(f.id, statusInput(f.run.id)), /正在处理/);
+    await assert.rejects(f.service.submit(f.id, f.input), /草稿同步/);
+    let opened = false, closed = false;
+    const context = f.service.context(f.id).then(value => { opened = true; return value; });
+    const closing = f.service.close().then(() => { closed = true; });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(opened, false); assert.equal(closed, false); assert.equal(f.runtime.listeners.size, 0);
+    release();
+    assert.deepEqual((await context).draft?.draft, draft); await closing;
+    assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')).draft, draft); assert.deepEqual(f.writes, []);
+  } finally { release(); await f.close(); }
+});
+test('状态请求先于最终完成通知时，自动草稿等待状态成功或失败收尾且关闭不丢报告', async t => {
+  for (const failStatus of [false, true]) await t.test(failStatus ? '状态请求失败' : '状态请求成功', async () => {
+    const f = await fixture(async () => { throw new Error('不能调用模型'); });
+    let release!: () => void, entered!: () => void, firstRead = true;
+    const gate = new Promise<void>(resolve => { release = resolve; }), reading = new Promise<void>(resolve => { entered = resolve; });
+    const readIssue = f.source.readIssue;
+    f.source.readIssue = async key => {
+      if (firstRead) {
+        firstRead = false; entered(); await gate;
+        if (failStatus) throw new Error('模拟状态请求读取失败');
+      }
+      return readIssue(key);
+    };
+    try {
+      f.run.result = handoffReport(); f.runtime.notify(f.run, false);
+      const status = Promise.allSettled([f.service.applyStatus(f.id, statusInput(f.run.id))]);
+      await reading; f.runtime.notify(f.run);
+      let closed = false;
+      const closing = f.service.close().then(() => { closed = true; });
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(closed, false);
+      assert.equal((await fs.readdir(f.directory)).some(name => name.endsWith('.draft.json')), false);
+      release();
+      const [outcome] = await status;
+      assert.equal(outcome!.status, failStatus ? 'rejected' : 'fulfilled');
+      await closing;
+      const saved = JSON.parse(await fs.readFile(path.join(f.directory, `${f.id}.${f.run.id}.draft.json`), 'utf8'));
+      assert.deepEqual(saved.draft, draft); assert.equal(f.runtime.listeners.size, 0);
+      assert.deepEqual(f.writes, failStatus ? [] : ['transition']);
+    } finally { release(); await f.close(); }
+  });
+});
+test('显式生成进行中和已有交接记录时，自动完成事件不覆盖或另建草稿', async () => {
+  let finish!: (value: JiraCommentDraft) => void, entered!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const f = await fixture(() => new Promise(resolve => { finish = resolve; entered(); }));
+  try {
+    f.run.result = handoffReport();
+    const generating = f.service.generate(f.id, { runId: f.run.id, draft: {}, feedback: '', authorization: 'generate-jira-comment' });
+    await started; f.runtime.notify(f.run);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(await fs.readdir(f.directory), []);
+    finish({ ...draft, impact: '显式生成内容' }); await generating;
+    const file = path.join(f.directory, `${f.id}.${f.run.id}.draft.json`), original = await fs.readFile(file, 'utf8');
+    await f.service.submit(f.id, f.input);
+    f.run.result = handoffReport({ ...draft, impact: '迟到报告' }); f.runtime.notify(f.run);
+    await f.service.close();
+    assert.equal(await fs.readFile(file, 'utf8'), original);
+  } finally { finish?.(draft); await f.close(); }
+});
+test('自动草稿落盘失败保留旧稿，清理临时文件且不触发外部写入', async t => {
+  const f = await fixture(async () => draft);
+  try {
+    await f.service.generate(f.id, { runId: f.run.id, draft: {}, feedback: '', authorization: 'generate-jira-comment' });
+    const file = path.join(f.directory, `${f.id}.${f.run.id}.draft.json`), original = await fs.readFile(file, 'utf8');
+    const rename = fs.rename;
+    t.mock.method(fs, 'rename', async (...args: Parameters<typeof fs.rename>) => {
+      if (args[1] === file) throw new Error('模拟自动草稿保存失败');
+      return rename(...args);
+    });
+    f.run.result = handoffReport(); f.runtime.notify(f.run); await f.service.close();
+    assert.equal(await fs.readFile(file, 'utf8'), original);
+    assert.deepEqual(await fs.readdir(f.directory), [path.basename(file)]); assert.deepEqual(f.writes, []);
+  } finally { await f.close(); }
+});
+test('自动保存期间来源改变不保存旧报告，新轮完成事件排队后仍能保存', async t => {
+  const f = await fixture(async () => { throw new Error('不能调用模型'); });
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; }), writing = new Promise<void>(resolve => { entered = resolve; });
+  const oldFile = path.join(f.directory, `${f.id}.${f.run.id}.draft.json`), writeFile = fs.writeFile;
+  t.mock.method(fs, 'writeFile', async (...args: Parameters<typeof fs.writeFile>) => {
+    await writeFile(...args);
+    if (args[0] === `${oldFile}.tmp`) { entered(); await gate; }
+  });
+  try {
+    f.run.result = handoffReport(); f.runtime.notify(f.run); await writing;
+    f.run.id = randomUUID(); f.run.result = handoffReport({ ...draft, impact: '新一轮实际范围' });
+    f.runtime.notify(f.run); release(); await f.service.close();
+    const file = path.join(f.directory, `${f.id}.${f.run.id}.draft.json`);
+    assert.deepEqual(await fs.readdir(f.directory), [path.basename(file)]);
+    assert.equal(JSON.parse(await fs.readFile(file, 'utf8')).draft.impact, '新一轮实际范围');
+    assert.deepEqual(f.reads, []); assert.deepEqual(f.writes, []);
+  } finally { release(); await f.close(); }
+});
+
+test('生成及按反馈重写携带证据和手改稿，保存本地草稿但不发布 Jira、不保存交接状态', async () => {
   const seen: Parameters<JiraCommentGenerator>[0][] = [];
   const f = await fixture(async evidence => { seen.push(evidence); return { ...draft, impact: evidence.feedback || draft.impact }; });
   try {
@@ -199,10 +376,71 @@ test('生成及按反馈重写携带证据和手改稿，不发布 Jira、不保
     assert.equal((await f.service.generate(f.id, { ...input, draft: modified, feedback: '还影响新增页面' })).impact, '还影响新增页面');
     assert.deepEqual(seen[1]!.draft, modified); assert.equal(seen[0]!.result, f.run.result);
     assert.equal(seen[0]!.issue.key, 'TEST-123'); assert.deepEqual(f.writes, []);
-    assert.equal(f.service.state(f.id), undefined); assert.deepEqual(await fs.readdir(f.directory), []);
+    assert.equal(f.service.state(f.id), undefined);
+    const saved = (await f.service.context(f.id)).draft!;
+    assert.equal(saved.recordId, f.id); assert.equal(saved.runId, f.run.id);
+    assert.equal(saved.draft.impact, '还影响新增页面');
+    assert.deepEqual(await fs.readdir(f.directory), [`${f.id}.${f.run.id}.draft.json`]);
     await assert.rejects(f.service.generate(f.id, { ...input, runId: randomUUID() }), /新一轮/);
     await f.service.submit(f.id, f.input);
     await assert.rejects(f.service.generate(f.id, input), /已有交接记录/);
+  } finally { await f.close(); }
+});
+test('服务重载恢复生成稿，新轮次或相同轮次结果变化不套用旧稿，读取不生成或写 Jira', async () => {
+  let calls = 0;
+  const f = await fixture(async () => { calls++; return draft; });
+  let restored: Awaited<ReturnType<typeof createJiraFixHandoffService>> | undefined;
+  try {
+    await f.service.generate(f.id, { runId: f.run.id, draft: {}, feedback: '', authorization: 'generate-jira-comment' });
+    await f.service.close();
+    restored = await createJiraFixHandoffService(f.directory, f.find, f.source, async () => { throw new Error('不应自动生成'); });
+    assert.deepEqual((await restored.context(f.id)).draft?.draft, draft);
+    const runId = f.run.id;
+    f.run.id = randomUUID(); assert.equal((await restored.context(f.id)).draft, undefined);
+    f.run.id = runId; f.run.result += '；新增验证';
+    assert.equal((await restored.context(f.id)).draft, undefined);
+    assert.equal(calls, 1); assert.deepEqual(f.writes, []);
+  } finally { await restored?.close(); await f.close(); }
+});
+test('生成失败、取消和来源变化保留原草稿文件，成功后才原子替换', async () => {
+  let mode = 'success';
+  let controller = new AbortController();
+  const f = await fixture(async (_evidence, signal) => {
+    if (mode === 'fail') throw new Error('模拟模型失败');
+    if (mode === 'change') f.run.result += '；结果已修正';
+    if (mode === 'cancel') { controller.abort(); signal.throwIfAborted(); }
+    return { ...draft, impact: mode };
+  });
+  try {
+    const input = { runId: f.run.id, draft: {}, feedback: '', authorization: 'generate-jira-comment' };
+    await f.service.generate(f.id, input);
+    const file = path.join(f.directory, `${f.id}.${f.run.id}.draft.json`), original = await fs.readFile(file, 'utf8');
+    for (const value of ['fail', 'cancel', 'change']) {
+      mode = value; controller = new AbortController(); await assert.rejects(f.service.generate(f.id, input, controller.signal));
+      assert.equal(await fs.readFile(file, 'utf8'), original);
+      assert.deepEqual(await fs.readdir(f.directory), [path.basename(file)]);
+    }
+    mode = 'success'; await f.service.generate(f.id, input);
+    assert.deepEqual((await f.service.context(f.id)).draft?.draft, { ...draft, impact: 'success' });
+    assert.deepEqual(f.writes, []); assert.equal(f.service.state(f.id), undefined);
+  } finally { await f.close(); }
+});
+test('草稿落盘失败保留上一稿且不留下半写文件', async t => {
+  const f = await fixture(async () => draft);
+  try {
+    const input = { runId: f.run.id, draft: {}, feedback: '', authorization: 'generate-jira-comment' };
+    await f.service.generate(f.id, input);
+    const file = path.join(f.directory, `${f.id}.${f.run.id}.draft.json`), original = await fs.readFile(file, 'utf8');
+    const rename = fs.rename;
+    t.mock.method(fs, 'rename', async (...args: Parameters<typeof fs.rename>) => {
+      if (args[1] === file) throw new Error('模拟磁盘写入失败');
+      return rename(...args);
+    });
+    await assert.rejects(f.service.generate(f.id, input), /模拟磁盘写入失败/);
+    assert.equal(await fs.readFile(file, 'utf8'), original);
+    assert.deepEqual((await f.service.context(f.id)).draft?.draft, draft);
+    assert.deepEqual(await fs.readdir(f.directory), [path.basename(file)]);
+    assert.deepEqual(f.writes, []);
   } finally { await f.close(); }
 });
 test('生成中的重复请求和发布被阻止；完成时再次核对修复轮次', async () => {
@@ -215,6 +453,7 @@ test('生成中的重复请求和发布被阻止；完成时再次核对修复�
     await assert.rejects(f.service.submit(f.id, f.input), /等待评论生成/);
     f.run.id = randomUUID(); finish(draft);
     await assert.rejects(pending, /新一轮/); assert.deepEqual(f.writes, []);
+    assert.deepEqual(await fs.readdir(f.directory), []);
   } finally { await f.close(); }
 });
 test('旧占位草稿可以重写，生成结果禁止占位文字并保留未验证事实', async () => {

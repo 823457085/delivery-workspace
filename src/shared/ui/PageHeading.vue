@@ -1,12 +1,18 @@
 <script setup lang="ts">
 // 操作栏自行管理对齐与留白，兼容独立页面和 Agent 内嵌面板，不依赖旧 Hub 外层样式。
+import { inject } from 'vue';
+import { agentWorkspaceContext } from '../agent-workspace-context';
+const workspace = inject(agentWorkspaceContext, undefined);
+const inWorkspaceHeader = !!workspace;
 defineProps<{ title: string; description: string; loading?: boolean; updatedAt?: number }>();
 defineEmits<{ refresh: [] }>();
 </script>
 <template>
+  <Teleport defer :to="inWorkspaceHeader ? '#workspace-panel-toolbar' : 'body'" :disabled="!inWorkspaceHeader">
   <header class="page-heading" :aria-label="title">
     <div class="heading-actions"><slot /><el-button :loading="loading" @click="$emit('refresh')">刷新数据</el-button></div>
   </header>
+  </Teleport>
 </template>
 
 <style scoped>

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { createAgentAttachmentStore } from '../server/agent-attachments.js';
+import { createAgentAttachmentStore, maxAgentAttachmentBytes } from '../server/agent-attachments.js';
 
 const onePixelPng = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZpQAAAABJRU5ErkJggg==';
 
@@ -65,5 +65,32 @@ test('Agent 会话也支持非 XLSX 文件，并保留文件扩展名供 Agent �
     assert.equal(uploaded.mimeType, 'text/plain');
     assert.match((await store.resolve([uploaded.id]))[0].filePath, /\.txt$/);
     assert.equal((await store.read(uploaded.id)).content.toString(), 'report content');
+  } finally { await fs.rm(directory, { recursive: true, force: true }); }
+});
+
+test('Agent 附件支持超过 10 MB 至 100 MB，超限拒绝且不遗留文件', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-large-attachment-test-'));
+  const store = await createAgentAttachmentStore(directory);
+  try {
+    assert.equal(maxAgentAttachmentBytes, 100 * 1024 * 1024);
+    for (const size of [10 * 1024 * 1024 + 1, maxAgentAttachmentBytes]) {
+      const content = Buffer.alloc(size, 0xa5);
+      content[0] = 0;
+      content[size - 1] = 0xff;
+      const uploaded = await store.upload({ name: 'large.bin', mimeType: 'application/octet-stream', data: content.toString('base64') });
+      assert.equal(uploaded.size, size);
+      const [resolved] = await store.resolve([uploaded.id]);
+      assert.equal(resolved.attachment.size, size);
+      assert.equal((await fs.readFile(resolved.filePath)).equals(content), true);
+      const read = await store.read(uploaded.id);
+      assert.equal(read.attachment.size, size);
+      assert.equal(read.content.equals(content), true);
+      await store.remove([uploaded.id]);
+      await assert.rejects(store.read(uploaded.id), /ENOENT/);
+      assert.deepEqual(await fs.readdir(directory), []);
+    }
+    await assert.rejects(store.upload({ name: 'too-large.bin', mimeType: 'application/octet-stream',
+      data: Buffer.alloc(maxAgentAttachmentBytes + 1, 0xa5).toString('base64') }), /不能超过 100 MB/);
+    assert.deepEqual(await fs.readdir(directory), []);
   } finally { await fs.rm(directory, { recursive: true, force: true }); }
 });

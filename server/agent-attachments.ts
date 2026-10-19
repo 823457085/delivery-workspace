@@ -6,10 +6,11 @@
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { AgentAttachment, AgentImageMimeType } from '../shared/agent-runtime.js';
+import { maxAgentAttachmentBytes, type AgentAttachment, type AgentImageMimeType } from '../shared/agent-runtime.js';
+
+export { maxAgentAttachmentBytes } from '../shared/agent-runtime.js';
 
 export const maxAgentAttachmentCount = 6;
-export const maxAgentAttachmentBytes = 10 * 1024 * 1024;
 const xlsxMimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 const mimePattern = /^[a-z0-9.+-]+\/[a-z0-9.+-]+$/;
 const idPattern = /^[0-9a-f-]{36}$/;
@@ -60,7 +61,7 @@ function decodeBase64(value: string) {
   if (!source || !/^[A-Za-z0-9+/]*={0,2}$/.test(source)) throw new Error('附件数据格式不正确');
   const buffer = Buffer.from(source, 'base64');
   if (!buffer.length) throw new Error('附件内容为空');
-  if (buffer.length > maxAgentAttachmentBytes) throw new Error('单个附件不能超过 10 MB');
+  if (buffer.length > maxAgentAttachmentBytes) throw new Error(`单个附件不能超过 ${maxAgentAttachmentBytes / 1024 / 1024} MB`);
   return buffer;
 }
 

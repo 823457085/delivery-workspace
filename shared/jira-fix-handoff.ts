@@ -1,11 +1,22 @@
 /** 交接独立于修复执行：用户确认四段评论和工作流目标后才允许写 Jira。 */
 import { z } from 'zod';
+import { readDeliveryReport } from './delivery-report.js';
 
 const draftText = z.string().trim().min(1).max(6000);
 const text = z.string().trim().min(1, '请填写完整交接说明').max(6000)
   .refine(value => !/【待开发(?:填写|确认)】/.test(value), '请先确认并补全交接说明');
 export const jiraCommentDraftSchema = z.object({ cause: text, impact: text, suggestion: text, conclusion: text }).strict();
 export type JiraCommentDraft = z.infer<typeof jiraCommentDraftSchema>;
+const jiraHandoffReportSchema = z.object({ version: z.literal(1), jiraHandoff: jiraCommentDraftSchema,
+  validationEvidence: z.unknown().optional() }).strict();
+export function readJiraHandoffReport(result: string): JiraCommentDraft {
+  return jiraHandoffReportSchema.parse(readDeliveryReport(result)).jiraHandoff;
+}
+export const jiraCommentSavedDraftSchema = z.object({
+  recordId: z.uuid(), runId: z.uuid(), sourceFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+  draft: jiraCommentDraftSchema, updatedAt: z.iso.datetime(),
+}).strict();
+export type JiraCommentSavedDraft = z.infer<typeof jiraCommentSavedDraftSchema>;
 const transitionFields = z.record(z.string().regex(/^[a-zA-Z][a-zA-Z0-9_]{0,99}$/), z.iso.date()).optional();
 export const jiraCommentGenerateSchema = z.object({
   // 旧草稿允许带占位文字参与重写，生成结果与正式评论均不允许保留。
@@ -59,6 +70,7 @@ export interface JiraFixHandoffState {
 }
 export interface JiraFixHandoffContext {
   issue: JiraHandoffIssue; transitions: JiraHandoffTransition[]; runId: string; result: string;
+  draft?: JiraCommentSavedDraft;
   handoff?: JiraFixHandoffState;
   statuses?: JiraHandoffStatus[];
   statusWarning?: string;

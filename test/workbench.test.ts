@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { AutomationData, JiraIssue } from '../shared/hub';
+import type { AutomationData, CatchupData, JiraIssue } from '../shared/hub';
 import type { ExecutionDashboard } from '../shared/design-execution';
 import { emptyArtifacts } from '../shared/design-execution';
 import { deliveryRecords, forIssue, hasDeliveryResult, plannedToday, recordGroup, recordMatchesFilter, threadUrl } from '../src/features/workbench/domain';
@@ -57,6 +57,18 @@ test('待审、已合入和执行完成独立分类，空来源不产生演示�
   assert.equal(recordGroup('completed'), 'other');
   assert.equal(recordGroup('MERGED'), 'other');
   assert.deepEqual(deliveryRecords(), []);
+});
+test('追平尚未创建会话时 session 为 null，不阻止已有交付记录聚合', () => {
+  const catchup = { requirements: [
+    { id: 'not-started', title: '未开始', session: null },
+    { id: 'started', title: '已有会话', session: { status: 'completed', jiraKey: 'APEX-900', threadId,
+      workspacePath: '/isolated', branch: 'feature/APEX-900', result: '已有结果', error: '', updatedAt: '2026-10-16T01:00:00Z' } },
+  ] } as unknown as CatchupData;
+  const records = deliveryRecords(automation, { runs: [] } as unknown as ExecutionDashboard, catchup);
+  assert.equal(records.length, automation.jobs.length + 1);
+  assert.equal(records.some(record => record.id === 'catchup:not-started'), false);
+  assert.equal(forIssue(records, 'APEX-900')[0].result, '已有结果');
+  assert.equal(forIssue(records, 'APEX-295').length, 2);
 });
 test('工作台默认待处理只聚合运行、待审和阻塞，结果判定不依赖会话', () => {
   const records = deliveryRecords(automation);

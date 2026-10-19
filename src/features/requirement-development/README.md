@@ -15,4 +15,8 @@
 
 服务记录在 `.data/requirement-development/`，同一 requestId 重试复用已有结果；重启不会自动重放中断的准备操作。失败保留新目录，核实后可修改输入重新准备。需求开发页面不再挂载旧方案流程，已有历史数据保持不变，不迁移、不自动重跑。
 
+当前轮运行与产物保存成功后，会自动同步有效的 `delivery-report` 阶段报告和关联 Jira；不覆盖人工进度、不自动导入历史轮次，也不写人工验收结论。报告缺失或无效时保留原进度并提示手动核对；已有续聊排队时，上一轮报告不会覆盖当前轮进度。手动记录和显式导入入口仍保留。
+
+同一报告的 `validationEvidence` 用于打开交付验收时预填当前轮测试、浏览器、远端及部署证据；必须先完成运行与最终落盘。人工同源记录优先，旧轮证据不复用，保存与验收结论仍需人工确认。该字段无效不会影响合法阶段报告导入。
+
 验证：`tsx --test test/requirement-development.test.ts test/agent-conversation-actions.test.ts test/agent-workspace-navigation.test.ts`。使用临时 Git 仓库和注入的测试 Agent，不操作真实 Jira。

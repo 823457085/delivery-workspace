@@ -13,7 +13,7 @@ defineExpose({ openSession: (id: string) => runtime.value?.openSession(id) || fa
 
 <template>
   <AgentRuntimePanel ref="runtime" :workbench-open="workbenchOpen" @chat="emit('chat')" @ready="emit('ready', $event)">
-    <template #navigation><slot name="navigation" /></template>
+    <template #navigation="context"><slot name="navigation" v-bind="context" /></template>
     <template #workbench="context"><slot name="workbench" v-bind="context" /></template>
   </AgentRuntimePanel>
 </template>

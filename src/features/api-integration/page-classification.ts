@@ -38,7 +38,6 @@ const pages: Record<string, InterfacePage> = {
   '商家功能配置': on('运营管理', '商家详情 · 功能配置', '/OperateManage/MerchantDetail'),
   '商家 API 凭证': unmapped('运营管理', '商家 API 凭证 · 待定位'),
   'POS 消息配置': on('系统配置', '错误码提示文案配置', '/SystemConfig/GlobalConfig/PosMessage'),
-  '带屏设备配置': unmapped('系统配置', '带屏设备配置 · 待定位'),
   'POS报错时间': on('系统配置', 'POS 报错时间', '/SystemConfig/GlobalConfig/PosErrorTime'),
   '商品互斥': unmapped('客服管理', '商品互斥 · 待定位'),
   '点位管理': on('运营管理', '商家详情 · 点位管理', '/OperateManage/MerchantDetail'),

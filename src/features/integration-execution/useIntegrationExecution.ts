@@ -9,7 +9,7 @@ import { agentWorkspaceContext } from '../../shared/agent-workspace-context';
 import { useAgentRuntimeSnapshot } from '../../shared/useAgentRuntimeSnapshot';
 import { buildReviewCatalog } from '../api-integration/review-catalog';
 import { readIntegrationCatalog, useIntegrationCatalog } from '../api-integration/useIntegrationCatalog';
-import { activeExecution, buildExecutionTasks, createExecutionInput, executionIssueDeferral, executionRequest, progressUrl, taskInterfaces,
+import { activeExecution, buildExecutionTasks, createExecutionInput, currentExecutionProgress, executionIssueDeferral, executionRequest, progressUrl, taskInterfaces,
   type ExecutionPlan, type ExecutionProgress, type ExecutionRequest } from './execution-plan';
 
 async function read<T>(url: string, signal?: AbortSignal): Promise<T> {
@@ -44,7 +44,7 @@ export function useIntegrationExecution() {
   const runs = computed(() => runtime.data.value?.runs.filter(run => executionRequest(run)).sort((a, b) => b.createdAt.localeCompare(a.createdAt)) ?? []);
   const active = computed(() => runs.value.filter(run => ['queued', 'running'].includes(run.status)));
   const tasks = computed(() => buildExecutionTasks(catalog.value, reviews.data.value ?? {}, snapshot.data.value?.plan.automation.assignee).map(task => {
-    const ledger = snapshot.data.value?.ledgers[task.id];
+    const ledger = currentExecutionProgress(snapshot.data.value?.ledgers[task.id]);
     const items = taskInterfaces(task, ledger, reviews.data.value ?? {});
     const executable = items.filter(item => item.category !== '暂不联调');
     const run = activeExecution(runs.value, task.id) || runs.value.find(entry => executionRequest(entry)?.taskId === task.id);

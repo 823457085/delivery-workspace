@@ -7,7 +7,7 @@ const settings = { enabled: true, weekday: 5, time: '17:30' };
 test('周报按周五 17:30 自动调度，并且同一计划只执行一次', () => {
   const before = new Date(2026, 8, 18, 17, 0);
   assert.equal(getDueWeeklyReportSlot(settings, '', before), '2026-09-11 17:30');
-  assert.match(getNextWeeklyReportRun(settings, before) || '', /^2026-09-18T09:30:00\.000Z$/);
+  assert.equal(getNextWeeklyReportRun(settings, before), new Date(2026, 8, 18, 17, 30).toISOString());
 
   const after = new Date(2026, 8, 18, 18, 0);
   assert.equal(getDueWeeklyReportSlot(settings, '2026-09-11 17:30', after), '2026-09-18 17:30');

@@ -1,22 +1,26 @@
-/** 修复与 Jira 交接分离；逐步持久化外部写入结果，超时/重启不盲目重放评论。 */
+/** 修复与 Jira 交接分离；未提交草稿按运行及来源保存，外部写入仍逐步持久化，超时/重启不盲目重放。 */
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import type { AgentRun } from '../shared/agent-runtime.js';
 import { jiraIssueKey, type JiraFixRecord } from '../shared/jira-fix.js';
 import { jiraFixHandoffInputSchema, jiraFixHandoffComment, type JiraFixHandoffState, type JiraFixHandoffContext,
-  jiraCommentGenerateSchema, jiraCommentDraftSchema, jiraStatusChangeInputSchema, jiraTestingPath, validateJiraTransitionFields, type JiraStatusChangeState, type JiraCommentDraft, type JiraHandoffStep } from '../shared/jira-fix-handoff.js';
+  jiraCommentGenerateSchema, jiraCommentDraftSchema, jiraCommentSavedDraftSchema, readJiraHandoffReport, jiraStatusChangeInputSchema, jiraTestingPath, validateJiraTransitionFields, type JiraStatusChangeState, type JiraCommentDraft, type JiraHandoffStep } from '../shared/jira-fix-handoff.js';
 import type { JiraHandoffSource } from './jira-handoff-client.js';
 import { generateJiraComment, type JiraCommentGenerator } from './jira-comment-generator.js';
 
 export async function createJiraFixHandoffService(directory: string,
   find: (id: string) => { record: JiraFixRecord; run?: AgentRun; history?: { objective: string; result: string; status: string }[] } | undefined,
-  source: JiraHandoffSource, generator: JiraCommentGenerator = generateJiraComment) {
+  source: JiraHandoffSource, generator: JiraCommentGenerator = generateJiraComment,
+  runtime?: { subscribe(subscriber: (revision: number, run?: AgentRun, finalized?: boolean) => void): () => void }) {
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
   const states = new Map<string, JiraFixHandoffState>();
   const pending = new Map<string, Promise<JiraFixHandoffState>>();
   const statusPending = new Map<string, Promise<JiraStatusChangeState>>();
   const statusChanges = new Map<string, JiraStatusChangeState[]>();
   const generating = new Map<string, { controller: AbortController; task: Promise<JiraCommentDraft> }>();
+  const synchronizing = new Map<string, Promise<void>>();
+  let closing = false;
   for (const file of await fs.readdir(directory)) if (/^[0-9a-f-]{36}\.status\.json$/.test(file)) {
     const changes = JSON.parse(await fs.readFile(path.join(directory, file), 'utf8')) as JiraStatusChangeState[];
     for (const state of changes) if (state.status === 'submitting') {
@@ -45,6 +49,49 @@ export async function createJiraFixHandoffService(directory: string,
       throw new Error('修复会话尚未结束或已有新一轮执行，请刷新后核对结果');
     }
     return { ...found, run: found.run, key: jiraIssueKey(found.record.input.issueKey) };
+  }
+  function fingerprint(found: ReturnType<typeof ready>) {
+    return createHash('sha256').update(JSON.stringify({ runId: found.run.id, result: found.run.result,
+      history: found.history || [], notes: found.record.input.notes || '', description: found.record.issue?.description || '' })).digest('hex');
+  }
+  const draftFile = (id: string, runId: string) => path.join(directory, `${id}.${runId}.draft.json`);
+  async function readDraft(id: string, runId: string) {
+    try {
+      const saved = jiraCommentSavedDraftSchema.parse(JSON.parse(await fs.readFile(draftFile(id, runId), 'utf8')));
+      return saved.recordId === id && saved.runId === runId && saved.sourceFingerprint === fingerprint(ready(id, runId)) ? saved : undefined;
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  }
+  async function saveDraft(id: string, runId: string, sourceFingerprint: string, draft: JiraCommentDraft, signal?: AbortSignal) {
+    const saved = jiraCommentSavedDraftSchema.parse({ recordId: id, runId, sourceFingerprint, draft, updatedAt: new Date().toISOString() });
+    const file = draftFile(id, runId), temporary = `${file}.tmp`;
+    try {
+      await fs.writeFile(temporary, JSON.stringify(saved), { mode: 0o600 });
+      signal?.throwIfAborted();
+      if (fingerprint(ready(id, runId)) !== sourceFingerprint) throw new Error('修复结果已变化，生成草稿未保存，请重新核对后生成');
+      await fs.rename(temporary, file);
+    } finally { await fs.rm(temporary, { force: true }); }
+  }
+  // 新完成报告复用本地草稿存储；串行处理并保护已有稿，不再调用模型或 Jira 生成同一份交接。
+  function synchronizeDraft(id: string, runId: string) {
+    const previous = synchronizing.get(id) || Promise.resolve();
+    const statusChange = statusPending.get(id);
+    const task = previous.catch(() => undefined).then(async () => {
+      // 状态请求可能早于最终完成通知；等待它收尾，避免唯一一次报告事件被跳过。
+      await statusChange?.catch(() => undefined);
+      if (states.has(id) || pending.has(id) || statusPending.has(id) || generating.has(id)) return;
+      const current = find(id);
+      if (!current?.run || current.record.id !== id || current.run.id !== runId
+        || current.run.status !== 'completed' || current.run.pausedForEdit) return;
+      const found = ready(id, runId), sourceFingerprint = fingerprint(found);
+      let draft: JiraCommentDraft;
+      try { draft = readJiraHandoffReport(found.run.result); } catch { return; }
+      if (await readDraft(id, runId)) return;
+      await saveDraft(id, runId, sourceFingerprint, draft);
+    });
+    synchronizing.set(id, task);
+    void task.finally(() => { if (synchronizing.get(id) === task) synchronizing.delete(id); }).catch(error => {
+      console.error(`修复 ${id} 的交接报告自动保存失败，已有草稿已保留：`, error instanceof Error ? error.message : error);
+    });
   }
   async function saveStatus(id: string) {
     const file = path.join(directory, `${id}.status.json`);
@@ -124,12 +171,17 @@ export async function createJiraFixHandoffService(directory: string,
   }
   async function context(id: string): Promise<JiraFixHandoffContext> {
     const { key, run } = ready(id);
+    const runId = run.id;
     const [issue, transitions, catalog] = await Promise.all([source.readIssue(key), source.transitions(key),
       source.statuses(key).then(statuses => ({ statuses, statusWarning: '' })).catch(() => ({
         statuses: undefined, statusWarning: '完整状态读取失败，当前仅展示可直接流转的状态；请重新打开后重试。',
       }))]);
+    await synchronizing.get(id)?.catch(() => undefined);
+    const draft = await readDraft(id, runId);
+    const current = ready(id, runId);
     return { issue, transitions, ...catalog, testingPath: jiraTestingPath(issue, catalog.statuses || [], transitions),
-      runId: run.id, result: run.result, handoff: states.get(id), statusChange: statusChanges.get(id)?.at(-1) };
+      runId, result: current.run.result, draft: draft?.sourceFingerprint === fingerprint(current) ? draft : undefined,
+      handoff: states.get(id), statusChange: statusChanges.get(id)?.at(-1) };
   }
   async function execute(id: string, raw: unknown): Promise<JiraFixHandoffState> {
     const input = jiraFixHandoffInputSchema.parse(raw);
@@ -191,19 +243,27 @@ export async function createJiraFixHandoffService(directory: string,
     await save(id, state);
     return state;
   }
+  const unsubscribe = runtime?.subscribe((_revision, run, finalized) => {
+    const sourceId = run?.task?.sourceId;
+    if (closing || !finalized || !run || run.status !== 'completed' || !sourceId?.startsWith('jira-fix:')) return;
+    synchronizeDraft(sourceId.slice('jira-fix:'.length), run.id);
+  });
   return {
     context, state: (id: string) => states.get(id),
     applyStatus(id: string, raw: unknown) {
-      if (pending.has(id) || statusPending.has(id) || generating.has(id)) return Promise.reject(new Error('该事项正在处理，请稍候再修改状态'));
+      if (pending.has(id) || statusPending.has(id) || generating.has(id) || synchronizing.has(id)) return Promise.reject(new Error('该事项正在处理，请稍候再修改状态'));
       const task = changeStatus(id, raw).finally(() => statusPending.delete(id));
       statusPending.set(id, task); return task;
     },
     async generate(id: string, raw: unknown, signal?: AbortSignal) {
       const input = jiraCommentGenerateSchema.parse(raw);
-      const { record, run, history, key } = ready(id, input.runId);
+      const found = ready(id, input.runId);
+      const { record, run, history, key } = found;
+      const sourceFingerprint = fingerprint(found);
       if (states.has(id) || pending.has(id)) throw new Error('已有交接记录，不能重新生成已确认的评论');
       if (statusPending.has(id)) throw new Error('状态正在生效，请稍候');
       if (generating.has(id)) throw new Error('评论正在生成，请稍候');
+      if (synchronizing.has(id)) throw new Error('交接草稿正在自动同步，请稍候');
       const controller = new AbortController();
       const abort = () => controller.abort();
       signal?.addEventListener('abort', abort, { once: true });
@@ -219,7 +279,7 @@ export async function createJiraFixHandoffService(directory: string,
           draft: input.draft, feedback: input.feedback,
         }, controller.signal));
         controller.signal.throwIfAborted();
-        ready(id, input.runId);
+        await saveDraft(id, input.runId, sourceFingerprint, draft, controller.signal);
         return draft;
       })().finally(() => { generating.delete(id); signal?.removeEventListener('abort', abort); });
       generating.set(id, { controller, task });
@@ -228,13 +288,15 @@ export async function createJiraFixHandoffService(directory: string,
     submit(id: string, raw: unknown) {
       if (statusPending.has(id)) return Promise.reject(new Error('状态正在生效，请稍候'));
       if (generating.has(id)) return Promise.reject(new Error('请等待评论生成完成并预览后再提交'));
+      if (synchronizing.has(id)) return Promise.reject(new Error('请等待交接草稿同步完成并预览后再提交'));
       if (pending.has(id)) return Promise.reject(new Error('该交接正在提交，请勿重复操作'));
       const task = execute(id, raw).finally(() => pending.delete(id));
       pending.set(id, task); return task;
     },
     close: () => {
+      closing = true; unsubscribe?.();
       for (const item of generating.values()) item.controller.abort();
-      return Promise.allSettled([...pending.values(), ...statusPending.values(), ...[...generating.values()].map(item => item.task)]);
+      return Promise.allSettled([...pending.values(), ...statusPending.values(), ...[...generating.values()].map(item => item.task), ...synchronizing.values()]);
     },
   };
 }

@@ -13,6 +13,12 @@
 
 工作台可手动输入项目路径。macOS 原生文件夹选择器、Terminal.app、钥匙串和桌面 IPC 需要对应系统能力。`pnpm run doctor` 会报告当前可用的执行器。
 
+## 状态备份与版本核对
+
+工作台为清单内的关键 JSON 状态保留逐文件备份，默认每个文件保留 5 份，不包含项目源码、凭据或数据库。可用 `pnpm run state:backup list` 查看元数据，`pnpm run state:backup snapshot` 手动备份，`pnpm run state:backup --help` 查看校验及离线恢复命令。恢复前先等待 Agent 任务结束，再停止自己启动的工作台；仍存活的 Agent 子进程会阻止恢复。恢复会保留原件，不自动重放任务。
+
+`/api/health` 和页面版本提示提供前端构建信息与后端源码摘要。更新代码后重新执行 `pnpm run setup`，在已有任务结束后重启自己启动的工作台，再核对前后端版本。
+
 ## Jira 和 Confluence
 
 设置 `JIRA_BASE_URL`，再任选自己已有的鉴权方式：`JIRA_USERNAME` + `JIRA_API_TOKEN`、`JIRA_AUTH_HEADER` 或 `JIRA_COOKIE`。macOS 可指向已有钥匙串条目；不要把密码写入源码。
@@ -62,6 +68,8 @@ node --env-file-if-exists=.env --import tsx scripts/integration-execution-progre
 企业微信机器人在页面配置，默认凭据保存到 `.data/credentials/wecom-integration.json`；也可设置 `DELIVERY_WECOM_CONFIG_FILE`。先预览再确认发送。截图地址必须能被接收方访问，应使用自己授权的网络/网关和已脱敏图片。
 
 ## 需求追平和合入
+
+新增源码增量投影读取 `public/catchup/apex-930.json`，分享版仅提供空模板。按 `src/features/catchup/increment.ts` 的结构填入自己的增量资料后重新构建；增量仅展示待核验项，不会自动登记任务或改变已有执行状态。不要把私人需求和提交证据上传到公开仓库。
 
 没有资料时显示空看板，不伪造执行结果。设置 `APEX_CATCHUP_DATA_ROOT` 指向自己的事实目录。目录包含 `manifest.json`、`requirements.json`、`work-packages.json`、`git-landings.json`、`demo-path-coverage.json` 和 `decisions.json`；每份实体文件使用 `{ "items": [...] }`。manifest 记录数量和 SHA-256，后端读取时校验完整性，格式见 `server/jira-backend/catchup-board.mjs`。
 

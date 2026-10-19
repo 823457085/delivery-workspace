@@ -6,7 +6,11 @@ import { agentWorkflowRunAction } from '../src/features/agent-workbench/agent-wo
 
 test('Agent 快捷动作只写入稳定引用和只读意图', () => {
   assert.equal(jiraQuickPrompt({ key: 'APEX-263' }), '@Jira:APEX-263 请检查该需求的当前实现范围、风险和下一步，先只读分析。');
-  assert.match(projectQuickPrompt({ projectId: 'apex-admin' }), /^@项目:apex-admin .*先只读分析。$/);
+  const projectPrompt = projectQuickPrompt({ projectId: 'apex-admin', path: '/repo/工作区 A', branch: 'feature/APEX-263' });
+  assert.match(projectPrompt, /^@项目:apex-admin @工作区:%2Frepo%2F/);
+  assert.ok(projectPrompt.includes('"workspacePath":"/repo/工作区 A"'));
+  assert.ok(projectPrompt.includes('"branch":"feature/APEX-263"'));
+  assert.match(projectPrompt, /先只读分析。$/);
   assert.match(interfaceQuickPrompt({ page: { id: 'monitoring' } } as Parameters<typeof interfaceQuickPrompt>[0]), /^@接口:monitoring /);
   assert.match(deliveryJobQuickPrompt({ id: 'job-1', issueKey: 'APEX-263' }), /^@Jira:APEX-263 /);
   assert.match(catchupQuickPrompt({ id: 'REQ-027' }), /^@合入:REQ-027 /);

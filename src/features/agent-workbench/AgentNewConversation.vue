@@ -11,6 +11,7 @@ import AgentAccessSelector from './AgentAccessSelector.vue';
 import AgentModelSpeed from './AgentModelSpeed.vue';
 import AgentPromptEditor from './AgentPromptEditor.vue';
 import type { AgentBusinessMention } from './agent-business-context';
+import type { AgentAttachmentDraft } from './useAgentAttachments';
 
 export interface AgentWorkspaceOption {
   path: string;
@@ -19,7 +20,7 @@ export interface AgentWorkspaceOption {
 }
 
 const props = defineProps<{ runtimes: AgentRuntimeHealth[]; workspaces: AgentWorkspaceOption[]; changing: string; canStart: boolean;
-  businessOptions: AgentBusinessMention[] }>();
+  businessOptions: AgentBusinessMention[]; attachmentDraft?: AgentAttachmentDraft }>();
 const provider = defineModel<AgentProvider>('provider', { required: true });
 const mode = defineModel<AgentRunMode>('mode', { required: true });
 const accessMode = defineModel<AgentAccessMode>('accessMode', { required: true });
@@ -90,7 +91,7 @@ function clearWorkspace() {
 }
 
 function submit() {
-  if (props.canStart) emit('send');
+  if (props.canStart && !props.attachmentDraft?.pending) emit('send');
 }
 
 function focusPrompt() { void promptEditor.value?.focusInput(); }
@@ -128,6 +129,7 @@ defineExpose({ focusPrompt });
       </div>
       <div class="composer-box">
         <AgentPromptEditor ref="promptEditor" v-model="objective" v-model:attachments="attachments" class="new-prompt" :workspace-path="workspacePath" :provider="provider" :modes="runtime?.modes || []"
+          :attachment-draft="attachmentDraft"
           :selected-mode="mode" :business-options="businessOptions" :disabled="changing === 'start'" placeholder="随心输入，输入 @ 可选择 Jira、项目、接口、模式、Skill 或文件…" submit-on-enter
           @select-mode="mode = $event" @submit="submit" />
         <div class="composer-actions">
@@ -138,7 +140,7 @@ defineExpose({ focusPrompt });
             <AgentModelSpeed v-model:service-tier="serviceTier" :runtime="runtime" :model="model" />
             <el-button text size="small" aria-label="管理自定义模型" @click="emit('configureModels')"><Settings2 :size="13" /></el-button>
           </div>
-          <el-button class="send-button" type="primary" circle :disabled="!canStart" :loading="changing === 'start'" aria-label="创建并发送" @click="submit"><Send :size="15" /></el-button>
+          <el-button class="send-button" type="primary" circle :disabled="!canStart || attachmentDraft?.pending" :loading="changing === 'start'" aria-label="创建并发送" @click="submit"><Send :size="15" /></el-button>
         </div>
       </div>
     </footer>

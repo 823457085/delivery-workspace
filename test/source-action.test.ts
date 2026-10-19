@@ -64,3 +64,19 @@ test('snapshot responses keep feedback in the current panel without claiming mer
   assert.equal(sends.length, 1);
   assert.ok(!events.some((event) => /原系统|已经合入|已合入/.test(event)));
 });
+
+test('保存返回的服务端配置先进入缓存，随后回读失败仍保留新配置且不重放写入', async () => {
+  let cached = { settings: { enabled: false, dailyTimes: ['08:30'] }, jobs: [], runs: [] };
+  const saved = { settings: { enabled: true, dailyTimes: ['09:00'] }, jobs: [], runs: [] };
+  let writes = 0;
+  const execute = createSourceActionExecutor({
+    confirm: async () => true,
+    send: async () => { writes++; return Response.json(saved); },
+    accepted: (key, result) => { assert.equal(key, 'settings'); cached = result as typeof cached; },
+    refresh: async () => { assert.deepEqual(cached, saved); throw new Error('offline'); },
+    success: () => {}, error: () => {}, pending: () => {},
+  });
+  assert.equal(await execute('settings', saved.settings, '保存', '保存配置'), true);
+  assert.deepEqual(cached, saved);
+  assert.equal(writes, 1);
+});

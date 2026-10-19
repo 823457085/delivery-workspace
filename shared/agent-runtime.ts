@@ -13,6 +13,7 @@ export type AgentTaskRole = 'main' | 'worker' | 'reviewer';
 export type AgentTaskSource = 'manual' | 'workflow' | 'automation';
 
 export const agentReasoningEfforts: AgentReasoningEffort[] = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+export const maxAgentAttachmentBytes = 100 * 1024 * 1024;
 
 export interface AgentModelOption {
   id: string;
@@ -48,14 +49,14 @@ export interface AgentRuntimeHealth {
   checkedAt: string;
 }
 
-/** 工作台统一使用已授权的模型与强度；保留 CLI 原始目录，不向不可用模型降级。 */
-export const codexWorkbenchDefaults = { model: 'gpt-6.1-sol', reasoningEffort: 'max' } as const;
+/** 工作台默认使用 GPT-6-Astra、最高推理强度和普通速度；用户仍可按会话改选。 */
+export const codexWorkbenchDefaults = { model: 'gpt-6-astra', reasoningEffort: 'ultra', serviceTier: 'default' } as const;
 export function workbenchRuntime(runtime: AgentRuntimeHealth): AgentRuntimeHealth {
   if (runtime.provider !== 'codex') return runtime;
   return { ...runtime, defaultModel: codexWorkbenchDefaults.model,
-    models: runtime.models.filter(model => model.id === codexWorkbenchDefaults.model
-      && model.efforts?.includes(codexWorkbenchDefaults.reasoningEffort))
-      .map(model => ({ ...model, efforts: [codexWorkbenchDefaults.reasoningEffort], defaultEffort: codexWorkbenchDefaults.reasoningEffort })) };
+    models: runtime.models.map(model => model.id === codexWorkbenchDefaults.model
+      && model.efforts?.includes(codexWorkbenchDefaults.reasoningEffort)
+      ? { ...model, defaultEffort: codexWorkbenchDefaults.reasoningEffort } : model) };
 }
 
 export interface AgentUsageWindow {
@@ -122,6 +123,16 @@ export interface AgentContinuation {
 }
 
 export interface AgentRun {
+  recoveryOfRunId?: string;
+  /** 重启只核对原轮次；恢复记录不代表业务验收，也不自动重派任务。 */
+  recovery?: {
+    previousStatus: 'running' | 'queued' | 'interrupted';
+    previousPid: number | null;
+    state: 'pending' | 'active' | 'needs-review' | 'completed' | 'resumed';
+    checkedAt: string;
+    message: string;
+    resumedRunId?: string;
+  };
   /** 暂停当前会话队列，等待用户编辑后显式继续；不回滚已执行的副作用。 */
   pausedForEdit?: boolean;
   revisesRunId?: string;
@@ -162,6 +173,8 @@ export interface AgentRun {
   sessionId: string;
   pid: number | null;
   result: string;
+  /** 仅派生于已持久化的当前结果版本；运行结束但尚在落盘时仍为 false，不写入账本。 */
+  readonly resultReady?: boolean;
   error: string;
   events: AgentRunEvent[];
   changedFiles?: AgentChangedFile[];

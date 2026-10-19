@@ -24,7 +24,7 @@ onMounted(() => {
 onBeforeUnmount(() => observer?.disconnect());
 </script>
 
-<template><div ref="viewport" class="workspace-panel-content" @scroll="record" @wheel.passive="interact" @pointerdown="interact" @keydown="interact"><div ref="content"><slot /></div></div></template>
+<template><div ref="viewport" class="workspace-panel-content" @scroll="record" @wheel.passive="interact" @pointerdown="interact" @keydown="interact"><div ref="content" class="workspace-page-body"><slot /></div></div></template>
 
 <style scoped>
 .workspace-panel-content{flex:1;min-height:0;overflow:auto;padding:20px}

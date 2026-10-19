@@ -6,13 +6,14 @@
 import { computed, nextTick, useTemplateRef } from 'vue';
 import type { AgentAttachment, AgentRun } from '../../../shared/agent-runtime';
 import AgentPromptEditor from './AgentPromptEditor.vue';
+import type { AgentAttachmentDraft } from './useAgentAttachments';
 
-const props = defineProps<{ open: boolean; source?: AgentRun; submitting: boolean }>();
+const props = defineProps<{ open: boolean; source?: AgentRun; submitting: boolean; attachmentDraft?: AgentAttachmentDraft }>();
 const objective = defineModel<string>('objective', { required: true });
 const attachments = defineModel<AgentAttachment[]>('attachments', { required: true });
 const emit = defineEmits<{ submit: []; cancel: [] }>();
 const promptEditor = useTemplateRef<InstanceType<typeof AgentPromptEditor>>('promptEditor');
-const canSubmit = computed(() => !!objective.value.trim() || !!attachments.value.length);
+const canSubmit = computed(() => (!!objective.value.trim() || !!attachments.value.length) && !props.attachmentDraft?.pending);
 
 async function focusPrompt() {
   await nextTick();
@@ -30,6 +31,7 @@ function submit() {
     @opened="focusPrompt" @update:model-value="!$event && emit('cancel')">
     <p class="fork-description">新会话会继承当前会话已完成的上下文，原会话保留不变。</p>
     <AgentPromptEditor v-if="source" ref="promptEditor" v-model="objective" v-model:attachments="attachments"
+      :attachment-draft="attachmentDraft"
       :workspace-path="source.workspacePath" provider="codex" :modes="[source.mode]" :selected-mode="source.mode" mode-locked
       :disabled="submitting" placeholder="输入新会话的第一条消息，或直接粘贴图片" :min-rows="3" :max-rows="8" submit-on-enter @submit="submit" />
     <template #footer>

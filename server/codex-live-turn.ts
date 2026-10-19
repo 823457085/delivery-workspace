@@ -19,7 +19,7 @@ export interface LiveContext {
   forkLastTurnId?: string;
   imagePaths: string[];
   signal: AbortSignal;
-  onPid(pid: number): void;
+  onPid(pid: number): void | Promise<void>;
   onSession(id: string): void | Promise<void>;
   onTurn?(id: string): void | Promise<void>;
   onEvent(type: AgentRunEvent['type'], message: string): void;
@@ -183,10 +183,10 @@ export function runCodexLiveTurn(binary: string, context: LiveContext, prompt: s
       if (completion && ![...pending.values()].some(item => item.method === 'turn/steer')) finishCompletedTurn();
       else finish(new Error(`Codex 连接提前结束（退出码 ${code}）`));
     });
-    if (child.pid) context.onPid(child.pid);
     context.signal.addEventListener('abort', abort, { once: true });
     if (context.signal.aborted) { abort(); return; }
     void (async () => {
+      if (child.pid) await context.onPid(child.pid);
       await request('initialize', { clientInfo: { name: 'delivery_workspace', version: '1.0.0' }, capabilities: { experimentalApi: true } });
       write({ method: 'initialized', params: {} });
       const method = context.forkSessionId ? 'thread/fork' : context.resumeSessionId ? 'thread/resume' : 'thread/start';

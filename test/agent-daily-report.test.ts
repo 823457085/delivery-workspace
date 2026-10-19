@@ -6,8 +6,8 @@ import { createDailyReportInput, dailyReportDate, isDailyReportDate } from '../s
 const now = new Date(2026, 8, 22, 0, 5);
 const runtime: AgentRuntimeHealth = {
   provider: 'codex', label: 'Codex', binary: '/codex', version: '', authenticated: true, ready: true,
-  message: '', modes: ['ask', 'agent'], models: [{ id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', efforts: ['low', 'max'], defaultEffort: 'low' }],
-  defaultModel: 'configured-model', writable: true, checkedAt: '',
+  message: '', modes: ['ask', 'agent'], models: [{ id: 'gpt-6-astra', label: 'GPT-6-Astra', efforts: ['medium', 'max', 'ultra'], defaultEffort: 'medium' }],
+  defaultModel: 'configured-model', configuredServiceTier: 'priority', writable: true, checkedAt: '',
 };
 
 test('日报使用本地日历日期，拒绝未来、无效日期和注入内容', () => {
@@ -25,8 +25,9 @@ test('日报创建独立只读任务，不复用开发会话、不切分支、�
   assert.equal(input.mode, 'ask');
   assert.equal(input.accessMode, 'workspace');
   assert.equal(input.provider, 'codex');
-  assert.equal(input.model, 'gpt-6.1-sol');
-  assert.equal(input.reasoningEffort, 'max');
+  assert.equal(input.model, 'gpt-6-astra');
+  assert.equal(input.reasoningEffort, 'ultra');
+  assert.equal(input.serviceTier, 'default', '不继承 CLI 配置中的倍速');
   assert.equal(input.workspacePath, '/ordinary-folder');
   for (const key of ['branch', 'isolateWorkspace', 'resumeSessionId', 'parentRunId', 'attachmentIds']) assert.equal(key in input, false);
   for (const required of ['computer_history_status', '6h', '10min', '未受信任', '不发布', '不自动恢复采集', '待确认', '覆盖范围', '密码', '本机时区 2026-09-22']) {

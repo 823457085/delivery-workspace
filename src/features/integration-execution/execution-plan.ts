@@ -3,7 +3,7 @@
  * 这里只定义授权范围和回测基线，不发请求、不复制执行器；人工审核与自动检查各自保留。
  */
 import type { AgentRun, AgentRuntimeHealth, StartAgentRunInput } from '../../../shared/agent-runtime';
-import { workbenchRuntime } from '../../../shared/agent-runtime';
+import { codexWorkbenchDefaults, workbenchRuntime } from '../../../shared/agent-runtime';
 import { reviewLabel, type ApexBffReviewState } from '../../../shared/apex-bff-review';
 import { integrationDeferral, integrationScopeCategory, type IntegrationScopeCategory } from '../../../shared/apex-integration-scope';
 import type { ReviewCatalogItem } from '../api-integration/review-catalog';
@@ -60,7 +60,7 @@ const taskDefinitions = [
   { id: 'merchant', title: '商家管理与详情', module: '运营管理', deferred: false, directories: 'src/features/merchant（商家进件除外）、src/features/pricing、src/features/installment、src/features/warranty' },
   { id: 'equipment', title: '设备管理', module: '运营管理', deferred: false, directories: 'src/features/device、src/features/operations-diagnostics' },
   { id: 'finance', title: '财务管理', module: '财务管理', deferred: false, directories: 'src/features/finance、src/features/accounting' },
-  { id: 'operations', title: '广告、活动、订单、消费用户与商家进件', module: '运营管理', deferred: false, directories: 'src/features/advertising、src/features/activity、src/features/order、src/features/consumer-user、商家进件对应的独立 feature' },
+  { id: 'operations', title: '活动、订单、消费用户与商家进件', module: '运营管理', deferred: false, directories: 'src/features/activity、src/features/order、src/features/consumer-user、商家进件对应的独立 feature' },
   { id: 'configuration', title: '系统配置、账号与公共能力', module: '系统配置 / 账号与权限 / 公共能力 / 客服管理', deferred: false, directories: 'src/features/system-config、src/features/system-management、src/features/auth；公共能力只读检查' },
   { id: 'monitoring', title: '数据监控（暂不联调）', module: '数据监控', deferred: true, directories: 'src/features/data-monitoring' },
 ];
@@ -99,6 +99,17 @@ export function taskInterfaces(task: ExecutionTask, progress: ExecutionProgress 
       result: saved?.result || (confirmed ? '人工审核已确认；自动实测结论单独记录。' : item.method && item.method !== 'GET' ? '等待可用于写入的测试数据，未执行写操作。' : ''),
     };
   });
+}
+/** 删除后的广告不再进入当前页面和问题统计；只派生视图，保留原始台账与复测证据。 */
+export function currentExecutionProgress(progress: ExecutionProgress | undefined): ExecutionProgress | undefined {
+  if (!progress) return;
+  const advertisingPage = (name: string) => ['广告管理', '带屏设备配置'].includes(name);
+  const issues = progress.issues.filter(issue => ![...(issue.pages || []), ...(issue.retest?.pages || [])].some(advertisingPage)
+    && !/^GET \/admin\/v1\/advertising(?:\/|$)/.test(issue.retest?.request || '')
+    && ![...(issue.interfaceIds || []), ...(issue.retest?.interfaceIds || [])].some(id => /^plan:.*Advertising/.test(id) || ['apex-bff-211', 'apex-bff-212', 'apex-bff-213'].includes(id)));
+  const removedIssueIds = new Set(progress.issues.filter(issue => !issues.includes(issue)).map(issue => issue.id));
+  return { ...progress, pages: progress.pages.filter(page => !advertisingPage(page.name)), issues,
+    retests: progress.retests?.filter(retest => !removedIssueIds.has(retest.issueId)) };
 }
 export function executionIssueDeferral(issue: ExecutionIssue, scope: ReviewCatalogItem[]) {
   const ids = [...(issue.interfaceIds || []), ...(issue.retest?.interfaceIds || [])];
@@ -149,11 +160,11 @@ export function createExecutionInput(progress: ExecutionProgress, scope: ReviewC
   } else if (!pending.length) throw new Error('没有待执行的查询接口；阻塞问题请使用回测入口');
   const selection = workbenchRuntime(runtime);
   const model = selection.models.find(item => item.id === selection.defaultModel);
-  if (!model) throw new Error('工作台指定的 GPT-6.1-Sol 极高强度不可用');
+  if (!model) throw new Error('工作台默认模型不可用，请检查当前 Codex 模型列表');
   const progressCommand = `scripts/integration-execution-progress.ts ${taskId}`;
   const task = request.kind === 'retest'
     ? `回测问题 ${issue!.id}，后端申报已部署到 ${request.environment}，版本 ${request.version}。这只是触发依据，必须重新实测。\n原问题与复验基线：${JSON.stringify(issue)}\n开始先调用台账脚本 retest 动作，按本次请求编号保存“回测中”记录。先复验原 GET 请求及最新 BFF 字段类型/必填约束，再检查列出的页面和邻近列表/详情读取，保存能证明本问题或复验结果的关键截图及请求/响应记录。缺字段、接口失败、登录失效、页面未验证都不能判为通过。接口与页面均通过后用 interface/page 动作保存“已通过”或“已修复”，再记录“回测通过，待人工验收”；不自动改人工审核或 Jira。每次回测单独保存 requestId、issueId、environment、version、status、result、report，调用台账脚本 retest 动作。即使失败也要保存结论与证据。`
     : `自动顺序完成以下尚未检查的 GET 接口和关联页面，单项阻塞后记录并继续其他独立项，直到本批已检查或明确阻塞。不等待用户逐条下令。\n${JSON.stringify(pending)}\n每个接口先核对实际页面调用、请求路径/参数类型、真实响应与最新 BFF 契约，再检查页面展示和 demo 还原度。调用缺失、缺必填字段、HTTP 200但不符合契约都不能记为通过。无可用ID/测试数据时标记“需测试数据”，不得猜ID。`;
-  return { provider: 'codex', mode: 'agent', accessMode: 'full', model: model.id, reasoningEffort: model.defaultEffort, workspacePath: progress.automation.workspacePath, isolateWorkspace: false,
+  return { provider: 'codex', mode: 'agent', accessMode: 'full', model: model.id, reasoningEffort: model.defaultEffort, serviceTier: codexWorkbenchDefaults.serviceTier, workspacePath: progress.automation.workspacePath, isolateWorkspace: false,
     objective: `${executionMarker}\n${JSON.stringify({ ...request, taskId })}\n你是“${definition.title}”独立联调会话；其他模块由并行会话负责。只执行本批，不自行创建其他会话。\n${task}\n\n执行环境：${JSON.stringify(progress.automation)}\n${loginInstructions}\n先检查 ${progress.automation.baseUrl} 的实际监听进程与工作区一致，保留已有脏改动，不切分支、不创建替代运行环境。读取工作区规则及必要 Skill。不导航或关闭用户和其他会话的标签页，不使用会修改其他会话登录/地区上下文的操作。\n授权边界：本会话完整接口范围为 ${JSON.stringify(taskScope.map(item => ({ id: item.id, page: item.ui.page, route: item.ui.route })))}。每开始页面或请求前重新读取 Delivery 的 .data/apex-bff-review.json 和 shared/apex-integration-scope.ts；负责人变化、已替代/不再使用或 integrationDeferral(item) 非空则跳过。大数据/数据监控、活动/交易订单、财务账单/利润/统计及商家账单详情归为“暂不联调”，不发起接口、页面检查、修复、回测或本轮新群反馈；混合页面仅检查未延期区域，避免触发延期请求，不能安全分离则记录暂不联调。负责人、历史检查状态、问题和证据保持原值。开发工具与其他负责人任务不执行。普通联调跳过人工已确认项；申请回测允许复验原接口。业务接口只调用 GET；本账号正常登录所需的鉴权请求已授权。业务写入、重置密码、资金、删除、启禁用、测试邮件保持需测试数据，不自动执行。\n前端修复只允许本会话的独立业务目录：${directories}，Page仅在本批路由下局部调整。禁止编辑共享组件、shared、app、全局header、package/lock文件或其他模块目录；需要公共修改时记录“前端问题（公共修复待协调）”，交主会话统一处理。不得擅自重启业务服务或工作台，不同时覆盖公共配置。运行定向检查再真实页面回归。接口文案原样展示含L码，不翻译，不以默认值掩盖缺字段。后端问题只收集反馈，不改契约或服务。禁止提交、推送、Jira修改。\n独立实时台账：在 Delivery 根目录执行 node_modules/.bin/tsx ${progressCommand} <step|interface|page|issue|retest> '<JSON>'。每接口/页面前后以及每60秒有进展时更新。step只传status/current，interface传已有id/status/result，page传已有name/status/result（先读取 /integration-runs/${taskId}.json 的实际page name）。禁止 init、更新其他模块或覆盖已有证据。遇到全局登录/网络阻塞记录并结束，不死循环重试。\n后端问题issue保存带本模块前缀的唯一ID、简洁summary/kind/status、实际/预期、请求路径参数、traceId、截图/报告相对URL；归属通过retest基线的interfaceIds/pages或顶层interfaceIds/pages明确。retest只保存观察到的GET、非敏感上下文头、requiredFields，不保存Authorization/Cookie/密码/Token。\n${integrationFeedbackInstructions}\n截图和证据文件以本taskId为前缀，避免并行覆盖。先脱敏，发送能识别页面的上下文截图及对应原生Network详情，用红框标出异常，原图与详细结果留证据页。\n最后step为“本批执行结束”或“等待后端/测试数据”，说明通过、阻塞和待人工验收。Agent结束不等于接口通过。` };
 }

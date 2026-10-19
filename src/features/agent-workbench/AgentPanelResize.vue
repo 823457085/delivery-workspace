@@ -5,12 +5,12 @@
  */
 import { onMounted, shallowRef } from 'vue';
 
-const props = defineProps<{ side: 'left' | 'right' }>();
+const props = defineProps<{ side: 'left' | 'right'; variant?: string }>();
 const width = defineModel<number>({ required: true });
 const active = shallowRef(false);
-const min = props.side === 'left' ? 240 : 280;
-const max = props.side === 'left' ? 480 : 560;
-const storageKey = `delivery.agent.panel-width.${props.side}`;
+const min = props.variant === 'split' ? props.side === 'left' ? 200 : 320 : ['studio', 'project-studio'].includes(props.variant || '') ? props.side === 'left' ? 220 : 260 : props.side === 'left' ? 240 : 280;
+const max = props.variant === 'split' ? props.side === 'left' ? 280 : 680 : props.side === 'left' ? 480 : 560;
+const storageKey = `delivery.agent.panel-width.${props.side}${props.variant ? `.${props.variant}` : ''}`;
 let startX = 0;
 let startWidth = 0;
 
@@ -27,7 +27,7 @@ function measuredWidth(element: HTMLElement) {
 }
 
 function resize(value: number) {
-  width.value = Math.round(Math.max(min, Math.min(max, window.innerWidth * .28, value)));
+  width.value = Math.round(Math.max(min, Math.min(max, window.innerWidth * (props.variant === 'split' && props.side === 'right' ? .4 : .28), value)));
 }
 
 function save() {
@@ -66,7 +66,7 @@ function keydown(event: KeyboardEvent) {
 
 <template>
   <div class="panel-resize" :class="[side, { active }]" role="separator" tabindex="0"
-    aria-orientation="vertical" :aria-label="side === 'left' ? '调整会话列表宽度' : '调整记录面板宽度'"
+    aria-orientation="vertical" :aria-label="side === 'left' ? '调整会话列表宽度' : variant === 'split' ? '调整成果面板宽度' : '调整记录面板宽度'"
     :aria-valuemin="min" :aria-valuemax="max" :aria-valuenow="width"
     @pointerdown="start" @pointermove="move" @pointerup="finish" @pointercancel="finish" @lostpointercapture="finish" @keydown="keydown" />
 </template>

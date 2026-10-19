@@ -33,6 +33,12 @@ export function useSourceActions() {
       catch { return false; }
     },
     send: (key, body) => fetch(sourceUrl(key), { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Delivery-Confirmed': 'yes' }, body }),
+    accepted: (key, result) => {
+      // 保存接口返回服务端实际配置；后续回读失败时也不能恢复成保存前的缓存。
+      if (key === 'settings' && result.settings && Array.isArray(result.jobs) && Array.isArray(result.runs)) {
+        client.setQueriesData({ queryKey: ['source', 'automation'] }, result);
+      }
+    },
     refresh: () => client.invalidateQueries({ queryKey: ['source'] }, { throwOnError: true }),
     success: (message) => { ElMessage.success(message); }, error: (message) => { ElMessage.error(message); },
     pending: (value) => { pending.value = value; },

@@ -69,7 +69,6 @@ const pages: PageDefinition[] = [
   { id: 'order-probe', menu: '开发工具', title: '订单探针', routes: ['/DeveloperTools/OrderProbeDashboard'], matches: prefix('/admin/v1/order-probes/') },
   { id: 'content', menu: '客服管理', title: 'APP 公告与视频教程', routes: ['/CustomerServiceManage/AnnouncementList', '/CustomerServiceManage/VideoTutorial'], matches: path => path.startsWith('/admin/v1/notifications/') || path.startsWith('/admin/v1/video-tutorials/') },
   { id: 'workbench', menu: '工作台', title: '工作台', routes: ['/Workbench'], matches: prefix('/admin/v1/workbench/') },
-  { id: 'advertising', menu: '运营管理', title: '广告管理', routes: ['/OperateManage/AdManage'], matches: prefix('/admin/v1/advertising/') },
 ]
 
 export function buildMenuPagePlans(stages: ReadonlyArray<PlanStage>): MenuPagePlan[] {

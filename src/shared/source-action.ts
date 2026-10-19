@@ -3,6 +3,7 @@ interface ActionEffects {
   confirm: (title: string, impact: string) => Promise<boolean>;
   send: (key: string, body: string) => Promise<Response>;
   refresh: () => Promise<unknown>;
+  accepted?: (key: string, result: Record<string, unknown>) => void;
   success: (message: string) => void;
   error: (message: string) => void;
   pending: (value: boolean) => void;
@@ -28,6 +29,7 @@ export function createSourceActionExecutor(effects: ActionEffects) {
         if (response.status === 409) await refresh();
         return false;
       }
+      effects.accepted?.(key, result);
       effects.success(result.message || '操作已受理，请在当前面板查看最新状态');
       await refresh();
       return true;

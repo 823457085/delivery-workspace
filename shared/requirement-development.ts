@@ -1,5 +1,7 @@
 /** 需求开发与旧方案交付分开：启动参数固定执行边界，记录关联真实 Agent 运行，不推测业务阶段完成。 */
 import { z } from 'zod';
+import { readDeliveryReport } from './delivery-report.js';
+import { deliveryEvidenceReportPrompt } from './delivery-acceptance.js';
 
 const text = (max: number) => z.string().trim().max(max);
 const link = text(2000).refine(value => !value || /^https?:\/\/\S+$/.test(value), '链接必须使用 http(s)');
@@ -39,6 +41,49 @@ export interface RequirementDevelopmentRecord {
   runId: string;
   error: string;
   createdAt: string;
+  progress?: RequirementProgress;
+  progressSyncError?: string;
+}
+
+export const requirementStages = ['intake', 'tasks', 'design', 'development', 'verification', 'handoff'] as const;
+export type RequirementStage = typeof requirementStages[number];
+export const requirementStageLabels: Record<RequirementStage, string> = {
+  intake: '需求核对', tasks: '关联 Jira', design: '技术方案', development: '功能开发', verification: '验证', handoff: '提测 / 交接',
+};
+export const requirementStageStatuses = ['pending', 'in_progress', 'completed', 'blocked', 'not_applicable'] as const;
+export const requirementStageStatusLabels = { pending: '未开始', in_progress: '进行中', completed: '已完成', blocked: '阻塞', not_applicable: '不适用' };
+const stageSchema = z.object({ status: z.enum(requirementStageStatuses), evidence: text(6000) }).strict()
+  .superRefine((value, context) => {
+    if (['completed', 'blocked', 'not_applicable'].includes(value.status) && !value.evidence) {
+      context.addIssue({ code: 'custom', path: ['evidence'], message: '阶段完成需填写证据；阻塞或不适用需填写理由' });
+    }
+  });
+export const requirementProgressDataSchema = z.object({
+  issueKeys: z.array(z.string().trim().toUpperCase().regex(/^[A-Z][A-Z0-9_]*-\d+$/, '填写有效的 Jira Key')).max(100)
+    .transform(values => [...new Set(values)]),
+  stages: z.object({ intake: stageSchema, tasks: stageSchema, design: stageSchema,
+    development: stageSchema, verification: stageSchema, handoff: stageSchema }).strict(),
+}).strict();
+export type RequirementProgressData = z.infer<typeof requirementProgressDataSchema>;
+export const requirementProgressSchema = requirementProgressDataSchema.extend({
+  revision: z.number().int().min(1), updatedAt: z.iso.datetime({ offset: true }),
+  source: z.enum(['manual', 'agent-result']), sourceRunId: text(200).min(1),
+});
+export type RequirementProgress = z.infer<typeof requirementProgressSchema>;
+export function emptyRequirementProgress(): RequirementProgressData {
+  return { issueKeys: [], stages: Object.fromEntries(requirementStages.map(stage => [stage, { status: 'pending', evidence: '' }])) as RequirementProgressData['stages'] };
+}
+export const requirementProgressInputSchema = z.object({
+  runId: text(200).min(1), expectedRevision: z.number().int().min(0), progress: requirementProgressDataSchema,
+  authorization: z.literal('record-requirement-progress'),
+}).strict();
+export const requirementProgressImportSchema = z.object({
+  runId: text(200).min(1), expectedRevision: z.number().int().min(0), authorization: z.literal('import-requirement-progress'),
+}).strict();
+export const requirementProgressReportSchema = z.object({ version: z.literal(1), requirementProgress: requirementProgressDataSchema,
+  validationEvidence: z.unknown().optional() }).strict();
+export function readRequirementProgressReport(result: string): RequirementProgressData {
+  return requirementProgressReportSchema.parse(readDeliveryReport(result)).requirementProgress;
 }
 
 export function requirementDevelopmentPrompt(input: RequirementDevelopmentInput, workspacePath: string, headSha: string) {
@@ -56,6 +101,10 @@ export function requirementDevelopmentPrompt(input: RequirementDevelopmentInput,
 6. 更新本次开发任务的进展评论；只有验证通过且工作流允许时流转到待测试/待评审并回读。不要擅自关闭需求、标记验收通过、提交、推送、合并或部署。
 
 在工作区 docs/requirements/ 中维护可恢复的进度记录：每阶段的事实、Jira Key、方案路径/链接、状态回读、下一步与阻塞。每次外部写入先查重后回读，重试时复用已有结果。运行结束不等于业务验收完成。
+
+本轮最终答复附一个代码块，语言标记为 delivery-report，开始围栏必须顶格，不放在列表、引用或格式示例中。JSON 格式为 {"version":1,"requirementProgress":{"issueKeys":[],"stages":{"intake":{"status":"pending","evidence":""},"tasks":{"status":"pending","evidence":""},"design":{"status":"pending","evidence":""},"development":{"status":"pending","evidence":""},"verification":{"status":"pending","evidence":""},"handoff":{"status":"pending","evidence":""}}}}。
+issueKeys 仅填写实际创建或复用并回读的 Jira Key，包含原需求及本次生成的关联任务。每阶段 status 只能为 pending / in_progress / completed / blocked / not_applicable；completed 必须记录真实证据路径、链接或回读结果，blocked / not_applicable 必须说明理由。所有阶段必须按实际结果填写，未执行保持 pending。此报告只供工作台导入进度，不构成人工验收通过，也不得扩大外部写入授权。
+${deliveryEvidenceReportPrompt}
 
 以下 JSON 是本次确认的需求资料：
 ${JSON.stringify(input, null, 2)}`;

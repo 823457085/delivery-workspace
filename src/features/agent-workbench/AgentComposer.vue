@@ -6,15 +6,17 @@
 import { computed, shallowRef, useTemplateRef, watch } from 'vue';
 import { CircleStop, Send, Settings2 } from '@lucide/vue';
 import type { AgentAccessMode, AgentAttachment, AgentProvider, AgentQueuePlacement, AgentReasoningEffort, AgentRuntimeHealth, AgentServiceTier } from '../../../shared/agent-runtime';
+import { codexWorkbenchDefaults } from '../../../shared/agent-runtime';
 import type { AgentConversation } from './conversation';
 import AgentPromptEditor from './AgentPromptEditor.vue';
 import AgentAccessSelector from './AgentAccessSelector.vue';
 import AgentModelSpeed from './AgentModelSpeed.vue';
 import type { AgentBusinessMention } from './agent-business-context';
 import { codexServiceTier } from './model-speed';
+import type { AgentAttachmentDraft } from './useAgentAttachments';
 
 const props = defineProps<{ conversation: AgentConversation; runtimes: AgentRuntimeHealth[]; changing: string; running: boolean;
-  canInsert: boolean; businessOptions: AgentBusinessMention[] }>();
+  canInsert: boolean; businessOptions: AgentBusinessMention[]; attachmentDraft?: AgentAttachmentDraft }>();
 const draft = defineModel<string>({ default: '' });
 const attachments = defineModel<AgentAttachment[]>('attachments', { default: () => [] });
 const promptEditor = useTemplateRef<InstanceType<typeof AgentPromptEditor>>('promptEditor');
@@ -39,6 +41,7 @@ const hasContent = computed(() => !!draft.value.trim() || !!attachments.value.le
 const stoppableRunId = computed(() => props.conversation.runs.find((run) => run.status === 'running')?.id
   || [...props.conversation.runs].reverse().find((run) => run.status === 'queued')?.id);
 const canSend = computed(() => (switchingProvider.value || canResume.value) && hasContent.value && !props.changing
+  && !props.attachmentDraft?.pending
   && !!runtime.value?.ready && runtime.value.modes.includes(composerMode.value)
   && !!selectedOption.value && (!effortOptions.value.length || effortOptions.value.includes(selectedEffort.value as AgentReasoningEffort)));
 const effortLabels: Record<AgentReasoningEffort, string> = { low: '低', medium: '中', high: '高', xhigh: '超高', max: '极高', ultra: '最高' };
@@ -46,14 +49,44 @@ const effortLabels: Record<AgentReasoningEffort, string> = { low: '低', medium:
 watch([() => props.conversation.id, () => props.conversation.latest.provider], () => {
   selectedProvider.value = props.conversation.latest.provider;
 });
-watch([() => props.conversation.id, () => props.conversation.latest.model, selectedProvider, () => runtime.value?.defaultModel], () => {
-  const previous = switchingProvider.value ? '' : props.conversation.latest.model || '';
-  selectedModel.value = previous && modelOptions.value.some((model) => model.id === previous)
-    ? previous : runtime.value?.defaultModel || modelOptions.value[0]?.id || '';
+// Codex 选择启用新版本，旧会话保存的模型与档位不再覆盖本次统一默认值；Cursor 沿用原选择。
+function modelSelectionKey() {
+  return `agent-model-selection${selectedProvider.value === 'codex' ? ':v2' : ''}:${props.conversation.id}:${selectedProvider.value}`;
+}
+
+function readModelSelection(): { model: string; reasoningEffort: string } | undefined {
+  try {
+    const value = JSON.parse(window.localStorage.getItem(modelSelectionKey()) || 'null');
+    if (value && typeof value.model === 'string' && typeof value.reasoningEffort === 'string') return value;
+  } catch { /* 存储不可用时仍可在当前会话选择模型 */ }
+}
+
+function saveModelSelection() {
+  try {
+    window.localStorage.setItem(modelSelectionKey(),
+      JSON.stringify({ model: selectedModel.value, reasoningEffort: selectedEffort.value }));
+  } catch { /* 当前页面仍使用选中的模型与档位 */ }
+}
+
+function setModel(value: string) {
+  selectedModel.value = value;
+  const option = modelOptions.value.find(model => model.id === value);
+  selectedEffort.value = option?.defaultEffort || option?.efforts?.[0] || '';
+  saveModelSelection();
+}
+
+watch([() => props.conversation.id, selectedProvider, () => runtime.value?.defaultModel], () => {
+  // 旧轮实际使用的模型只属于历史记录；未手动改选的 Codex 会话统一采用工作台默认值。
+  const previous = selectedProvider.value === 'cursor' && !switchingProvider.value ? props.conversation.latest.model : undefined;
+  const preferred = readModelSelection()?.model ?? previous ?? runtime.value?.defaultModel ?? '';
+  selectedModel.value = modelOptions.value.some(model => model.id === preferred)
+    ? preferred : runtime.value?.defaultModel || modelOptions.value[0]?.id || '';
 }, { immediate: true });
 
 watch([selectedModel, selectedProvider, () => props.conversation.id], () => {
-  const previous = props.conversation.latest.reasoningEffort || '';
+  const saved = readModelSelection();
+  const previous = saved?.model === selectedModel.value ? saved.reasoningEffort
+    : selectedProvider.value === 'cursor' ? props.conversation.latest.reasoningEffort || '' : '';
   selectedEffort.value = effortOptions.value.includes(previous as AgentReasoningEffort)
     ? previous as AgentReasoningEffort : selectedOption.value?.defaultEffort || effortOptions.value[0] || '';
 }, { immediate: true });
@@ -64,13 +97,13 @@ watch([() => props.conversation.id, () => props.conversation.latest.accessMode],
 
 watch(() => props.conversation.id, (id) => {
   let saved: string | null = null;
-  try { saved = window.localStorage.getItem(`agent-service-tier:${id}`); } catch { /* 本地存储不可用时仍可在当前页面切换 */ }
-  selectedServiceTier.value = saved === 'default' || saved === 'priority' ? saved : props.conversation.latest.serviceTier;
+  try { saved = window.localStorage.getItem(`agent-service-tier:v2:${id}`); } catch { /* 本地存储不可用时仍可在当前页面切换 */ }
+  selectedServiceTier.value = saved === 'default' || saved === 'priority' ? saved : codexWorkbenchDefaults.serviceTier;
 }, { immediate: true });
 
 function setServiceTier(value: AgentServiceTier) {
   selectedServiceTier.value = value;
-  try { window.localStorage.setItem(`agent-service-tier:${props.conversation.id}`, value); }
+  try { window.localStorage.setItem(`agent-service-tier:v2:${props.conversation.id}`, value); }
   catch { /* 当前页面仍使用选中的档位 */ }
 }
 
@@ -95,12 +128,13 @@ defineExpose({ focusPrompt });
           <el-option v-for="item in runtimes" :key="item.provider" :value="item.provider" :label="item.label" :disabled="!item.ready || !item.modes.includes(composerMode)" />
         </el-select>
         <span>{{ modeLabel }}</span>
-        <el-select v-model="selectedModel" class="composer-model" popper-class="agent-model-popper" size="small" filterable :disabled="!!changing" aria-label="选择模型"><el-option v-for="model in modelOptions" :key="model.id || 'default'" :label="model.label" :value="model.id"><span>{{ model.label }}</span><small v-if="model.customId">自定义</small></el-option></el-select>
-        <el-select v-if="effortOptions.length" v-model="selectedEffort" class="composer-effort" popper-class="agent-model-popper" size="small" :disabled="!!changing" aria-label="Codex 推理强度"><el-option v-for="effort in effortOptions" :key="effort" :label="`Thinking ${effortLabels[effort]}`" :value="effort" /></el-select>
+        <el-select v-model="selectedModel" class="composer-model" popper-class="agent-model-popper" size="small" filterable :disabled="!!changing" aria-label="选择模型" @change="setModel"><el-option v-for="model in modelOptions" :key="model.id || 'default'" :label="model.label" :value="model.id"><span>{{ model.label }}</span><small v-if="model.customId">自定义</small></el-option></el-select>
+        <el-select v-if="effortOptions.length" v-model="selectedEffort" class="composer-effort" popper-class="agent-model-popper" size="small" :disabled="!!changing" aria-label="Codex 推理强度" @change="saveModelSelection"><el-option v-for="effort in effortOptions" :key="effort" :label="`Thinking ${effortLabels[effort]}`" :value="effort" /></el-select>
         <AgentModelSpeed :runtime="runtime" :model="selectedModel" :service-tier="selectedServiceTier" @update:service-tier="setServiceTier" />
         <el-button text size="small" aria-label="管理自定义模型" @click="emit('configureModels')"><Settings2 :size="13" /></el-button>
       </div>
       <AgentPromptEditor ref="promptEditor" v-model="draft" v-model:attachments="attachments" class="composer-prompt" :workspace-path="conversation.latest.workspacePath"
+        :attachment-draft="attachmentDraft"
         :provider="selectedProvider" :modes="runtime?.modes || []" :selected-mode="composerMode" mode-locked
         :business-options="businessOptions"
         :placeholder="switchingProvider ? '输入要求，发送后带入近期对话文本并创建独立会话…' : running ? '当前轮执行中；发送后将进入队列' : '继续询问当前会话…（输入 @ 选择业务上下文、模式、Skill 或文件，Enter 发送）'" submit-on-enter @submit="submit()" />

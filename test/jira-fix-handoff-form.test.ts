@@ -1,5 +1,5 @@
 /** 测试真实表单状态与请求，所有 Jira 网络写入均由 fetch 替身拦截。 */
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { effectScope } from 'vue';
@@ -8,7 +8,15 @@ import { useJiraFixHandoff } from '../src/features/jira-fix/useJiraFixHandoff.js
 import type { JiraFixHandoffContext, JiraStatusChangeState } from '../shared/jira-fix-handoff.js';
 import type { JiraFixRecord } from '../shared/jira-fix.js';
 
+function browserStorage(t: TestContext) {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'localStorage'), values = new Map<string, string>();
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: {
+    getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => values.set(key, value),
+  } });
+  t.after(() => { if (previous) Object.defineProperty(globalThis, 'localStorage', previous); else Reflect.deleteProperty(globalThis, 'localStorage'); });
+}
 const record = { id: randomUUID() } as JiraFixRecord;
+const draft = { cause: '已确认的根因', impact: '编辑入口', suggestion: '回归空值', conclusion: '定向检查通过，浏览器未验证' };
 function context(): JiraFixHandoffContext {
   return { runId: randomUUID(), result: '定向测试通过', issue: { key: 'TEST-123', summary: '缺陷', status: { id: 'start', name: '待开始' },
     reporter: { id: 'qa', name: '报告人', kind: 'name', active: true }, assignee: null },
@@ -17,6 +25,64 @@ function context(): JiraFixHandoffContext {
       { id: 'customfield_10110', name: '目标结束日期', required: false },
     ] }], testingPath: { transitionId: '11', statuses: [{ id: 'design', name: '设计中' }, { id: 'dev', name: '开发中' }, { id: 'test', name: '测试中' }] } };
 }
+
+test('打开恢复服务端生成稿，手改稿刷新后仍保留且不调用生成或发布接口', async t => {
+  browserStorage(t);
+  const latest = context(); latest.draft = { recordId: record.id, runId: latest.runId,
+    sourceFingerprint: 'a'.repeat(64), draft, updatedAt: new Date().toISOString() };
+  const requests: string[] = [];
+  t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
+    requests.push(init?.method || 'GET'); return Response.json(latest);
+  });
+  const first = effectScope(), state = first.run(() => useJiraFixHandoff(async () => {}))!;
+  t.after(() => first.stop());
+  await state.show(record); assert.equal(state.form.value.cause, draft.cause);
+  assert.equal(state.form.value.conclusion, draft.conclusion);
+  state.form.value.cause = '人工补充的根因'; state.close(); first.stop();
+  const second = effectScope(), restored = second.run(() => useJiraFixHandoff(async () => {}))!;
+  t.after(() => second.stop());
+  await restored.show(record); assert.equal(restored.form.value.cause, '人工补充的根因');
+  assert.equal(restored.form.value.conclusion, draft.conclusion);
+  assert.deepEqual(requests, ['GET', 'GET']);
+});
+
+test('浏览器手改稿不跨事项、运行或结果来源恢复，存储不可用时仍恢复服务端稿', async t => {
+  browserStorage(t);
+  const latest = context();
+  t.mock.method(globalThis, 'fetch', async () => Response.json(latest));
+  const scope = effectScope(), state = scope.run(() => useJiraFixHandoff(async () => {}))!;
+  t.after(() => scope.stop());
+  await state.show(record); Object.assign(state.form.value, draft); state.close();
+  await state.show({ id: randomUUID() } as JiraFixRecord); assert.equal(state.form.value.cause, '');
+  const runId = latest.runId;
+  latest.runId = randomUUID(); await state.show(record); assert.equal(state.form.value.cause, '');
+  latest.runId = runId; latest.result += '；新的检查结果';
+  await state.show(record); assert.equal(state.form.value.cause, '');
+  latest.draft = { recordId: record.id, runId: latest.runId, sourceFingerprint: 'b'.repeat(64), draft, updatedAt: new Date().toISOString() };
+  t.mock.method(localStorage, 'getItem', () => { throw new Error('存储被禁用'); });
+  t.mock.method(localStorage, 'setItem', () => { throw new Error('存储被禁用'); });
+  await state.show(record); assert.equal(state.form.value.cause, draft.cause);
+  state.form.value.cause = '仍可编辑'; assert.equal(state.form.value.cause, '仍可编辑');
+});
+
+test('生成中的手动修改和切换事项后的晚到结果不被覆盖，失败保留当前稿', async t => {
+  browserStorage(t);
+  let latest = context(), finish!: (value: Response) => void;
+  const scope = effectScope(), state = scope.run(() => useJiraFixHandoff(async () => {}))!;
+  t.after(() => scope.stop());
+  t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => init?.method === 'POST'
+    ? new Promise<Response>(resolve => { finish = resolve; }) : Response.json(latest));
+  await state.show(record); Object.assign(state.form.value, draft);
+  const editing = state.generate(); state.form.value.cause = '生成期间手改';
+  finish(Response.json({ ...draft, cause: '晚到模型文本' })); await editing;
+  assert.equal(state.form.value.cause, '生成期间手改'); assert.match(state.error.value, /已保留当前编辑/);
+  const failed = state.generate(); finish(Response.json({ message: '模拟生成失败' }, { status: 502 })); await failed;
+  assert.equal(state.form.value.cause, '生成期间手改');
+  const late = state.generate(); latest = context();
+  await state.show({ id: randomUUID() } as JiraFixRecord);
+  finish(Response.json(draft)); await late;
+  assert.equal(state.form.value.cause, ''); assert.equal(state.context.value?.runId, latest.runId);
+});
 
 test('失败后保留提测目标、日期和评论，确认展示日期；修正后可重试且成功才选保持当前状态', async t => {
   const scope = effectScope(), state = scope.run(() => useJiraFixHandoff(async () => {}))!;

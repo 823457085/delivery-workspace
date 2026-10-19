@@ -5,8 +5,9 @@
  */
 import { computed, nextTick, onBeforeUnmount, reactive, shallowRef, useTemplateRef, watch } from 'vue';
 import { ElMessageBox } from 'element-plus';
+import { PanelLeftOpen } from '@lucide/vue';
 import type { AgentAccessMode, AgentAttachment, AgentProvider, AgentQueuePlacement, AgentReasoningEffort, AgentRun, AgentRunMode, AgentServiceTier, SpawnAgentTaskInput, StartAgentRunInput, StartAgentTaskWorkflowInput } from '../../../shared/agent-runtime';
-import { workbenchRuntime } from '../../../shared/agent-runtime';
+import { codexWorkbenchDefaults, workbenchRuntime } from '../../../shared/agent-runtime';
 import { useWorkspacePicker } from '../../shared/useWorkspacePicker';
 import WorkspaceBrowserDialog from '../../shared/ui/WorkspaceBrowserDialog.vue';
 import StatusPill from '../../shared/ui/StatusPill.vue';
@@ -17,6 +18,7 @@ import AgentEditMessageDialog from './AgentEditMessageDialog.vue';
 import AgentInitialLoading from './AgentInitialLoading.vue';
 import AgentMarkdown from './AgentMarkdown.vue';
 import AgentModelSettings from './AgentModelSettings.vue';
+import AgentRecoveryDialog from './AgentRecoveryDialog.vue';
 import AgentNewConversation, { type AgentWorkspaceOption } from './AgentNewConversation.vue';
 import AgentSessionList from './AgentSessionList.vue';
 import AgentSidePanel from './AgentSidePanel.vue';
@@ -30,7 +32,7 @@ import { readLastAgentSessionId, saveLastAgentSessionId } from './last-session-s
 import { isPinnedAgentSession, migratePinnedAgentSessionIds, readPinnedAgentSessionIds, savePinnedAgentSessionIds,
   togglePinnedAgentSession } from './session-pins';
 import { useAgentRuntimes } from './useAgentRuntimes';
-import { removePendingAgentAttachments } from './useAgentAttachments';
+import { AgentAttachmentDraft, removePendingAgentAttachments } from './useAgentAttachments';
 import { useAgentBusinessContext } from './useAgentBusinessContext';
 import { useAgentConversationDrafts } from './useAgentConversationDrafts';
 import { createDailyReportInput, dailyReportDate } from './daily-report';
@@ -51,6 +53,7 @@ const editObjective = shallowRef('');
 const editDialogOpen = shallowRef(false);
 const forkObjective = shallowRef('');
 const forkAttachments = shallowRef<AgentAttachment[]>([]);
+const forkAttachmentDraft = shallowRef(new AgentAttachmentDraft(forkAttachments));
 const detail = shallowRef<AgentRun>();
 const selectedConversationId = shallowRef('');
 const rememberedConversationId = readLastAgentSessionId(window.localStorage);
@@ -58,16 +61,30 @@ const selectionInitialized = shallowRef(false);
 const pendingConversationId = shallowRef('');
 let selectionRevision = 0;
 let pendingSelectionRevision = 0;
-const { draft, attachments: draftAttachments, clear: clearConversationDraft, restore: restoreConversationDraft, move: moveConversationDraft,
-  pendingAttachments: pendingDraftAttachments } = useAgentConversationDrafts(selectedConversationId);
+const { draft, attachments: draftAttachments, attachmentDraft: conversationAttachmentDraft, attachmentsPending,
+  clear: clearConversationDraft, restore: restoreConversationDraft, move: moveConversationDraft,
+  pendingAttachments: pendingDraftAttachments, dispose: disposeConversationDrafts } = useAgentConversationDrafts(selectedConversationId);
 const newAttachments = shallowRef<AgentAttachment[]>([]);
+const newAttachmentDraft = shallowRef(new AgentAttachmentDraft(newAttachments));
+const submittingNew = shallowRef(false);
+let panelDisposed = false;
 const leftCollapsed = shallowRef(false);
-const rightCollapsed = shallowRef(false);
+const rightCollapsed = shallowRef(true);
 const { mobile, keyboardOpen, viewportStyle } = useAgentViewport();
 const mobilePanel = shallowRef<'sessions' | 'details' | ''>('');
 watch(mobile, () => { mobilePanel.value = ''; });
-const leftWidth = shallowRef(300);
-const rightWidth = shallowRef(336);
+// 布局和栏宽独立于配色，切换主题时保留用户当前的面板状态。
+const leftWidth = shallowRef(232);
+const rightWidth = shallowRef(320);
+const executionColumnWidth = computed(() => `min(${rightWidth.value}px, 28vw)`);
+function toggleSessions() {
+  if (mobile.value) mobilePanel.value = mobilePanel.value === 'sessions' ? '' : 'sessions';
+  else leftCollapsed.value = !leftCollapsed.value;
+}
+function toggleDetails() {
+  if (mobile.value) mobilePanel.value = mobilePanel.value === 'details' ? '' : 'details';
+  else rightCollapsed.value = !rightCollapsed.value;
+}
 const creating = shallowRef(false);
 watch([selectedConversationId, creating], () => { mobilePanel.value = ''; });
 const conversationPane = useTemplateRef<InstanceType<typeof AgentConversation>>('conversationPane');
@@ -77,15 +94,15 @@ const detailDrawer = computed({ get: () => !!detail.value, set: (open: boolean) 
 const detailSummary = computed(() => detail.value ? summarizeRunExecution(detail.value) : []);
 const detailEvents = computed(() => groupRunExecutionEvents(detail.value?.events || []));
 let savedNewServiceTier: string | null = null;
-try { savedNewServiceTier = window.localStorage.getItem('agent-service-tier:new'); }
-catch { /* 存储不可用时沿用执行器配置 */ }
+try { savedNewServiceTier = window.localStorage.getItem('agent-service-tier:v2:new'); }
+catch { /* 存储不可用时使用工作台普通速度 */ }
 const form = reactive<StartAgentRunInput & { accessMode: AgentAccessMode; reasoningEffort: AgentReasoningEffort | ''; branch: string }>({
   provider: 'codex', mode: 'agent', accessMode: 'workspace', model: '', reasoningEffort: '', objective: '', workspacePath: '', branch: '',
-  serviceTier: savedNewServiceTier === 'default' || savedNewServiceTier === 'priority' ? savedNewServiceTier : undefined,
+  serviceTier: savedNewServiceTier === 'default' || savedNewServiceTier === 'priority' ? savedNewServiceTier : codexWorkbenchDefaults.serviceTier,
 });
 watch(() => form.serviceTier, (value) => {
   if (value) {
-    try { window.localStorage.setItem('agent-service-tier:new', value); }
+    try { window.localStorage.setItem('agent-service-tier:v2:new', value); }
     catch { /* 当前页面仍使用选中的档位 */ }
   }
 });
@@ -130,7 +147,7 @@ const workspaceOptions = computed<AgentWorkspaceOption[]>(() => {
 const canStart = computed(() => !!selectedRuntime.value?.ready && selectedRuntime.value.modes.includes(form.mode)
   && !!selectedModelOption.value && (!effortOptions.value.length || effortOptions.value.includes(form.reasoningEffort as AgentReasoningEffort))
   && (!!form.objective.trim() || !!newAttachments.value.length) && (!newAttachments.value.length || form.provider === 'codex')
-  && !changing.value);
+  && !changing.value && !submittingNew.value && !newAttachmentDraft.value.pending);
 const effortLabels: Record<AgentReasoningEffort, string> = { low: '低', medium: '中', high: '高', xhigh: '超高', max: '极高', ultra: '最高' };
 
 watch(conversations, (items) => {
@@ -196,8 +213,10 @@ watch(selectedModelOption, (option) => {
 }, { immediate: true });
 
 function resetForm() {
+  newAttachmentDraft.value.discard();
   if (newAttachments.value.length) void removePendingAgentAttachments(newAttachments.value);
   newAttachments.value = [];
+  newAttachmentDraft.value = new AgentAttachmentDraft(newAttachments);
   form.provider = 'codex'; form.mode = 'agent'; form.accessMode = 'workspace'; form.model = runtimes.value.find((runtime) => runtime.provider === 'codex')?.defaultModel || '';
   form.reasoningEffort = runtimes.value.find((runtime) => runtime.provider === 'codex')?.models.find((model) => model.id === form.model)?.defaultEffort || '';
   form.objective = ''; form.workspacePath = ''; form.branch = '';
@@ -240,16 +259,22 @@ async function chooseWorkspace() {
   form.branch = selection.branch;
 }
 async function submit() {
-  if (!canStart.value) return;
+  if (!canStart.value || submittingNew.value || newAttachmentDraft.value.pending) return;
   const requestSelectionRevision = selectionRevision;
-  const run = await start({ ...form, serviceTier: form.provider === 'codex' ? codexServiceTier(selectedRuntime.value, form.model, form.serviceTier) : undefined,
-  isolateWorkspace: true, attachmentIds: newAttachments.value.map((item) => item.id) });
-  if (!run) return;
-  newAttachments.value = [];
-  resetForm();
-  if (selectionRevision === requestSelectionRevision) {
-    selectedConversationId.value = run.id;
-    creating.value = false;
+  submittingNew.value = true;
+  try {
+    const run = await start({ ...form, serviceTier: form.provider === 'codex' ? codexServiceTier(selectedRuntime.value, form.model, form.serviceTier) : undefined,
+      isolateWorkspace: true, attachmentIds: newAttachments.value.map((item) => item.id) });
+    if (!run) return;
+    newAttachments.value = [];
+    if (panelDisposed) return;
+    resetForm();
+    if (selectionRevision === requestSelectionRevision) {
+      selectedConversationId.value = run.id;
+      creating.value = false;
+    }
+  } finally {
+    submittingNew.value = false;
   }
 }
 async function openEditMessage(run: AgentRun) {
@@ -276,7 +301,8 @@ async function sendMessage(selection: { provider?: AgentProvider; model: string;
   queuePlacement: AgentQueuePlacement; serviceTier?: AgentServiceTier; workflow?: boolean }) {
   const conversation = selectedConversation.value;
   const objective = draft.value.trim();
-  if (!conversation || changing.value || pendingConversationId.value || (!objective && !draftAttachments.value.length)) return;
+  if (!conversation || changing.value || pendingConversationId.value || attachmentsPending(conversation.id)
+    || (!objective && !draftAttachments.value.length)) return;
   const targetProvider = selection.provider || conversation.latest.provider;
   const switchingProvider = targetProvider !== conversation.latest.provider;
   if (selection.workflow && !switchingProvider) { await startAgentWorkflow({ templateId: 'implement-review', objective,
@@ -332,13 +358,16 @@ async function retryRun(run: AgentRun) {
   }
 }
 function openForkConversation(run: AgentRun) {
+  forkAttachmentDraft.value.discard();
   if (forkAttachments.value.length) void removePendingAgentAttachments(forkAttachments.value);
   forkObjective.value = '';
   forkAttachments.value = [];
+  forkAttachmentDraft.value = new AgentAttachmentDraft(forkAttachments);
   forkSource.value = run;
 }
 function closeForkDialog() {
   if (forkSource.value && changing.value === `fork:${forkSource.value.id}`) return;
+  forkAttachmentDraft.value.discard();
   if (forkAttachments.value.length) void removePendingAgentAttachments(forkAttachments.value);
   forkObjective.value = '';
   forkAttachments.value = [];
@@ -346,10 +375,11 @@ function closeForkDialog() {
 }
 async function forkConversation() {
   const source = forkSource.value;
-  if (!source) return;
+  if (!source || forkAttachmentDraft.value.pending) return;
   const requestSelectionRevision = selectionRevision;
   const next = await fork(source, forkObjective.value, forkAttachments.value.map((item) => item.id));
   if (!next) return;
+  forkAttachmentDraft.value.discard();
   forkAttachments.value = [];
   forkObjective.value = '';
   forkSource.value = undefined;
@@ -407,7 +437,7 @@ async function spawnAgentTask(input: SpawnAgentTaskInput) {
 }
 async function startAgentWorkflow(input: StartAgentTaskWorkflowInput) {
   const conversation = selectedConversation.value;
-  if (!conversation || conversation.source === 'codex' || !input.objective.trim()) return;
+  if (!conversation || conversation.source === 'codex' || !input.objective.trim() || attachmentsPending(conversation.id)) return;
   const revision = selectionRevision;
   const sentDraft = clearConversationDraft(conversation.id)!;
   let accepted = false;
@@ -428,16 +458,21 @@ function modelLabel(run: AgentRun) {
     || run.model || 'CLI 默认';
 }
 onBeforeUnmount(() => {
-  if (newAttachments.value.length) void removePendingAgentAttachments(newAttachments.value);
+  panelDisposed = true;
+  newAttachmentDraft.value.discard();
+  forkAttachmentDraft.value.discard();
+  disposeConversationDrafts();
+  // 已提交但尚未返回的附件可能已被运行接收，不能在离开页面时删除。
+  if (!submittingNew.value && newAttachments.value.length) void removePendingAgentAttachments(newAttachments.value);
   const pending = pendingDraftAttachments();
   if (pending.length) void removePendingAgentAttachments(pending);
-  if (forkAttachments.value.length) void removePendingAgentAttachments(forkAttachments.value);
+  if ((!forkSource.value || changing.value !== `fork:${forkSource.value.id}`) && forkAttachments.value.length) void removePendingAgentAttachments(forkAttachments.value);
 });
 </script>
 
 <template>
-  <section class="agent-panel" :class="{ 'mobile-layout': mobile, 'keyboard-open': keyboardOpen }" :style="{ '--session-column-width': `min(${leftWidth}px, 28vw)`, '--execution-column-width': `min(${rightWidth}px, 28vw)`, ...viewportStyle }">
-    <slot name="navigation" />
+  <section class="agent-panel studio-layout" :class="{ 'mobile-layout': mobile, 'keyboard-open': keyboardOpen }" :style="{ '--session-column-width': `min(${leftWidth}px, 28vw)`, '--execution-column-width': executionColumnWidth, ...viewportStyle }">
+    <button v-if="!mobile && leftCollapsed && (workbenchOpen || creating || !selectedConversation)" type="button" class="studio-navigation-reopen" aria-label="展开会话列表" title="展开会话列表" @click="toggleSessions"><PanelLeftOpen :size="18" /></button>
     <header v-if="mobile" class="mobile-agent-toolbar">
       <button type="button" :aria-expanded="mobilePanel === 'sessions'" @click="mobilePanel = 'sessions'">会话列表</button>
       <strong>启元</strong>
@@ -451,26 +486,30 @@ onBeforeUnmount(() => {
         <AgentResponsivePanel class="session-column" :mobile="mobile" :open="mobile ? mobilePanel === 'sessions' : !leftCollapsed" side="left" title="会话列表" @close="mobilePanel = ''">
         <AgentSessionList :conversations="conversations" :selected-id="selectedConversationId" :runtimes="runtimes"
           :sync-state="data?.codexSync" :usage="data?.codexUsage" :changing="changing" :pinned-ids="pinnedConversationIds" @select="mobilePanel = ''; selectConversation($event); emit('chat')" @create="mobilePanel = ''; openCreate(); emit('chat')"
-          @sync="syncCodexSessions" @refresh="query.refetch()" />
+          @sync="syncCodexSessions" @refresh="query.refetch()" @collapse="toggleSessions">
+          <template #navigation><slot name="navigation" placement="sidebar" :close-navigation="() => { mobilePanel = ''; }" :toggle-sessions="toggleSessions" :sessions-collapsed="false" /></template>
+          <template #navigation-footer><AgentRecoveryDialog :changing="changing" @retry="retryRun" @inspect="detail = $event" /><slot name="navigation" placement="footer" :close-navigation="() => { mobilePanel = ''; }" :toggle-sessions="toggleSessions" :sessions-collapsed="false" /></template>
+        </AgentSessionList>
         </AgentResponsivePanel>
-        <AgentPanelResize v-show="!mobile && !leftCollapsed" v-model="leftWidth" side="left" />
-        <AgentPanelResize v-show="!mobile && !rightCollapsed && !workbenchOpen" v-model="rightWidth" side="right" />
+        <AgentPanelResize v-show="!mobile && !leftCollapsed" v-model="leftWidth" side="left" variant="project-studio" />
+        <AgentPanelResize v-show="!mobile && !rightCollapsed && !workbenchOpen" v-model="rightWidth" side="right" variant="project-studio" />
         <AgentNewConversation v-if="creating" v-show="!workbenchOpen" ref="newConversationPane" v-model:provider="form.provider" v-model:mode="form.mode" v-model:access-mode="form.accessMode" v-model:model="form.model" v-model:service-tier="form.serviceTier" v-model:reasoning-effort="form.reasoningEffort"
           v-model:objective="form.objective" v-model:attachments="newAttachments" v-model:workspace-path="form.workspacePath" v-model:branch="form.branch" class="conversation-column"
-          :runtimes="runtimes" :workspaces="workspaceOptions" :business-options="businessMentions" :changing="changing" :can-start="canStart"
+          :runtimes="runtimes" :workspaces="workspaceOptions" :business-options="businessMentions" :changing="submittingNew ? 'start' : changing" :can-start="canStart" :attachment-draft="newAttachmentDraft"
           @send="submit" @choose-workspace="chooseWorkspace" @configure-models="modelDialog = true" />
         <AgentConversation v-else v-show="!workbenchOpen" ref="conversationPane" v-model="draft" v-model:attachments="draftAttachments" class="conversation-column" :conversation="selectedConversation" :pinned="!!selectedConversation && isPinnedAgentSession(pinnedConversationIds, selectedConversation)" :changing="conversationChanging" :runtimes="runtimes"
-          :left-collapsed="leftCollapsed" :right-collapsed="rightCollapsed" :business-options="businessMentions" @send="sendMessage" @stop="stop" @steer="steer" @remove-queued="deleteQueuedRun" @retry="retryRun" @fork="openForkConversation"
+          :attachment-draft="conversationAttachmentDraft"
+          :left-collapsed="mobile ? mobilePanel !== 'sessions' : leftCollapsed" :right-collapsed="mobile ? mobilePanel !== 'details' : rightCollapsed" :business-options="businessMentions" @send="sendMessage" @stop="stop" @steer="steer" @remove-queued="deleteQueuedRun" @retry="retryRun" @fork="openForkConversation"
           @edit="openEditMessage" @pin="togglePinnedConversation" @rename="renameAgentConversation" @remove="removeAgentConversation" @inspect="detail = $event" @configure-models="modelDialog = true"
-          @toggle-left="mobile ? mobilePanel = 'sessions' : leftCollapsed = !leftCollapsed" @toggle-right="mobile ? mobilePanel = 'details' : rightCollapsed = !rightCollapsed" />
-        <AgentResponsivePanel v-show="!workbenchOpen" class="execution-column" :mobile="mobile" :open="mobile ? mobilePanel === 'details' && !workbenchOpen : !rightCollapsed" side="right" title="会话详情" @close="mobilePanel = ''">
+          @toggle-left="toggleSessions" @toggle-right="toggleDetails" />
+        <AgentResponsivePanel class="execution-column" :mobile="mobile" :open="mobile ? mobilePanel === 'details' && !workbenchOpen : !rightCollapsed && !workbenchOpen" side="right" title="会话详情" @close="mobilePanel = ''">
         <AgentSidePanel :conversation="creating ? undefined : selectedConversation"
           :conversations="conversations"
           :context="businessContext" :loading="businessLoading"
           :workspace-path="sideWorkspacePath" :provider="sideProvider" :stream-status="streamStatus" :spawning="changing.startsWith('spawn:')"
           :changing="!!changing"
           @inspect="detail = $event || selectedConversation?.latest" @compose="mobilePanel = ''; composeBusinessPrompt($event)" @select-conversation="mobilePanel = ''; selectConversation($event)"
-          @spawn-agent="spawnAgentTask" @focus="conversationPane?.focusComposer()" @stop="stop" @retry="retryRun" />
+          @spawn-agent="spawnAgentTask" @focus="conversationPane?.focusComposer()" @stop="stop" @retry="retryRun" @collapse="toggleDetails" />
         </AgentResponsivePanel>
         <div v-if="workbenchOpen" class="workbench-column"><slot name="workbench" :daily-report-available="dailyReportAvailable" :daily-report-pending="dailyReportStarting || !!changing" :generate-daily-report="async (date: string) => { const before = selectedConversationId; await generateDailyReport(date); if (selectedConversationId !== before) emit('chat'); }" :compose="(prompt: string) => { emit('chat'); composeBusinessPrompt(prompt); }" /></div>
       </div>
@@ -478,12 +517,13 @@ onBeforeUnmount(() => {
   </section>
 
   <el-drawer v-model="detailDrawer" :title="detail ? `${providerLabel(detail.provider)}${detailRoundNumber ? ` · 第 ${detailRoundNumber} 轮` : ''} 会话信息` : 'Agent 会话信息'" size="min(760px, 94vw)" class="hub-drawer" destroy-on-close>
-    <template v-if="detail"><dl class="detail-facts"><div><dt>状态</dt><dd><StatusPill :value="detail.status" /></dd></div><div><dt>模式 / 模型</dt><dd>{{ modeLabel(detail.mode) }} · {{ modelLabel(detail) }}{{ detail.reasoningEffort ? ` · Thinking ${effortLabels[detail.reasoningEffort]}` : '' }}</dd></div><div><dt>访问权限</dt><dd>{{ detail.mode !== 'agent' ? '只读访问' : detail.accessMode === 'full' ? '完全访问' : '工作区访问' }}</dd></div><div v-if="detail.isolatedWorkspace"><dt>源项目 / 基线</dt><dd>{{ detail.sourceWorkspacePath }}<br />{{ detail.baseBranch }}</dd></div><div><dt>{{ detail.isolatedWorkspace ? '隔离工作区' : '工作区' }}</dt><dd>{{ detail.workspacePath }}</dd></div><div><dt>{{ detail.branch || detail.headSha ? '分支 / HEAD' : '工作区类型' }}</dt><dd>{{ detail.branch || '普通文件夹' }}<template v-if="detail.headSha"><br />{{ detail.headSha }}</template></dd></div><div><dt>CLI Session ID</dt><dd>{{ detail.sessionId || '尚未取得' }}</dd></div><div><dt>本机 PID</dt><dd>{{ detail.pid || '已结束' }}</dd></div></dl><section class="detail-section"><h3>本轮消息</h3><p>{{ detail.objective }}</p></section><section v-if="detail.result" class="detail-section"><h3>本轮结果</h3><AgentMarkdown :source="detail.result" /></section><el-alert v-if="detail.error" :title="detail.error" type="error" :closable="false" /><section class="detail-section"><h3>执行摘要</h3><div class="drawer-summary"><article v-for="item in detailSummary" :key="item.key" :class="item.tone"><strong>{{ item.title }}</strong><p>{{ item.detail }}</p></article></div><details v-if="detail.events.length" :key="detail.id" class="raw-events" open><summary>查看原始运行记录（{{ detail.events.length }}）</summary><el-timeline v-if="detailEvents.visible.length"><el-timeline-item v-for="event in [...detailEvents.visible].reverse()" :key="event.id" :timestamp="dateTime(event.createdAt)">{{ event.message }}</el-timeline-item></el-timeline><details v-if="detailEvents.routine.length" class="routine-events"><summary>工作区命令：{{ detailEvents.routineSummary }}（{{ detailEvents.routine.length }} 个节点）</summary><el-timeline><el-timeline-item v-for="event in [...detailEvents.routine].reverse()" :key="event.id" :timestamp="dateTime(event.createdAt)">{{ event.message }}</el-timeline-item></el-timeline></details></details></section></template>
+    <template v-if="detail"><dl class="detail-facts"><div><dt>状态</dt><dd><StatusPill :value="detail.status" /></dd></div><div><dt>模式 / 模型</dt><dd>{{ modeLabel(detail.mode) }} · {{ modelLabel(detail) }}{{ detail.reasoningEffort ? ` · Thinking ${effortLabels[detail.reasoningEffort]}` : '' }}</dd></div><div><dt>访问权限</dt><dd>{{ detail.mode !== 'agent' ? '只读访问' : detail.accessMode === 'full' ? '完全访问' : '工作区访问' }}</dd></div><div v-if="detail.isolatedWorkspace"><dt>源项目 / 基线</dt><dd>{{ detail.sourceWorkspacePath }}<br />{{ detail.baseBranch }}</dd></div><div><dt>{{ detail.isolatedWorkspace ? '隔离工作区' : '工作区' }}</dt><dd>{{ detail.workspacePath }}</dd></div><div><dt>{{ detail.branch || detail.headSha ? '分支 / HEAD' : '工作区类型' }}</dt><dd>{{ detail.branch || '普通文件夹' }}<template v-if="detail.headSha"><br />{{ detail.headSha }}</template></dd></div><div><dt>CLI Session ID</dt><dd>{{ detail.sessionId || '尚未取得' }}</dd></div><div><dt>本机 PID</dt><dd>{{ detail.pid || '已结束' }}</dd></div></dl><section class="detail-section"><h3>本轮消息</h3><p>{{ detail.objective }}</p></section><section v-if="detail.result" class="detail-section"><h3>本轮结果</h3><AgentMarkdown :source="detail.result" /></section><el-alert v-if="detail.error" :title="detail.error" type="error" :closable="false" /><section class="detail-section"><h3>执行摘要</h3><div class="drawer-summary"><article v-for="item in detailSummary" :key="item.key" :class="item.tone"><strong>{{ item.title }}</strong><p>{{ item.detail }}</p></article></div><details v-if="detail.events.length" :key="detail.id" class="raw-events" open><summary>查看原始运行记录（{{ detail.events.length }}）</summary><el-timeline v-if="detailEvents.visible.length"><el-timeline-item v-for="event in [...detailEvents.visible].reverse()" :key="event.id" :timestamp="dateTime(event.createdAt)">{{ event.message }}</el-timeline-item></el-timeline><details v-if="detailEvents.routine.length" class="routine-events"><summary>工具原始记录：{{ detailEvents.routineSummary }}</summary><el-timeline><el-timeline-item v-for="event in [...detailEvents.routine].reverse()" :key="event.id" :timestamp="dateTime(event.createdAt)">{{ event.message }}</el-timeline-item></el-timeline></details></details></section></template>
     <template #footer><el-button @click="detail = undefined">关闭</el-button></template>
   </el-drawer>
   <WorkspaceBrowserDialog :open="picker.browserOpen.value" :initial-path="picker.browserPath.value" @select="picker.completeBrowser" @cancel="picker.completeBrowser(null)" />
   <AgentModelSettings v-model="modelDialog" :runtimes="runtimes" :changing="changing" @add="addCustomModel" @remove="removeCustomModel" />
   <AgentForkDialog :open="!!forkSource" v-model:objective="forkObjective" v-model:attachments="forkAttachments" :source="forkSource"
+    :attachment-draft="forkAttachmentDraft"
     :submitting="!!forkSource && changing === `fork:${forkSource.id}`" @submit="forkConversation" @cancel="closeForkDialog" />
   <AgentEditMessageDialog v-model="editObjective" :open="editDialogOpen" :source="editSource"
     :submitting="!!changing" @submit="saveEditedMessage" @close="editDialogOpen = false" />
@@ -500,3 +540,4 @@ onBeforeUnmount(() => {
 
 <style src="./agent-appearance.css"></style>
 <style src="./agent-mobile.css"></style>
+<style src="./agent-studio.css"></style>

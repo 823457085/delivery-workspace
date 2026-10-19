@@ -5,15 +5,34 @@
 import type { AgentRun, CodexSessionDetail, CodexSessionSummary } from '../../../shared/agent-runtime';
 import { codexRunningMessage, codexWriterHeldMessage } from '../../../shared/codex-session-error';
 
+/** 仅用于页面投影，保留合并到本机会话中的同步历史来源。 */
+export type AgentConversationRun = AgentRun & { syncedHistory?: true };
+
 export interface AgentConversation {
   id: string;
   title: string;
-  runs: AgentRun[];
-  latest: AgentRun;
+  runs: AgentConversationRun[];
+  latest: AgentConversationRun;
   updatedAt: string;
   source: 'workspace' | 'codex';
   loaded: boolean;
   archived?: boolean;
+}
+
+/** 同步历史没有实时运行状态；本机完成仅表示这一轮正常结束，不代表业务验收。 */
+export function agentRunStatus(run: AgentConversationRun) {
+  if (run.syncedHistory) return { value: 'history', label: '历史记录', title: '已同步历史记录，当前执行状态未确认' };
+  const value = run.pausedForEdit ? 'paused' : run.status;
+  const labels: Record<string, string> = { running: '执行中', queued: '排队中', completed: '本轮完成', failed: '执行失败',
+    cancelled: '已停止', interrupted: '已中断', paused: '等待编辑' };
+  const label = labels[value] || value;
+  return { value, label, title: value === 'completed' ? '本轮执行已正常结束；业务验收请查看交付结果'
+    : value === 'interrupted' ? '运行已中断，未确认本轮完成' : label };
+}
+
+export function agentConversationStatus(conversation: AgentConversation) {
+  if (conversation.source === 'codex') return { value: 'history', label: '已同步', title: '已同步历史记录，当前执行状态未确认' };
+  return agentRunStatus(conversation.runs.find(run => run.pausedForEdit) || conversation.latest);
 }
 
 export function resumedConversationId(_conversation: AgentConversation, run: AgentRun) {
@@ -92,9 +111,10 @@ export function buildAgentConversations(runs: AgentRun[]): AgentConversation[] {
   }).sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
 }
 
-function codexRun(session: CodexSessionSummary, id: string, objective: string, result: string, createdAt: string, updatedAt: string): AgentRun {
+function codexRun(session: CodexSessionSummary, id: string, objective: string, result: string, createdAt: string, updatedAt: string): AgentConversationRun {
   return {
     id,
+    syncedHistory: true,
     provider: 'codex',
     mode: 'ask',
     accessMode: 'workspace',

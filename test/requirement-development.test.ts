@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 import { prepareRequirementWorkspace, createRequirementDevelopmentService } from '../server/requirement-development.js';
 import { requirementDevelopmentInputSchema, requirementDevelopmentPrompt, type RequirementDevelopmentInput } from '../shared/requirement-development.js';
 import { createAgentRuntimeService, type AgentRuntimeAdapter } from '../server/agent-runtime.js';
+import type { AgentRun } from '../shared/agent-runtime.js';
 
 const exec = promisify(execFile);
 const input: RequirementDevelopmentInput = { title: '需求开发测试', issueKey: 'APEX-123', prdUrl: '', requirement: '', project: '', fixVersion: '', assignee: '',
@@ -129,6 +130,43 @@ test('克隆失败不创建 Agent；重启后不自动重放不确定的启动',
     const reloaded = await createRequirementDevelopmentService(directory, runtime);
     assert.equal((await reloaded.start(payload)).status, 'uncertain');
     assert.equal(starts, 0);
+  } finally { await fs.rm(directory, { recursive: true, force: true }); }
+});
+
+test('失败需求用原输入的新请求可重试，保留旧失败且重复提交不再启动', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'requirement-retry-'));
+  let prepares = 0, starts = 0;
+  const runs = new Map<string, AgentRun>();
+  const runtime = {
+    findRequirementDevelopment: (id: string) => runs.get(id),
+    startRequirementDevelopment: async (_input: unknown, sourceId: string) => {
+      starts++;
+      const run: AgentRun = { id: 'retry-run', provider: 'codex', mode: 'agent', accessMode: 'full', model: 'test', reasoningEffort: 'xhigh',
+        objective: '', workspacePath: '/isolated/new-attempt', branch: input.branch, headSha: 'abc', status: 'completed',
+        sessionId: '', pid: null, result: '', error: '', events: [], createdAt: '', updatedAt: '' };
+      runs.set(sourceId, run); return run;
+    },
+  };
+  try {
+    const service = await createRequirementDevelopmentService(directory, runtime, async () => {
+      prepares++;
+      if (prepares === 1) throw new Error('temporary clone failure');
+      return { workspacePath: '/isolated/new-attempt', headSha: 'abc' };
+    });
+    const firstRequest = request();
+    const failed = await service.start(firstRequest);
+    assert.equal(failed.status, 'failed');
+    assert.equal((await service.start(firstRequest)).status, 'failed');
+    assert.equal(prepares, 1);
+    const retried = await service.start(request(firstRequest.input));
+    assert.equal(retried.status, 'started');
+    assert.equal(retried.runId, 'retry-run');
+    assert.notEqual(retried.id, failed.id);
+    assert.equal(prepares, 2); assert.equal(starts, 1);
+    assert.equal((await service.start(request(firstRequest.input))).runId, retried.runId);
+    assert.equal(prepares, 2); assert.equal(starts, 1);
+    assert.equal(JSON.parse(await fs.readFile(path.join(directory, `${failed.id}.json`), 'utf8')).status, 'failed');
+    await service.close();
   } finally { await fs.rm(directory, { recursive: true, force: true }); }
 });
 

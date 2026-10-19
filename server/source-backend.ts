@@ -6,13 +6,15 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { JiraIssue, ProjectsData } from '../shared/hub.js';
+import type { AutomationData, CatchupData, JiraIssue, ProjectsData } from '../shared/hub.js';
 
 interface JiraBackendModule {
   handleJiraTaskCalendarRequest(request: IncomingMessage, response: ServerResponse): Promise<void>;
   startAutomationScheduler(): void;
   stopAutomationScheduler(): void;
   getCatchupMergeDashboard(refresh?: boolean): Promise<unknown>;
+  getAutomationDashboard(): Promise<AutomationData>;
+  getCatchupDashboard(): Promise<CatchupData>;
   readJiraFixIssue(reference: string): Promise<JiraIssue>;
   jiraFixHandoffRequest(key: string, suffix: string, method?: string, body?: unknown): Promise<unknown>;
   getLocalProjects(refresh?: boolean): Promise<ProjectsData>;
@@ -38,6 +40,8 @@ export interface SourceBackend {
   handles(pathname: string): boolean;
   dispatch(request: IncomingMessage, response: ServerResponse, target: string): Promise<void>;
   readMergePlan(refresh?: boolean): Promise<unknown>;
+  readAutomation(): Promise<AutomationData>;
+  readCatchup(): Promise<CatchupData>;
   readJiraFixIssue(reference: string): Promise<JiraIssue>;
   jiraFixHandoffRequest(key: string, suffix: string, method?: string, body?: unknown): Promise<unknown>;
   readLocalProjects(): Promise<ProjectsData>;
@@ -63,6 +67,8 @@ export async function createSourceBackend(port: number): Promise<SourceBackend> 
       finally { request.url = originalUrl; }
     },
     readMergePlan: (refresh = false) => backend.getCatchupMergeDashboard(refresh),
+    readAutomation: () => backend.getAutomationDashboard(),
+    readCatchup: () => backend.getCatchupDashboard(),
     readJiraFixIssue: reference => backend.readJiraFixIssue(reference),
     jiraFixHandoffRequest: (key, suffix, method, body) => backend.jiraFixHandoffRequest(key, suffix, method, body),
     readLocalProjects: () => backend.getLocalProjects(false),

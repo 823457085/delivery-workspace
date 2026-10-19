@@ -9,6 +9,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream, type Dirent } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { StringDecoder } from 'node:string_decoder';
 import { promisify } from 'node:util';
 import { cliBinary, codexChildEnvironment, cursorBinary } from './cli-runtime.js';
@@ -16,6 +17,8 @@ import { forkCodexThread, runCodexLiveTurn, type LiveSteer } from './codex-live-
 import { codexSessionErrorText } from '../shared/codex-session-error.js';
 import { createCodexModelReader, requestCodexModels } from './codex-models.js';
 import { createCodexSessionSource, type CodexSessionSource } from './codex-session-source.js';
+import { checkAgentRecovery } from './agent-recovery.js';
+import type { createStateBackupStore } from './state-backup.js';
 import { resolveRenamedWorkspace } from './generated-workspace.js';
 import type { ResolvedAgentAttachment } from './agent-attachments.js';
 import { isAgentImageAttachment } from '../shared/agent-runtime.js';
@@ -51,7 +54,7 @@ interface ExecutionContext {
   imagePaths: string[];
   fileAttachments: { name: string; path: string }[];
   signal: AbortSignal;
-  onPid(pid: number): void;
+  onPid(pid: number): void | Promise<void>;
   onSession(sessionId: string): void | Promise<void>;
   onTurn?(turnId: string): void | Promise<void>;
   onEvent(type: AgentRunEvent['type'], message: string): void;
@@ -89,6 +92,7 @@ interface IsolatedWorkspaceIdentity extends WorkspaceIdentity {
 }
 
 interface ServiceOptions {
+  stateBackup?: Awaited<ReturnType<typeof createStateBackupStore>>;
   resolveKnowledge?: (objective: string) => Promise<string>;
   adapters?: AgentRuntimeAdapter[];
   resolveWorkspace?: (workspacePath: string) => Promise<WorkspaceIdentity>;
@@ -102,7 +106,7 @@ interface ServiceOptions {
   openBrowserFile?: (filePath: string) => Promise<void>;
 }
 
-type AgentRuntimeSubscriber = (revision: number, run?: AgentRun) => void;
+type AgentRuntimeSubscriber = (revision: number, run?: AgentRun, finalized?: boolean) => void;
 
 interface StoredCustomModel extends AgentCustomModelInput {
   id: string;
@@ -462,9 +466,9 @@ export function cursorRunArguments(workspacePath: string, mode: AgentRunMode, mo
 
 async function runCli(provider: AgentProvider, binary: string, args: string[], context: ExecutionContext, stdin = '') {
   return new Promise<string>((resolve, reject) => {
-    const child = spawn(binary, args, { cwd: context.run.workspacePath, stdio: ['pipe', 'pipe', 'pipe'], shell: false,
+    const child = spawn(process.execPath, [fileURLToPath(new URL('./cli-start-gate.mjs', import.meta.url))], {
+      cwd: context.run.workspacePath, stdio: ['pipe', 'pipe', 'pipe', 'ipc'], shell: false,
       detached: process.platform !== 'win32', env: provider === 'codex' ? codexChildEnvironment() : process.env });
-    if (child.pid) context.onPid(child.pid);
     const stdout = new StringDecoder('utf8');
     const stderr = new StringDecoder('utf8');
     let buffer = '';
@@ -472,13 +476,21 @@ async function runCli(provider: AgentProvider, binary: string, args: string[], c
     let result = '';
     let stopped = false;
     let failure = '';
+    let childClosed = false;
+    let pidRecording: Promise<void> = Promise.resolve();
+    let outputProcessing: Promise<void> = Promise.resolve();
     let killTimer: ReturnType<typeof setTimeout> | undefined;
     const kill = (signal: NodeJS.Signals) => {
-      try { if (child.pid && process.platform !== 'win32') process.kill(-child.pid, signal); else child.kill(signal); } catch { /* Process already exited. */ }
+      try {
+        if (child.pid && process.platform !== 'win32') process.kill(-child.pid, signal);
+        else if (child.connected) child.send({ type: 'stop', signal }, error => { if (error) child.kill(signal); });
+        else child.kill(signal);
+      } catch { /* Process already exited. */ }
     };
     const terminate = (message: string) => {
       if (failure) return;
       failure = message;
+      if (childClosed) return;
       kill('SIGTERM');
       killTimer = setTimeout(() => kill('SIGKILL'), 5000);
     };
@@ -486,25 +498,31 @@ async function runCli(provider: AgentProvider, binary: string, args: string[], c
     // CLI 可以持续执行长任务；只在主动中断、异常或进程结束时收尾。
     context.signal.addEventListener('abort', stop, { once: true });
     child.on('error', () => reject(new Error(`${provider === 'codex' ? 'Codex' : 'Cursor'} CLI 进程未能启动`)));
-    child.stderr.on('data', (chunk: Buffer) => { diagnostic = (diagnostic + stderr.write(chunk)).slice(-16_384); });
-    child.stdout.on('data', (chunk: Buffer) => {
+    child.stderr!.on('data', (chunk: Buffer) => { diagnostic = (diagnostic + stderr.write(chunk)).slice(-16_384); });
+    child.stdout!.on('data', (chunk: Buffer) => {
       buffer += stdout.write(chunk);
       if (buffer.length > 2_000_000) { context.onEvent('diagnostic', 'CLI 事件输出超过限制，已停止运行'); terminate('CLI 事件输出超过大小限制'); return; }
       let newline: number;
       while ((newline = buffer.indexOf('\n')) >= 0) {
         const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1);
-        try {
-          const event = JSON.parse(line) as Record<string, unknown>;
+        let event: Record<string, unknown>;
+        try { event = JSON.parse(line) as Record<string, unknown>; }
+        catch { continue; /* CLI diagnostics can share stdout; never echo unparsed content to the page. */ }
+        outputProcessing = outputProcessing.then(async () => {
+          if (failure || stopped) return;
           const sessionId = eventSession(provider, event);
-          if (sessionId) context.onSession(sessionId);
+          if (sessionId) await context.onSession(sessionId);
           const message = eventMessage(provider, event);
           if (message) { result = message; context.onEvent('message', message); }
           const lifecycle = lifecycleMessage(provider, context.run.mode, event);
           if (lifecycle) context.onEvent(lifecycle.includes('检查') ? 'tool' : 'lifecycle', lifecycle);
-        } catch { /* CLI diagnostics can share stdout; never echo unparsed content to the page. */ }
+        }).catch(() => terminate('CLI 会话记录保存失败，已停止本轮'));
       }
     });
-    child.on('close', (code) => {
+    child.on('close', async (code) => {
+      childClosed = true;
+      await pidRecording;
+      await outputProcessing;
       clearTimeout(killTimer);
       context.signal.removeEventListener('abort', stop);
       if (stopped || context.signal.aborted) { reject(new Error('运行已停止')); return; }
@@ -512,8 +530,15 @@ async function runCli(provider: AgentProvider, binary: string, args: string[], c
       if (code !== 0) { reject(new Error(agentCliFailureMessage(provider, code, diagnostic))); return; }
       resolve(result || 'CLI 已完成本轮任务，但没有返回可展示的最终文本。');
     });
-    child.stdin.on('error', () => { /* close/error reports the actual failure */ });
-    child.stdin.end(stdin);
+    child.stdin!.on('error', () => { /* close/error reports the actual failure */ });
+    pidRecording = Promise.resolve().then(async () => {
+      if (child.pid) await context.onPid(child.pid);
+      if (!childClosed && !context.signal.aborted) {
+        await new Promise<void>((resolve, reject) => child.send({ type: 'start', command: binary, args, stdin },
+          error => { if (error) reject(error); else resolve(); }));
+        child.stdin!.end();
+      }
+    }).catch(() => terminate('执行进程记录保存失败，已停止本轮'));
     if (context.signal.aborted) stop();
   });
 }
@@ -655,6 +680,15 @@ export async function createAgentRuntimeService(directory: string, options: Serv
   const codexSessionFile = path.join(directory, 'codex-sessions.json');
   const hiddenCodexSessionFile = path.join(directory, 'hidden-codex-sessions.json');
   const conversationTitleFile = path.join(directory, 'conversation-titles.json');
+  const readState = async <T = unknown>(filename: string): Promise<T> => options.stateBackup
+    ? options.stateBackup.readJson<T>(`agent-runtimes/${path.basename(filename)}`)
+    : JSON.parse(await fs.readFile(filename, 'utf8')) as T;
+  const writeState = async (filename: string, value: unknown) => {
+    if (options.stateBackup) { await options.stateBackup.writeJson(`agent-runtimes/${path.basename(filename)}`, value); return; }
+    const temporary = `${filename}.${process.pid}.tmp`;
+    await fs.writeFile(temporary, JSON.stringify(value, null, 2), { mode: 0o600 });
+    await fs.rename(temporary, filename);
+  };
   const adapters = new Map((options.adapters || [createCodexAdapter(), createCursorAdapter()]).map((adapter) => [adapter.id, adapter]));
   const workspaceIdentity = options.resolveWorkspace || resolveWorkspace;
   const workspaceBranchSwitcher = options.switchWorkspaceBranch || switchGitWorkspaceBranch;
@@ -672,12 +706,18 @@ export async function createAgentRuntimeService(directory: string, options: Serv
   let conversationTitles: Record<string, string> = {};
   let codexSync: CodexSyncState = { syncedAt: '', total: 0, hidden: 0 };
   let hiddenCodexSessionIds = new Set<string>();
+  // 同步只刷新工作台已关联的线程；目录、标题和旧同步缓存都不能证明个人会话属于工作台。
+  function filterCodexSessions(sessions: CodexSessionSummary[]) {
+    const linkedIds = new Set(runs.filter((run) => run.provider === 'codex')
+      .flatMap((run) => [run.sessionId, run.originSessionId, run.continuation?.sessionId]).filter(Boolean));
+    return sessions.filter((session) => linkedIds.has(session.id) && !session.archived && !hiddenCodexSessionIds.has(session.id));
+  }
   try {
-    const parsed = JSON.parse(await fs.readFile(file, 'utf8'));
+    const parsed = await readState<AgentRun[]>(file);
     runs = Array.isArray(parsed) ? parsed.map((run) => ({ ...run, model: cleanText(run.model, 100),
       accessMode: run.accessMode === 'full' && run.mode === 'agent' ? 'full' : 'workspace',
       serviceTier: run.serviceTier === 'default' || run.serviceTier === 'priority' ? run.serviceTier : undefined,
-      reasoningEffort: cleanText(run.reasoningEffort, 20), attachments: storedAttachments(run.attachments), liveInputReady: false,
+      reasoningEffort: cleanText(run.reasoningEffort, 20) as AgentReasoningEffort | '', attachments: storedAttachments(run.attachments), liveInputReady: false,
       ...(storedTask(run.task) ? { task: storedTask(run.task) } : {}),
       ...(storedChangedFiles(run.changedFiles) !== undefined ? { changedFiles: storedChangedFiles(run.changedFiles) } : {}) })) : [];
     runs = await Promise.all(runs.map(async (stored) => {
@@ -685,7 +725,7 @@ export async function createAgentRuntimeService(directory: string, options: Serv
       const generated = await resultArtifactFiles(run.workspacePath, run.result);
       return generated.length ? { ...run, changedFiles: mergeChangedFiles(run.changedFiles || [], generated) } : run;
     }));
-  } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Agent 运行记录不可读'); }
+  } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error(`Agent 运行记录不可读：${error instanceof Error ? error.message : String(error)}`); }
   // 修正旧版将 writer 占用误报为执行中的文案；由接口返回准确文案，前端原样显示。
   let migratedSessionErrors = false;
   runs = runs.map(run => {
@@ -712,41 +752,62 @@ export async function createAgentRuntimeService(directory: string, options: Serv
   const migratedQueueRoots = runs.some((run) => !run.queueRootId);
   runs = runs.map((run) => ({ ...run, queueRootId: queueRootFor(run) }));
   try {
-    const parsed = JSON.parse(await fs.readFile(customModelFile, 'utf8'));
+    const parsed = await readState<StoredCustomModel[]>(customModelFile);
     customModels = Array.isArray(parsed) ? parsed.filter((item) => item && typeof item === 'object')
       .map((item) => ({ id: cleanText(item.id, 80), provider: item.provider, modelId: cleanText(item.modelId, 100),
         label: cleanText(item.label, 80), createdAt: cleanText(item.createdAt, 40) }))
       .filter((item): item is StoredCustomModel => !!item.id && ['codex', 'cursor'].includes(item.provider)
         && /^[A-Za-z0-9][A-Za-z0-9._:/\[\]=,-]{0,99}$/.test(item.modelId) && !!item.label) : [];
-  } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('自定义模型配置不可读'); }
+  } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error(`自定义模型配置不可读：${error instanceof Error ? error.message : String(error)}`); }
   try {
-    const parsed = JSON.parse(await fs.readFile(codexSessionFile, 'utf8')) as StoredCodexSessions;
+    const parsed = await readState<StoredCodexSessions>(codexSessionFile);
     codexSessions = Array.isArray(parsed.sessions) ? await Promise.all(parsed.sessions.map(resolveRenamedWorkspace)) : [];
     codexSessionDetails = parsed.details && typeof parsed.details === 'object' && !Array.isArray(parsed.details)
       ? Object.fromEntries(await Promise.all(Object.entries(parsed.details).filter(([id, detail]) => sessionPattern.test(id)
         && detail && typeof detail === 'object' && Array.isArray(detail.turns)).map(async ([id, detail]) => [id, await resolveRenamedWorkspace(detail)]))) : {};
     codexSync = { syncedAt: cleanText(parsed.syncedAt, 40), total: codexSessions.length, hidden: 0 };
-  } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Codex 会话缓存不可读'); }
+  } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error(`Codex 会话缓存不可读：${error instanceof Error ? error.message : String(error)}`); }
   try {
-    const parsed = JSON.parse(await fs.readFile(hiddenCodexSessionFile, 'utf8'));
+    const parsed = await readState<string[]>(hiddenCodexSessionFile);
     hiddenCodexSessionIds = new Set(Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string' && sessionPattern.test(id)) : []);
-  } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Codex 会话隐藏记录不可读'); }
+  } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error(`Codex 会话隐藏记录不可读：${error instanceof Error ? error.message : String(error)}`); }
   try {
-    const parsed = JSON.parse(await fs.readFile(conversationTitleFile, 'utf8'));
+    const parsed = await readState<Record<string, string>>(conversationTitleFile);
     conversationTitles = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
       ? Object.fromEntries(Object.entries(parsed).map(([id, title]) => [id, cleanText(title, 120)])
         .filter(([id, title]) => sessionPattern.test(id) && !!title)) : {};
-  } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('会话标题配置不可读'); }
-  codexSessions = codexSessions.filter((session) => !hiddenCodexSessionIds.has(session.id));
+  } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error(`会话标题配置不可读：${error instanceof Error ? error.message : String(error)}`); }
+  const cachedSessionCount = codexSessions.length;
+  const cachedDetailCount = Object.keys(codexSessionDetails).length;
+  codexSessions = filterCodexSessions(codexSessions);
   const visibleCodexSessionIds = new Set(codexSessions.map((session) => session.id));
   codexSessionDetails = Object.fromEntries(Object.entries(codexSessionDetails)
     .filter(([id]) => visibleCodexSessionIds.has(id)));
+  const migratedCodexSessions = cachedSessionCount !== codexSessions.length
+    || cachedDetailCount !== Object.keys(codexSessionDetails).length;
   codexSync = { ...codexSync, total: codexSessions.length, hidden: hiddenCodexSessionIds.size };
   const now = new Date().toISOString();
   let recovered = false;
   runs = runs.map((run) => activeStatuses.has(run.status) ? { ...run, status: 'interrupted', pid: null,
-    error: '5199 服务重启中断了本机 CLI 观察；未自动重复执行，请从原会话精确续跑。', updatedAt: now } : run);
+    recovery: { previousStatus: run.status as 'running' | 'queued', previousPid: run.pid, state: 'pending', checkedAt: '',
+      message: '服务重启后待核对原执行状态，未自动重复执行。' },
+    error: '5199 服务重启中断了本机 CLI 观察；未自动重复执行，请先核对原会话。', updatedAt: now }
+    : run.status === 'interrupted' && !run.recovery ? { ...run,
+      recovery: { previousStatus: 'interrupted', previousPid: null, state: 'pending', checkedAt: '',
+        message: '历史中断任务尚未核对，未自动重复执行。' } } : run);
   recovered = runs.some((run) => run.updatedAt === now && run.status === 'interrupted');
+  // 结果版本独立于可变运行对象；保留现有实时引用，任何正文或来源时间变化都会先失效，落盘成功后才恢复。
+  const readyResultVersions = new Map<string, Pick<AgentRun, 'result' | 'updatedAt'>>(runs
+    .filter(run => run.status === 'completed' && run.pid === null)
+    .map(run => [run.id, { result: run.result, updatedAt: run.updatedAt }]));
+  function exposeResultReady(run: AgentRun) {
+    return Object.defineProperty(run, 'resultReady', { configurable: true, enumerable: true, get: () => {
+      const saved = readyResultVersions.get(run.id);
+      return run.status === 'completed' && run.pid === null && !!saved
+        && saved.result === run.result && saved.updatedAt === run.updatedAt;
+    } });
+  }
+  runs.forEach(exposeResultReady);
   let writeLock: Promise<unknown> = Promise.resolve();
   let modelWriteLock: Promise<unknown> = Promise.resolve();
   let codexSessionWriteLock: Promise<unknown> = Promise.resolve();
@@ -759,9 +820,10 @@ export async function createAgentRuntimeService(directory: string, options: Serv
     queueKey: string; forkSessionId: string; task: Promise<void> }>();
   const liveInputs = new Map<string, LiveSteer>();
   const waiting = new Map<string, PendingAgentRun>();
-  function pruneRuns() {
-    const protectedIds = new Set([...active.keys(), ...waiting.keys()]);
-    const byId = new Map(runs.map((run) => [run.id, run]));
+  function pruneRuns(candidates = runs, pendingRunId = '') {
+    const protectedIds = new Set([...active.keys(), ...waiting.keys(), ...(pendingRunId ? [pendingRunId] : []),
+      ...candidates.filter(run => run.status === 'interrupted' && run.recovery && run.recovery.state !== 'resumed').map(run => run.id)]);
+    const byId = new Map(candidates.map((run) => [run.id, run]));
     for (const id of [...protectedIds]) {
       let parentId = byId.get(id)?.parentRunId;
       while (parentId && !protectedIds.has(parentId)) {
@@ -770,7 +832,7 @@ export async function createAgentRuntimeService(directory: string, options: Serv
       }
     }
     const latestByConversation = new Map<string, AgentRun>();
-    for (const run of runs) {
+    for (const run of candidates) {
       if (!run.conversationId) continue;
       const latest = latestByConversation.get(run.conversationId);
       if (!latest || compareConversationLatest(run, latest) < 0) latestByConversation.set(run.conversationId, run);
@@ -778,17 +840,18 @@ export async function createAgentRuntimeService(directory: string, options: Serv
     for (const [conversationId, latest] of latestByConversation) {
       protectedIds.add(latest.id);
       if (latest.provider !== 'codex' || !latest.requiresIsolation || latest.continuation) continue;
-      const completed = runs.filter((run) => run.conversationId === conversationId && run.provider === 'codex'
+      const completed = candidates.filter((run) => run.conversationId === conversationId && run.provider === 'codex'
         && run.status === 'completed' && run.codexTurnId)
         .sort(compareConversationLatest)[0];
       if (completed) protectedIds.add(completed.id);
     }
-    runs = [...runs.slice(0, 100), ...runs.slice(100).filter((run) => protectedIds.has(run.id))];
+    return [...candidates.slice(0, 100), ...candidates.slice(100).filter((run) => protectedIds.has(run.id))];
   }
-  const notify = (run?: AgentRun) => {
+  const notify = (run?: AgentRun, finalized = false) => {
+    if (run) exposeResultReady(run);
     revision += 1;
     for (const subscriber of subscribers) {
-      try { subscriber(revision, run); } catch { /* A disconnected browser must not interrupt the runtime. */ }
+      try { subscriber(revision, run, finalized); } catch { /* A disconnected browser must not interrupt the runtime. */ }
     }
   };
   const exclusive = <T>(action: () => Promise<T>) => {
@@ -796,50 +859,64 @@ export async function createAgentRuntimeService(directory: string, options: Serv
     transition = operation.catch(() => {});
     return operation;
   };
-  const persist = () => {
+  const persist = (pendingRun?: AgentRun, finalizedRunId = '') => {
     const operation = writeLock.then(async () => {
-      const temporary = `${file}.${process.pid}.tmp`;
-      await fs.writeFile(temporary, JSON.stringify(runs, null, 2), { mode: 0o600 });
-      await fs.rename(temporary, file);
+      const candidates = pendingRun ? pruneRuns([pendingRun, ...runs], pendingRun.id) : runs;
+      const stored = candidates.map(({ resultReady: _ready, ...run }) => run);
+      await writeState(file, stored);
+      const storedIds = new Set(stored.map(run => run.id));
+      for (const id of readyResultVersions.keys()) if (!storedIds.has(id)) readyResultVersions.delete(id);
+      for (const run of stored) {
+        if (run.status === 'completed' && run.pid === null && (run.id === finalizedRunId || readyResultVersions.has(run.id))) {
+          readyResultVersions.set(run.id, { result: run.result, updatedAt: run.updatedAt });
+        } else readyResultVersions.delete(run.id);
+      }
     });
     writeLock = operation.catch(() => {});
     return operation;
   };
   const persistCustomModels = () => {
-    const operation = modelWriteLock.then(async () => {
-      const temporary = `${customModelFile}.${process.pid}.tmp`;
-      await fs.writeFile(temporary, JSON.stringify(customModels, null, 2), { mode: 0o600 });
-      await fs.rename(temporary, customModelFile);
-    });
+    const operation = modelWriteLock.then(() => writeState(customModelFile, customModels));
     modelWriteLock = operation.catch(() => {});
     return operation;
   };
   const persistCodexSessions = () => {
     const operation = codexSessionWriteLock.then(async () => {
-      const cacheTemporary = `${codexSessionFile}.${process.pid}.tmp`;
-      const hiddenTemporary = `${hiddenCodexSessionFile}.${process.pid}.tmp`;
-      await fs.writeFile(cacheTemporary, JSON.stringify({
+      await writeState(codexSessionFile, {
         syncedAt: codexSync.syncedAt,
         sessions: codexSessions,
         details: codexSessionDetails,
-      }, null, 2), { mode: 0o600 });
-      await fs.writeFile(hiddenTemporary, JSON.stringify([...hiddenCodexSessionIds], null, 2), { mode: 0o600 });
-      await fs.rename(cacheTemporary, codexSessionFile);
-      await fs.rename(hiddenTemporary, hiddenCodexSessionFile);
+      });
+      await writeState(hiddenCodexSessionFile, [...hiddenCodexSessionIds]);
     });
     codexSessionWriteLock = operation.catch(() => {});
     return operation;
   };
   const persistConversationTitles = () => {
-    const operation = conversationTitleWriteLock.then(async () => {
-      const temporary = `${conversationTitleFile}.${process.pid}.tmp`;
-      await fs.writeFile(temporary, JSON.stringify(conversationTitles, null, 2), { mode: 0o600 });
-      await fs.rename(temporary, conversationTitleFile);
-    });
+    const operation = conversationTitleWriteLock.then(() => writeState(conversationTitleFile, conversationTitles));
     conversationTitleWriteLock = operation.catch(() => {});
     return operation;
   };
   if (recovered || migratedQueueRoots || migratedSessionErrors) await persist();
+  if (migratedCodexSessions) await persistCodexSessions();
+
+  function recoveryRuns() {
+    return runs.filter(run => run.recovery && (run.status === 'interrupted' || ['completed', 'resumed'].includes(run.recovery.state)))
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt)).map(exposeResultReady);
+  }
+  async function reconcileRun(run: AgentRun) {
+    if (!run.recovery || run.recovery.state === 'resumed' || run.status !== 'interrupted') return run;
+    const update = await checkAgentRecovery(run, codexSessionSource);
+    Object.assign(run, update);
+    run.updatedAt = new Date().toISOString();
+    await persist(undefined, update.status === 'completed' ? run.id : '');
+    notify(run);
+    return run;
+  }
+  async function reconcileRecovery() {
+    for (const run of recoveryRuns()) await reconcileRun(run);
+    return recoveryRuns();
+  }
 
   async function runtimeHealth(provider: AgentProvider, force = false) {
     const adapter = adapters.get(provider);
@@ -853,26 +930,32 @@ export async function createAgentRuntimeService(directory: string, options: Serv
     return { ...health, models: [...health.models, ...added] };
   }
 
-  function addEvent(run: AgentRun, type: AgentRunEvent['type'], message: string) {
+  function addEvent(run: AgentRun, type: AgentRunEvent['type'], message: string, publish = true) {
     const value = cleanText(message, 1000);
     if (!value) return;
     run.events = [...run.events.slice(-198), { id: randomUUID(), type, message: value, createdAt: new Date().toISOString() }];
     run.updatedAt = new Date().toISOString();
     if (type === 'message') run.result = message;
-    notify(run);
+    if (publish) notify(run);
   }
 
   async function launch(run: AgentRun, adapter: AgentRuntimeAdapter, resumeSessionId = '', imagePaths: string[] = [],
     fileAttachments: { name: string; path: string }[] = [], forkSessionId = '', queueKey = `run:${run.id}`, forkLastTurnId = '') {
     const controller = new AbortController();
     const task = (async () => {
-      run.status = 'running';
-      addEvent(run, 'lifecycle', forkSessionId ? '正在基于原会话创建新会话' : resumeSessionId ? '正在续接原会话' : '正在启动 Agent');
-      await persist();
-      const workspaceBefore = run.mode === 'agent' ? await snapshotGitWorkspace(run.workspacePath) : undefined;
+      let workspaceBefore: GitWorkspaceSnapshot | undefined;
       try {
+        run.status = 'running';
+        addEvent(run, 'lifecycle', forkSessionId ? '正在基于原会话创建新会话' : resumeSessionId ? '正在续接原会话' : '正在启动 Agent');
+        await persist();
+        workspaceBefore = run.mode === 'agent' ? await snapshotGitWorkspace(run.workspacePath) : undefined;
         run.result = await adapter.execute({ run, resumeSessionId, forkSessionId, forkLastTurnId, imagePaths, fileAttachments, signal: controller.signal,
-          onPid: (pid) => { run.pid = pid; run.updatedAt = new Date().toISOString(); notify(run); },
+          onPid: async (pid) => {
+            run.pid = pid;
+            run.updatedAt = new Date().toISOString();
+            await persist();
+            notify(run);
+          },
           onSession: async (sessionId) => {
             if (!run.sessionId) {
               run.sessionId = sessionId;
@@ -917,9 +1000,28 @@ export async function createAgentRuntimeService(directory: string, options: Serv
         run.pid = null;
         run.updatedAt = new Date().toISOString();
         active.delete(run.id);
-        pruneRuns();
-        await persist();
-        notify(run);
+        runs = pruneRuns();
+        try { await persist(undefined, run.id); }
+        catch {
+          const message = '运行记录保存失败；已有结果保留在当前页面，后续消息未派发，请核对原会话后再继续。';
+          const interrupted = [run];
+          for (const [id, pending] of waiting) {
+            if (pending.queueKey !== queueKey) continue;
+            waiting.delete(id);
+            const queued = runs.find(item => item.id === id);
+            if (queued) interrupted.push(queued);
+          }
+          for (const item of interrupted) {
+            item.status = 'interrupted';
+            item.error = message;
+            item.recovery = { previousStatus: item === run ? 'running' : 'queued', previousPid: null,
+              state: 'needs-review', checkedAt: new Date().toISOString(), message };
+            addEvent(item, 'diagnostic', message);
+          }
+          return;
+        }
+        // 自动整理只能消费产物采集、最终账本落盘后的结果，不能依赖过程中的 completed 通知。
+        notify(run, true);
         if (!closing) void exclusive(() => launchReadyQueues(queueKey));
       }
     })();
@@ -988,8 +1090,9 @@ export async function createAgentRuntimeService(directory: string, options: Serv
   function isHistoricalCodexThread(run: AgentRun) {
     if (run.provider !== 'codex') return false;
     const latest = latestConversationRun(conversationIdFor(run));
-    return !!latest && latest.id !== run.id && !!run.sessionId
-      && run.sessionId !== (latest.continuation?.sessionId || latest.sessionId);
+    const latestSessionId = latest?.continuation?.sessionId || latest?.sessionId;
+    return !!latest && latest.id !== run.id && !!run.sessionId && !!latestSessionId
+      && run.sessionId !== latestSessionId;
   }
 
   function dependenciesReady(run: AgentRun) {
@@ -1023,7 +1126,7 @@ export async function createAgentRuntimeService(directory: string, options: Serv
   async function start(input: StartAgentRunInput, parentRunId = '', resumeSessionId = '', originSessionId = '', forkSessionId = '',
     queuePlacement: AgentQueuePlacement = 'append', taskLink?: AgentTaskLink,
     taskWorkspaceMetadata?: Pick<AgentRun, 'sourceWorkspacePath' | 'baseBranch' | 'isolatedWorkspace'>,
-    runOptions: { conversationId?: string; resetQueueRoot?: boolean; forkLastTurnId?: string; branchPrefix?: 'feature/' } = {}) {
+    runOptions: { conversationId?: string; resetQueueRoot?: boolean; forkLastTurnId?: string; branchPrefix?: 'feature/'; recoveryOfRunId?: string } = {}) {
     const attachmentIds = input.attachmentIds || [];
     if (attachmentIds.length && !attachmentResolver) throw new Error('附件服务不可用');
     const resolvedAttachments = attachmentIds.length ? await attachmentResolver!(attachmentIds) : [];
@@ -1070,6 +1173,12 @@ export async function createAgentRuntimeService(directory: string, options: Serv
     if (selectedWorkspace && input.cursorTrustPath !== undefined && (input.provider !== 'cursor' || input.cursorTrustPath !== identity.workspacePath)) {
       throw new Error('Cursor 信任确认与实际工作区不一致，请重新选择并确认目录');
     }
+    // 重启后 active Map 已清空；先核对旧进程，再创建工作区或切分支。
+    for (const interrupted of runs.filter(run => run.status === 'interrupted' && run.recovery
+      && (run.workspacePath === identity.workspacePath || (!!resumeSessionId && run.sessionId === resumeSessionId)))) {
+      await reconcileRun(interrupted);
+      if (interrupted.recovery?.state === 'active') throw new Error(interrupted.recovery.message);
+    }
     let workspaceMetadata: Pick<AgentRun, 'sourceWorkspacePath' | 'baseBranch' | 'isolatedWorkspace'> = taskWorkspaceMetadata
       || (selectedWorkspace ? {} : { sourceWorkspacePath: '', baseBranch: '', isolatedWorkspace: false });
     const parent = parentRunId ? runs.find((run) => run.id === parentRunId) : undefined;
@@ -1098,6 +1207,7 @@ export async function createAgentRuntimeService(directory: string, options: Serv
     const conversationId = runOptions.conversationId || (parent ? conversationIdFor(parent)
       : imported ? conversationIdFor(imported) : runId);
     const run: AgentRun = { id: runId, ...(parentRunId ? { parentRunId } : {}), conversationId,
+      ...(runOptions.recoveryOfRunId ? { recoveryOfRunId: runOptions.recoveryOfRunId } : {}),
       queueRootId: runOptions.resetQueueRoot ? runId : parent?.queueRootId || runId,
       ...(originSessionId ? { originSessionId } : {}),
       provider: input.provider, mode: input.mode, accessMode, model, reasoningEffort,
@@ -1107,17 +1217,19 @@ export async function createAgentRuntimeService(directory: string, options: Serv
       ...(input.cursorTrustPath !== undefined ? { cursorTrustPath: identity.workspacePath } : {}),
       status: 'queued', sessionId: forkSessionId ? '' : resumeSessionId, pid: null, result: '', error: '', events: [],
       ...(input.mode === 'agent' ? { changedFiles: [] } : {}), ...(task ? { task } : {}), createdAt, updatedAt: createdAt };
+    exposeResultReady(run);
+    if (!dependenciesReady(run)) addEvent(run, 'lifecycle', `等待前置 Agent 完成：${run.task?.dependsOnConversationIds.join('、')}`, false);
+    else if (occupied || queued) addEvent(run, 'lifecycle', parentRunId || originSessionId
+      ? queuePlacement === 'next' ? '消息已插入当前会话队列，将在当前轮完成后优先执行'
+        : '消息已加入当前会话队列，正在等待上一轮完成' : '', false);
+    // 持久化成功后才公开队列，失败不会留下幽灵任务或裁剪已有历史。
+    await persist(run);
     runs = [run, ...runs];
     waiting.set(run.id, { adapter, resumeSessionId, forkSessionId, forkLastTurnId: runOptions.forkLastTurnId || '',
       imagePaths: resolvedAttachments.filter(item => isAgentImageAttachment(item.attachment)).map(item => item.filePath),
       fileAttachments: resolvedAttachments.filter(item => input.provider === 'cursor' || !isAgentImageAttachment(item.attachment))
         .map(item => ({ name: item.attachment.name, path: item.filePath })), queuePlacement, queueKey });
-    pruneRuns();
-    if (!dependenciesReady(run)) addEvent(run, 'lifecycle', `等待前置 Agent 完成：${run.task?.dependsOnConversationIds.join('、')}`);
-    else if (occupied || queued) addEvent(run, 'lifecycle', parentRunId || originSessionId
-      ? queuePlacement === 'next' ? '消息已插入当前会话队列，将在当前轮完成后优先执行'
-        : '消息已加入当前会话队列，正在等待上一轮完成' : '');
-    await persist();
+    runs = pruneRuns();
     notify();
     await launchReadyQueues(queueKey);
     return run;
@@ -1383,6 +1495,10 @@ export async function createAgentRuntimeService(directory: string, options: Serv
     accessMode?: AgentAccessMode, queuePlacement: AgentQueuePlacement = 'append', serviceTier?: AgentServiceTier) {
     const source = runs.find((run) => run.id === runId);
     if (!source) throw new Error('找不到该 Agent 运行');
+    if (source.recovery && source.status === 'interrupted') {
+      await reconcileRun(source);
+      if (source.recovery.state === 'active') throw new Error(source.recovery.message);
+    }
     if (queuePlacement === 'next' && source.provider === 'codex' && source.sessionId
       && (source.requiresIsolation || codexSessionConversations(source.sessionId).size > 1)) {
       throw new Error('该 Codex 会话由多个会话共享，请使用发送以先创建独立会话');
@@ -1449,6 +1565,24 @@ export async function createAgentRuntimeService(directory: string, options: Serv
   async function retry(runId: string, cursorTrustPath?: string) {
     const source = runs.find((run) => run.id === runId);
     if (!source) throw new Error('找不到该 Agent 运行');
+    if (source.recovery) {
+      // The existing child also guards against a response/persistence failure after start.
+      const resumed = runs.find(run => run.id === source.recovery?.resumedRunId || run.recoveryOfRunId === source.id);
+      if (resumed) return resumed;
+      await reconcileRun(source);
+      if (source.status === 'completed') throw new Error('已核对该原生轮次结束并同步结果，无需重新执行');
+      if (source.recovery.state === 'active') throw new Error(source.recovery.message);
+      if (source.recovery.previousStatus !== 'queued' && !source.sessionId) throw new Error('中断任务缺少原会话 ID，请核对已执行结果后在原会话明确新的任务，不能自动重建');
+      const parent = source.parentRunId ? runs.find(run => run.id === source.parentRunId) : undefined;
+      if (parent?.recovery && parent.status === 'interrupted' && !parent.recovery.resumedRunId) {
+        throw new Error('前序任务尚未恢复，请先核对并处理前序任务');
+      }
+      if (!source.sessionId && parent) {
+        const restoredParent = runs.find(run => run.id === parent.recovery?.resumedRunId) || parent;
+        if (restoredParent.status !== 'completed' || !restoredParent.sessionId) throw new Error('前序任务尚未结束或缺少会话 ID，请稍后继续');
+        source.sessionId = restoredParent.sessionId;
+      }
+    }
     if (isHistoricalCodexThread(source)) throw new Error('该消息属于旧 Codex 线程，请从会话最新消息续聊');
     if (!['failed', 'interrupted', 'cancelled'].includes(source.status)) throw new Error('只有失败、中断或已取消的运行可以重新执行');
     if (cursorTrustPath !== undefined && (source.provider !== 'cursor' || cursorTrustPath !== source.workspacePath)) {
@@ -1458,10 +1592,18 @@ export async function createAgentRuntimeService(directory: string, options: Serv
       && (source.requiresIsolation || codexSessionConversations(source.sessionId).size > 1)) {
       throw new Error('该旧 Codex 会话由多个会话共享，请先从已完成消息精确隔离后再继续');
     }
-    return start({ provider: source.provider, mode: source.mode, accessMode: source.accessMode, model: source.model,
+    const next = await start({ provider: source.provider, mode: source.mode, accessMode: source.accessMode, model: source.model,
       reasoningEffort: source.reasoningEffort, serviceTier: source.serviceTier, objective: source.objective,
       attachmentIds: source.attachments?.map((item) => item.id) || [], workspacePath: source.workspacePath, cursorTrustPath },
-    source.id, source.sessionId, source.originSessionId, '', 'append');
+    source.id, source.sessionId, source.originSessionId, '', 'append', undefined, undefined,
+    source.recovery ? { recoveryOfRunId: source.id } : {});
+    if (source.recovery) {
+      source.recovery = { ...source.recovery, state: 'resumed', resumedRunId: next.id,
+        message: '已由用户确认继续，后续结果见关联运行。' };
+      await persist();
+      notify(source);
+    }
+    return next;
   }
 
   async function resumeCodexSession(sessionId: string, objective: string, model?: string, reasoningEffort?: AgentReasoningEffort | '', attachmentIds: string[] = [],
@@ -1772,7 +1914,7 @@ export async function createAgentRuntimeService(directory: string, options: Serv
   async function syncCodexSessions() {
     const sessions = await Promise.all((await codexSessionSource.listSessions()).map(resolveRenamedWorkspace));
     const byId = new Map(sessions.map((session) => [session.id, session]));
-    const nextSessions = [...byId.values()].filter((session) => !session.archived && !hiddenCodexSessionIds.has(session.id))
+    const nextSessions = filterCodexSessions([...byId.values()])
       .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
     const nextDetails: Record<string, CodexSessionDetail> = {};
     let cursor = 0;
@@ -1944,7 +2086,7 @@ export async function createAgentRuntimeService(directory: string, options: Serv
     }
     const anchors = [...latestByConversation.values()].filter((run) => !recentIds.has(run.id))
       .sort(compareConversationLatest);
-    return { revision, runtimes, runs: [...recent, ...anchors], codexSessions, conversationTitles, codexSync,
+    return { revision, runtimes, runs: [...recent, ...anchors].map(exposeResultReady), codexSessions, conversationTitles, codexSync,
       activeWorkspaceLocks: [...active.entries()].map(([runId, item]) => ({
       workspacePath: item.workspacePath, runId, provider: item.provider,
     })) };
@@ -1955,7 +2097,7 @@ export async function createAgentRuntimeService(directory: string, options: Serv
     return () => subscribers.delete(subscriber);
   }
 
-  return { dashboard, start: (input: StartAgentRunInput) => exclusive(() => start(input)),
+  return { dashboard, recoveryRuns, reconcileRecovery: () => exclusive(reconcileRecovery), start: (input: StartAgentRunInput) => exclusive(() => start(input)),
     migrateConversationIds: (assignments: { runId: string; conversationId: string; codexTurnId?: string }[]) =>
       exclusive(() => migrateConversationIds(assignments)),
     prepareConversationIsolation: (conversationId: string, preparedWorkspacePath = '') =>

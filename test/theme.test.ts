@@ -5,9 +5,9 @@ import { readFileSync } from 'node:fs';
 import { CUSTOM_THEME_STORAGE_KEY, DEFAULT_CUSTOM_THEME, normalizeCustomTheme, readCustomTheme, saveCustomTheme } from '../src/shared/theme/customTheme';
 import { normalizeTheme, resolveTheme, readTheme, saveTheme, THEME_STORAGE_KEY, themeOptions } from '../src/shared/theme/theme';
 
-test('only supported skins are accepted, invalid preferences fall back to cobalt', () => {
+test('only supported skins are accepted, invalid preferences fall back to studio', () => {
   for (const option of themeOptions) assert.equal(normalizeTheme(option.id), option.id);
-  for (const value of [null, undefined, '', 'pink', {}, 1]) assert.equal(normalizeTheme(value), 'cobalt');
+  for (const value of [null, undefined, '', 'pink', {}, 1]) assert.equal(normalizeTheme(value), 'studio');
 });
 test('system follows OS preference, explicit skins never change with the OS', () => {
   assert.equal(resolveTheme('system', true), 'night');
@@ -20,14 +20,14 @@ test('system follows OS preference, explicit skins never change with the OS', ()
 test('theme round trips through the dedicated local storage key', () => {
   const entries = new Map<string, string>();
   const storage = { getItem: (key: string) => entries.get(key) ?? null, setItem: (key: string, value: string) => { entries.set(key, value); } };
-  assert.equal(readTheme(storage), 'cobalt');
+  assert.equal(readTheme(storage), 'studio');
   assert.equal(saveTheme(storage, 'forest'), true);
   assert.equal(entries.get(THEME_STORAGE_KEY), 'forest');
   assert.equal(readTheme(storage), 'forest');
 });
 test('denied browser storage does not break rendering or switching', () => {
   const storage = { getItem(): string { throw new Error('denied'); }, setItem() { throw new Error('denied'); } };
-  assert.equal(readTheme(storage), 'cobalt');
+  assert.equal(readTheme(storage), 'studio');
   assert.equal(saveTheme(storage, 'night'), false);
 });
 test('custom theme validates colors and clamps wallpaper and message transparency', () => {

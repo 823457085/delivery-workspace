@@ -1,6 +1,7 @@
 /**
  * 设计说明：执行器事件是诊断证据，不适合直接作为用户进度。
- * 这里只做无状态的展示归纳：保留本轮结果、命令数量和最后一条异常，不改写原始事件。
+ * 这里只做无状态的展示归纳：关键过程保留进度说明、状态和异常，工具流水留在完整信息中。
+ * 事件可能只保留最近一段，因此只统计已保存的记录，不推断整轮调用次数或工具执行成功。
  */
 import type { AgentRun } from '../../../shared/agent-runtime';
 
@@ -17,23 +18,17 @@ export interface AgentExecutionEvents {
   routineSummary: string;
 }
 
-function isRoutineCommandEvent(message: string) {
-  return /^(?:Codex|Cursor) 正在(?:执行工作区命令|执行只读检查|调用工作区工具)$/.test(message)
-    || /^(?:工作区命令|只读检查)(?:已完成|未通过)$/.test(message);
+function isRoutineCommandEvent(event: AgentRun['events'][number]) {
+  if (event.type === 'tool') return true;
+  return event.type === 'lifecycle' && (
+    /^(?:Codex|Cursor) 正在(?:执行工作区命令|执行只读检查|调用工作区工具)$/.test(event.message)
+    || /^(?:工作区命令|只读检查)(?:已完成|未通过)$/.test(event.message));
 }
 
 export function groupRunExecutionEvents(events: AgentRun['events']): AgentExecutionEvents {
-  const routine = events.filter((event) => isRoutineCommandEvent(event.message));
-  const visible = events.filter((event) => !isRoutineCommandEvent(event.message));
-  const started = routine.filter((event) => /正在/.test(event.message)).length;
-  const succeeded = routine.filter((event) => /已完成$/.test(event.message)).length;
-  const failed = routine.filter((event) => /未通过$/.test(event.message)).length;
-  const total = Math.max(started, succeeded + failed);
-  const parts = [`${total} 次执行`];
-  if (succeeded) parts.push(`${succeeded} 次完成`);
-  if (failed) parts.push(`${failed} 次未通过`);
-  if (started > succeeded + failed) parts.push(`${started - succeeded - failed} 次执行中`);
-  return { visible, routine, routineSummary: parts.join(' · ') };
+  const routine = events.filter(isRoutineCommandEvent);
+  const visible = events.filter((event) => !isRoutineCommandEvent(event));
+  return { visible, routine, routineSummary: `已保存 ${routine.length} 条工具记录` };
 }
 
 function statusSummary(run: AgentRun): AgentExecutionSummary {
@@ -48,18 +43,11 @@ function statusSummary(run: AgentRun): AgentExecutionSummary {
 }
 
 function commandSummary(run: AgentRun): AgentExecutionSummary | undefined {
-  const messages = run.events.map((event) => event.message);
-  const started = messages.filter((message) => /正在(?:执行工作区命令|执行只读检查|调用工作区工具)/.test(message)).length;
-  const succeeded = messages.filter((message) => /(?:工作区命令|只读检查)已完成/.test(message)).length;
-  const failed = messages.filter((message) => /(?:工作区命令|只读检查)未通过/.test(message)).length;
-  const finished = succeeded + failed;
-  const total = Math.max(started, finished);
-  if (!total) return undefined;
-  const active = run.status === 'running' ? Math.max(0, started - finished) : 0;
-  let detail = `已执行 ${total} 个操作`;
-  if (active) detail += `，${active} 个执行中`;
-  if (failed) detail += run.status === 'running' ? `，${failed} 个需要调整` : `，${failed} 个曾未通过`;
-  return { key: 'commands', title: '工作区操作', detail, tone: failed ? 'warning' : active ? 'progress' : 'success' };
+  const { routine } = groupRunExecutionEvents(run.events);
+  if (!routine.length) return undefined;
+  const failed = routine.filter((event) => /^(?:工作区命令|只读检查)未通过$|^执行(?:失败|未通过)[:：]/.test(event.message)).length;
+  const detail = `${routine.length} 条记录已收起${failed ? `，${failed} 条提示未通过` : '，可在完整信息中查看'}`;
+  return { key: 'commands', title: '工具调用', detail, tone: failed ? 'warning' : 'muted' };
 }
 
 export function summarizeRunExecution(run: AgentRun): AgentExecutionSummary[] {

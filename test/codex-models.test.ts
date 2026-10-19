@@ -4,21 +4,30 @@ import { fileURLToPath } from 'node:url';
 import { createCodexModelReader, normalizeCodexModels, requestCodexModels } from '../server/codex-models.js';
 import { codexServiceTier, modelSpeed } from '../src/features/agent-workbench/model-speed.js';
 import type { AgentRuntimeHealth } from '../shared/agent-runtime.js';
-import { workbenchRuntime } from '../shared/agent-runtime.js';
+import { codexWorkbenchDefaults, workbenchRuntime } from '../shared/agent-runtime.js';
 
 const fixture = fileURLToPath(new URL('./fixtures/codex-model-server.mjs', import.meta.url));
-test('工作台统一模型与极高强度，不复用低强度、不修改原目录或伪造可用能力', () => {
+test('工作台默认 Astra 6 Ultra 普通速度，保留所有模型与推理档位且不修改 CLI 目录', () => {
   const runtime = { provider: 'codex', defaultModel: 'older-model', models: [
+    { id: '', label: 'CLI 默认' },
     { id: 'older-model', label: 'Older', efforts: ['low'], defaultEffort: 'low' },
-    { id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', efforts: ['low', 'max'], defaultEffort: 'low' },
+    { id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', efforts: ['low', 'max', 'ultra'], defaultEffort: 'low' },
+    { id: 'gpt-6-astra', label: 'GPT-6-Astra', efforts: ['medium', 'max', 'ultra'], defaultEffort: 'medium' },
+    { id: 'team-model', label: '团队模型', customId: 'custom-1' },
   ] } as AgentRuntimeHealth;
   const original = structuredClone(runtime);
   const selected = workbenchRuntime(runtime);
-  assert.equal(selected.defaultModel, 'gpt-6.1-sol');
-  assert.deepEqual(selected.models.map(model => [model.id, model.defaultEffort, model.efforts]), [['gpt-6.1-sol', 'max', ['max']]]);
+  assert.equal(selected.defaultModel, 'gpt-6-astra');
+  assert.equal(codexWorkbenchDefaults.serviceTier, 'default');
+  assert.deepEqual(selected.models.map(model => model.id), runtime.models.map(model => model.id));
+  assert.deepEqual(selected.models[3], { ...runtime.models[3], defaultEffort: 'ultra' });
+  assert.deepEqual(selected.models[2], runtime.models[2], '其他模型保留真实默认强度和完整可选档位');
+  assert.deepEqual(selected.models[4], runtime.models[4], '自定义模型仍可选');
   assert.deepEqual(runtime, original);
-  assert.deepEqual(workbenchRuntime({ ...runtime, models: [runtime.models[0]] }).models, []);
-  assert.deepEqual(workbenchRuntime({ ...runtime, models: [{ ...runtime.models[1], efforts: ['low'] }] }).models, []);
+  assert.deepEqual(workbenchRuntime({ ...runtime, models: [runtime.models[2]] }).models, [runtime.models[2]], '默认模型不可用也不隐藏其他选择');
+  const restricted = { ...runtime.models[3], efforts: ['medium'] as const, defaultEffort: 'medium' as const };
+  assert.deepEqual(workbenchRuntime({ ...runtime, models: [{ ...restricted, efforts: [...restricted.efforts] }] }).models,
+    [{ ...restricted, efforts: [...restricted.efforts] }], '不能伪造 CLI 不支持的 Ultra 档位');
   const cursor = { ...runtime, provider: 'cursor' as const };
   assert.equal(workbenchRuntime(cursor), cursor);
 });

@@ -10,8 +10,8 @@ test('执行只包含所选负责人、当前模块和待执行 GET，未配置�
   const scope = executionScope(catalog, copy, assignee);
   assert.equal(executionScope(catalog, copy).length, 0);
   const input = createExecutionInput(progress(), scope, copy, runtime, { requestId, kind: 'integration' });
-  assert.equal(input.model, 'gpt-6.1-sol');
-  assert.equal(input.reasoningEffort, 'max');
+  assert.equal(input.model, 'gpt-6-astra');
+  assert.equal(input.reasoningEffort, 'ultra');
   assert.equal(input.workspacePath, '/fixture/workspace');
   assert.ok(input.objective.includes('"request":"GET /api/v1/fixture/read"'));
   assert.ok(!input.objective.includes('"request":"POST /api/v1/fixture/write"'));

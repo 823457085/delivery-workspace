@@ -99,3 +99,17 @@ test('连续刷新不打断在途请求，只在完成后补一次；卸载后�
     assert.equal(calls, 2);
   } finally { refresh.close(); resolve?.(); }
 });
+
+test('SSE 保留 HTTP 快照中的旧会话，后续完整快照仍可清理历史', () => {
+  const recent = Array.from({ length: 50 }, (_, index) => ({ ...run(`recent-${index}`), conversationId: 'busy',
+    createdAt: new Date(2026, 9, 16, 0, 0, index).toISOString() }));
+  const anchors = ['older-a', 'older-b'].map(id => ({ ...run(id, '', 'completed'), conversationId: id,
+    createdAt: '2026-10-01T00:00:00.000Z' }));
+  const state = createRuntimeStreamState();
+  const initial = state.snapshot(snapshot(1, [...recent, ...anchors]));
+  const updated = state.receive(2, [{ ...recent[0], result: '新正文' }], initial)!;
+  assert.equal(updated.runs.length, 52);
+  assert.ok(anchors.every(anchor => updated.runs.some(item => item.id === anchor.id)));
+  assert.equal(updated.runs.find(item => item.id === recent[0].id)?.result, '新正文');
+  assert.equal(state.snapshot(snapshot(3, [recent[0]])).runs.length, 1);
+});

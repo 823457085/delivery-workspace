@@ -8,12 +8,12 @@ import { AtSign, BookOpen, Bot, BriefcaseBusiness, Eye, File, ImagePlus, Pencil,
 import { isAgentImageAttachment, type AgentAttachment, type AgentProvider, type AgentRunMode } from '../../../shared/agent-runtime';
 import AgentMarkdown from './AgentMarkdown.vue';
 import { useAgentMentions, type AgentMentionKind } from './useAgentMentions';
-import { useAgentAttachments } from './useAgentAttachments';
+import { useAgentAttachments, type AgentAttachmentDraft } from './useAgentAttachments';
 import type { AgentBusinessMention } from './agent-business-context';
 import AgentNotePreview from './AgentNotePreview.vue';
 
 const props = withDefaults(defineProps<{ workspacePath: string; provider?: AgentProvider; modes?: AgentRunMode[]; selectedMode?: AgentRunMode;
-  modeLocked?: boolean; businessOptions?: AgentBusinessMention[]; disabled?: boolean; placeholder?: string; minRows?: number; maxRows?: number; submitOnEnter?: boolean }>(), {
+  modeLocked?: boolean; businessOptions?: AgentBusinessMention[]; attachmentDraft?: AgentAttachmentDraft; disabled?: boolean; placeholder?: string; minRows?: number; maxRows?: number; submitOnEnter?: boolean }>(), {
   provider: 'codex', modes: () => [], businessOptions: () => [], modeLocked: false, disabled: false, placeholder: '', minRows: 2, maxRows: 6, submitOnEnter: false,
 });
 const draft = defineModel<string>({ default: '' });
@@ -24,7 +24,7 @@ const imageInput = useTemplateRef<HTMLInputElement>('imageInput');
 const fileInput = useTemplateRef<HTMLInputElement>('fileInput');
 const preview = shallowRef(false);
 const noteReference = shallowRef('');
-const attachedFiles = useAgentAttachments(attachments, () => props.disabled);
+const attachedFiles = useAgentAttachments(attachments, () => props.disabled, () => props.attachmentDraft);
 const mentions = useAgentMentions(draft, () => ({ workspacePath: props.workspacePath, provider: props.provider,
   modes: props.modes, selectedMode: props.selectedMode, modeLocked: props.modeLocked, businessOptions: props.businessOptions }),
 () => props.disabled || preview.value, (mode) => emit('selectMode', mode));
@@ -61,10 +61,11 @@ async function focusInput() {
 defineExpose({ focusInput });
 
 function onKeydown(event: KeyboardEvent) {
+  if (event.isComposing || event.keyCode === 229) return;
   if (mentions.handleKeydown(event)) return;
-  if (!props.submitOnEnter || event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+  if (!props.submitOnEnter || event.key !== 'Enter' || event.shiftKey) return;
   event.preventDefault();
-  emit('submit');
+  if (!props.disabled && !attachedFiles.pending.value) emit('submit');
 }
 
 function chooseImages() {
@@ -109,7 +110,7 @@ function onDrop(event: DragEvent) { attachedFiles.fromTransfer(event.dataTransfe
           <img v-if="isAgentImageAttachment(attachment)" :src="attachment.url" :alt="attachment.name" />
           <div v-else class="file-preview"><File :size="27" /></div>
           <figcaption :title="attachment.name">{{ attachment.name }}</figcaption>
-          <button type="button" :disabled="disabled" :aria-label="`移除附件 ${attachment.name}`" @click="attachedFiles.remove(attachment)"><X :size="12" /></button>
+          <button type="button" :disabled="disabled || attachedFiles.pending.value" :aria-label="`移除附件 ${attachment.name}`" @click="attachedFiles.remove(attachment)"><X :size="12" /></button>
         </figure>
       </div>
       <el-input v-show="!preview" ref="input" v-model="draft" type="textarea" resize="none" :autosize="{ minRows, maxRows }"

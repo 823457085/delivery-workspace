@@ -58,6 +58,14 @@ export interface CatchupRequirement {
   session: { status: string; jiraKey: string; jiraUrl: string; threadId: string; clientThreadId?: string;
     branch: string; workspacePath: string; result: string; error: string; updatedAt: string };
   architecturePlacement?: Record<string, unknown>;
+  sourceBatch?: string;
+  sourceIncrement?: {
+    category: string; demoState: string; issues: string[]; generatedAt: string;
+    demoCommit: string; targetCommit: string;
+    evidence: { path: string; line: number; endLine?: number; commit: string }[];
+    commits: { sha: string; subject: string; committedAt: string }[];
+    conflicts: { title: string; requirement: string; source: string; decision: string }[];
+  };
 }
 export interface CatchupData {
   source: { updatedAt: string; integrity: string }; counts: Record<string, number>; requirements: CatchupRequirement[];

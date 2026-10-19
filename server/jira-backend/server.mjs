@@ -719,15 +719,11 @@ async function fetchJiraProjectVersions(projectKey, authHeaders) {
   const cached = jiraProjectVersionsCache.get(projectKey);
   if (cached && cached.expiresAt > Date.now()) return cached.versions;
 
-  const response = await fetch(
+  const response = await fetchJiraHandoff(
     `${jiraBaseUrl}/rest/api/2/project/${encodeURIComponent(projectKey)}/versions`,
     { headers: { ...authHeaders, Accept: "application/json" } }
   );
-  if (!response.ok) {
-    throw new Error(`读取 Jira 项目 ${projectKey} 的版本日期失败：HTTP ${response.status}`);
-  }
-
-  const payload = await response.json();
+  const payload = await readJiraResponse(response, `项目 ${projectKey} 的版本日期`);
   const versions = Array.isArray(payload) ? payload : payload.values || [];
   jiraProjectVersionsCache.set(projectKey, {
     versions,
@@ -780,7 +776,7 @@ async function fetchJiraIssues(query) {
 
   while (issues.length < maxResults) {
     const pageSize = Math.min(50, maxResults - issues.length);
-    const response = await fetch(`${jiraBaseUrl}/rest/api/2/search`, {
+    const response = await fetchJiraHandoff(`${jiraBaseUrl}/rest/api/2/search`, {
       method: "POST",
       headers: {
         ...authHeaders,
@@ -793,14 +789,9 @@ async function fetchJiraIssues(query) {
         maxResults: pageSize,
         fields: issueFields
       })
-    });
+    }, true); // Jira search 使用 POST，但只读取任务；只允许这一明确的读取请求有限重试。
 
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`Jira search failed: HTTP ${response.status} ${body.slice(0, 500)}`);
-    }
-
-    const payload = await response.json();
+    const payload = await readJiraResponse(response, "任务");
     total = payload.total || 0;
     const pageIssues = Array.isArray(payload.issues) ? payload.issues : [];
     issues.push(...pageIssues.map(normalizeIssue));
@@ -821,9 +812,36 @@ async function fetchJiraIssues(query) {
   };
 }
 
-// 交接读取允许一次短暂网络故障恢复；评论、流转和指派绝不自动重放。
-async function fetchJiraHandoff(url, options) {
-  const method = options.method || 'GET';
+async function readJiraResponse(response, resource) {
+  await requireJiraReadResponse(response, resource);
+  try { return await response.json(); }
+  catch (cause) {
+    const code = cause?.cause?.code || cause?.code;
+    const diagnostic = typeof code === 'string' && /^[A-Z][A-Z0-9_]{0,47}$/.test(code) ? `（${code}）` : '';
+    const reason = ['AbortError', 'TimeoutError'].includes(cause?.name) ? '响应读取超时或中断'
+      : cause instanceof SyntaxError ? '响应格式不是有效 JSON' : '响应读取中断';
+    throw new Error(`读取 Jira ${resource}失败：${reason}${diagnostic}，请重新读取核对。`, { cause });
+  }
+}
+
+async function requireJiraReadResponse(response, resource) {
+  if (response.ok) return;
+  const reasons = {
+    401: '身份认证失败，请检查已配置的 Jira 登录凭据',
+    403: '当前账号无权访问，请核对 Jira 项目权限',
+    429: '请求过于频繁，请稍后重新读取',
+  };
+  const reason = reasons[response.status] || (response.status >= 500 ? 'Jira 服务暂不可用，请稍后重新读取' : '请核对查询条件');
+  const payload = await response.json().catch(() => null);
+  const details = [
+    ...(Array.isArray(payload?.errorMessages) ? payload.errorMessages : []),
+    ...(payload?.errors && typeof payload.errors === 'object' && !Array.isArray(payload.errors) ? Object.values(payload.errors) : []),
+  ].filter(value => typeof value === 'string' && value.trim());
+  throw new Error(`读取 Jira ${resource}失败：HTTP ${response.status}，${reason}${details.length ? `；${details.join('；')}` : ''}`);
+}
+
+// 明确的读取请求允许一次短暂网络故障恢复；评论、流转和指派绝不自动重放。
+async function fetchJiraHandoff(url, options, readOnly = (options.method || 'GET') === 'GET') {
   const signal = AbortSignal.timeout(30_000);
   for (let attempt = 0; ; attempt++) {
     try {
@@ -831,14 +849,16 @@ async function fetchJiraHandoff(url, options) {
     } catch (cause) {
       const code = cause?.cause?.code || cause?.code;
       const transient = ['ECONNRESET', 'EPIPE', 'ETIMEDOUT', 'EAI_AGAIN', 'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT'].includes(code);
-      if (method === 'GET' && attempt === 0 && transient && !signal.aborted) {
+      if (readOnly && attempt === 0 && transient && !signal.aborted) {
         await new Promise(resolve => setTimeout(resolve, 250));
         continue;
       }
       const diagnostic = typeof code === 'string' && /^[A-Z][A-Z0-9_]{0,47}$/.test(code) ? `（${code}）` : '';
       const reason = signal.aborted || cause?.name === 'TimeoutError' ? '网络请求超时'
-        : /CERT|TLS|SSL|SELF_SIGNED/.test(code || '') ? '证书校验失败' : '网络连接失败';
-      const action = method === 'GET' ? '读取' : '写入';
+        : /CERT|TLS|SSL|SELF_SIGNED/.test(code || '') ? '证书校验失败'
+        : ['ENOTFOUND', 'EAI_AGAIN'].includes(code) ? 'Jira 域名解析失败'
+        : code === 'ECONNREFUSED' ? 'Jira 服务拒绝连接' : '网络连接失败';
+      const action = readOnly ? '读取' : '写入';
       throw new Error(`${action} Jira 失败：${reason}${diagnostic}，请检查 Jira 网络连接后重新核对。`, { cause });
     }
   }
@@ -4170,6 +4190,8 @@ export {
   buildOrderBy,
   claimAutomationJobs,
   getCatchupMergeDashboard,
+  getAutomationDashboard,
+  getCatchupDashboard,
   getLocalProjectId,
   getLocalProjects,
   getSuggestedLocalProjectName,

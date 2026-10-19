@@ -8,7 +8,10 @@ import type { AgentRunStatus } from '../../../shared/agent-runtime';
 import { useWorkspacePicker } from '../../shared/useWorkspacePicker';
 import WorkspaceBrowserDialog from '../../shared/ui/WorkspaceBrowserDialog.vue';
 import { createRequestId } from './request-id';
+import { useRequirementDevelopmentRetry } from './useRequirementDevelopmentRetry';
 import { dateTime } from '../../shared/format';
+import RequirementProgressEditor from './RequirementProgressEditor.vue';
+import { requirementStages, requirementStageLabels, requirementStageStatusLabels } from '../../../shared/requirement-development';
 
 const emit = defineEmits<{ openRun: [id: string] }>();
 const storageKey = 'qiyuan:requirement-development:v1';
@@ -38,6 +41,11 @@ const query = useQuery({ queryKey: ['requirement-development'], retry: false,
   }, refetchInterval: q => q.state.data?.some(item => ['preparing', 'starting'].includes(item.status) || ['queued', 'running'].includes(item.runStatus || '')) ? 2000 : 15000,
 });
 const records = computed(() => query.data.value || []);
+const { retry, retryingId, busy: retryBusy } = useRequirementDevelopmentRetry({ records,
+  blocked: () => pending.value || query.isPending.value || !!query.error.value,
+  refresh: () => query.refetch(), openRun: id => emit('openRun', id),
+});
+const busy = computed(() => pending.value || retryBusy.value);
 const statusLabels: Record<AgentRunStatus, string> = { queued: '会话排队中', running: '开发会话执行中', completed: '本轮已结束 · 查看结果', failed: '本轮失败', interrupted: '已中断', cancelled: '已取消' };
 function status(record: RecordView) {
   if (record.runStatus) return statusLabels[record.runStatus];
@@ -49,7 +57,7 @@ async function chooseDirectory() {
   else if (picker.error.value) ElMessage.error(picker.error.value);
 }
 async function start() {
-  if (pending.value) return;
+  if (busy.value) return;
   const parsed = requirementDevelopmentInputSchema.safeParse(form);
   if (!parsed.success) { ElMessage.warning(parsed.error.issues[0]?.message || '请补齐需求资料'); return; }
   const input = parsed.data;
@@ -77,7 +85,7 @@ async function start() {
   <section class="requirement-development">
     <header class="development-heading"><div><h2>需求开发</h2><p>从需求到代码，在启元会话中连续推进。</p></div><span>Codex CLI · GPT-6 Astra · 超高 · 完全访问</span></header>
     <ol class="development-flow" aria-label="需求开发流程"><li>读取 PRD / Jira</li><li>创建关联任务</li><li>编写技术方案</li><li>流转开发状态</li><li>功能开发</li><li>验证与回读</li></ol>
-    <el-form label-position="top" class="development-form" :disabled="pending" @submit.prevent="start">
+    <el-form label-position="top" class="development-form" :disabled="busy" @submit.prevent="start">
       <div class="form-grid">
         <el-form-item label="需求名称" required><el-input v-model="form.title" placeholder="要实现什么功能" maxlength="300" /></el-form-item>
         <el-form-item label="需求 Jira Key / 链接"><el-input v-model="form.issueKey" placeholder="例如 APEX-123；也可只提供 PRD 或需求正文" /></el-form-item>
@@ -100,7 +108,7 @@ async function start() {
     <section class="development-records"><header><h3>开发启动记录</h3><el-button :loading="query.isFetching.value" @click="query.refetch()">刷新</el-button></header>
       <p v-if="query.error.value">{{ query.error.value.message }}</p>
       <el-empty v-else-if="!records.length && !query.isPending.value" description="尚未启动需求开发" :image-size="48" />
-      <article v-for="record in records" :key="record.id"><div><strong>{{ record.input.title }}</strong><span>{{ status(record) }}</span><small>{{ dateTime(record.createdAt) }} · {{ record.input.branch }}</small><small>{{ record.workspacePath || record.input.parentDirectory }}</small><p v-if="record.error || record.runError">{{ record.error || record.runError }}</p></div><el-button v-if="record.runId" @click="emit('openRun', record.runId)">打开开发会话</el-button></article>
+      <article v-for="record in records" :key="record.id"><div class="record-content"><strong>{{ record.input.title }}</strong><span>{{ status(record) }}</span><small>{{ dateTime(record.createdAt) }} · {{ record.input.branch }}</small><small>{{ record.workspacePath || record.input.parentDirectory }}</small><small v-if="record.progress?.issueKeys.length">关联 Jira：{{ record.progress.issueKeys.join(' · ') }}</small><details v-if="record.progress"><summary>阶段进度 · {{ record.progress.sourceRunId !== record.runId ? '之前运行，待核对' : record.progress.source === 'agent-result' ? '导入本轮报告' : '人工记录' }}</summary><p v-for="stage in requirementStages" :key="stage">{{ requirementStageLabels[stage] }} · {{ requirementStageStatusLabels[record.progress.stages[stage].status] }}<small>{{ record.progress.stages[stage].evidence }}</small></p></details><p v-if="record.error || record.runError || record.progressSyncError">{{ record.error || record.runError || record.progressSyncError }}</p></div><div class="record-actions"><el-button v-if="record.status === 'failed' && !record.runId" :loading="retryingId === record.id" :disabled="busy || !!query.error.value" @click="retry(record)">重试</el-button><RequirementProgressEditor v-if="record.runId" :record="record" /><el-button v-if="record.runId" @click="emit('openRun', record.runId)">打开开发会话</el-button></div></article>
     </section>
   </section>
   <WorkspaceBrowserDialog :open="picker.browserOpen.value" :initial-path="picker.browserPath.value" @select="picker.completeBrowser" @cancel="picker.completeBrowser(null)" />
@@ -112,5 +120,6 @@ async function start() {
 .development-flow{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px;list-style-position:inside;padding:18px 0;margin:10px 0;color:var(--ui-secondary);font-size:13px;border-block:1px solid var(--ui-border)}
 .development-form{padding:20px;border:1px solid var(--ui-border);border-radius:10px;background:var(--ui-surface)}.form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 20px}.wide{grid-column:1/-1}.optional-fields{margin-top:18px}summary{cursor:pointer;font-size:13px;color:var(--ui-secondary)}footer{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-top:20px}footer p{font-size:12px;color:var(--ui-secondary);line-height:1.8;margin:0}
 .development-records{margin-top:24px}.development-records h3{font-size:15px}.development-records article{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:16px 0;border-bottom:1px solid var(--ui-border)}article strong{font-size:14px}article span{font-size:12px;margin-left:16px;color:var(--ui-accent)}article small{display:block;color:var(--ui-secondary);margin-top:6px;overflow-wrap:anywhere}article p{font-size:12px;line-height:1.7}
+.record-content{min-width:0;flex:1}.record-content details{margin-top:12px}.record-actions{display:flex;flex-wrap:wrap;gap:8px}.record-actions .el-button+.el-button{margin-left:0}
 @media(max-width:800px){.form-grid{grid-template-columns:1fr}.development-flow{grid-template-columns:repeat(3,1fr)}.development-heading,footer{align-items:flex-start;flex-direction:column}}
 </style>

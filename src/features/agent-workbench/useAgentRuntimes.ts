@@ -187,6 +187,11 @@ export function useAgentRuntimes() {
     run = { ...run };
     changing.value = `retry:${run.id}`;
     try {
+      if (run.recovery && run.recovery.state !== 'resumed') {
+        try { await ElMessageBox.confirm(`将继续原任务：${run.objective}\n工作区：${run.workspacePath}\n原会话：${run.sessionId || '排队时尚未取得'}\n请确认已核对已有结果和外部操作，继续可能重复执行原指令。`,
+          '确认中断任务恢复', { type: 'warning', confirmButtonText: '已核对，继续', cancelButtonText: '取消', closeOnClickModal: false }); }
+        catch { return undefined; }
+      }
       if (run.provider === 'cursor') {
         try {
           await ElMessageBox.confirm(`将信任当前工作区及其子目录：${run.workspacePath}，并重新执行已保存的任务。Cursor 会读取项目规则；保留原访问权限（${run.accessMode === 'full' ? '完全访问' : '工作区访问'}），不自动批准全部 MCP。`,
