@@ -2,9 +2,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-// 测试显式配置替身端点，分享版本不携带企业 Jira 默认地址。
-process.env.JIRA_BASE_URL = 'https://jira.example.test';
-
 async function readIssues(t: { after(callback: () => void): void }) {
   const previous = process.env.JIRA_AUTH_HEADER;
   process.env.JIRA_AUTH_HEADER = 'Bearer local-test-only';

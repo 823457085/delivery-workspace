@@ -33,7 +33,7 @@ export interface WorkflowRunContext {
   agentRunId: string;
   workspacePath: string;
   branch: string;
-  provider: 'codex' | 'cursor';
+  provider: 'codex' | 'cursor' | 'claude' | 'kiro' | 'antigravity';
 }
 
 export interface RunRecord {

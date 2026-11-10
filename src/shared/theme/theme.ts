@@ -1,9 +1,13 @@
 /** 主题是整个面板的展示偏好，不属于业务数据；用固定预设避免引入可视化配色器或新的状态库。 */
 export const themeOptions = [
-  { id: 'studio', name: '云雾白', description: '浅灰侧栏 · 纯白背景', colors: ['#f7f7f9', '#ffffff', '#5a4ee1'], dark: false, artwork: null },
-  { id: 'split', name: '月光银', description: '浅色背景 · 紫色强调', colors: ['#f7f7f9', '#ffffff', '#5a4ee1'], dark: false, artwork: null },
+  { id: 'bento', name: 'Bento 浅色', description: 'StyleKit · 雾白、靛蓝与紫色', colors: ['#f2f3fa', '#ffffff', '#4f46e5'], dark: false, artwork: null },
+  { id: 'bento-dark', name: 'Bento 深色', description: '深蓝灰底 · 淡紫强调', colors: ['#121321', '#1b1e31', '#b8b2ff'], dark: true, artwork: null },
+  { id: 'studio', name: 'Volt 控制台', description: '中性深灰 · 翡翠绿强调', colors: ['#101010', '#181818', '#10b981'], dark: true, artwork: null },
+  { id: 'split', name: '云雾白', description: '浅色背景 · 紫色强调', colors: ['#f7f7f9', '#ffffff', '#5a4ee1'], dark: false, artwork: null },
+  { id: 'ink', name: '墨笺', description: '暖白纸色 · 朱红强调 · 衬线标题', colors: ['#1c1a16', '#f3efe7', '#b3341c'], dark: false, artwork: null },
   { id: 'cobalt', name: '远洋蓝', description: '深色导航 · 清晰明亮', colors: ['#11213b', '#e9eff7', '#245bd6'], dark: false, artwork: null },
   { id: 'night', name: '极夜黑', description: '低亮背景 · 夜间专注', colors: ['#080e17', '#172232', '#91baff'], dark: true, artwork: null },
+  { id: 'obsidian', name: '纯黑', description: '中性黑底 · 灰白正文', colors: ['#101010', '#171717', '#9dc3fe'], dark: true, artwork: null },
   { id: 'forest', name: '青竹绿', description: '墨绿导航 · 温润纸白', colors: ['#123c34', '#f2efe6', '#0f766e'], dark: false, artwork: null },
   { id: 'violet', name: '星云紫', description: '深紫导航 · 冷调专注', colors: ['#241735', '#f1eef8', '#6d28d9'], dark: false, artwork: null },
   { id: 'amber', name: '琥珀橙', description: '暖棕导航 · 低饱和纸感', colors: ['#3a2416', '#f4efe7', '#9a4c0e'], dark: false, artwork: null },
@@ -12,15 +16,18 @@ export const themeOptions = [
 ] as const;
 export type ThemePreference = typeof themeOptions[number]['id'];
 export type ResolvedTheme = Exclude<ThemePreference, 'system'>;
+export const DEFAULT_THEME: ResolvedTheme = 'bento';
 export const THEME_STORAGE_KEY = 'delivery-workspace.theme.v1';
 export function normalizeTheme(value: unknown): ThemePreference {
-  return themeOptions.some((option) => option.id === value) ? value as ThemePreference : 'studio';
+  if (value === 'github') return 'bento';
+  if (value === 'github-dark') return 'bento-dark';
+  return themeOptions.some((option) => option.id === value) ? value as ThemePreference : DEFAULT_THEME;
 }
 export function resolveTheme(preference: ThemePreference, dark: boolean): ResolvedTheme {
   return preference === 'system' ? dark ? 'night' : 'cobalt' : preference;
 }
 export function readTheme(storage: Pick<Storage, 'getItem'>): ThemePreference {
-  try { return normalizeTheme(storage.getItem(THEME_STORAGE_KEY)); } catch { return 'studio'; }
+  try { return normalizeTheme(storage.getItem(THEME_STORAGE_KEY)); } catch { return DEFAULT_THEME; }
 }
 export function saveTheme(storage: Pick<Storage, 'setItem'>, preference: ThemePreference): boolean {
   try { storage.setItem(THEME_STORAGE_KEY, preference); return true; } catch { return false; }

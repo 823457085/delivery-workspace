@@ -4,14 +4,16 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { createAgentRuntimeService, type AgentRuntimeAdapter } from '../server/agent-runtime.js';
+import { randomUUID } from 'node:crypto';
+import { agentExecutionPrompt, createAgentRuntimeService, type AgentRuntimeAdapter } from '../server/agent-runtime.js';
 import type { AgentRun } from '../shared/agent-runtime.js';
 
 async function fixture(provider: 'codex' | 'cursor' = 'codex', firstSession = true) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'delivery-message-edit-'));
-  const executions: { run: AgentRun; session: string; finish: () => void }[] = [];
+  const executions: { run: AgentRun; session: string; prompt: string; finish: () => void }[] = [];
   let firstConversationId = '';
-  const attachment = { id: 'image-1', name: 'screen.png', mimeType: 'image/png' as const, size: 1, url: '/image-1' };
+  const attachment = { id: '11111111-1111-4111-8111-111111111111', name: 'screen.png', mimeType: 'image/png' as const, size: 1,
+    url: '/api/agent-runtimes/attachments/11111111-1111-4111-8111-111111111111' };
   const adapter: AgentRuntimeAdapter = { id: provider, health: async () => ({
     provider, label: provider, binary: '/mock', version: 'test', authenticated: true, ready: true, message: '',
     modes: ['ask'], models: [{ id: 'test', label: 'test' }], defaultModel: 'test', writable: false, checkedAt: '',
@@ -19,8 +21,11 @@ async function fixture(provider: 'codex' | 'cursor' = 'codex', firstSession = tr
     firstConversationId ||= context.run.conversationId || context.run.id;
     const sessionId = context.resumeSessionId || ((context.run.conversationId || context.run.id) === firstConversationId
       ? 'session-kept' : `session-${context.run.conversationId || context.run.id}`);
-    if (firstSession || executions.length) context.onSession(sessionId);
-    executions.push({ run: context.run, session: context.resumeSessionId || '', finish: () => resolve('done') });
+    if (firstSession || executions.length) {
+      context.onSession(sessionId);
+      if (provider === 'codex') context.onTurn?.(randomUUID());
+    }
+    executions.push({ run: context.run, session: context.resumeSessionId || '', prompt: agentExecutionPrompt(context.run, context.continueOriginal), finish: () => resolve('done') });
     context.onOutput?.('已生成的部分结果');
     const abort = () => reject(new Error('stopped'));
     if (context.signal.aborted) abort(); else context.signal.addEventListener('abort', abort, { once: true });
@@ -114,6 +119,66 @@ test('暂停状态重启可恢复；已完成消息不允许编辑', { timeout: 
     await waitFor(() => next.status === 'completed');
     await assert.rejects(restored.pauseForEdit(next.id), /已完成/);
   } finally { await restored?.close(); await f.close(); }
+});
+
+test('立即重启保存当前轮和排队续聊，恢复原会话后按顺序继续', { timeout: 10000 }, async () => {
+  const f = await fixture();
+  let reopened: Awaited<ReturnType<typeof createAgentRuntimeService>> | undefined;
+  try {
+    const original = await f.start();
+    await waitFor(() => f.executions.length === 1);
+    const queued = await f.service.resume(original.id, '排队续聊');
+    await f.service.prepareWorkspaceRestart();
+    assert.equal(f.service.isIdle(), true);
+    for (const run of [original, queued]) {
+      assert.equal(run.pausedForEdit, true);
+      assert.equal(run.resumeAfterWorkspaceRestart, true);
+    }
+    await f.service.close();
+    reopened = await createAgentRuntimeService(f.directory, f.options);
+    await waitFor(() => f.executions.length === 2);
+    assert.equal(f.executions[1].run.id, original.id);
+    assert.equal(f.executions[1].session, 'session-kept');
+    assert.match(f.executions[1].prompt, /只继续剩余工作/);
+    assert.doesNotMatch(f.executions[1].prompt, /原要求/);
+    assert.deepEqual(f.executions[1].run.attachments, [f.attachment]);
+    assert.equal(reopened.getRun(queued.id)?.status, 'queued');
+    f.executions[1].finish();
+    await waitFor(() => f.executions.length === 3);
+    assert.equal(f.executions[2].run.id, queued.id);
+    assert.equal(f.executions[2].session, 'session-kept');
+    assert.match(f.executions[2].prompt, /排队续聊/);
+  } finally { await reopened?.close(); await f.close(); }
+});
+
+test('重启后可在同一条已暂停的 Codex 消息继续，不重复发提示词或旧轮次', { timeout: 10000 }, async () => {
+  const f = await fixture();
+  let reopened: Awaited<ReturnType<typeof createAgentRuntimeService>> | undefined;
+  try {
+    const original = await f.start();
+    await waitFor(() => f.executions.length === 1);
+    await f.service.stop(original.id);
+    await waitFor(() => original.status === 'cancelled' && f.service.isIdle());
+    const latest = await f.service.resume(original.id, '当前任务内容');
+    await waitFor(() => f.executions.length === 2);
+    await f.service.pauseForEdit(latest.id);
+    const previousTurn = latest.codexTurnId;
+    await f.service.close();
+    reopened = await createAgentRuntimeService(f.directory, f.options);
+    await assert.rejects(reopened.retry(original.id), /已有后续任务/);
+    const [first, second] = await Promise.all([reopened.retry(latest.id), reopened.retry(latest.id)]);
+    await waitFor(() => f.executions.length === 3);
+    assert.equal(first.id, latest.id);
+    assert.equal(second.id, latest.id);
+    assert.equal(first.objective, '当前任务内容');
+    assert.equal(f.executions[2].session, 'session-kept');
+    assert.match(f.executions[2].prompt, /只继续剩余工作/);
+    assert.doesNotMatch(f.executions[2].prompt, /当前任务内容/);
+    assert.notEqual(first.codexTurnId, previousTurn);
+    assert.deepEqual((await reopened.dashboard()).runs.map(run => run.id).sort(), [original.id, latest.id].sort());
+    f.executions[2].finish();
+    await waitFor(() => first.status === 'completed');
+  } finally { await reopened?.close(); await f.close(); }
 });
 
 test('编辑排队消息先暂停当前执行；空内容拒绝后保持暂停，不影响另一会话', { timeout: 10000 }, async () => {

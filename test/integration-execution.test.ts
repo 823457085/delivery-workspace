@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { AgentRun } from '../shared/agent-runtime';
+import { codexWorkbenchDefaults } from '../shared/agent-runtime';
 import { activeExecution, buildExecutionTasks, createExecutionInput, executionRequest, executionScope, taskInterfaces } from '../src/features/integration-execution/execution-plan';
 import { catalog, records, assignee, runtime, requestId, progress } from './fixtures/integration-execution';
 
@@ -10,7 +11,7 @@ test('执行只包含所选负责人、当前模块和待执行 GET，未配置�
   const scope = executionScope(catalog, copy, assignee);
   assert.equal(executionScope(catalog, copy).length, 0);
   const input = createExecutionInput(progress(), scope, copy, runtime, { requestId, kind: 'integration' });
-  assert.equal(input.model, 'gpt-6-astra');
+  assert.equal(input.model, codexWorkbenchDefaults.model);
   assert.equal(input.reasoningEffort, 'ultra');
   assert.equal(input.workspacePath, '/fixture/workspace');
   assert.ok(input.objective.includes('"request":"GET /api/v1/fixture/read"'));

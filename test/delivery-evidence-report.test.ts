@@ -17,6 +17,9 @@ test('验证事实独立读取，保留失败、未验证范围、日志截图�
   const value = { version: 1, validationEvidence: checks() };
   assert.deepEqual(readDeliveryEvidenceReport(report(value)), checks());
   assert.deepEqual(readDeliveryEvidenceReport(report({ ...value, requirementProgress: emptyRequirementProgress() })), checks());
+  assert.deepEqual(readDeliveryEvidenceReport(report({ ...value, decision: 'accepted' })), checks(), '模型的验收结论不会覆盖验证事实');
+  assert.deepEqual(readDeliveryEvidenceReport(report({ ...value, taskPlan: { templateId: 'engineering', steps: ['核验远端'], questions: [] },
+    taskResult: { role: 'verifier', status: 'succeeded' } })), checks(), '同一报告的任务计划不能使有效验证证据丢失');
   const notApplicable = checks(); notApplicable.deployment = { status: 'not_applicable', evidence: '仅本地文档修正，不涉及部署', sha: '' };
   assert.equal(readDeliveryEvidenceReport(report({ ...value, validationEvidence: notApplicable }))?.deployment.status, 'not_applicable');
 });
@@ -24,7 +27,7 @@ test('验证事实独立读取，保留失败、未验证范围、日志截图�
 test('缺失或歧义报告、无证据通过、无理由不适用和短 SHA 均不预填', () => {
   const valid = { version: 1, validationEvidence: checks() };
   for (const invalid of [
-    { version: 1 }, { ...valid, version: 2 }, { ...valid, decision: 'accepted' },
+    { version: 1 }, { ...valid, version: 2 },
     { ...valid, validationEvidence: { ...checks(), browser: undefined } },
     { ...valid, validationEvidence: { ...checks(), tests: { status: 'passed', evidence: '', sha: '' } } },
     { ...valid, validationEvidence: { ...checks(), tests: { status: 'not_applicable', evidence: '', sha: '' } } },

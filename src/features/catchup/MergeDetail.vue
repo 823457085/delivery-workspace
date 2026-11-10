@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import AgentMarkdown from '../agent-workbench/AgentMarkdown.vue';
 /** 完整证据分为结论、逐项测试、截图、分支；不以概要卡代替人工审核材料。 */
 import { computed, ref } from 'vue';
 import type { MergeItem, Screenshot } from '../../../shared/hub';
@@ -6,6 +7,7 @@ import { sourceUrl } from '../../shared/api';
 import { safeUrl, dateTime } from '../../shared/format';
 import StatusPill from '../../shared/ui/StatusPill.vue';
 import WorkspaceContextLinks from '../../shared/ui/WorkspaceContextLinks.vue';
+import { mergeQuickPrompt } from '../agent-workbench/agent-quick-actions';
 import { screenshotGroups, mergeItemGroup } from './domain';
 const props = defineProps<{ item: MergeItem; targetBranch: string }>();
 const tab = ref('evidence-summary');
@@ -17,7 +19,7 @@ const caseResults = computed(() => props.item.testPlan.cases.map((test) => ({ ..
 const otherResults = computed(() => (props.item.pipeline.evidence?.testResults || []).filter((result) => !props.item.testPlan.cases.some((test) => test.id === result.tcId)));
 </script>
 <template>
-  <WorkspaceContextLinks :issue-key="item.jiraKey" :workspace-path="item.sessionWorkspacePath || item.deliveryWorkspacePath" :thread-id="item.pipeline.threadId" :prompt="`交付 ${item.requirementId}：${item.title}。${item.jiraKey ? `@Jira:${item.jiraKey}` : ''} 请检查已有测试证据、阻塞与下一步，先只读分析，不执行合入。`" />
+  <WorkspaceContextLinks :issue-key="item.jiraKey" :workspace-path="item.sessionWorkspacePath || item.deliveryWorkspacePath" :thread-id="item.pipeline.threadId" :prompt="mergeQuickPrompt(item, item.jiraKey)" />
   <div class="inline-links"><StatusPill :value="item.status" :label="excluded ? '无需合入' : undefined" /><StatusPill v-if="!excluded" :value="item.gitStatus" /><a v-if="safeUrl(item.jiraUrl)" :href="safeUrl(item.jiraUrl)" target="_blank">{{ item.jiraKey }} ↗</a><a v-if="safeUrl(item.mrUrl)" :href="safeUrl(item.mrUrl)" target="_blank">MR !{{ item.mrIid }} ↗</a></div>
   <el-alert v-if="excluded" title="无需合入 · 已移出 Admin 交付范围" :description="item.decisionNote" type="info" :closable="false" show-icon />
   <el-alert v-if="item.pipeline.error" :title="item.pipeline.error" type="error" :closable="false" show-icon />
@@ -26,7 +28,7 @@ const otherResults = computed(() => (props.item.pipeline.evidence?.testResults |
   <el-tabs v-model="tab" class="evidence-tabs">
     <el-tab-pane label="执行结论" name="evidence-summary">
       <section v-if="item.pipeline.reviewExceptionHistory?.length" class="detail-section"><h3>例外合入授权记录</h3><div v-for="entry in item.pipeline.reviewExceptionHistory" :key="entry.authorizedRevision" class="test-case"><p>{{ dateTime(entry.authorizedAt) }} · {{ entry.reason }}</p><p class="row-mono">{{ entry.sourceBranch }} → {{ entry.targetBranch }}<br>授权源提交 {{ entry.sourceSha }}</p><p>授权前状态：{{ entry.previousStatus }} · {{ entry.previousError || '未记录错误；不代表自测通过' }}</p></div></section>
-      <section class="detail-section"><h3>功能与本轮结果</h3><p>{{ item.functionSummary }}</p><pre class="detail-text">{{ item.pipeline.result || '暂无本轮结果' }}</pre><p v-if="item.scopeReviewNote">范围说明：{{ item.scopeReviewNote }}</p></section>
+      <section class="detail-section"><h3>功能与本轮结果</h3><p>{{ item.functionSummary }}</p><AgentMarkdown class="detail-text" :source="item.pipeline.result || '暂无本轮结果'" /><p v-if="item.scopeReviewNote">范围说明：{{ item.scopeReviewNote }}</p></section>
       <dl class="detail-facts"><div><dt>审核门禁</dt><dd>{{ item.reviewGate.passed ? '来源门禁通过' : '来源门禁未通过' }} · {{ item.reviewGate.evidenceComplete ? '证据完整' : '证据待补' }}</dd></div><div><dt>逐项结果</dt><dd>{{ item.reviewGate.passedTestCaseIds.length }} PASS / {{ item.reviewGate.skippedTestCaseIds.length }} N/A / {{ item.reviewGate.failedTestCaseIds.length }} FAIL</dd></div><div><dt>缺少的用例</dt><dd>{{ item.reviewGate.missingTestCaseIds.join('、') || '无' }}</dd></div><div><dt>最后更新 / 尝试次数</dt><dd>{{ dateTime(item.pipeline.updatedAt) }} / {{ item.pipeline.attempts }} 次</dd></div></dl>
       <section class="detail-section"><h3>验收标准 · {{ item.acceptanceCriteria.length }} 条</h3><ol><li v-for="ac in item.acceptanceCriteria" :key="ac.id"><strong>{{ ac.id }}</strong><br>{{ ac.text }}</li></ol></section>
       <section class="detail-section"><h3>测试入口与关注范围</h3><ul><li v-for="page in item.testPages" :key="page">{{ page }}</li></ul><p>{{ item.testFocus }}</p><p>冲突区域：{{ item.conflictArea || '未记录' }}</p><p>{{ item.decisionNote }}</p></section>
@@ -35,9 +37,9 @@ const otherResults = computed(() => (props.item.pipeline.evidence?.testResults |
     <el-tab-pane :label="`逐项测试 (${item.testPlan.cases.length})`" name="evidence-tests">
       <p class="source-footnote">{{ item.testPlan.scope }} · {{ item.testPlan.basis }}</p><p class="source-footnote">AC {{ item.testPlan.coverage.acCovered }}/{{ item.testPlan.coverage.acTotal }} · P0 {{ item.testPlan.coverage.p0Total }} 条 · 追踪率 {{ item.testPlan.coverage.traceabilityPercent }}%</p>
       <el-alert title="N/A 是带理由的未验证项，不是 PASS；请核对每条理由与覆盖范围。" type="warning" :closable="false" />
-      <section v-for="test in caseResults" :key="test.id" class="test-case"><header><span><strong>{{ test.id }}</strong> · {{ test.priority }} · {{ test.title }}</span><StatusPill :value="test.result?.status" :label="test.result ? undefined : '缺少结果'" /></header><p class="source-footnote">关联 AC：{{ test.acIds.join('、') }}</p><pre class="detail-text">{{ test.result?.evidence || '来源未回传该用例证据，不能判定通过。' }}</pre><details><summary>展开前置条件、测试步骤和期望结果</summary><h4>前置条件</h4><ul><li v-for="(line, index) in test.preconditions" :key="index">{{ line }}</li></ul><h4>测试步骤</h4><ol><li v-for="(line, index) in test.steps" :key="index">{{ line }}</li></ol><h4>期望结果</h4><ul><li v-for="(line, index) in test.expected" :key="index">{{ line }}</li></ul></details></section>
-      <section v-for="result in otherResults" :key="result.tcId" class="test-case"><header><strong>{{ result.tcId }} · 计划外回传</strong><StatusPill :value="result.status" /></header><pre class="detail-text">{{ result.evidence }}</pre></section>
-      <section class="detail-section"><h3>自动化检查 · {{ item.pipeline.evidence?.automatedChecks?.length || 0 }} 条</h3><div v-for="(check, index) in item.pipeline.evidence?.automatedChecks" :key="index" class="test-case"><header><strong>{{ check.name }}</strong><StatusPill :value="check.status" /></header><pre class="command-line">{{ check.command }}</pre><pre class="detail-text">{{ check.evidence }}</pre></div><el-empty v-if="!item.pipeline.evidence?.automatedChecks?.length" description="来源未提交自动化检查" /></section>
+      <section v-for="test in caseResults" :key="test.id" class="test-case"><header><span><strong>{{ test.id }}</strong> · {{ test.priority }} · {{ test.title }}</span><StatusPill :value="test.result?.status" :label="test.result ? undefined : '缺少结果'" /></header><p class="source-footnote">关联 AC：{{ test.acIds.join('、') }}</p><AgentMarkdown class="detail-text" :source="test.result?.evidence || '来源未回传该用例证据，不能判定通过。'" /><details><summary>展开前置条件、测试步骤和期望结果</summary><h4>前置条件</h4><ul><li v-for="(line, index) in test.preconditions" :key="index">{{ line }}</li></ul><h4>测试步骤</h4><ol><li v-for="(line, index) in test.steps" :key="index">{{ line }}</li></ol><h4>期望结果</h4><ul><li v-for="(line, index) in test.expected" :key="index">{{ line }}</li></ul></details></section>
+      <section v-for="result in otherResults" :key="result.tcId" class="test-case"><header><strong>{{ result.tcId }} · 计划外回传</strong><StatusPill :value="result.status" /></header><AgentMarkdown class="detail-text" :source="result.evidence" /></section>
+      <section class="detail-section"><h3>自动化检查 · {{ item.pipeline.evidence?.automatedChecks?.length || 0 }} 条</h3><div v-for="(check, index) in item.pipeline.evidence?.automatedChecks" :key="index" class="test-case"><header><strong>{{ check.name }}</strong><StatusPill :value="check.status" /></header><pre class="command-line">{{ check.command }}</pre><AgentMarkdown class="detail-text" :source="check.evidence" /></div><el-empty v-if="!item.pipeline.evidence?.automatedChecks?.length" description="来源未提交自动化检查" /></section>
     </el-tab-pane>
     <el-tab-pane :label="`证据截图 (${gallery.length})`" name="evidence-images">
       <el-alert v-if="images.excluded.length" :title="`${images.excluded.length} 张认证或无效截图已隔离，不计为功能证据。原始记录仍保留文件名。`" type="warning" :closable="false" />

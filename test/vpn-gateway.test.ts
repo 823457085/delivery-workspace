@@ -29,7 +29,7 @@ test('VPN config binds only the selected active tunnel address and snapshots the
     en0: [entry('192.168.1.5')], utun0: [entry('10.10.0.2')], ...interfaces,
   });
   assert.deepEqual(config, { network: { address: '10.77.0.2', netmask: '255.255.255.0' }, clients: ['10.77.0.3', '10.77.0.4'] });
-  for (const address of ['172.20.100.2', '172.31.0.2', '192.168.202.2']) {
+  for (const address of ['172.16.88.2', '172.31.0.2', '192.168.202.2']) {
     assert.equal(vpnGatewayConfig({ ...env, DELIVERY_VPN_ADDRESS: address }, { utun8: [entry(address)] }).network.address, address);
   }
 });

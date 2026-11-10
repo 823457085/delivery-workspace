@@ -1,0 +1,126 @@
+/* Bento 控件与独立挂载的弹层共用页面配色。 */
+:root[data-theme]:is([data-theme='bento'], [data-theme='bento-dark']) {
+  --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  --el-border-radius-base: 9px;
+  --el-color-primary-dark-2: color-mix(in srgb, var(--ui-accent) 85%, var(--ui-text));
+  --el-disabled-text-color: var(--ui-muted);
+  --el-disabled-bg-color: var(--ui-raised);
+  --el-disabled-border-color: var(--ui-border);
+  --el-mask-color: color-mix(in srgb, var(--ui-surface) 88%, transparent);
+  --el-mask-color-extra-light: color-mix(in srgb, var(--ui-surface) 45%, transparent);
+}
+
+:where(:root:is([data-theme='bento'], [data-theme='bento-dark'])) body {
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+:root:is([data-theme='bento'], [data-theme='bento-dark']) :is(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: 2px;
+}
+
+:root:is([data-theme='bento'], [data-theme='bento-dark']) :is(.btn, .el-button--default, .el-button--primary.is-plain):not(.primary, .is-link, .is-text) {
+  --el-button-bg-color: var(--ui-raised);
+  --el-button-border-color: var(--ui-border);
+  --el-button-text-color: var(--ui-text);
+  --el-button-hover-bg-color: var(--ui-hover);
+  --el-button-hover-border-color: var(--ui-border);
+  --el-button-hover-text-color: var(--ui-text);
+  --el-button-active-bg-color: var(--ui-hover);
+  --el-button-active-border-color: var(--ui-border);
+  --el-button-active-text-color: var(--ui-text);
+  box-shadow: none;
+}
+
+:root:is([data-theme='bento'], [data-theme='bento-dark']) :is(.btn, .el-button:not(.is-round, .is-circle), .theme-trigger, .theme-option) {
+  border-radius: 9px;
+  font-weight: 600;
+}
+
+:root:is([data-theme='bento'], [data-theme='bento-dark']) .btn { background: var(--ui-raised); color: var(--ui-text); }
+:root:is([data-theme='bento'], [data-theme='bento-dark']) .btn:hover:not(:disabled) { background: var(--ui-hover); }
+:root:is([data-theme='bento'], [data-theme='bento-dark']) .btn.primary {
+  border-color: var(--ui-primary);
+  background: var(--ui-primary);
+  color: var(--ui-on-primary);
+  box-shadow: none;
+}
+:root:is([data-theme='bento'], [data-theme='bento-dark']) .btn.primary:hover:not(:disabled) { background: var(--ui-primary-hover); }
+:root:is([data-theme='bento'], [data-theme='bento-dark']) .el-button--primary:is(.is-link, .is-text) {
+  --el-button-text-color: var(--ui-accent);
+  --el-button-hover-text-color: var(--el-color-primary-dark-2);
+  --el-button-active-text-color: var(--el-color-primary-dark-2);
+}
+:root:is([data-theme='bento'], [data-theme='bento-dark']) :is(.el-button.is-link:not(.is-disabled), .el-link:not(.is-disabled)):hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+:root:is([data-theme='bento'], [data-theme='bento-dark']) :is(.el-tag, .status-pill, .run-badge) {
+  border-radius: 2em;
+  font-weight: 500;
+}
+:root:is([data-theme='bento'], [data-theme='bento-dark']) .run-badge.success { color: var(--ui-success); }
+:root:is([data-theme='bento'], [data-theme='bento-dark']) .run-badge.failed {
+  background: var(--ui-danger-bg);
+  color: var(--ui-danger);
+}
+
+/* 多个独立操作使用间距；按钮组和自带布局的页脚沿用组件布局。 */
+:is(.el-dialog__footer, .el-drawer__footer, .el-empty__bottom):has(> .el-button + .el-button) {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+}
+:is(.el-dialog--center > .el-dialog__footer, .el-empty__bottom):has(> .el-button + .el-button) {
+  justify-content: center;
+}
+:is(.el-dialog__footer, .el-drawer__footer, .el-empty__bottom) > .el-button + .el-button {
+  margin-inline-start: 0;
+}
+
+:root:is([data-theme='bento'], [data-theme='bento-dark']) :is(.el-dialog, .el-message-box, .el-popover, .el-select__popper, .el-picker__popper, .el-dropdown__popper, .el-message, .el-notification) {
+  border: 1px solid var(--ui-border);
+  border-radius: 9px;
+  box-shadow: var(--ui-shadow);
+}
+
+:root:is([data-theme='bento'], [data-theme='bento-dark']) :is(.el-dialog, .el-message-box) {
+  --el-dialog-padding-primary: 18px;
+  --el-dialog-border-radius: 14px;
+  border-radius: 14px;
+  max-width: calc(100vw - 24px);
+}
+:root:is([data-theme='bento'], [data-theme='bento-dark']) :is(.el-dialog__title, .el-message-box__title, .el-drawer__title) {
+  color: var(--ui-text);
+  font: 600 16px/1.5 var(--sans);
+}
+:root:is([data-theme='bento'], [data-theme='bento-dark']) :is(.el-drawer__header, .el-message-box__header) {
+  border-bottom: 1px solid var(--ui-divider);
+  background: var(--ui-raised);
+}
+:root:is([data-theme='bento'], [data-theme='bento-dark']) .el-message-box__header { padding-block: 12px; }
+:root:is([data-theme='bento'], [data-theme='bento-dark']) .el-message-box__headerbtn { top: 8px; border-radius: 9px; }
+:root:is([data-theme='bento'], [data-theme='bento-dark']) .el-message-box__content { padding-top: 16px; }
+:root:is([data-theme='bento'], [data-theme='bento-dark']) .el-overlay.is-message-box { backdrop-filter: none; }
+:root:is([data-theme='bento'], [data-theme='bento-dark']) .hub-drawer.el-drawer { border-radius: 14px 0 0 14px; }
+:root:is([data-theme='bento'], [data-theme='bento-dark']) :is(.el-dialog__headerbtn, .el-drawer__close-btn):hover { color: var(--ui-accent); }
+:root:is([data-theme='bento'], [data-theme='bento-dark']) .theme-popover.el-popover {
+  width: min(340px, calc(100vw - 24px)) !important;
+  padding: 12px;
+}
+:root:is([data-theme='bento'], [data-theme='bento-dark']) .theme-option { min-height: 54px; padding: 7px 9px; }
+:root:is([data-theme='bento'], [data-theme='bento-dark']) :is(.el-select-dropdown__item.is-selected, .el-dropdown-menu__item:focus) {
+  background: var(--ui-accent-soft);
+  color: var(--ui-accent);
+}
+:root:is([data-theme='bento'], [data-theme='bento-dark']) .el-tabs__active-bar { background: var(--ui-accent); }
+:root:is([data-theme='bento'], [data-theme='bento-dark']) .el-tabs__item.is-active { color: var(--ui-text); }
+
+@media (prefers-reduced-motion: reduce) {
+  :root:is([data-theme='bento'], [data-theme='bento-dark']) :is(.workspace-primary-nav button, .el-button, .btn, .theme-trigger) { transition: none; }
+}

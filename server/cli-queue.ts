@@ -36,7 +36,7 @@ async function checkCli() {
   const [version, login] = await Promise.all([
     exec(cliBinary, ['--version'], { timeout: 10_000 }), exec(cliBinary, ['login', 'status'], { timeout: 10_000 }),
   ]);
-  return { version: version.stdout.trim(), authenticated: /Logged in/i.test(login.stdout + login.stderr) };
+  return { version: version.stdout.trim(), authenticated: /(?:Logged in|API key configured)/i.test(login.stdout + login.stderr) };
 }
 export async function createCliQueue(directory: string, options: Options = {}) {
   const file = path.join(directory, 'cli-queue.json');

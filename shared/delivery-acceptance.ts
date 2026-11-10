@@ -1,6 +1,6 @@
 /** 验收是人工核对后的独立记录；Jira、Agent 和历史执行状态都不能替代验收结论。 */
 import { z } from 'zod';
-import { readDeliveryReport } from './delivery-report.js';
+import { readAgentDeliveryReport as readDeliveryReport } from './delivery-report.js';
 
 export const deliveryEvidenceKinds = ['tests', 'browser', 'remote', 'deployment'] as const;
 export type DeliveryEvidenceKind = typeof deliveryEvidenceKinds[number];
@@ -23,14 +23,31 @@ export const deliveryEvidenceSchema = z.object({
   }
 });
 export type DeliveryEvidence = z.infer<typeof deliveryEvidenceSchema>;
+// 仅模型报告读取时忽略额外类别和元数据；正式字段仍复用人工验收的完整校验。
+export const agentDeliveryEvidenceSchema = z.preprocess((value, context) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  for (const [kind, item] of Object.entries(value)) {
+    if (deliveryEvidenceKinds.some(known => known === kind) || !item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const status = (item as Record<string, unknown>).status;
+    if (status === 'failed' || status === 'blocked') context.addIssue({ code: 'custom', path: [kind, 'status'],
+      message: `额外证据 ${kind} 回报 ${status}，须核对其对本次验收的影响，不能忽略明确失败或阻塞` });
+  }
+  return Object.fromEntries(deliveryEvidenceKinds.map(kind => {
+    const item = (value as Record<string, unknown>)[kind];
+    return [kind, item && typeof item === 'object' && !Array.isArray(item)
+      ? Object.fromEntries(['status', 'evidence', 'sha'].map(field => [field, (item as Record<string, unknown>)[field]])) : item];
+  }));
+}, deliveryEvidenceSchema);
 export function emptyDeliveryEvidence(): DeliveryEvidence {
   return Object.fromEntries(deliveryEvidenceKinds.map(kind => [kind, { status: 'pending', evidence: '', sha: '' }])) as DeliveryEvidence;
 }
 // 只读取报告中的验证事实，业务进度和交接字段各自校验；不从普通结果文本推断通过，也不写人工验收。
 const deliveryEvidenceReportSchema = z.object({
-  version: z.literal(1), validationEvidence: deliveryEvidenceSchema,
-  requirementProgress: z.unknown().optional(), jiraHandoff: z.unknown().optional(),
-}).strict();
+  version: z.literal(1), validationEvidence: agentDeliveryEvidenceSchema,
+  verificationCommands: z.array(z.string().min(1).max(2000)).max(30).optional(),
+  requirementProgress: z.unknown().optional(), jiraHandoff: z.unknown().optional(), taskResult: z.unknown().optional(),
+  taskPlan: z.unknown().optional(), requirementDelivery: z.unknown().optional(), requirementLogin: z.unknown().optional(),
+}).strip();
 export function readDeliveryEvidenceReport(result: string): DeliveryEvidence | undefined {
   try { return deliveryEvidenceReportSchema.parse(readDeliveryReport(result)).validationEvidence; }
   catch { return undefined; }
@@ -39,7 +56,7 @@ export const deliveryEvidenceReportPrompt = `在上面的同一个 delivery-repo
 tests / browser / remote / deployment 分别记录测试检查、浏览器验证、远端提交回读、部署验证。status 只能为 pending / passed / failed / not_applicable；每项 evidence 写明本轮实际命令、结果、日志/截图路径或回读链接，并保留真实联调、部署等未验证范围。未执行或证据不足用 pending 并说明缺项；失败用 failed；not_applicable 必须说明范围理由，不能将未执行写成不适用或通过。remote 只有真实远端回读成功才可 passed，sha 填完整 40 或 64 位提交 SHA；其余 sha 填空字符串。每项 evidence 不超过 6000 字。
 该字段仅用于预填待人工核对的验收证据；不填写人工验收结论、不新增执行或外部写入授权，不为填报告而提交、推送、部署。整个最终答复仍只提供一个 delivery-report 代码块。`;
 export const deliveryRecordIdSchema = z.string().max(260)
-  .regex(/^(?:requirement|jira-fix|agent|job|design|catchup|merge):[A-Za-z0-9][A-Za-z0-9:._-]*$/, '交付记录标识无效');
+  .regex(/^(?:requirement|jira-fix|agent|team|job|design|catchup|merge):[A-Za-z0-9][A-Za-z0-9:._-]*$/, '交付记录标识无效');
 export const deliveryAcceptanceSourceSchema = z.object({
   runId: z.string().trim().max(200), updatedAt: z.iso.datetime({ offset: true }),
 }).strict();

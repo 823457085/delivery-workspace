@@ -6,7 +6,7 @@ import { createDailyReportInput, dailyReportDate, isDailyReportDate } from '../s
 const now = new Date(2026, 8, 22, 0, 5);
 const runtime: AgentRuntimeHealth = {
   provider: 'codex', label: 'Codex', binary: '/codex', version: '', authenticated: true, ready: true,
-  message: '', modes: ['ask', 'agent'], models: [{ id: 'gpt-6-astra', label: 'GPT-6-Astra', efforts: ['medium', 'max', 'ultra'], defaultEffort: 'medium' }],
+  message: '', modes: ['ask', 'agent'], models: [{ id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', efforts: ['medium', 'max', 'ultra'], defaultEffort: 'medium' }],
   defaultModel: 'configured-model', configuredServiceTier: 'priority', writable: true, checkedAt: '',
 };
 
@@ -25,7 +25,7 @@ test('日报创建独立只读任务，不复用开发会话、不切分支、�
   assert.equal(input.mode, 'ask');
   assert.equal(input.accessMode, 'workspace');
   assert.equal(input.provider, 'codex');
-  assert.equal(input.model, 'gpt-6-astra');
+  assert.equal(input.model, 'gpt-6.1-sol');
   assert.equal(input.reasoningEffort, 'ultra');
   assert.equal(input.serviceTier, 'default', '不继承 CLI 配置中的倍速');
   assert.equal(input.workspacePath, '/ordinary-folder');
@@ -35,11 +35,11 @@ test('日报创建独立只读任务，不复用开发会话、不切分支、�
   }
 });
 
-test('日报在缺少项目、Codex 或有效模型时不可创建', () => {
+test('日报无需选择项目，仍需要可用的 Codex 和有效模型', () => {
   for (const unavailable of [undefined, { ...runtime, ready: false }, { ...runtime, provider: 'cursor' as const },
     { ...runtime, modes: ['agent'] as AgentRuntimeHealth['modes'] }, { ...runtime, models: [] },
-    { ...runtime, models: [{ id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', efforts: ['low'] as AgentRuntimeHealth['models'][number]['efforts'] }] }]) {
+    { ...runtime, models: [{ id: 'gpt-6-astra', label: 'GPT-6-Astra', efforts: ['low'] as AgentRuntimeHealth['models'][number]['efforts'] }] }]) {
     assert.equal(createDailyReportInput('2026-09-22', '/repo', unavailable, now), undefined);
   }
-  assert.equal(createDailyReportInput('2026-09-22', ' ', runtime, now), undefined);
+  assert.equal(createDailyReportInput('2026-09-22', ' ', runtime, now)?.workspacePath, '');
 });

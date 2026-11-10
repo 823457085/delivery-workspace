@@ -39,6 +39,7 @@ export interface JiraFixRecord {
   workspacePath: string; headSha: string; runId: string; error: string; createdAt: string;
   runStatus?: AgentRunStatus; runError?: string;
   handoff?: JiraFixHandoffState;
+  groupRoomId?: string; groupProgress?: import('./agent-group-chat.js').GroupExecutionProgress;
 }
 export function repositoryIdentity(repository: string) {
   return repository.trim().replace(/^\w+@([^:]+):/, '$1/').replace(/^(?:https?|ssh):\/\/(?:[^@/]+@)?/, '').replace(/(?:\.git)?\/?$/, '');
@@ -59,6 +60,10 @@ export function matchJiraFixProjects(issue: JiraIssue, bindings: JiraFixProject[
   return [...new Map(candidates.map(item => [repositoryIdentity(item.repository), item])).values()]
     .map(item => bindings.find(binding => binding.projectKey === issue.project && repositoryIdentity(binding.repository) === repositoryIdentity(item.repository)) || item);
 }
+/** 修复交接报告约定；工作台导入 jiraHandoff 为待确认草稿，validationEvidence 供验收预填。 */
+export const jiraFixReportPrompt = `本轮最终答复附一个代码块，语言标记为 delivery-report，开始围栏必须顶格，不放在列表、引用或格式示例中。JSON 格式为 {"version":1,"jiraHandoff":{"cause":"","impact":"","suggestion":"","conclusion":""}}。
+四个字段分别填写问题原因、影响范围、测试建议、自测结论，每项必须有实际内容且不超过 6000 字。conclusion 写明实际运行的验证命令、结果与证据路径，以及未验证项和阻塞；没有执行时如实说明，不能把会话结束写成验证通过。只提供本轮可核对的交接事实，不填写 Jira 流转、指派、发布授权或人工验收结论。工作台会将有效报告保存为待用户确认的草稿，不自动发布。
+${deliveryEvidenceReportPrompt}`;
 export function jiraFixPrompt(record: JiraFixRecord) {
   return `修复 Jira：${record.issue?.key} ${record.issue?.summary}
 
@@ -68,9 +73,7 @@ export function jiraFixPrompt(record: JiraFixRecord) {
 本次只授权读取 Jira、局部代码修复与验证；未经用户另行明确要求，不得创建 Jira 子任务、评论或流转状态，不得写 Confluence、提交、推送、创建 MR、合并或部署。
 结束时报告根因、修改文件、验证命令与结果以及未验证项；执行结束不等于问题验收通过。另提供供用户确认的四段交接草稿：问题原因、影响范围、测试建议、自测结论；只填写有证据的事实，证据不足或未验证时直接说明实际情况，不要写【待开发填写】、【待开发确认】等占位文字，不要自动发布到 Jira。
 
-本轮最终答复附一个代码块，语言标记为 delivery-report，开始围栏必须顶格，不放在列表、引用或格式示例中。JSON 格式为 {"version":1,"jiraHandoff":{"cause":"","impact":"","suggestion":"","conclusion":""}}。
-四个字段分别填写问题原因、影响范围、测试建议、自测结论，每项必须有实际内容且不超过 6000 字。conclusion 写明实际运行的验证命令、结果与证据路径，以及未验证项和阻塞；没有执行时如实说明，不能把会话结束写成验证通过。只提供本轮可核对的交接事实，不填写 Jira 流转、指派、发布授权或人工验收结论。工作台会将有效报告保存为待用户确认的草稿，不自动发布。
-${deliveryEvidenceReportPrompt}
+${jiraFixReportPrompt}
 
 以下为资料快照和用户补充：
 ${JSON.stringify({ issue: record.issue, notes: record.input.notes }, null, 2)}`;

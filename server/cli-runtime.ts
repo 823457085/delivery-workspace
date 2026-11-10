@@ -30,6 +30,7 @@ export function resolveCliBinaries(environment: NodeJS.ProcessEnv = process.env,
     path.join(home, 'Applications', app), path.join('/Applications', app),
   ].flatMap(appRoot => [
     path.join(appRoot, 'Contents/Resources/codex'),
+    path.join(appRoot, 'Contents/Resources/codex-cli/bin/codex'),
     path.join(appRoot, 'Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex'),
   ])) : [];
   const codexCandidates = [environment.DELIVERY_CODEX_BIN, ...desktopCandidates, findCliOnPath('codex', environment)]
@@ -47,6 +48,36 @@ const binaries = resolveCliBinaries();
 export const cliBinary = binaries.codex;
 export const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
 export const cursorBinary = binaries.cursor;
+
+export const claudeBinary = process.env.DELIVERY_CLAUDE_BIN || [
+  path.join(os.homedir(), '.local/bin/claude'),
+  path.join(os.homedir(), '.local/share/delivery-ai-clis/node_modules/.bin/claude'),
+].find(candidate => fs.existsSync(candidate)) || 'claude';
+
+export const kiroBinary = process.env.DELIVERY_KIRO_BIN || [
+  path.join(os.homedir(), '.local/bin/kiro-cli'),
+  '/opt/homebrew/bin/kiro-cli',
+  '/usr/local/bin/kiro-cli',
+  ...(process.env.PATH || '').split(path.delimiter).filter(Boolean).map(directory => path.join(directory, 'kiro-cli')),
+].find(candidate => fs.existsSync(candidate)) || 'kiro-cli';
+
+export const antigravityBinary = process.env.DELIVERY_ANTIGRAVITY_BIN || [
+  path.join(os.homedir(), '.local/bin/agy'),
+  '/opt/homebrew/bin/agy',
+  '/usr/local/bin/agy',
+  ...(process.env.PATH || '').split(path.delimiter).filter(Boolean).map(directory => path.join(directory, 'agy')),
+].find(candidate => fs.existsSync(candidate)) || 'agy';
+
+export const deepseekBinary = process.env.DELIVERY_DEEPSEEK_BIN || [
+  '/opt/homebrew/bin/dsh', '/usr/local/bin/dsh',
+  ...(process.env.PATH || '').split(path.delimiter).filter(Boolean).map(directory => path.join(directory, 'dsh')),
+].find(candidate => fs.existsSync(candidate)) || 'dsh';
+
+export function claudeChildEnvironment(source: NodeJS.ProcessEnv = process.env) {
+  const environment: NodeJS.ProcessEnv = { ...source, DISABLE_AUTOUPDATER: '1' };
+  delete environment.CLAUDECODE;
+  return environment;
+}
 
 export function codexChildEnvironment(source: NodeJS.ProcessEnv = process.env) {
   const environment = { ...source };

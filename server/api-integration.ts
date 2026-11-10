@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { loadIntegrationCatalog } from './integration-catalog.js';
+import type { IntegrationCatalog } from '../shared/integration-catalog.js';
 import { bffIntegrationStatuses, integrationStatuses, type IntegrationState } from '../shared/api-integration.js';
 
 const stage = z.object({ owner: z.string().max(200), startDate: z.string().regex(/^(\d{4}-\d{2}-\d{2})?$/), endDate: z.string().regex(/^(\d{4}-\d{2}-\d{2})?$/), notes: z.string().max(20000) }).strict();
@@ -13,9 +14,8 @@ const updateSchema = z.discriminatedUnion('kind', [
 ]);
 const stateSchema = z.object({ stages: z.record(z.string(), stage.extend({ updatedAt: z.string() })), operations: z.record(z.string(), operation.extend({ updatedAt: z.string() })) });
 
-export async function createIntegrationStore(directory: string) {
-  const catalog = await loadIntegrationCatalog();
-  const { plan } = catalog;
+export async function createIntegrationStore(directory: string, catalog?: IntegrationCatalog) {
+  const { plan } = catalog ?? await loadIntegrationCatalog();
   await fs.mkdir(directory, { recursive: true });
   const file = path.join(directory, 'api-integration.json');
   let state: IntegrationState = { stages: {}, operations: {} };
@@ -40,5 +40,5 @@ export async function createIntegrationStore(directory: string) {
     writes = task.then(() => {}, () => {});
     return task;
   }
-  return { catalog, snapshot: () => structuredClone(state), update, close: () => writes };
+  return { snapshot: () => structuredClone(state), update, close: () => writes };
 }

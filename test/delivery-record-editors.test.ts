@@ -77,6 +77,52 @@ test('同来源的人工记录优先于报告，编辑草稿不修改已保存�
   } finally { close(); }
 });
 
+test('团队证据预填后直接确认验收，自动记录结论且不改写验证事实', async t => {
+  const checks = reportEvidence(); checks.browser = { status: 'not_applicable', evidence: '本次仅核验 Git 同步，无页面变更', sha: '' };
+  const current = { ...row, reportedEvidence: checks, agentRuns: [evidenceRun({
+    team: { taskId: 'team-1', nodeId: 'impl-1', profileId: 'engineer', stageKey: 'implement', profileRevision: 1 },
+  })] };
+  const { state, close } = mount(() => useDeliveryAcceptance(() => current));
+  const sent: unknown[] = [];
+  t.mock.method(globalThis, 'fetch', async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body)); sent.push(body);
+    return Response.json({ ...body, authorization: undefined, expectedRevision: undefined, revision: 1, updatedAt: source.updatedAt });
+  });
+  try {
+    state.show(); assert.equal(sent.length, 0); assert.equal(state.approvalBlocker.value, '');
+    state.draft.value.checks.tests.evidence = '人工补充：仅同步核验通过';
+    assert.notEqual(checks.tests.evidence, state.draft.value.checks.tests.evidence, '编辑不得修改来源报告');
+    await state.save('accepted');
+    assert.equal(sent.length, 1); assert.equal(state.open.value, false);
+    assert.equal((sent[0] as { decision: string }).decision, 'accepted');
+    assert.match((sent[0] as { summary: string }).summary, /验收通过/);
+    assert.equal((sent[0] as { checks: DeliveryEvidence }).checks.browser.status, 'not_applicable');
+  } finally { close(); }
+});
+
+test('验收按钮受证据和来源变化约束，修改意见必须填写且仅保存 rejected', async t => {
+  const current = shallowRef<DeliveryRecord>({ ...row, agentRuns: [evidenceRun()] });
+  const { state, close } = mount(() => useDeliveryAcceptance(() => current.value));
+  const sent: unknown[] = [];
+  t.mock.method(globalThis, 'fetch', async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body)); sent.push(body);
+    return Response.json({ ...body, authorization: undefined, expectedRevision: undefined, revision: 1, updatedAt: source.updatedAt });
+  });
+  try {
+    state.show(); assert.match(state.approvalBlocker.value, /浏览器验证/);
+    await state.save('accepted'); assert.equal(sent.length, 0);
+    await state.save('rejected'); assert.equal(sent.length, 0); assert.match(state.error.value, /需要修改/);
+    state.draft.value.summary = '保存后列表没有更新，请修复';
+    current.value = { ...current.value, updatedAt: '2026-10-16T05:00:00Z' };
+    await state.save('rejected'); assert.equal(sent.length, 0, '来源过期不得保存');
+    await state.reload(); state.draft.value.summary = '保存后列表没有更新，请修复';
+    await state.save('rejected'); assert.equal(sent.length, 1);
+    assert.equal((sent[0] as { decision: string }).decision, 'rejected');
+    assert.equal((sent[0] as { summary: string }).summary, '保存后列表没有更新，请修复');
+    assert.equal((sent[0] as { checks: DeliveryEvidence }).checks.browser.status, 'failed');
+  } finally { close(); }
+});
+
 test('旧来源的人工证据与结论不会带入当前来源，仅保留保存版本', async t => {
   for (const decision of ['pending', 'accepted'] as const) for (const staleSource of [
     { ...source, runId: 'old-run' }, { ...source, updatedAt: '2026-10-16T00:00:00Z' },

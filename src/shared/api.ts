@@ -35,8 +35,10 @@ export function useSourceActions() {
     send: (key, body) => fetch(sourceUrl(key), { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Delivery-Confirmed': 'yes' }, body }),
     accepted: (key, result) => {
       // 保存接口返回服务端实际配置；后续回读失败时也不能恢复成保存前的缓存。
-      if (key === 'settings' && result.settings && Array.isArray(result.jobs) && Array.isArray(result.runs)) {
-        client.setQueriesData({ queryKey: ['source', 'automation'] }, result);
+      const dashboard = key === 'settings' ? result : key === 'weekly-report' ? result.dashboard : undefined;
+      if (dashboard && typeof dashboard === 'object' && 'settings' in dashboard
+        && 'jobs' in dashboard && Array.isArray(dashboard.jobs) && 'runs' in dashboard && Array.isArray(dashboard.runs)) {
+        client.setQueriesData({ queryKey: ['source', 'automation'] }, dashboard);
       }
     },
     refresh: () => client.invalidateQueries({ queryKey: ['source'] }, { throwOnError: true }),

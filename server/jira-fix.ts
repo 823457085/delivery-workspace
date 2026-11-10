@@ -5,6 +5,7 @@ import { jiraFixInputSchema, jiraFixStartSchema, jiraReferenceSchema, jiraIssueK
 import type { AgentRun, StartAgentRunInput } from '../shared/agent-runtime.js';
 import type { JiraIssue, ProjectsData } from '../shared/hub.js';
 import { prepareRequirementWorkspace } from './requirement-development.js';
+import { groupRunStatus, type GroupJiraExecution } from '../shared/agent-group-chat.js';
 import { resolveRenamedWorkspace } from './generated-workspace.js';
 
 interface Runtime {
@@ -16,7 +17,8 @@ interface Source {
   readLocalProjects(): Promise<ProjectsData>;
 }
 export async function createJiraFixService(directory: string, runtime: Runtime, source: Source,
-  prepare: (input: JiraFixInput, id: string, signal?: AbortSignal) => ReturnType<typeof prepareRequirementWorkspace> = prepareRequirementWorkspace) {
+  prepare: (input: JiraFixInput, id: string, signal?: AbortSignal) => ReturnType<typeof prepareRequirementWorkspace> = prepareRequirementWorkspace,
+  options: { groupExecution?: (taskId: string) => GroupJiraExecution | undefined } = {}) {
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
   const records = new Map<string, JiraFixRecord>();
   let bindings: JiraFixProject[] = [];
@@ -36,6 +38,11 @@ export async function createJiraFixService(directory: string, runtime: Runtime, 
     await fs.rename(`${file}.tmp`, file);
   }
   function reconcile(record: JiraFixRecord): JiraFixRecord {
+    if (record.groupRoomId) {
+      const group = options.groupExecution?.(record.id), progress = group?.groupProgress || { roomId: record.groupRoomId, state: 'paused' as const, completed: 0, total: 0, activeMember: '', error: '关联群聊暂不可核对，请恢复原群聊记录；不会自动重建任务。' };
+      return { ...record, runId: group?.run?.id || '', groupProgress: progress, runStatus: progress ? groupRunStatus(progress) : undefined,
+        runError: progress?.error || '', error: '' };
+    }
     const run = runtime.findJiraFix(record.id);
     if (run) return { ...record, status: 'started', runId: run.id, runStatus: run.status, runError: run.error, error: '' };
     if (['preparing', 'starting'].includes(record.status) && !pending.has(record.id)) {
@@ -75,7 +82,7 @@ export async function createJiraFixService(directory: string, runtime: Runtime, 
       if (record.input.rememberProject) await remember(record);
       shutdown.signal.throwIfAborted();
       record.status = 'starting'; await save(record.id, record);
-      const run = await runtime.startJiraFix({ provider: 'codex', mode: 'agent', accessMode: 'workspace',
+      const run = await runtime.startJiraFix({ provider: 'codex', mode: 'agent', accessMode: 'full',
         model: 'gpt-6-astra', reasoningEffort: 'xhigh', workspacePath: record.workspacePath, branch: record.input.branch,
         objective: jiraFixPrompt(record) }, record.id, `修复 ${record.issue.key} ${record.issue.summary}`);
       record.runId = run.id; record.status = 'started';
@@ -108,6 +115,14 @@ export async function createJiraFixService(directory: string, runtime: Runtime, 
     pending.set(record.id, work);
     return { ...record };
   }
-  return { resolve, start, list: () => [...records.values()].map(reconcile).sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+  /** Jira 研发助手流程已自行建好工作区并启动会话；这里只登记记录，复用原交接与验收入口。 */
+  async function adopt(record: JiraFixRecord) {
+    if (records.has(record.id)) return reconcile(records.get(record.id)!);
+    await save(record.id, record);
+    records.set(record.id, record);
+    return reconcile(record);
+  }
+  return { resolve, start, adopt, list: () => [...records.values()].map(reconcile).sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+    isIdle: () => !pending.size,
     close: async () => { shutdown.abort(); await Promise.allSettled([...pending.values()]); } };
 }

@@ -3,25 +3,27 @@
  * 同工作区会话只作为并行 Agent 展示；续聊运行仍属于原会话，不冒充独立子 Agent。
  */
 import type { RunView, WorkflowRunContext } from '../../../shared/types';
-import { agentRunProjectPath, type AgentConversation } from './conversation';
+import type { AgentProvider } from '../../../shared/agent-runtime';
+import { agentRunContextPath, type AgentConversation } from './conversation';
 
 export interface WorkflowAgentLane {
   id: string;
   title: string;
   role: 'main' | 'parallel';
-  provider: 'codex' | 'cursor';
+  provider: AgentProvider;
   branch: string;
   status: string;
 }
 
 export function workflowContext(conversation?: AgentConversation): WorkflowRunContext | undefined {
-  if (!conversation) return undefined;
+  const provider = (['codex', 'cursor', 'claude', 'kiro', 'antigravity'] as const).find(id => id === conversation?.latest.provider);
+  if (!conversation || !provider) return undefined;
   return {
     conversationId: conversation.id,
     agentRunId: conversation.latest.id,
-    workspacePath: agentRunProjectPath(conversation.latest),
+    workspacePath: agentRunContextPath(conversation.latest),
     branch: conversation.latest.baseBranch || conversation.latest.branch,
-    provider: conversation.latest.provider,
+    provider,
   };
 }
 
@@ -32,9 +34,9 @@ export function conversationWorkflowRuns(runs: RunView[], conversationId: string
 
 export function workflowAgentLanes(current: AgentConversation | undefined, conversations: AgentConversation[]): WorkflowAgentLane[] {
   if (!current) return [];
-  const workspacePath = agentRunProjectPath(current.latest);
+  const workspacePath = agentRunContextPath(current.latest);
   const peers = conversations.filter((conversation) => conversation.id !== current.id
-    && agentRunProjectPath(conversation.latest) === workspacePath
+    && agentRunContextPath(conversation.latest) === workspacePath
     && ['queued', 'running'].includes(conversation.latest.status));
   return [current, ...peers].slice(0, 6).map((conversation, index) => ({
     id: conversation.id,

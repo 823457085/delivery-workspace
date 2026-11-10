@@ -4,7 +4,7 @@ import path from "node:path";
 import { execFile, execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { homedir } from "node:os";
-import { repositoryRoot, sourceDataRoot, catchupDataRoot as configuredCatchupDataRoot, gitBinary } from "./config.mjs";
+import { repositoryRoot, sourceDataRoot, catchupDataRoot, gitBinary } from "./config.mjs";
 import { promisify } from "node:util";
 import { automationSubtaskKeys, isAutomationSubtaskJob, isJiraSubtask } from "../../shared/automation-policy.mjs";
 import {
@@ -13,6 +13,7 @@ import {
   buildAutomationPlan,
   buildCodexPrompt,
   buildCodexPromptFromJob,
+  automationProjectRoutingProblem,
   buildRequirementSegmentTitles,
   buildTaskDateSegments,
   classifyAutomationTask,
@@ -84,7 +85,7 @@ const publicDir = path.join(__dirname, "public");
 const execFileAsync = promisify(execFile);
 
 const port = Number(process.env.DELIVERY_PORT || process.env.PORT || 5199);
-const jiraBaseUrl = (process.env.JIRA_BASE_URL || "").replace(/\/+$/, "");
+let jiraBaseUrl = configuredJiraBaseUrl();
 const runtimeRoot = sourceDataRoot;
 const localProjectLabelsFile = process.env.LOCAL_PROJECT_LABELS_FILE
   || path.join(runtimeRoot, "local-project-labels.json");
@@ -100,7 +101,6 @@ const catchupMergePipelineStateFile = process.env.CATCHUP_MERGE_PIPELINE_STATE_F
   || path.join(runtimeRoot, "catchup-merge-pipeline-state.json");
 const catchupMergeEvidenceRoot = process.env.CATCHUP_MERGE_EVIDENCE_ROOT
   || path.join(runtimeRoot, "catchup-merge-evidence");
-const catchupDataRoot = configuredCatchupDataRoot;
 const catchupSourceRepository = process.env.APEX_CATCHUP_SOURCE_REPOSITORY
   || DEFAULT_CATCHUP_SOURCE_REPOSITORY;
 const catchupRequirementsRoot = process.env.APEX_CATCHUP_REQUIREMENTS_ROOT
@@ -133,6 +133,8 @@ let catchupJiraCompletionPromise = null;
 const catchupJiraReconcileRequirementIds = new Set();
 let automationScanPromise = null;
 let weeklyReportPromise = null;
+let automationRestartHeld = false;
+let schedulerTickPromise = null;
 const jiraProjectVersionsCache = new Map();
 
 const localProjectSkipDirectories = new Set([
@@ -195,15 +197,26 @@ const automationSpreadsheetExtensions = new Set([".xlsx"]);
 const automationScreenshotExtensions = new Set([".png", ".jpg", ".jpeg", ".webp"]);
 const automationReportExtensions = new Set([".md"]);
 
+function configuredJiraBaseUrl() {
+  const value = (process.env.JIRA_BASE_URL || "").trim().replace(/\/+$/, "");
+  try {
+    const url = new URL(value);
+    return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash ? value : "";
+  } catch {
+    return "";
+  }
+}
+
 // 配置存在不等于凭据可读；只说明恢复入口，不回显钥匙串内容或底层命令输出。
 export function jiraAuthUnavailableMessage(keychainService = process.env.JIRA_KEYCHAIN_SERVICE) {
-  if (!jiraBaseUrl) return "Jira 未配置 JIRA_BASE_URL";
+  if (!jiraBaseUrl) return "Jira 未配置有效的 JIRA_BASE_URL";
   return keychainService
     ? "Jira 鉴权已配置，但当前进程无法读取 macOS 钥匙串凭据。请确认“登录”钥匙串已解锁，并检查现有 Jira 条目的访问权限后重试。"
     : "Jira 未配置鉴权";
 }
 
 function getAuthHeaders() {
+  jiraBaseUrl = configuredJiraBaseUrl();
   if (!jiraBaseUrl) return null;
   if (process.env.JIRA_AUTH_HEADER) {
     return { Authorization: process.env.JIRA_AUTH_HEADER };
@@ -240,6 +253,45 @@ function getConfluenceAuthHeaders() {
   return null;
 }
 
+// 文档知识检索只读固定 Content API，认证沿用当前工作台配置，不接受浏览器传入站点或方法。
+export async function confluenceReadRequest(resource) {
+  if (typeof resource !== 'string' || !/^content\/(?:search\?|[1-9]\d*\?)/.test(resource)
+    || /[\r\n#]/.test(resource)) throw new Error('不支持的 Confluence 文档资源');
+  const auth = getConfluenceAuthHeaders();
+  if (!auth) throw new Error('Confluence 未配置可用鉴权，请在本工作台配置本人账号后重试。');
+  if (!process.env.CONFLUENCE_BASE_URL) throw new Error('Confluence 未配置 CONFLUENCE_BASE_URL');
+  const base = new URL(process.env.CONFLUENCE_BASE_URL);
+  if (!['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash) throw new Error('Confluence 站点配置无效');
+  const target = new URL(`${base.href.replace(/\/+$/, '')}/rest/api/${resource}`);
+  const response = await fetch(target, { headers: { ...auth, Accept: 'application/json' }, redirect: 'manual', signal: AbortSignal.timeout(15000) });
+  if (!response.ok || !response.headers.get('content-type')?.includes('application/json')) {
+    throw new Error([401, 403].includes(response.status) || response.status >= 300 && response.status < 400
+      ? 'Confluence 鉴权失效或无权访问，请检查本工作台账号配置。' : `读取 Confluence 文档失败：HTTP ${response.status}`);
+  }
+  return response;
+}
+
+// 仅供已确认的任务方案发布使用；固定站点和 Content API，不接收浏览器提供的 URL 或认证。
+export async function confluencePublishRequest(resource, method, body) {
+  const invalid = message => Object.assign(new Error(message), { definite: true });
+  if (!(method === 'POST' && resource === 'content' || method === 'PUT' && /^content\/[1-9]\d{0,31}$/.test(resource))
+    || !body || typeof body !== 'object' || body.type !== 'page' || typeof body.title !== 'string'
+    || !body.title.trim() || !body.space?.key || body.body?.storage?.representation !== 'storage'
+    || typeof body.body.storage.value !== 'string' || body.body.storage.value.length > 1_000_000
+    || !Array.isArray(body.ancestors) || body.ancestors.length !== 1 || !/^[1-9]\d{0,31}$/.test(body.ancestors[0]?.id)
+    || method === 'PUT' && (body.id !== resource.slice(8) || !Number.isInteger(body.version?.number) || body.version.number < 2)) throw invalid('不支持的 Confluence 方案发布请求');
+  const auth = getConfluenceAuthHeaders();
+  if (!auth) throw invalid('Confluence 未配置可用鉴权，请在本工作台配置本人账号后重试。');
+  if (!process.env.CONFLUENCE_BASE_URL) throw invalid('Confluence 未配置 CONFLUENCE_BASE_URL');
+  let base;
+  try { base = new URL(process.env.CONFLUENCE_BASE_URL); }
+  catch { throw invalid('Confluence 站点配置无效'); }
+  if (!['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash) throw invalid('Confluence 站点配置无效');
+  return fetch(`${base.href.replace(/\/+$/, '')}/rest/api/${resource}`, { method,
+    headers: { ...auth, Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    redirect: 'manual', signal: AbortSignal.timeout(30000) });
+}
+
 function getConfluenceKeychainAuthorization() {
   const service = process.env.CONFLUENCE_KEYCHAIN_SERVICE;
   if (!service) return null;
@@ -263,6 +315,7 @@ function getConfluenceKeychainAuthorization() {
 }
 
 async function getCatchupJiraAuthHeaders() {
+  jiraBaseUrl = configuredJiraBaseUrl();
   if (!jiraBaseUrl) return null;
   if (process.env.JIRA_AUTH_HEADER) {
     return { Authorization: process.env.JIRA_AUTH_HEADER };
@@ -761,6 +814,10 @@ async function hydrateIssueFixVersionDetails(issues, authHeaders) {
   });
 }
 
+export async function readWorkspaceReportIssues() {
+  return fetchJiraIssues(buildJql(new URLSearchParams({ allTime: "true", includeSubtasks: "true", includeDone: "true", maxResults: "5000" })));
+}
+
 async function fetchJiraIssues(query) {
   const authHeaders = getAuthHeaders();
   if (!authHeaders) {
@@ -864,6 +921,40 @@ async function fetchJiraHandoff(url, options, readOnly = (options.method || 'GET
   }
 }
 
+// 事项详情使用同一份本机认证，资源由服务端操作映射生成，浏览器不能传入 URL。
+export async function jiraIssueRequest(resource, method = 'GET', body) {
+  if (typeof resource !== 'string' || resource.includes('..') || resource.startsWith('/')
+    || !/^(?:issue(?:\/|\?|$)|issueLink(?:Type)?(?:\?|$)|mypermissions\?|myself$|user\/assignable\/search\?|attachment\/content\/\d+$)/.test(resource)
+    || !['GET', 'POST', 'PUT', 'DELETE'].includes(method)) throw new Error('不支持的 Jira 事项资源');
+  const auth = getAuthHeaders();
+  if (!auth) throw new Error(jiraAuthUnavailableMessage());
+  let target = new URL(`/rest/api/2/${resource}`, jiraBaseUrl);
+  if (target.origin !== new URL(jiraBaseUrl).origin) throw new Error('Jira 资源来源不正确');
+  const read = async url => {
+    const response = await fetchJiraHandoff(url, { headers: { ...auth, Accept: 'application/json' }, redirect: 'manual' });
+    await requireJiraReadResponse(response, '事项'); return response;
+  };
+  if (/^attachment\/content\/\d+$/.test(resource)) {
+    const id = resource.split('/').at(-1);
+    const metadata = await (await read(new URL(`/rest/api/2/attachment/${id}`, jiraBaseUrl))).json();
+    target = new URL(metadata.content);
+    if (target.origin !== new URL(jiraBaseUrl).origin || !target.pathname.startsWith(`/secure/attachment/${id}/`)) throw new Error('附件下载来源不正确');
+    return read(target);
+  }
+  const multipart = body instanceof FormData;
+  const response = await fetchJiraHandoff(target, { method, redirect: 'manual', headers: { ...auth, Accept: 'application/json',
+    ...(multipart ? { 'X-Atlassian-Token': 'no-check' } : { 'Content-Type': 'application/json' }) },
+    ...(body === undefined ? {} : { body: multipart ? body : JSON.stringify(body) }) });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null);
+    const messages = [...(Array.isArray(payload?.errorMessages) ? payload.errorMessages : []),
+      ...(payload?.errors && typeof payload.errors === 'object' ? Object.values(payload.errors) : [])].filter(value => typeof value === 'string');
+    throw Object.assign(new Error(messages.join('；') || `Jira 请求失败：HTTP ${response.status}`),
+      { statusCode: response.status, definite: response.status >= 400 && response.status < 500 });
+  }
+  return response;
+}
+
 // 专用修复入口只读取已配置 Jira，绝不向输入链接的任意主机转发凭据。
 export async function jiraFixHandoffRequest(key, suffix, method = 'GET', body) {
   if (!/^[A-Z][A-Z0-9_]*-\d+$/.test(key)
@@ -910,7 +1001,6 @@ export async function jiraFixHandoffRequest(key, suffix, method = 'GET', body) {
 }
 
 export async function readJiraFixIssue(reference) {
-  if (!jiraBaseUrl) throw new Error(jiraAuthUnavailableMessage());
   let key = String(reference || '').trim();
   if (/^https?:\/\//i.test(key)) {
     const url = new URL(key);
@@ -1028,8 +1118,9 @@ async function runGit(repositoryPath, args, timeout = 5000) {
   }
 }
 
-function parseGitStatus(output) {
-  const lines = String(output || "").split(/\r?\n/).filter(Boolean);
+function parseGitStatus(output, changedPaths) {
+  const separator = output?.includes("\0") ? "\0" : /\r?\n/;
+  const lines = String(output || "").split(separator).filter(Boolean);
   const header = lines[0]?.startsWith("## ") ? lines.shift().slice(3) : "";
   let branch = header.split("...")[0].replace(/ \[.*$/, "");
 
@@ -1045,26 +1136,32 @@ function parseGitStatus(output) {
   let staged = 0;
   let modified = 0;
   let untracked = 0;
+  let changed = 0;
 
-  lines.forEach((line) => {
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    changed += 1;
+    changedPaths?.push(line.slice(3));
+    // With -z a rename/copy lists its destination before its original path.
+    if (separator === "\0" && /[RC]/.test(line.slice(0, 2))) index += 1;
     if (line.startsWith("??")) {
       untracked += 1;
-      return;
+      continue;
     }
     if (line[0] && line[0] !== " ") staged += 1;
     if (line[1] && line[1] !== " ") modified += 1;
-  });
+  }
 
   return {
     branch,
     upstream: upstreamMatch?.[1] || "",
     ahead: Number(aheadMatch?.[1] || 0),
     behind: Number(behindMatch?.[1] || 0),
-    changed: lines.length,
+    changed,
     staged,
     modified,
     untracked,
-    clean: lines.length === 0
+    clean: changed === 0
   };
 }
 
@@ -1162,20 +1259,36 @@ function sanitizeLocalProjectDisplayName(value) {
 async function inspectGitRepository(repositoryPath, scanRoot) {
   const [
     statusOutput,
+    directory,
+    headReflog,
     remoteOutput,
     commitsAheadTargetOutput,
     diffFilesOutput,
     remoteBranchesContainingHeadOutput,
     headCommitMessageOutput
   ] = await Promise.all([
-    runGit(repositoryPath, ["status", "--porcelain=v1", "--branch", "--ignore-submodules=all"]),
+    runGit(repositoryPath, ["--no-optional-locks", "status", "--porcelain=v1", "-z", "--branch", "--ignore-submodules=all"]),
+    fs.stat(repositoryPath).catch(() => null),
+    runGit(repositoryPath, ["reflog", "-1", "--format=%gD", "--date=unix", "HEAD"]),
     runGit(repositoryPath, ["config", "--get", "remote.origin.url"]),
-    runGit(repositoryPath, ["rev-list", "--count", `origin/${DEFAULT_AUTOMATION_SETTINGS.targetBranch}..HEAD`]),
-    runGit(repositoryPath, ["diff", "--name-only", `origin/${DEFAULT_AUTOMATION_SETTINGS.targetBranch}...HEAD`]),
+    runGit(repositoryPath, ["rev-list", "--count", "origin/i18n-test..HEAD"]),
+    runGit(repositoryPath, ["diff", "--name-only", "origin/i18n-test...HEAD"]),
     runGit(repositoryPath, ["branch", "-r", "--contains", "HEAD", "--format=%(refname:short)"]),
     runGit(repositoryPath, ["log", "-1", "--format=%s%n%b", "HEAD"])
   ]);
-  const status = parseGitStatus(statusOutput);
+  const changedPaths = [];
+  const status = parseGitStatus(statusOutput, changedPaths);
+  const createdMs = directory?.birthtimeMs || 0;
+  const reflogMs = Number(headReflog.match(/@\{(\d+)\}$/)?.[1] || 0) * 1000;
+  const fileTimes = await mapWithConcurrency(changedPaths, 8, async (file) => (
+    (await fs.lstat(path.join(repositoryPath, file)).catch(() => null))?.mtimeMs || 0
+  ));
+  const now = Date.now();
+  const createdSecondMs = Math.floor(createdMs / 1000) * 1000;
+  let lastActivityMs = 0;
+  for (const time of [reflogMs, ...fileTimes]) {
+    if (time > lastActivityMs && time <= now && time >= createdSecondMs) lastActivityMs = time;
+  }
   const detached = statusOutput.startsWith("## HEAD (no branch)");
   const folderName = path.basename(repositoryPath);
   const remote = parseGitRemote(remoteOutput, folderName);
@@ -1185,12 +1298,15 @@ async function inspectGitRepository(repositoryPath, scanRoot) {
   return {
     folderName,
     path: repositoryPath,
+    createdAt: createdMs > 0 ? new Date(createdMs).toISOString() : undefined,
+    lastActivityAt: lastActivityMs > 0 ? new Date(lastActivityMs).toISOString() : undefined,
     displayPath: displayLocalPath(repositoryPath),
     relativePath: path.relative(scanRoot, repositoryPath) || ".",
     rootPath: scanRoot,
     rootLabel: displayLocalPath(scanRoot),
     projectId,
     suggestedDisplayName: getSuggestedLocalProjectName(remote),
+    gitEvidenceTargetBranch: "i18n-test",
     commitsAheadTarget: Number(commitsAheadTargetOutput || 0),
     diffFileCount: diffFilesOutput ? diffFilesOutput.split(/\r?\n/).filter(Boolean).length : 0,
     remoteBranchesContainingHead: remoteBranchesContainingHeadOutput
@@ -1205,16 +1321,17 @@ async function inspectGitRepository(repositoryPath, scanRoot) {
 }
 
 async function refreshAutomationGitEvidence(issues, projects, jobs, settings) {
-  const matchedPaths = new Set(
+  const targetByPath = new Map(
     buildAutomationPlan(issues, projects, jobs, settings)
-      .filter((item) => !isIssueDone(item.issue) && item.workspace?.path)
-      .map((item) => item.workspace.path)
+      .filter((item) => !isIssueDone(item.issue) && item.projectRouting?.status === "matched" && item.workspace?.path)
+      .map((item) => [item.workspace.path, item.targetBranch])
   );
-  const matchedProjects = projects.filter((project) => matchedPaths.has(project.path));
-  const targetRef = `origin/${settings.targetBranch}`;
+  const matchedProjects = projects.filter((project) => targetByPath.has(project.path));
 
   await mapWithConcurrency(matchedProjects, 4, async (project) => {
-    await runGit(project.path, ["fetch", "--quiet", "origin", settings.targetBranch], 15_000);
+    const targetBranch = targetByPath.get(project.path);
+    const targetRef = `origin/${targetBranch}`;
+    await runGit(project.path, ["fetch", "--quiet", "origin", targetBranch], 15_000);
     const [statusOutput, commitsAheadOutput, diffFilesOutput, containingBranchesOutput] = await Promise.all([
       runGit(project.path, ["status", "--porcelain=v1", "--branch", "--ignore-submodules=all"]),
       runGit(project.path, ["rev-list", "--count", `${targetRef}..HEAD`]),
@@ -1224,6 +1341,7 @@ async function refreshAutomationGitEvidence(issues, projects, jobs, settings) {
     const status = parseGitStatus(statusOutput);
 
     Object.assign(project, status, {
+      gitEvidenceTargetBranch: targetBranch,
       branch: status.branch || project.branch,
       commitsAheadTarget: Number(commitsAheadOutput || 0),
       diffFileCount: diffFilesOutput ? diffFilesOutput.split(/\r?\n/).filter(Boolean).length : 0,
@@ -1430,6 +1548,17 @@ async function getCatchupDashboard() {
 
 async function getCatchupMergeDashboard(force = false) {
   const board = await getCatchupDashboard();
+  if (!board.requirements.length) {
+    return {
+      source: { checkedAt: new Date().toISOString(), targetFresh: true, remoteChecked: false },
+      target: { branch: "", localSha: "", remoteSha: "", url: "" },
+      summary: { total: 0, merged: 0, ready: 0, blocked: 0 },
+      revision: 0,
+      items: [],
+      mergeRules: [],
+      pipeline: { status: "idle", currentRequirementId: "", result: "", error: "", updatedAt: "" }
+    };
+  }
   const [dashboard, pipeline] = await Promise.all([
     readCatchupMergeDashboard(board, { force }),
     readCatchupMergePipelineState(catchupMergePipelineStateFile)
@@ -1481,6 +1610,11 @@ function isTrustedCatchupBrowserRequest(request) {
   return isLoopbackAddress(request.socket?.remoteAddress) && isTrustedCatchupOrigin(request);
 }
 
+function isConfirmedAutomationBrowserRequest(request) {
+  return isTrustedCatchupBrowserRequest(request) && request.headers.origin === `http://${request.headers.host}`
+    && hasJsonContentType(request) && request.headers["x-delivery-confirmed"] === "yes";
+}
+
 function isTrustedMeetingBrowserRequest(request) {
   return isLoopbackAddress(request.socket?.remoteAddress) && isTrustedCatchupOrigin(request);
 }
@@ -1519,7 +1653,7 @@ export function buildCatchupDispatcherManifest(serverPort = port) {
     `每轮先 GET ${endpoint}/api/health；服务不可访问就结束本轮，不创建或操作任何任务。健康检查通过后 POST ${endpoint}/api/automation/catchup/dispatcher/update，JSON 为 {"status":"active","lastHeartbeatAt":"当前 ISO 时间"}。`,
     `本轮最多处理 ${dispatchBatchSize} 项。一次 POST ${endpoint}/api/automation/catchup/dispatch，Content-Type 为 application/json，JSON 为 {"limit":${dispatchBatchSize}}；jobs 为空即结束。每个 job 必须使用独立需求会话并行执行，接口硬上限为 ${maxDispatchBatchSize}；不得把多个需求串到一个长期 task。`,
     "一个 job.id 永远对应一个长期 Codex task。job.prompt 必须原样交给目标 task，不得在调度 task 中代替它实现需求。不要为同一 job.id 创建第二个 task，也不要把仅创建 task 或一次 turn 结束当成功能完成。向目标 task 投递时必须明确：它现在就是执行者，必须直接在 job.workspacePath 工作，禁止再调用 create_thread、fork_thread、send_message_to_thread 或其他线程管理工具转发、委派或重建本任务。",
-    "合入预演任务必须按需求独立绑定 job.id 与长期 task；每个 task 只处理一个需求。现有 job.id=catchup-merge:sequence 仅作兼容控制标识，不得承载多个需求或跨需求复用 threadId。先在该需求隔离 worktree 基于最新已配置的目标分支 拉取对应需求分支，完成代码预演、本地服务、Chrome 自测和截图，并回调 awaiting_review 后停止；禁止仅创建 task 或一次 turn 结束就直接视为完成。只有用户审核该需求截图并在页面明确点击“确认通过”后，才向同一需求 task 投递交付动作，执行合入、提交和推送；禁止预演阶段提交、推送或自动开始下一项。",
+    "合入预演任务必须按需求独立绑定 job.id 与长期 task；每个 task 只处理一个需求。现有 job.id=catchup-merge:sequence 仅作兼容控制标识，不得承载多个需求或跨需求复用 threadId。先在该需求隔离 worktree 基于最新已配置的目标分支拉取对应需求分支，完成代码预演、本地服务、Chrome 自测和截图，并回调 awaiting_review 后停止；禁止仅创建 task 或一次 turn 结束就直接视为完成。只有用户审核该需求截图并在页面明确点击“确认通过”后，才向同一需求 task 投递交付动作，执行合入、提交和推送；禁止预演阶段提交、推送或自动开始下一项。",
     "公共组件复用规则：start/resume 向目标 task 交付 job.prompt 后，必须确认目标 task 已收到以下固定说明；不存在时向同一 task 追加且仅追加一次：“实现前必须先检查本仓库、同业务域 `_shared/` 和 `src/shared` 的既有公共组件；存在满足需求的组件时必须优先复用，禁止重复实现同类基础 UI、交互或工具。仅当能力已经稳定服务于同域多个 Feature 时才下沉到 `_shared/`，或稳定跨业务域复用时才下沉到 `shared/`；单一需求或单 Feature 的实现必须留在 Feature 内，不得为了形式上的‘公共组件’强行抽象。”",
     "action=start 或 resume：必须优先 list_threads，按 job.id、requirementId、需求标题和原登记 workspacePath 唯一匹配已有 task；命中后只恢复/续跑该 task，不重复创建。threadId 非空时先读取该 task并发送 job.prompt；已归档则先恢复。threadId 为空但 clientThreadId 非空时，禁止直接止于 dispatched：先 bounded wait 后再匹配；初始 prompt 已随 create_thread 提交，后续 stale resolution 重领仍须继续解析。确认找不到原 task 且没有多条歧义命中时，才创建该需求自己的独立 projectless task，使用用户默认模型；多条命中或 workspace 不一致时回写 blocked，不能猜测。目标 task 必须按 job.workspacePath 操作，绝不能在默认目录写产品代码。",
     "action=pause 或 finish：只能控制该 job 的同一长期 task。threadId 为空时先 list_threads，按 job.title 与 requirementId 查找未归档和已归档 task；唯一命中就回填 threadId 并发送 job.prompt，多条命中则回写 blocked，不得猜测。若没有命中且 clientThreadId 非空，只做一次 bounded wait 后再 list_threads，仍找不到才回写 blocked。若没有命中且 clientThreadId 也为空，说明目标 task 从未创建：pause 直接回 paused no-op，finish 直接回 completed no-op，绝不 blocked，也绝不能为 pause/finish 新建替代 task。",
@@ -2187,7 +2321,8 @@ function synchronizeAutomationJobs(state, issues, projects) {
 
   if (state.settings.autoCreateCodex) {
     plan.forEach((item) => {
-      if (isJiraSubtask(item.issue)) return;
+      if (isJiraSubtask(item.issue) || item.category === "implementation"
+        && (state.settings.autoPrepareJiraDev || state.settings.jiraDevAutomationRouted === true || state.settings.jiraDevAutomationApproved === true)) return;
       state.jobs
         .filter((job) => job.issueKey === item.issue.key && job.id !== item.jobId)
         .filter((job) => ["waiting", "pending", "cancelled"].includes(job.status))
@@ -2205,7 +2340,7 @@ function synchronizeAutomationJobs(state, issues, projects) {
           const alreadyHandled = isIssueDone(item.issue) || item.localAlreadyDone;
           staleJob.status = alreadyHandled ? "skipped" : "cancelled";
           staleJob.result = item.localAlreadyDone
-            ? `本地需求分支已合入 ${state.settings.targetBranch}，巡检判定为已做过，不再创建 Codex 会话。`
+            ? `本地需求分支已合入 ${item.targetBranch}，巡检判定为已做过，不再创建 Codex 会话。`
             : isIssueDone(item.issue)
               ? "Jira 已完成，巡检判定为已做过，不再创建 Codex 会话。"
               : item.category === "unsupported"
@@ -2220,6 +2355,8 @@ function synchronizeAutomationJobs(state, issues, projects) {
       }
 
       let job = existingJobs.get(item.jobId);
+      // 已领取的任务保留执行时的项目与运行配置，巡检不能在中途换仓库。
+      if (job && ["dispatching", "dispatched", "running", "review", "completed"].includes(job.status)) return;
       if (!job) {
         job = {
           id: item.jobId,
@@ -2270,13 +2407,16 @@ function synchronizeAutomationJobs(state, issues, projects) {
       job.branch = item.workspace?.branch || `feature/${item.issue.key}`;
       job.workspaceEvidence = item.workspaceEvidence;
       job.deliveryOnly = item.deliveryOnly;
+      job.projectRouting = item.projectRouting;
       if (item.deliveryOnly && item.workspaceEvidence.commitMessageStatus === "failed" && !["completed", "review"].includes(job.status)) {
         job.commitMessage = "failed";
       } else if (!item.deliveryOnly && !job.threadId && ["waiting", "pending"].includes(job.status)) {
         job.commitMessage = "";
       }
       job.title = `${item.issue.key} ${item.categoryLabel} · ${item.issue.summary}`.slice(0, 140);
-      job.prompt = buildCodexPrompt(item, state.settings);
+      job.prompt = item.projectRouting?.status === "matched" ? buildCodexPrompt(item, state.settings) : "";
+      if (job.status === "waiting" && item.projectRouting?.status !== "matched") job.error = item.projectRouting?.reason || "等待选择项目";
+      else if (job.status === "pending") job.error = "";
       job.updatedAt = now;
     });
   }
@@ -2958,6 +3098,11 @@ async function executeAutomationTransitions(plan, settings, today) {
   return results;
 }
 
+let prepareJiraDevPreviews;
+export function connectJiraDevPreviews(handler) {
+  prepareJiraDevPreviews = handler;
+}
+
 async function performAutomationScan(trigger = "manual", scheduledSlot = "") {
   const state = await readAutomationState();
   if (!state.settings.enabled && trigger === "schedule") {
@@ -2996,6 +3141,28 @@ async function performAutomationScan(trigger = "manual", scheduledSlot = "") {
 
   const latestState = await readAutomationState();
   const plan = buildAutomationPlan(jiraPayload.issues, localPayload.projects, latestState.jobs, latestState.settings);
+  let jiraDevPreviews, jiraDevPreviewError;
+  const mode = latestState.settings.autoPrepareJiraDev ? "preview"
+    : ["manual", "schedule"].includes(trigger) && latestState.settings.enabled && latestState.settings.autoCreateCodex
+      && latestState.settings.jiraDevAutomationApproved === true ? "start" : "";
+  if (mode && jiraPayload.source === "jira" && prepareJiraDevPreviews) {
+    const occupied = new Set(latestState.jobs.filter(job => ["dispatching", "dispatched", "running", "review", "completed"].includes(job.status))
+      .map(job => job.issueKey));
+    const candidates = plan.filter(item => item.category === "implementation" && item.dispatchable
+      && !item.deliveryOnly && !occupied.has(item.issue.key));
+    const approvedProfiles = JSON.stringify(latestState.settings.projectProfiles);
+    const approvedLimit = latestState.settings.maxDispatchPerRun;
+    const mayStart = mode === "start" ? async () => {
+      const { settings } = await readAutomationState();
+      return settings.enabled && settings.autoCreateCodex && !settings.autoPrepareJiraDev && settings.jiraDevAutomationApproved === true
+        && settings.maxDispatchPerRun === approvedLimit && JSON.stringify(settings.projectProfiles) === approvedProfiles;
+    } : undefined;
+    try {
+      jiraDevPreviews = await prepareJiraDevPreviews(compactAutomationPlan(candidates), approvedLimit, mode, mayStart);
+    } catch {
+      jiraDevPreviewError = "无法读取本地研发任务记录，请在下次巡检前核对。";
+    }
+  }
   const transitionResults = jiraPayload.source === "jira"
     ? await executeAutomationTransitions(plan, latestState.settings, localDateIso())
     : [];
@@ -3018,6 +3185,8 @@ async function performAutomationScan(trigger = "manual", scheduledSlot = "") {
     )).length,
     localAlreadyDoneCount: plan.filter((item) => item.localAlreadyDone).length,
     enqueuedCount: synchronized.enqueued,
+    ...(jiraDevPreviews ? { jiraDevPreviews } : {}),
+    ...(jiraDevPreviewError ? { jiraDevPreviewError } : {}),
     splitCreatedCount: splitResults.filter((item) => item.status === "created").length,
     splitUpdatedCount: splitResults.filter((item) => item.status === "updated").length,
     splitExistingCount: splitResults.filter((item) => item.status === "skipped").length,
@@ -3044,6 +3213,7 @@ async function performAutomationScan(trigger = "manual", scheduledSlot = "") {
 }
 
 function runAutomationScan(trigger = "manual", scheduledSlot = "") {
+  if (automationRestartHeld) return Promise.reject(new Error("工作台正在重启，稍后再执行扫描"));
   if (!automationScanPromise) {
     automationScanPromise = performAutomationScan(trigger, scheduledSlot)
       .finally(() => {
@@ -3111,6 +3281,7 @@ async function performWeeklyReport(trigger = "manual", scheduledSlot = "") {
 }
 
 function runWeeklyReport(trigger = "manual", scheduledSlot = "") {
+  if (automationRestartHeld) return Promise.reject(new Error("工作台正在重启，稍后再生成周报"));
   if (!weeklyReportPromise) {
     weeklyReportPromise = performWeeklyReport(trigger, scheduledSlot)
       .finally(() => {
@@ -3132,6 +3303,19 @@ async function getAutomationDashboard() {
       running: Boolean(weeklyReportPromise)
     },
     stateFile: displayLocalPath(automationStateFile)
+  };
+}
+
+// 只预览已保存的 Jira 快照：不创建任务、不保存配置、不运行巡检或远端写入。
+async function previewAutomationProjects(input = {}) {
+  const [state, localPayload] = await Promise.all([readAutomationState(), getLocalProjects(false)]);
+  const settings = sanitizeAutomationSettings(input.settings || {}, state.settings);
+  const issues = (state.plan || []).map((item) => item.issue).filter(Boolean);
+  return {
+    source: "snapshot",
+    checkedAt: new Date().toISOString(),
+    issueCount: issues.length,
+    plan: compactAutomationPlan(buildAutomationPlan(issues, localPayload.projects, state.jobs, settings))
   };
 }
 
@@ -3198,8 +3382,18 @@ async function claimAutomationJobs(requestedLimit) {
     const now = new Date().toISOString();
     const subtaskKeys = automationSubtaskKeys(state.plan);
     const pendingJobs = state.jobs
-      .filter((job) => job.status === "pending")
+      .filter((job) => job.status === "pending" && !(job.category === "implementation"
+        && (state.settings.autoPrepareJiraDev || state.settings.jiraDevAutomationRouted === true || state.settings.jiraDevAutomationApproved === true)))
       .filter((job) => !isAutomationSubtaskJob(job, subtaskKeys))
+      .filter((job) => {
+        const problem = automationProjectRoutingProblem(job.projectRouting, state.settings);
+        if (!problem) return true;
+        job.status = "waiting";
+        job.error = problem;
+        job.prompt = "";
+        job.updatedAt = now;
+        return false;
+      })
       .sort((left, right) => (
         String(left.endDate || "9999-12-31").localeCompare(String(right.endDate || "9999-12-31"))
         || Number(left.phase || 9) - Number(right.phase || 9)
@@ -3288,7 +3482,7 @@ const automationSchedulerTick = createAutomationSchedulerTick({
   readState: readAutomationState,
   runScan: runAutomationScan,
   runWeeklyReport,
-  reconcile: catchupJiraReconciliationTick,
+  reconcile: () => automationRestartHeld ? Promise.resolve() : catchupJiraReconciliationTick(),
   onError: (name, error) => console.error(`${name} failed: ${error.message}`)
 });
 
@@ -3337,9 +3531,10 @@ export async function handleJiraTaskCalendarRequest(request, response) {
     }
 
     if (url.pathname === "/api/config") {
+      const hasCredentials = Boolean(getAuthHeaders());
       sendJson(response, 200, {
         baseUrl: jiraBaseUrl,
-        hasCredentials: Boolean(getAuthHeaders())
+        hasCredentials
       });
       return;
     }
@@ -4013,6 +4208,16 @@ export async function handleJiraTaskCalendarRequest(request, response) {
       return;
     }
 
+    if (url.pathname === "/api/automation/project-preview") {
+      if (request.method !== "POST") {
+        sendError(response, 405, "Method not allowed");
+        return;
+      }
+      const body = await readJsonBody(request);
+      sendJson(response, 200, await previewAutomationProjects(body));
+      return;
+    }
+
     if (url.pathname === "/api/automation/weekly-report/generate") {
       if (request.method !== "POST") {
         sendError(response, 405, "Method not allowed");
@@ -4034,8 +4239,18 @@ export async function handleJiraTaskCalendarRequest(request, response) {
       }
 
       const body = await readJsonBody(request);
+      if ((body?.jiraDevAutomationApproved === true || body?.jiraDevAutomationRouted === true)
+        && !isConfirmedAutomationBrowserRequest(request)) {
+        sendError(response, 403, "请在本机工作台确认研发自动交付设置");
+        return;
+      }
+      const localPayload = await getLocalProjects(false);
       await mutateAutomationState((state) => {
         state.settings = sanitizeAutomationSettings(body, state.settings);
+        // 保存配置只刷新匹配展示，真正创建/领取仍由已有巡检与执行开关控制。
+        state.plan = compactAutomationPlan(buildAutomationPlan(
+          state.plan.map((item) => item.issue).filter(Boolean), localPayload.projects, state.jobs, state.settings
+        ));
       });
       sendJson(response, 200, await getAutomationDashboard());
       return;
@@ -4047,6 +4262,10 @@ export async function handleJiraTaskCalendarRequest(request, response) {
         return;
       }
 
+      if ((await readAutomationState()).settings.jiraDevAutomationApproved === true && !isConfirmedAutomationBrowserRequest(request)) {
+        sendError(response, 403, "请在本机工作台确认立即巡检");
+        return;
+      }
       const run = await runAutomationScan("manual");
       sendJson(response, 200, { run, dashboard: await getAutomationDashboard() });
       return;
@@ -4154,16 +4373,22 @@ const server = http.createServer(handleJiraTaskCalendarRequest);
 let schedulerStartup = null;
 let schedulerInterval = null;
 
+function runSchedulerTick() {
+  if (automationRestartHeld) return Promise.resolve();
+  if (!schedulerTickPromise) schedulerTickPromise = automationSchedulerTick().finally(() => { schedulerTickPromise = null; });
+  return schedulerTickPromise;
+}
+
 export function startAutomationScheduler() {
   if (schedulerInterval) return;
   schedulerStartup = setTimeout(() => {
-    automationSchedulerTick().catch((error) => {
+    runSchedulerTick().catch((error) => {
       console.error(`Automation scheduler failed: ${error.message}`);
     });
   }, 2000);
   schedulerStartup.unref();
   schedulerInterval = setInterval(() => {
-    automationSchedulerTick().catch((error) => {
+    runSchedulerTick().catch((error) => {
       console.error(`Automation scheduler failed: ${error.message}`);
     });
   }, 60_000);
@@ -4175,6 +4400,21 @@ export function stopAutomationScheduler() {
   if (schedulerInterval) clearInterval(schedulerInterval);
   schedulerStartup = null;
   schedulerInterval = null;
+}
+
+// 封住已排入事件循环的 callback scan；停止 timer 本身不能阻止这些晚到任务。
+export function holdAutomationForRestart() {
+  const running = Boolean(schedulerStartup || schedulerInterval);
+  automationRestartHeld = true;
+  stopAutomationScheduler();
+  return () => {
+    automationRestartHeld = false;
+    if (running) startAutomationScheduler();
+  };
+}
+
+export function automationIdleForRestart() {
+  return !schedulerTickPromise && !automationScanPromise && !weeklyReportPromise && !catchupJiraReconcilePromise && !catchupJiraCompletionPromise;
 }
 
 const isMain = Boolean(process.argv[1]) && import.meta.url === pathToFileURL(process.argv[1]).href;

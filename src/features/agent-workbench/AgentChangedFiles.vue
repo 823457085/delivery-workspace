@@ -3,7 +3,7 @@
  * 设计说明：该组件只呈现单轮 Agent 的结构化文件变更与本地产物。
  * 打开操作通过受限后端接口交给 Cursor 或浏览器，组件不直接读取文件内容。
  */
-import { FileDiff, FolderOpen, Globe2, SquareArrowOutUpRight } from '@lucide/vue';
+import { Download, FileDiff, FolderOpen, Globe2, SquareArrowOutUpRight } from '@lucide/vue';
 import { ElMessage } from 'element-plus';
 import type { AgentChangedFile } from '../../../shared/agent-runtime';
 
@@ -50,6 +50,8 @@ const openInBrowser = (file: AgentChangedFile) => requestFileAction(file, 'open-
           <span :class="file.status">{{ labels[file.status] }}</span><code>{{ file.path }}</code><SquareArrowOutUpRight v-if="file.status !== 'deleted'" :size="11" />
         </button>
         <div class="changed-file-actions">
+          <a v-if="file.status !== 'deleted'" class="changed-file-action" :href="`/api/agent-runtimes/runs/${encodeURIComponent(runId)}/download-file?path=${encodeURIComponent(file.path)}`" download
+            :title="`下载 ${file.path}`" :aria-label="`下载 ${file.path}`"><Download :size="12" /></a>
           <button v-if="canOpenInBrowser(file)" type="button" class="changed-file-action" :title="`在浏览器中打开 ${file.path}`"
             :aria-label="`在浏览器中打开 ${file.path}`" @click="openInBrowser(file)"><Globe2 :size="12" /></button>
           <button type="button" class="changed-file-action" :disabled="file.status === 'deleted'" :title="`在文件夹中显示 ${file.path}`"

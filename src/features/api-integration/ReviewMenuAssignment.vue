@@ -31,7 +31,7 @@ function assign() { if (assignee.value && targets.value.length && !props.saving)
       <el-form-item label="负责人">
         <ReviewAssigneePicker v-model="assignee" :disabled="saving" class="assignment-input" label="菜单负责人" />
       </el-form-item>
-      <p class="assignment-summary">共 {{ menus.length }} 个菜单、{{ targets.length }} 条待人工审核接口；已联调、已替代和不再使用的接口不参与分配。所选菜单已有负责人会被本次选择覆盖。</p>
+      <p class="assignment-summary">共 {{ menus.length }} 个菜单、{{ targets.length }} 条待人工审核接口；暂不联调、暂不使用、已联调、已替代和不再使用的接口不参与分配。所选菜单已有负责人会被本次选择覆盖。</p>
       <p v-if="assignee" class="assignment-summary">负责人：{{ assignee.displayName }}（{{ assignee.name }}）</p>
     </el-form>
     <template #footer>

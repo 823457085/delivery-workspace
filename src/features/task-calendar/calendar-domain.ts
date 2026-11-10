@@ -3,6 +3,32 @@ import { plannedOn, plannedTaskRange } from '../../shared/task-schedule';
 
 export const calendarWeekdays = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 
+export interface TaskFilter {
+  assignee: string;
+  projects: string;
+  versions: string;
+  keyword: string;
+  start: string;
+  end: string;
+  dateField: string;
+  allTime: boolean;
+  includeSubtasks: boolean;
+  includeDone: boolean;
+  maxResults: string;
+  sortOrder: string;
+}
+
+export const advancedTaskDefaults = {
+  assignee: 'currentUser()',
+  versions: '',
+  start: '',
+  end: '',
+  dateField: 'planned',
+  allTime: true,
+  maxResults: '5000',
+  sortOrder: 'default',
+} satisfies Partial<TaskFilter>;
+
 export function taskQueryParams(applied: Record<string, string>) {
   if (applied.dateField !== 'planned') return applied;
   // 来源接口没有计划区间查询；只请求已支持的字段，再按原始计划日期筛选本次返回的任务。
@@ -38,6 +64,56 @@ export interface MonthCalendarCell {
   isCurrentMonth: boolean;
   isRestDay: boolean;
   isToday: boolean;
+}
+
+export interface CalendarTaskSegment {
+  issue: JiraIssue;
+  startColumn: number;
+  endColumn: number;
+  lane: number;
+  continuesBefore: boolean;
+  continuesAfter: boolean;
+}
+
+/** 按当前日历的实际日期连续性合并任务；每周单独排布，重叠任务使用不同轨道。 */
+export function buildCalendarWeeks(cells: MonthCalendarCell[], itemsByDay: Map<string, JiraIssue[]>) {
+  const weeks = Array.from({ length: Math.ceil(cells.length / 7) }, (_, index) => ({
+    days: cells.slice(index * 7, index * 7 + 7), segments: [] as CalendarTaskSegment[], laneCount: 0,
+  }));
+  const occurrences = new Map<string, { issue: JiraIssue; days: number[] }>();
+  cells.forEach((cell, index) => {
+    for (const issue of itemsByDay.get(cell.day) || []) {
+      let entry = occurrences.get(issue.key);
+      if (!entry) { entry = { issue, days: [] }; occurrences.set(issue.key, entry); }
+      if (entry.days.at(-1) !== index) entry.days.push(index);
+    }
+  });
+  for (const { issue, days } of occurrences.values()) {
+    for (let first = 0; first < days.length;) {
+      let last = first;
+      while (last + 1 < days.length && days[last + 1] === days[last] + 1) last++;
+      const start = days[first], end = days[last];
+      for (let week = Math.floor(start / 7); week <= Math.floor(end / 7); week++) {
+        const from = Math.max(start, week * 7), to = Math.min(end, week * 7 + 6);
+        weeks[week].segments.push({ issue, startColumn: from % 7, endColumn: to % 7, lane: 0,
+          continuesBefore: from > start, continuesAfter: to < end });
+      }
+      first = last + 1;
+    }
+  }
+  for (const week of weeks) {
+    const occupied: number[] = [];
+    week.segments.sort((a, b) => a.startColumn - b.startColumn || b.endColumn - a.endColumn || a.issue.key.localeCompare(b.issue.key));
+    for (const segment of week.segments) {
+      const mask = ((1 << (segment.endColumn - segment.startColumn + 1)) - 1) << segment.startColumn;
+      let lane = occupied.findIndex(value => !(value & mask));
+      if (lane < 0) { lane = occupied.length; occupied.push(0); }
+      occupied[lane] |= mask;
+      segment.lane = lane;
+    }
+    week.laneCount = occupied.length;
+  }
+  return weeks;
 }
 
 function dayKey(date: Date) {

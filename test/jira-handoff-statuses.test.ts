@@ -2,9 +2,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-// 测试显式提供端点，分享版本不再带企业 Jira 默认地址。
-process.env.JIRA_BASE_URL = 'https://jira.example.test';
-
 test('Jira 完整状态聚合只读取事项所在项目和类型，不混入其他类型的状态', async t => {
   const old = process.env.JIRA_AUTH_HEADER;
   process.env.JIRA_AUTH_HEADER = 'Bearer test-only';

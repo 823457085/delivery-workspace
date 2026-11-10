@@ -26,3 +26,11 @@ test('会话导出保留用户与 Agent 内容，不暴露运行事件', () => {
   assert.equal(json.turns[0].attachments[0].name, '问题截图.png');
   assert.equal(json.turns[0].events, undefined);
 });
+
+test('Claude 会话导出使用实际执行器名称', () => {
+  const claudeRun = { ...run, provider: 'claude' as const };
+  const markdown = conversationMarkdown({ ...conversation, latest: claudeRun, runs: [claudeRun] });
+  assert.match(markdown, /> 执行器：Claude Code/);
+  assert.match(markdown, /## 第 1 轮 · Claude Code/);
+  assert.doesNotMatch(markdown, /Cursor/);
+});

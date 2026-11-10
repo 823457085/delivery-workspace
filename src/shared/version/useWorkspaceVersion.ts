@@ -1,10 +1,21 @@
-import { computed, onScopeDispose, watch } from 'vue';
+import { computed, getCurrentInstance, h, onScopeDispose, watch } from 'vue';
 import { useQuery } from '@tanstack/vue-query';
-import { ElNotification } from 'element-plus';
+import { ElButton, ElMessage, ElMessageBox, ElNotification } from 'element-plus';
 import { isWorkspaceVersion, workspaceVersionState, type WorkspaceBuild } from '../../../shared/workspace-version';
+import { isWorkspaceRestartPending, useWorkspaceRestart } from './useWorkspaceRestart';
+import WorkspaceRestartButton from './WorkspaceRestartButton.vue';
 
 declare const __DELIVERY_BUILD__: WorkspaceBuild;
 export const loadedWorkspaceBuild = __DELIVERY_BUILD__;
+
+export async function reloadWorkspacePage() {
+  try {
+    await ElMessageBox.confirm('请先保存未发送内容。确认重新加载页面以使用最新构建？', '刷新工作台', {
+      confirmButtonText: '重新加载', cancelButtonText: '暂不刷新', type: 'warning', closeOnClickModal: false,
+    });
+    window.location.reload();
+  } catch { /* 取消时保留当前页面和草稿。 */ }
+}
 
 export function useWorkspaceVersion() {
   const query = useQuery({ queryKey: ['workspace-version'], queryFn: async ({ signal }) => {
@@ -20,19 +31,36 @@ export function useWorkspaceVersion() {
 
 // 仅 App 挂载通知；所有页面共用查询缓存，升级不会触发刷新或覆盖输入内容。
 export function useWorkspaceVersionNotice() {
-  const { query, state, loaded } = useWorkspaceVersion();
+  const { query, state } = useWorkspaceVersion();
+  const { query: restartQuery } = useWorkspaceRestart();
+  const appContext = getCurrentInstance()?.appContext;
   let notification: ReturnType<typeof ElNotification> | undefined;
   let notified = '';
+  watch(restartQuery.data, async (current, previous) => {
+    if (current?.status === 'failed' && (previous?.status !== 'failed' || previous.message !== current.message)) ElMessage.error(current.message);
+    if (current?.status !== 'idle' || !isWorkspaceRestartPending(previous)) return;
+    if (current.startedAt === previous?.startedAt) {
+      await query.refetch();
+      if (current.message) ElMessage.success(current.message);
+      return;
+    }
+    const result = await query.refetch();
+    if (result.error || !result.data?.frontend) { ElMessage.warning('后端已重新启动，版本信息暂时无法核验，请稍后检查版本。'); return; }
+    if (result.data.buildError) ElMessage.error(result.data.buildError);
+    else if (result.data.backend.sourceHash === result.data.frontend.backendSourceHash) ElMessage.success('重启和页面构建已完成，保存草稿后刷新即可使用新版。');
+    else if (result.data.backend.diskSourceHash === result.data.backend.sourceHash) ElMessage.warning('页面版本尚未更新，可再次点击更新工作台。');
+    else ElMessage.warning('后端已重新启动，运行版本仍待更新，请检查服务启动配置。');
+  });
   watch([state, query.data], ([current, version]) => {
     const key = `${current.status}:${version?.frontend?.id || ''}`;
-    if (!current.refreshRequired && !current.restartRequired) { notification?.close(); return; }
+    if (!current.refreshRequired && !current.restartRequired && !current.buildRequired) { notification?.close(); return; }
     if (key === notified) return;
     notified = key;
     notification?.close();
-    const message = current.restartRequired
-      ? '页面构建与正在运行的后端版本不同。请在当前任务结束后更新后端服务；刷新页面不能替代服务重启。'
-      : `当前页面 ${loaded.id.slice(0, 8)}，最新构建 ${version!.frontend!.id.slice(0, 8)}。请先保存草稿，再手动刷新页面。`;
-    notification = ElNotification({ title: current.label, message, type: 'warning', duration: 0 });
+    const message = current.restartRequired || current.buildRequired
+      ? h('div', [h('p', version?.buildError || '更新会先构建页面。后端需要重启时，工作台会保存任务并在重启后继续。'), h(WorkspaceRestartButton)])
+      : h(ElButton, { size: 'small', type: 'primary', onClick: reloadWorkspacePage }, () => '保存草稿后刷新');
+    notification = ElNotification({ title: current.label, message, type: 'warning', duration: 0 }, appContext);
   }, { immediate: true });
   onScopeDispose(() => notification?.close());
 }

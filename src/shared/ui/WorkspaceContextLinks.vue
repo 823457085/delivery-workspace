@@ -10,5 +10,5 @@ const threadUrl = computed(() => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
   <RouterLink v-if="issueKey" :to="{ path: '/tasks/list', query: { q: issueKey } }" class="hub-link">查看任务</RouterLink>
   <RouterLink v-if="workspacePath" :to="{ path: '/projects', query: { q: workspacePath } }" class="hub-link">查看项目</RouterLink>
   <a v-if="threadUrl" :href="threadUrl" class="hub-link">打开原会话</a>
-  <el-button v-if="workspace && prompt" link type="primary" @click="workspace.compose(prompt)">带入会话</el-button>
+  <el-button v-if="workspace && prompt" link type="primary" @click="workspace.compose(prompt, workspacePath)">带入会话</el-button>
 </div></template>

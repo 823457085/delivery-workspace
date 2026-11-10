@@ -1,5 +1,5 @@
-/** 日报只负责构造独立只读任务；沿用会话的保存、复制和导出，不另建报告存储或调度器。 */
-import type { AgentRuntimeHealth, StartAgentRunInput } from '../../../shared/agent-runtime';
+/** 日报沿用独立只读会话及运行记录。 */
+import type { AgentModelDefaults, AgentRun, AgentRuntimeHealth, StartAgentRunInput } from '../../../shared/agent-runtime';
 import { codexWorkbenchDefaults, workbenchRuntime } from '../../../shared/agent-runtime';
 
 export function dailyReportDate(now = new Date()): string {
@@ -12,15 +12,25 @@ export function isDailyReportDate(date: string, now = new Date()): boolean {
   return Number.isFinite(parsed.getTime()) && dailyReportDate(parsed) === date && date <= dailyReportDate(now);
 }
 
-export function createDailyReportInput(date: string, workspacePath: string, runtime?: AgentRuntimeHealth, now = new Date()): StartAgentRunInput | undefined {
-  const selection = runtime && workbenchRuntime(runtime);
+function dailyReportTitle(date: string) {
+  return `生成 ${date} 工作日报草稿（Computer History）`;
+}
+
+export function findDailyReportRun(runs: AgentRun[], date: string) {
+  const prefix = `${dailyReportTitle(date)}\n\n请使用 Computer History 插件的 computer-history 技能`;
+  return runs.filter(run => run.provider === 'codex' && run.mode === 'ask' && !run.parentRunId && run.objective.startsWith(prefix))
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
+}
+
+export function createDailyReportInput(date: string, workspacePath: string, runtime?: AgentRuntimeHealth, now = new Date(), defaults: AgentModelDefaults = codexWorkbenchDefaults): StartAgentRunInput | undefined {
+  const selection = runtime && workbenchRuntime(runtime, defaults);
   const model = selection?.models.find((item) => item.id === selection.defaultModel);
-  if (!isDailyReportDate(date, now) || !workspacePath.trim() || runtime?.provider !== 'codex'
+  if (!isDailyReportDate(date, now) || runtime?.provider !== 'codex'
     || !runtime.ready || !runtime.modes.includes('ask') || !model) return undefined;
   return {
     provider: 'codex', mode: 'ask', accessMode: 'workspace', model: model.id, serviceTier: codexWorkbenchDefaults.serviceTier,
-    reasoningEffort: model.defaultEffort || model.efforts?.[0] || '', workspacePath,
-    objective: `生成 ${date} 工作日报草稿（Computer History）
+    reasoningEffort: model.defaultEffort || model.efforts?.[0] || '', workspacePath: workspacePath.trim(),
+    objective: `${dailyReportTitle(date)}
 
 请使用 Computer History 插件的 computer-history 技能，汇总我在所选日期的工作活动，按项目归类，不限于当前工作区。只生成可复制的中文 Markdown 草稿，不修改代码、文件、Jira、Confluence 或任何外部系统，不发布、不发送、不创建定时任务。
 

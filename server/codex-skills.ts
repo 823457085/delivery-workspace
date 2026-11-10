@@ -121,11 +121,9 @@ async function installedPluginRoots(): Promise<SkillRoot[]> {
 }
 
 export async function listCodexSkills(workspacePath: string, query = ''): Promise<AgentSkillOption[]> {
-  const bundledSkills = process.env.DELIVERY_SKILLS_ROOT;
   const roots: SkillRoot[] = [
     { path: path.join(workspacePath, '.agents', 'skills'), source: 'project', sourceLabel: '当前项目' },
     { path: path.join(workspacePath, '.codex', 'skills'), source: 'project', sourceLabel: '当前项目' },
-    ...(bundledSkills ? [{ path: path.resolve(bundledSkills), source: 'project' as const, sourceLabel: '工作台配套 Skill' }] : []),
     { path: path.join(codexHome, 'skills'), source: 'personal', sourceLabel: '个人 Skill' },
     ...await installedPluginRoots(),
   ];

@@ -2,16 +2,24 @@
  * 设计说明：Agent 输出和草稿都是不可信文本，因此只解析工作台需要的 Markdown 子集。
  * 边界是标题、段落、列表、引用、代码块、表格和安全链接；不生成 HTML，避免 v-html 与脚本注入。
  */
-export type MarkdownInline = { type: 'text' | 'strong' | 'emphasis' | 'code'; text: string }
+export type MarkdownInline = { type: 'text' | 'emphasis' | 'code'; text: string }
+  | { type: 'strong'; text: string; content?: MarkdownInline[] }
   | { type: 'link'; text: string; href: string };
 
 export type MarkdownBlock =
   | { type: 'heading'; level: number; content: MarkdownInline[] }
   | { type: 'paragraph' | 'quote'; content: MarkdownInline[] }
   | { type: 'code'; language: string; text: string }
-  | { type: 'list'; ordered: boolean; items: MarkdownInline[][] }
+  | { type: 'list'; ordered: boolean; start?: number; items: MarkdownInline[][] }
   | { type: 'table'; headers: MarkdownInline[][]; rows: MarkdownInline[][][] }
   | { type: 'rule' };
+
+/** 用更长围栏保留命令、路径等字面文本，避免内容中的反引号提前结束代码块。 */
+export function markdownCodeBlock(text: string, language = 'text') {
+  const longest = Array.from(text.matchAll(/`+/g)).reduce((length, match) => Math.max(length, match[0].length), 2);
+  const fence = '`'.repeat(longest + 1);
+  return `${fence}${language}\n${text}\n${fence}`;
+}
 
 function safeHref(value: string) {
   const href = value.trim();
@@ -26,7 +34,13 @@ export function parseMarkdownInline(source: string): MarkdownInline[] {
   let rest = source;
   while (rest) {
     const strong = rest.match(/^\*\*([^*]+)\*\*/);
-    if (strong) { nodes.push({ type: 'strong', text: strong[1] }); rest = rest.slice(strong[0].length); continue; }
+    if (strong) {
+      const text = strong[1], content = parseMarkdownInline(text);
+      const plain = content.length === 1 && content[0].type === 'text' && content[0].text === text;
+      nodes.push(plain ? { type: 'strong', text } : { type: 'strong', text, content });
+      rest = rest.slice(strong[0].length);
+      continue;
+    }
     const code = rest.match(/^`([^`]+)`/);
     if (code) { nodes.push({ type: 'code', text: code[1] }); rest = rest.slice(code[0].length); continue; }
     const link = rest.match(/^\[([^\]]+)]\(((?:[^()]|\([^()]*\))+?)\)/);
@@ -69,21 +83,22 @@ export function parseAgentMarkdown(source: string): MarkdownBlock[] {
   let paragraph: string[] = [];
   const flushParagraph = () => {
     if (!paragraph.length) return;
-    blocks.push({ type: 'paragraph', content: parseMarkdownInline(paragraph.join(' ')) });
+    blocks.push({ type: 'paragraph', content: parseMarkdownInline(paragraph.join('\n')) });
     paragraph = [];
   };
 
   for (let index = 0; index < lines.length;) {
     const line = lines[index];
     if (!line.trim()) { flushParagraph(); index++; continue; }
-    const fence = line.match(/^```\s*([\w.+-]*)\s*$/);
+    const fence = line.match(/^(`{3,})\s*([\w.+-]*)\s*$/);
     if (fence) {
       flushParagraph();
       const body: string[] = [];
+      const closingFence = new RegExp('^`{' + fence[1].length + ',}\\s*$');
       index++;
-      while (index < lines.length && !/^```\s*$/.test(lines[index])) body.push(lines[index++]);
+      while (index < lines.length && !closingFence.test(lines[index])) body.push(lines[index++]);
       if (index < lines.length) index++;
-      blocks.push({ type: 'code', language: fence[1], text: body.join('\n') });
+      blocks.push({ type: 'code', language: fence[2], text: body.join('\n') });
       continue;
     }
     if (line.includes('|') && index + 1 < lines.length && tableSeparator(lines[index + 1])) {
@@ -109,7 +124,7 @@ export function parseAgentMarkdown(source: string): MarkdownBlock[] {
         items.push(parseMarkdownInline(item[2]));
         index++;
       }
-      blocks.push({ type: 'list', ordered, items });
+      blocks.push({ type: 'list', ordered, ...(ordered ? { start: Number(list[1]) } : {}), items });
       continue;
     }
     const quote = line.match(/^>\s?(.*)$/);
@@ -122,7 +137,7 @@ export function parseAgentMarkdown(source: string): MarkdownBlock[] {
         quoted.push(item[1]);
         index++;
       }
-      blocks.push({ type: 'quote', content: parseMarkdownInline(quoted.join(' ')) });
+      blocks.push({ type: 'quote', content: parseMarkdownInline(quoted.join('\n')) });
       continue;
     }
     paragraph.push(line.trim());

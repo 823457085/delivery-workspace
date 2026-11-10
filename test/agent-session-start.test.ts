@@ -16,6 +16,7 @@ test('启动参数允许不选项目、不传分支及普通文件夹的空分�
   assert.equal(agentStartSchema.parse({ ...input, workspacePath: '/tmp/plain', branch: '  ' }).branch, '');
   assert.equal(agentStartSchema.parse({ ...input, workspacePath: '/repo', branch: 'main' }).branch, 'main');
   assert.equal(agentStartSchema.parse({ ...input, provider: 'cursor', cursorTrustPath: '' }).cursorTrustPath, '');
+  for (const mode of ['agent', 'ask', 'plan']) assert.equal(agentStartSchema.parse({ ...input, provider: 'claude', mode }).provider, 'claude');
   assert.equal(agentStartSchema.parse({ ...input, serviceTier: 'default' }).serviceTier, 'default');
   assert.equal(agentStartSchema.parse({ ...input, serviceTier: 'priority' }).serviceTier, 'priority');
 });
@@ -25,9 +26,20 @@ test('放开项目选择不放开消息、分支、附件、权限及未知参�
     { ...input, objective: ' ' }, { ...input, branch: 'main' },
     { ...input, workspacePath: 123 }, { ...input, branch: 123 },
     { ...input, attachmentIds: ['invalid'] }, { ...input, mode: 'ask', accessMode: 'full' },
-    { ...input, extra: true }, { ...input, serviceTier: 'ultrafast' },
+    { ...input, extra: true }, { ...input, serviceTier: 'ultrafast' }, { ...input, provider: 'unknown' },
   ]) assert.equal(agentStartSchema.safeParse(invalid).success, false);
   assert.equal(agentStartSchema.safeParse({ ...input, objective: '', attachmentIds: ['12345678-1234-4234-8234-123456789012'] }).success, true);
+});
+
+test('兼容旧页面发送正文和两张图片，额外的项目列表不进入执行参数', () => {
+  const request = { ...input, attachmentIds: ['12345678-1234-4234-8234-123456789012', '12345678-1234-4234-8234-123456789013'] };
+  assert.deepEqual(agentStartSchema.parse({ ...request, workspacePaths: [] }), agentStartSchema.parse(request));
+  assert.deepEqual(
+    agentStartSchema.parse({ ...request, workspacePath: '/repo', workspacePaths: ['/repo', '/related'] }),
+    agentStartSchema.parse({ ...request, workspacePath: '/repo' }),
+  );
+  assert.equal(agentStartSchema.safeParse({ ...request, workspacePaths: ['/related'], extra: true }).success, false);
+  assert.equal(agentStartSchema.safeParse({ ...request, workspacePaths: '/related' }).success, false);
 });
 
 test('无项目会话分配私有目录、相互隔离，续聊复用目录且不调用 Git 工作区操作', async () => {
@@ -58,7 +70,7 @@ test('无项目会话分配私有目录、相互隔离，续聊复用目录且�
     assert.equal(first.branch, '');
     assert.equal(first.headSha, '');
     assert.equal(first.isolatedWorkspace, false);
-    assert.equal(first.accessMode, 'workspace');
+    assert.equal(first.accessMode, 'full');
     assert.equal(agentRunProjectPath(first), '');
     const resumed = await service.resume(first.id, '继续');
     await settle(resumed);

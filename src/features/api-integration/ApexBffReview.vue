@@ -13,7 +13,7 @@ import { integrationDeferral, integrationScopeCategory, type IntegrationScopeCat
 import PageHeading from '../../shared/ui/PageHeading.vue';
 import type { ReviewCatalogItem } from './review-catalog';
 import { useIntegrationCatalog } from './useIntegrationCatalog';
-import { filterReviewCatalog } from './review-filter';
+import { filterReviewCatalog, reviewDisplayStatus } from './review-filter';
 import ReviewNavigation from './ReviewNavigation.vue';
 import ReviewAssigneePicker from './ReviewAssigneePicker.vue';
 import ReviewMenuAssignment from './ReviewMenuAssignment.vue';
@@ -43,7 +43,9 @@ const { selectedModule, selectedPage, statusFilter, search, page, pageSize } = u
 // 新筛选不读取旧版面板快照，避免缺失字段时失去响应式引用。
 const { assigneeFilter } = useWorkspacePanelState('integration-assignee', () => ({ assigneeFilter: '' }));
 const { categoryFilter } = useWorkspacePanelState('integration-scope', () => ({ categoryFilter: '' as IntegrationScopeCategory | '' }));
-const deferredCount = computed(() => catalog.value.filter(integrationDeferral).length);
+const deferredCount = computed(() => catalog.value.filter(item => integrationScopeCategory(item) === '暂不联调').length);
+const unusedCount = computed(() => catalog.value.filter(item => integrationScopeCategory(item) === '暂不使用').length);
+const reviewOptions = reviewStatuses.map(value => ({ value, label: value === '已联调' ? '确认联调通过' : value }));
 const assignmentOpen = shallowRef(false);
 const wecomOpen = shallowRef(false);
 const feedbackItem = shallowRef<ReviewCatalogItem>();
@@ -54,13 +56,18 @@ const assignees = computed(() => [...new Map(Object.values(records.value).flatMa
 const counts = computed(() => {
   const result = { confirmed: 0, pending: 0, inactive: 0 };
   for (const item of catalog.value) {
-    const status = reviewLabel(records.value[item.id]);
+    if (item.archived) continue;
+    const status = reviewDisplayStatus(item, records.value[item.id]);
     if (status === '已联调') result.confirmed += 1;
     else if (status === '待人工审核') result.pending += 1;
-    else result.inactive += 1;
+    else if (status === '已替代' || status === '不再使用') result.inactive += 1;
   }
   return result;
 });
+watch(categoryFilter, (category, previous) => {
+  if (category === '暂不联调' && statusFilter.value === '待人工审核'
+    || previous !== undefined && (category === '暂不使用' || statusFilter.value === '暂不使用')) statusFilter.value = '';
+}, { immediate: true });
 const matchingItems = computed(() => filterReviewCatalog(catalog.value, records.value, {
   status: reviewAvailable.value ? statusFilter.value : '', assignee: reviewAvailable.value ? assigneeFilter.value : '', search: search.value,
   category: categoryFilter.value,
@@ -79,7 +86,7 @@ const rows = computed(() => filtered.value.slice((page.value - 1) * pageSize.val
 watch([selectedModule, selectedPage, statusFilter, assigneeFilter, categoryFilter, search, pageSize], () => { page.value = 1; });
 watch(() => filtered.value.length, length => { page.value = Math.min(page.value, Math.max(1, Math.ceil(length / pageSize.value))); });
 async function assignInterfaces(ids: string[], assignee: ApexBffAssignee | undefined, batch = false) {
-  if (!reviewAvailable.value || savingId.value || !ids.length) return;
+  if (!reviewAvailable.value || savingId.value || !ids.length || ids.some(id => catalog.value.find(item => item.id === id)?.archived)) return;
   savingId.value = batch ? 'menu-assignment' : ids[0];
   try {
     await reviewMutation.mutateAsync({ action: 'assign', ids, assignee: assignee ?? null });
@@ -89,11 +96,18 @@ async function assignInterfaces(ids: string[], assignee: ApexBffAssignee | undef
   finally { savingId.value = ''; }
 }
 function statusTone(item: ReviewCatalogItem) {
-  const status = reviewLabel(records.value[item.id]);
+  if (item.archived) return '';
+  const status = reviewDisplayStatus(item, records.value[item.id]);
   return status === '已联调' ? 'confirmed' : status === '待人工审核' ? 'pending' : '';
 }
+function statusText(item: ReviewCatalogItem) {
+  if (item.archived) return '暂不使用';
+  if (!reviewAvailable.value) return '状态未加载';
+  const status = reviewDisplayStatus(item, records.value[item.id]);
+  return status === '已联调' ? '确认联调通过' : status;
+}
 async function saveStatus(item: ReviewCatalogItem, status: ApexBffReviewStatus) {
-  if (!reviewAvailable.value || savingId.value || status === reviewLabel(records.value[item.id])) return;
+  if (item.archived || !reviewAvailable.value || savingId.value || status === reviewLabel(records.value[item.id])) return;
   savingId.value = item.id;
   try {
     await reviewMutation.mutateAsync({ action: 'status', id: item.id, status });
@@ -101,39 +115,40 @@ async function saveStatus(item: ReviewCatalogItem, status: ApexBffReviewStatus) 
   } catch (error) { ElMessage.error((error as Error).message); }
   finally { savingId.value = ''; }
 }
-function refresh() { void query.refetch(); }
+function refresh() { void query.refetch(); void catalogQuery.refetch(); }
 async function toggleReview(item: ReviewCatalogItem) {
-  if (!reviewAvailable.value || savingId.value) return;
+  if (item.archived || !reviewAvailable.value || savingId.value) return;
   const action = records.value[item.id]?.confirmedAt ? 'reopen' : 'confirm';
   savingId.value = item.id;
   try {
     await reviewMutation.mutateAsync({ action, id: item.id });
-    ElMessage.success(action === 'confirm' ? '已标记为接口已联调' : '已撤回联调确认，原证据仍保留');
+    ElMessage.success(action === 'confirm' ? '已标记为确认联调通过' : '已撤回联调确认，原证据仍保留');
   } catch (error) { ElMessage.error((error as Error).message); }
   finally { savingId.value = ''; }
 }
 </script>
 
 <template>
-  <PageHeading title="APEX 接口联调" description="按模块和页面核对接口；只有人工确认后才计入已联调。" :loading="query.isFetching.value" @refresh="refresh">
+  <PageHeading title="APEX 接口联调" description="按模块和页面核对接口；只有人工确认后才计入确认联调通过。" :loading="query.isFetching.value" @refresh="refresh">
     <RouterLink to="/agent?view=integration-execution" class="review-resource-link">联调执行进度</RouterLink>
     <el-button @click="feedbackItem = undefined; wecomOpen = true">企业微信机器人</el-button>
     <a v-if="plan?.contractUrl" :href="plan.contractUrl" target="_blank" rel="noreferrer" class="review-resource-link">接口文档</a>
   </PageHeading>
   <div class="review-overview surface">
-    <div class="overview-main"><small>接口总数</small><strong>{{ catalog.length }}</strong><span>暂不联调 {{ deferredCount }} · 已替代 / 不再使用 {{ reviewAvailable ? counts.inactive : '—' }}</span></div>
-    <div class="overview-stat confirmed"><small>已联调</small><strong>{{ reviewAvailable ? counts.confirmed : '—' }}</strong><span>仅统计人工确认</span></div>
-    <div class="overview-stat pending"><small>待人工审核</small><strong>{{ reviewAvailable ? counts.pending : '—' }}</strong><span>不含已替代、不再使用</span></div>
+    <div class="overview-main"><small>接口总数</small><strong>{{ catalog.length }}</strong><span>暂不联调 {{ deferredCount }} · 暂不使用 {{ unusedCount }} · 已替代 / 不再使用 {{ reviewAvailable ? counts.inactive : '—' }}</span></div>
+    <div class="overview-stat confirmed"><small>确认联调通过</small><strong>{{ reviewAvailable ? counts.confirmed : '—' }}</strong><span>仅统计人工确认</span></div>
+    <div class="overview-stat pending"><small>待人工审核</small><strong>{{ reviewAvailable ? counts.pending : '—' }}</strong><span>不含暂不联调、暂不使用、已替代、不再使用</span></div>
   </div>
-  <p v-if="query.error.value || catalogQuery.error.value" class="load-error">审核记录读取失败：{{ (query.error.value || catalogQuery.error.value)?.message }}</p>
+  <p v-if="query.error.value" class="load-error">审核记录读取失败：{{ query.error.value.message }}</p>
+  <p v-if="catalogQuery.error.value" class="load-error">接口清单读取失败：{{ catalogQuery.error.value.message }}</p>
   <div class="review-layout">
     <ReviewNavigation v-model:module="selectedModule" v-model:page="selectedPage" :items="matchingItems" :records="records" :available="reviewAvailable" />
     <section class="surface review-main">
       <div class="review-toolbar">
-        <div><h2>{{ selectedModule || '全部模块' }}<span v-if="selectedPage"> / {{ selectedPage }}</span></h2><p>{{ filtered.length }} 条接口 · 已联调 {{ reviewAvailable ? filtered.filter(item => !!records[item.id]?.confirmedAt).length : '—' }} 条</p></div>
+        <div><h2>{{ selectedModule || '全部模块' }}<span v-if="selectedPage"> / {{ selectedPage }}</span></h2><p>{{ filtered.length }} 条接口 · 确认联调通过 {{ reviewAvailable ? filtered.filter(item => !!records[item.id]?.confirmedAt).length : '—' }} 条</p></div>
         <div class="review-filters">
-          <el-select v-model="categoryFilter" clearable placeholder="全部联调分类" aria-label="联调分类" class="status-filter"><el-option label="本轮联调" value="本轮联调" /><el-option label="暂不联调" value="暂不联调" /></el-select>
-          <el-select v-model="statusFilter" clearable :disabled="!reviewAvailable" placeholder="全部审核状态" aria-label="审核状态" class="status-filter"><el-option v-for="label in reviewStatuses" :key="label" :label="label" :value="label" /></el-select>
+          <el-select v-model="categoryFilter" clearable placeholder="全部联调分类" aria-label="联调分类" class="status-filter"><el-option label="本轮联调" value="本轮联调" /><el-option label="暂不联调" value="暂不联调" /><el-option label="暂不使用" value="暂不使用" /></el-select>
+          <el-select v-model="statusFilter" clearable :disabled="!reviewAvailable" placeholder="全部审核状态" aria-label="审核状态" class="status-filter"><el-option v-for="option in reviewOptions" :key="option.value" :label="option.label" :value="option.value" /><el-option label="暂不使用" value="暂不使用" /></el-select>
           <el-select v-model="assigneeFilter" filterable clearable :disabled="!reviewAvailable" placeholder="全部人员" aria-label="负责人筛选" class="assignee-filter"><el-option label="未分配" value=":unassigned" /><el-option v-for="person in assignees" :key="person.name" :label="`${person.displayName}（${person.name}）`" :value="person.name" /></el-select>
           <el-input v-model="search" clearable placeholder="搜索接口、路径、页面" aria-label="搜索接口" class="search-filter" />
           <el-button :disabled="!reviewAvailable || !!savingId" @click="assignmentOpen = true">按菜单分配</el-button>
@@ -144,8 +159,8 @@ async function toggleReview(item: ReviewCatalogItem) {
         <el-table-column label="模块 / 页面" min-width="210"><template #default="{ row }"><strong>{{ row.ui.module }} / {{ row.ui.page }}</strong><code v-if="row.ui.route" class="subline interface-path">{{ row.ui.route }}</code><small v-else class="subline">{{ row.ui.kind === 'multiple' ? '关联多个页面' : row.ui.kind === 'shared' ? '跨页面公共接口' : '页面待定位' }}</small></template></el-table-column>
         <el-table-column label="开发信息" min-width="190"><template #default="{ row }"><span v-if="row.plan">契约：{{ row.plan.contractStatus }}</span><span v-else>契约未收录</span><small v-if="row.workbook" class="subline">计划备注：{{ row.workbook.planNote || row.workbook.completion || '未填写' }}</small></template></el-table-column>
         <el-table-column label="联调分类" min-width="150"><template #default="{ row }"><span>{{ integrationScopeCategory(row) }}</span><small v-if="integrationDeferral(row)" class="subline">{{ integrationDeferral(row) }}</small></template></el-table-column>
-        <el-table-column label="负责人" width="210"><template #default="{ row }"><ReviewAssigneePicker :model-value="records[row.id]?.assignee" :disabled="!reviewAvailable || !!savingId" :loading="savingId === row.id" :label="`${row.name}负责人`" @update:model-value="assignInterfaces([row.id], $event)" /><small class="subline">{{ records[row.id]?.assignee?.name || '未分配' }}</small></template></el-table-column>
-        <el-table-column label="人工审核" width="210" fixed="right"><template #default="{ row }"><span :class="['review-status', reviewAvailable ? statusTone(row) : '']">{{ reviewAvailable ? reviewLabel(records[row.id]) : '状态未加载' }}</span><div class="review-actions"><el-button v-if="reviewAvailable" link :type="records[row.id]?.confirmedAt ? 'info' : 'success'" :loading="savingId === row.id" :disabled="!!savingId && savingId !== row.id" @click="toggleReview(row)">{{ records[row.id]?.confirmedAt ? '撤回联调确认' : '确认联调通过' }}</el-button><el-dropdown trigger="click" :disabled="!reviewAvailable || !!savingId" @command="saveStatus(row, $event)"><el-button link type="primary" :disabled="!reviewAvailable || !!savingId">修改状态</el-button><template #dropdown><el-dropdown-menu><el-dropdown-item v-for="status in reviewStatuses" :key="status" :command="status" :disabled="!!savingId || status === reviewLabel(records[row.id])">{{ status }}</el-dropdown-item></el-dropdown-menu></template></el-dropdown></div><el-button link type="primary" @click="feedbackItem = row; wecomOpen = true">后端反馈</el-button></template></el-table-column>
+        <el-table-column label="负责人" width="210"><template #default="{ row }"><ReviewAssigneePicker :model-value="records[row.id]?.assignee" :disabled="!!row.archived || !reviewAvailable || !!savingId" :loading="savingId === row.id" :label="`${row.name}负责人`" @update:model-value="assignInterfaces([row.id], $event)" /><small class="subline">{{ records[row.id]?.assignee?.name || '未分配' }}</small></template></el-table-column>
+        <el-table-column label="人工审核" width="210" fixed="right"><template #default="{ row }"><span :class="['review-status', reviewAvailable ? statusTone(row) : '']">{{ statusText(row) }}</span><div v-if="!row.archived" class="review-actions"><el-button v-if="reviewAvailable" link :type="records[row.id]?.confirmedAt ? 'info' : 'success'" :loading="savingId === row.id" :disabled="!!savingId && savingId !== row.id" @click="toggleReview(row)">{{ records[row.id]?.confirmedAt ? '撤回联调确认' : '确认联调通过' }}</el-button><el-dropdown trigger="click" :disabled="!reviewAvailable || !!savingId" @command="saveStatus(row, $event)"><el-button link type="primary" :disabled="!reviewAvailable || !!savingId">修改状态</el-button><template #dropdown><el-dropdown-menu><el-dropdown-item v-for="option in reviewOptions" :key="option.value" :command="option.value" :disabled="!!savingId || option.value === reviewLabel(records[row.id])">{{ option.label }}</el-dropdown-item></el-dropdown-menu></template></el-dropdown></div><el-button v-if="!row.archived" link type="primary" @click="feedbackItem = row; wecomOpen = true">后端反馈</el-button></template></el-table-column>
       </el-table>
       <el-pagination v-if="filtered.length > pageSize" v-model:current-page="page" v-model:page-size="pageSize" :total="filtered.length" :page-sizes="[20, 50, 100]" layout="total, sizes, prev, pager, next" class="review-pagination" />
     </section>

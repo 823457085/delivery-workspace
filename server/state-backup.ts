@@ -6,8 +6,12 @@ import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { groupStateSchema } from '../shared/agent-group-chat.js';
+import { normalizeTeamAccessModes, profileConfigSchema } from '../shared/agent-team.js';
+import { collaborationStateSchema } from './agent-collaboration.js';
 import { deliveryAcceptanceRecordSchema } from '../shared/delivery-acceptance.js';
 import { requirementProgressSchema } from '../shared/requirement-development.js';
+import { overseasRequirementStateSchema } from '../shared/overseas-requirements.js';
 import { jiraCommentSavedDraftSchema } from '../shared/jira-fix-handoff.js';
 
 const exec = promisify(execFile);
@@ -22,8 +26,10 @@ const acceptanceFile = /^delivery-acceptance\/[a-f0-9]{64}\.json$/;
 export const stateBackupFiles = [
   'agent-runtimes/agent-runs.json', 'agent-runtimes/custom-models.json',
   'agent-runtimes/codex-sessions.json', 'agent-runtimes/hidden-codex-sessions.json',
-  'agent-runtimes/conversation-titles.json', 'cli-queue.json', 'api-integration.json',
-  'apex-bff-review.json', 'jira-fix/projects.json', 'agent-notes/vault.json',
+  'agent-runtimes/group-chat.json', 'agent-runtimes/team-tasks.json', 'agent-runtimes/agent-profiles.json', 'agent-runtimes/collaboration-state.json',
+  'agent-runtimes/agent-usage-daily.json', 'agent-runtimes/agent-evaluations.json', 'agent-runtimes/agent-delivery-drafts.json',
+  'agent-runtimes/conversation-titles.json', 'agent-runtimes/agent-workflows.json', 'cli-queue.json', 'api-integration.json',
+  'apex-bff-review.json', 'jira-fix/projects.json', 'agent-notes/vault.json', 'refactor-control/state.json', 'overseas-requirements/requirements.json',
 ] as const;
 const dynamicDirectories = ['jira-fix', 'requirement-development', 'jira-fix-handoffs', 'delivery-acceptance'];
 const isObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
@@ -45,12 +51,22 @@ export function validateStateJson(relative: string, value: unknown): void {
   assertManaged(relative);
   let valid = false;
   switch (relative) {
+    case 'overseas-requirements/requirements.json': valid = overseasRequirementStateSchema.safeParse(value).success; break;
+    case 'agent-runtimes/group-chat.json': valid = groupStateSchema.safeParse(value).success; break;
+    case 'agent-runtimes/agent-profiles.json': valid = profileConfigSchema.safeParse(normalizeTeamAccessModes(value)).success; break;
+    case 'agent-runtimes/collaboration-state.json': valid = collaborationStateSchema.safeParse(value).success; break;
+    case 'agent-runtimes/team-tasks.json': valid = isObject(value) && value.version === 1 && typeof value.revision === 'number'
+      && arrayOf(value.tasks, item => isObject(item) && strings(item, ['id', 'objective', 'state']) && Array.isArray(item.nodes)); break;
+    case 'agent-runtimes/agent-usage-daily.json': valid = isObject(value) && value.version === 1 && Array.isArray(value.records) && Array.isArray(value.daily); break;
+    case 'agent-runtimes/agent-evaluations.json': valid = isObject(value) && value.version === 1 && Array.isArray(value.records); break;
+    case 'agent-runtimes/agent-delivery-drafts.json': valid = isObject(value) && value.version === 1 && Array.isArray(value.drafts) && Array.isArray(value.opinions); break;
     case 'agent-runtimes/agent-runs.json':
       valid = arrayOf(value, item => isObject(item) && strings(item, ['id', 'createdAt', 'workspacePath'])
         && ['queued', 'running', 'completed', 'failed', 'interrupted', 'cancelled'].includes(String(item.status)));
       break;
     case 'agent-runtimes/custom-models.json':
-      valid = arrayOf(value, item => isObject(item) && strings(item, ['id', 'modelId', 'label']) && ['codex', 'cursor'].includes(String(item.provider)));
+      valid = arrayOf(value, item => isObject(item) && strings(item, ['id', 'modelId', 'label']) && ['codex', 'cursor', 'claude', 'kiro', 'antigravity', 'api', 'deepseek', 'workbuddy', 'grok'].includes(String(item.provider))
+        && (!['api', 'grok', 'deepseek'].includes(String(item.provider)) || (isObject(item.api) && typeof item.api.baseUrl === 'string' && !('apiKey' in item.api))));
       break;
     case 'agent-runtimes/codex-sessions.json':
       valid = isObject(value) && arrayOf(value.sessions, item => isObject(item) && typeof item.id === 'string')
@@ -58,8 +74,15 @@ export function validateStateJson(relative: string, value: unknown): void {
       break;
     case 'agent-runtimes/hidden-codex-sessions.json': valid = arrayOf(value, item => typeof item === 'string'); break;
     case 'agent-runtimes/conversation-titles.json': valid = recordOf(value, item => typeof item === 'string'); break;
+    case 'agent-runtimes/agent-workflows.json':
+      valid = arrayOf(value, item => isObject(item) && strings(item, ['id', 'templateId', 'parentConversationId', 'objective', 'createdAt'])
+        && Array.isArray(item.decisions));
+      break;
     case 'cli-queue.json': valid = isObject(value) && typeof value.enabled === 'boolean'; break;
     case 'api-integration.json': valid = isObject(value) && recordOf(value.stages, isObject) && recordOf(value.operations, isObject); break;
+    case 'refactor-control/state.json': valid = isObject(value) && value.version === 1 && typeof value.revision === 'string' && isObject(value.config)
+      && strings(value.config, ['sourceRoot', 'workspacePath', 'baseUrl', 'environment', 'assignee'])
+      && arrayOf(value.jobs, item => isObject(item) && strings(item, ['id', 'moduleId', 'action', 'status', 'createdAt'])) && Array.isArray(value.batches); break;
     case 'apex-bff-review.json': valid = recordOf(value, item => isObject(item) && strings(item, ['evidence', 'blocker', 'confirmedAt', 'updatedAt'])); break;
     case 'jira-fix/projects.json': valid = arrayOf(value, item => isObject(item) && strings(item, ['projectKey', 'repository', 'parentDirectory', 'baseBranch'])); break;
     case 'agent-notes/vault.json': valid = isObject(value) && typeof value.path === 'string'; break;
@@ -343,19 +366,6 @@ export async function assertStateOffline(dataDirectory: string, options: Offline
       if (processAlive(owner.pid)) throw new Error(`服务或执行器仍在运行，禁止恢复：${relative}`);
     } catch (error) { if (!missing(error)) throw error; }
   }
-  // 启动门可在主服务退出后继续持有 CLI；恢复旧账本前必须保留对这些进程的判断。
-  const runsFile = 'agent-runtimes/agent-runs.json';
-  try {
-    const runs: unknown = JSON.parse(await fs.readFile(await safePath(root, runsFile), 'utf8'));
-    validateStateJson(runsFile, runs);
-    for (const run of runs as Record<string, unknown>[]) {
-      for (const pid of [run.pid, isObject(run.recovery) ? run.recovery.previousPid : undefined]) {
-        if (pid !== null && pid !== undefined && processAlive(pid as number)) {
-          throw new Error(`Agent 执行进程仍在运行，禁止恢复：${runsFile}`);
-        }
-      }
-    }
-  } catch (error) { if (!missing(error)) throw error; }
   await new Promise<void>((resolve, reject) => {
     const socket = net.createConnection({ host: '127.0.0.1', port });
     socket.setTimeout(1500);

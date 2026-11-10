@@ -140,7 +140,7 @@ export async function createService(dataDirectory: string, options: { delayMs?: 
     } };
   }
 
-  return { start, resume, rework, getRun, dashboard,
+  return { start, resume, rework, getRun, dashboard, isIdle: () => !busy.size,
     subscribe: (subscriber: (revision: number) => void) => { subscribers.add(subscriber); return () => subscribers.delete(subscriber); },
     revision: () => revision,
     refreshSource: async () => { source = await readSource(dataDirectory, readCurrentSource); publish(); return source; },

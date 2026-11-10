@@ -10,9 +10,9 @@ import ExecutionRetest from './ExecutionRetest.vue';
 import { executionRequest } from './execution-plan';
 import { useIntegrationExecution } from './useIntegrationExecution';
 
-const { catalogQuery, progress, reviews, runtime, interfaces, tasks, runs, active, metrics, sending, refresh, start, startAll, stop, openRun } = useIntegrationExecution();
+const { progress, reviews, runtime, interfaces, tasks, runs, active, metrics, sending, refresh, start, startAll, stop, openRun } = useIntegrationExecution();
 const ready = computed(() => !!progress.data.value?.automation && !!reviews.data.value && !!runtime.data.value);
-const error = computed(() => catalogQuery.error.value || progress.error.value || reviews.error.value || runtime.error.value);
+const error = computed(() => progress.error.value || reviews.error.value || runtime.error.value);
 const stateLabels = { queued: '排队中', running: '执行中', completed: '本轮执行结束', failed: '执行失败', interrupted: '执行中断', cancelled: '已停止' };
 const taskRows = computed(() => tasks.value.map(task => ({ ...task,
   running: !!task.run && ['queued', 'running'].includes(task.run.status),
@@ -32,7 +32,7 @@ function taskTitle(run: AgentRun) {
 <template>
   <section class="integration-execution" aria-label="联调执行进度">
     <header class="execution-heading">
-      <div><h2>联调执行</h2><p>{{ progress.data.value?.automation.assignee || '未配置负责人' }} · 全部名下接口 · 按模块独立会话并行执行</p></div>
+      <div><h2>联调执行</h2><p>当前账号 · 全部名下接口 · 按模块独立会话并行执行</p></div>
       <div class="execution-actions">
         <el-button :loading="progress.isFetching.value" @click="refresh">刷新进度</el-button>
         <el-button type="primary" :disabled="!canStartAll" :loading="sending" @click="startAll">并行执行待办</el-button>
@@ -42,7 +42,7 @@ function taskTitle(run: AgentRun) {
       <MetricStrip :items="metrics" />
       <section class="execution-tasks surface" aria-label="各模块执行会话">
         <div class="tasks-title"><h3>模块执行会话</h3><small>{{ active.length }} 个会话执行或排队 · 进度每 5 秒刷新</small></div>
-        <el-table :data="taskRows" row-key="id" empty-text="所选负责人当前没有联调任务">
+        <el-table :data="taskRows" row-key="id" empty-text="当前没有联调任务">
           <el-table-column label="模块 / 会话" min-width="200"><template #default="{ row }"><strong>{{ row.title }}</strong><small v-if="row.module !== row.title" class="task-detail">{{ row.module }}</small></template></el-table-column>
           <el-table-column label="接口" width="120"><template #default="{ row }">{{ row.total }} 条<small class="task-detail">本轮 {{ row.executable }} · 暂不联调 {{ row.deferredCount }}</small><small class="task-detail">待查询 {{ row.pending }}</small></template></el-table-column>
           <el-table-column label="本轮检查进度" width="130"><template #default="{ row }">{{ row.checked }} / {{ row.executable }}<small class="task-detail">实测通过 {{ row.passed }}</small></template></el-table-column>

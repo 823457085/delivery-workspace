@@ -17,7 +17,7 @@ async function fixture(t: { after: (fn: () => Promise<unknown>) => void }) {
   await fs.writeFile(markdown, issueText.replace('externalIntegration缺失', 'externalIntegration缺失；Authorization: Bearer fixture-only-secret <@all>'));
   await fs.writeFile(image, imageBytes);
   await fs.writeFile(configFile, JSON.stringify({ webhook: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=fixture-only' }));
-  return { markdown, image, receipt, configFile, imageBytes, inlineImageUrl: 'http://172.20.100.50:5199/integration-runs/page.png' };
+  return { markdown, image, receipt, configFile, imageBytes, inlineImageUrl: 'http://172.16.88.50:5199/integration-runs/page.png' };
 }
 
 test('预览不发送；问题与截图只提交一条图文，重复执行及历史回执不刷群', async t => {
@@ -58,7 +58,7 @@ test('后端关注行带红色标记，行内代码和原始返回保持一致�
   await sendIntegrationEvidence(f.markdown, f.image, f.receipt, options);
   await sendIntegrationEvidence(f.markdown, f.image, f.receipt, options);
   assert.equal(requests.length, 1);
-  assert.deepEqual(requests[0], { msgtype: 'markdown_v2', markdown_v2: { content: content.replace('预期：', '预期：🔴 ') + `\n\n![页面截图](${f.inlineImageUrl})\n\n![关键返回](http://172.20.100.50:5199/integration-runs/native-network.png)` } });
+  assert.deepEqual(requests[0], { msgtype: 'markdown_v2', markdown_v2: { content: content.replace('预期：', '预期：🔴 ') + `\n\n![页面截图](${f.inlineImageUrl})\n\n![关键返回](http://172.16.88.50:5199/integration-runs/native-network.png)` } });
 });
 
 test('历史模块和摘要问题ID沿用原编号发送一次，仍拒绝前端摘要ID', async t => {
@@ -157,7 +157,7 @@ test('进度、成功通知、长篇问题和仅图片旧调用在外发与回�
 
 test('内嵌图文只有一次机器人请求，不单独发送图片，预览不发送且不重复提交', async t => {
   const f = await fixture(t), requests: Record<string, unknown>[] = [];
-  const imageUrl = 'http://172.20.100.50:5199/integration-runs/evidence.jpg';
+  const imageUrl = 'http://172.16.88.50:5199/integration-runs/evidence.jpg';
   const options = { inlineImageUrl: imageUrl, configFile: f.configFile, fetch: (async (_url, init) => { requests.push(JSON.parse(String(init?.body))); return new Response('{"errcode":0}'); }) as typeof fetch };
   const preview = await sendIntegrationEvidence(f.markdown, f.image, f.receipt, options);
   assert.ok(preview.content);
@@ -179,8 +179,8 @@ test('群内直接保留关键参数和返回，正文证据链接在发送及�
     requests.push(JSON.parse(String(init?.body)));
     return new Response('{"errcode":0}');
   }) as typeof fetch };
-  for (const linked of [content.replace('traceId: fixture-trace', 'traceId: fixture-trace；http://172.20.100.50:5199/integration-runs/evidence.html'),
-    issueText + '\n证据：[完整报告](http://172.20.100.50:5199/integration-runs/evidence.html)']) {
+  for (const linked of [content.replace('traceId: fixture-trace', 'traceId: fixture-trace；http://172.16.88.50:5199/integration-runs/evidence.html'),
+    issueText + '\n证据：[完整报告](http://172.16.88.50:5199/integration-runs/evidence.html)']) {
     await fs.writeFile(f.markdown, linked);
     await assert.rejects(sendIntegrationEvidence(f.markdown, f.image, f.receipt, options), /正文.*链接/);
     assert.equal(requests.length, 0);
@@ -266,7 +266,7 @@ test('页面和接口关键截图都内嵌在同一条消息，失败保留回�
     assert.deepEqual(result.receipt?.parts.map(part => part.status), failMessage ? ['failed'] : ['sent']);
     const content = (requests[0].markdown_v2 as { content: string }).content;
     assert.ok(content.includes(f.inlineImageUrl));
-    assert.ok(content.includes('http://172.20.100.50:5199/integration-runs/request-response.png'));
+    assert.ok(content.includes('http://172.16.88.50:5199/integration-runs/request-response.png'));
     const calls = requests.length;
     await sendIntegrationEvidence(f.markdown, f.image, f.receipt, options);
     assert.equal(requests.length, calls);
@@ -285,8 +285,8 @@ test('缺少或非法接口图在任何消息和回执创建前阻断', async t 
 
 test('请求证据页保留真实响应及接口文案，脱敏敏感数据并转义返回中的HTML', () => {
   const evidence = { source: 'browser-cdp', batchId: 'same-browser-batch', capturedAt: '2026-10-09T11:00:00.000Z',
-    pageUrl: 'http://fixture-owner1.localhost:6791/OperateManage/MerchantList',
-    request: { requestId: '23494.360', method: 'GET', url: 'http://fixture-owner1.localhost:6791/admin/v1/merchants/list?page=1', headers: { Authorization: 'Bearer fixture-secret', 'X-Region': 'NA' } },
+    pageUrl: 'http://demo-user1.localhost:6791/OperateManage/MerchantList',
+    request: { requestId: '23494.360', method: 'GET', url: 'http://demo-user1.localhost:6791/admin/v1/merchants/list?page=1', headers: { Authorization: 'Bearer fixture-secret', 'X-Region': 'NA' } },
     response: { status: 200, headers: { 'Set-Cookie': 'private-cookie' }, body: { code: 1000, data: { key: 'countryRegion', canResetPassword: false, label: 'L900037', phone: 'private-phone', message: '<script>alert(1)</script>' } } },
   };
   const html = renderIntegrationRequestEvidence(evidence);

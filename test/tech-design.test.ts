@@ -19,7 +19,7 @@ const plan = { category: 'design', jobId: job.id, issue: { key: input.issueKey, 
   assignee: 'Test', startDate: input.jiraStartDate, endDate: input.jiraEndDate, parent: { key: 'APEX-122' } } } as PlanItem;
 const data = { jobs: [job], plan: [plan] } as AutomationData;
 
-test('request form requires the user publication directory without changing historical inputs', () => {
+test('request form leaves the publication directory unset until configured', () => {
   const fresh = createRequestInput();
   assert.equal(fresh.confluenceParentUrl, '');
   assert.equal(emptyInput().confluenceParentUrl, '');
@@ -30,18 +30,18 @@ test('request form requires the user publication directory without changing hist
   assert.equal(createRequestInput().confluenceParentUrl, '');
 });
 
-test('opening a draft preserves its input and does not substitute a private directory', () => {
+test('opening a draft normalizes an empty directory and preserves its other inputs', () => {
   const draft = { ...input, confluenceParentUrl: '  ', notes: '保留待决问题' };
   const before = structuredClone(draft);
   const form = createRequestInput(draft);
-  assert.deepEqual(form, draft);
+  assert.deepEqual(form, { ...draft, confluenceParentUrl: createRequestInput().confluenceParentUrl });
   assert.deepEqual(draft, before);
 });
 
 test('a custom publication directory survives reopening and persistence without default substitution', () => {
   const form = createRequestInput(input);
   assert.deepEqual(form, input);
-  form.confluenceParentUrl = 'https://example.test/pages/123';
+  form.confluenceParentUrl = 'https://confluence.example.test/pages/viewpage.action?pageId=123';
   assert.equal(createRequestInput(form).confluenceParentUrl, form.confluenceParentUrl);
   assert.equal(input.confluenceParentUrl, 'https://example.test/parent');
   const record: DesignRecord = { input: form, review: emptyReview(), updatedAt: '', blockedReason: '' };

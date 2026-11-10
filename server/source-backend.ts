@@ -6,17 +6,26 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { AutomationData, CatchupData, JiraIssue, ProjectsData } from '../shared/hub.js';
+import type { AutomationData, CatchupData, IssueResponse, JiraDevScanPreview, JiraIssue, PlanItem, ProjectsData } from '../shared/hub.js';
+
+type PrepareJiraDevPreviews = (plan: PlanItem[], limit: number, mode?: 'preview' | 'start', mayStart?: () => Promise<boolean>) => Promise<JiraDevScanPreview[]>;
 
 interface JiraBackendModule {
+  connectJiraDevPreviews(handler: PrepareJiraDevPreviews): void;
   handleJiraTaskCalendarRequest(request: IncomingMessage, response: ServerResponse): Promise<void>;
   startAutomationScheduler(): void;
   stopAutomationScheduler(): void;
+  holdAutomationForRestart(): () => void;
+  automationIdleForRestart(): boolean;
   getCatchupMergeDashboard(refresh?: boolean): Promise<unknown>;
   getAutomationDashboard(): Promise<AutomationData>;
+  readWorkspaceReportIssues(): Promise<IssueResponse>;
   getCatchupDashboard(): Promise<CatchupData>;
   readJiraFixIssue(reference: string): Promise<JiraIssue>;
   jiraFixHandoffRequest(key: string, suffix: string, method?: string, body?: unknown): Promise<unknown>;
+  jiraIssueRequest(resource: string, method?: string, body?: unknown): Promise<Response>;
+  confluenceReadRequest(resource: string): Promise<Response>;
+  confluencePublishRequest?(resource: string, method: 'POST' | 'PUT', body: unknown): Promise<Response>;
   getLocalProjects(refresh?: boolean): Promise<ProjectsData>;
 }
 
@@ -41,12 +50,19 @@ export interface SourceBackend {
   dispatch(request: IncomingMessage, response: ServerResponse, target: string): Promise<void>;
   readMergePlan(refresh?: boolean): Promise<unknown>;
   readAutomation(): Promise<AutomationData>;
+  readIssues(): Promise<IssueResponse>;
   readCatchup(): Promise<CatchupData>;
   readJiraFixIssue(reference: string): Promise<JiraIssue>;
   jiraFixHandoffRequest(key: string, suffix: string, method?: string, body?: unknown): Promise<unknown>;
-  readLocalProjects(): Promise<ProjectsData>;
+  jiraIssueRequest(resource: string, method?: string, body?: unknown): Promise<Response>;
+  confluenceReadRequest(resource: string): Promise<Response>;
+  confluencePublishRequest?(resource: string, method: 'POST' | 'PUT', body: unknown): Promise<Response>;
+  readLocalProjects(refresh?: boolean): Promise<ProjectsData>;
+  connectJiraDevPreviews(handler: PrepareJiraDevPreviews): void;
   start(): void;
   close(): void;
+  holdForRestart(): () => void;
+  isIdle(): boolean;
 }
 
 export async function createSourceBackend(port: number): Promise<SourceBackend> {
@@ -68,11 +84,21 @@ export async function createSourceBackend(port: number): Promise<SourceBackend> 
     },
     readMergePlan: (refresh = false) => backend.getCatchupMergeDashboard(refresh),
     readAutomation: () => backend.getAutomationDashboard(),
+    readIssues: () => backend.readWorkspaceReportIssues(),
     readCatchup: () => backend.getCatchupDashboard(),
     readJiraFixIssue: reference => backend.readJiraFixIssue(reference),
     jiraFixHandoffRequest: (key, suffix, method, body) => backend.jiraFixHandoffRequest(key, suffix, method, body),
-    readLocalProjects: () => backend.getLocalProjects(false),
+    jiraIssueRequest: (resource, method, body) => backend.jiraIssueRequest(resource, method, body),
+    confluenceReadRequest: resource => backend.confluenceReadRequest(resource),
+    confluencePublishRequest: (resource, method, body) => {
+      if (!backend.confluencePublishRequest) throw new Error('当前 Confluence 连接不支持方案发布');
+      return backend.confluencePublishRequest(resource, method, body);
+    },
+    readLocalProjects: (refresh = false) => backend.getLocalProjects(refresh),
+    connectJiraDevPreviews: handler => backend.connectJiraDevPreviews(handler),
     start: () => backend.startAutomationScheduler(),
     close: () => backend.stopAutomationScheduler(),
+    holdForRestart: () => backend.holdAutomationForRestart(),
+    isIdle: () => backend.automationIdleForRestart(),
   };
 }

@@ -7,7 +7,7 @@ import type { AgentRuntimeHealth } from '../shared/agent-runtime.js';
 import { codexWorkbenchDefaults, workbenchRuntime } from '../shared/agent-runtime.js';
 
 const fixture = fileURLToPath(new URL('./fixtures/codex-model-server.mjs', import.meta.url));
-test('工作台默认 Astra 6 Ultra 普通速度，保留所有模型与推理档位且不修改 CLI 目录', () => {
+test('工作台默认 Sol 6.1 Ultra 普通速度，保留所有模型与推理档位且不修改 CLI 目录', () => {
   const runtime = { provider: 'codex', defaultModel: 'older-model', models: [
     { id: '', label: 'CLI 默认' },
     { id: 'older-model', label: 'Older', efforts: ['low'], defaultEffort: 'low' },
@@ -17,15 +17,15 @@ test('工作台默认 Astra 6 Ultra 普通速度，保留所有模型与推理�
   ] } as AgentRuntimeHealth;
   const original = structuredClone(runtime);
   const selected = workbenchRuntime(runtime);
-  assert.equal(selected.defaultModel, 'gpt-6-astra');
+  assert.equal(selected.defaultModel, 'gpt-6.1-sol');
   assert.equal(codexWorkbenchDefaults.serviceTier, 'default');
   assert.deepEqual(selected.models.map(model => model.id), runtime.models.map(model => model.id));
-  assert.deepEqual(selected.models[3], { ...runtime.models[3], defaultEffort: 'ultra' });
-  assert.deepEqual(selected.models[2], runtime.models[2], '其他模型保留真实默认强度和完整可选档位');
+  assert.deepEqual(selected.models[2], { ...runtime.models[2], defaultEffort: 'ultra' });
+  assert.deepEqual(selected.models[3], runtime.models[3], '其他模型保留真实默认强度和完整可选档位');
   assert.deepEqual(selected.models[4], runtime.models[4], '自定义模型仍可选');
   assert.deepEqual(runtime, original);
-  assert.deepEqual(workbenchRuntime({ ...runtime, models: [runtime.models[2]] }).models, [runtime.models[2]], '默认模型不可用也不隐藏其他选择');
-  const restricted = { ...runtime.models[3], efforts: ['medium'] as const, defaultEffort: 'medium' as const };
+  assert.deepEqual(workbenchRuntime({ ...runtime, models: [runtime.models[3]] }).models, [runtime.models[3]], '默认模型不可用也不隐藏其他选择');
+  const restricted = { ...runtime.models[2], efforts: ['medium'] as const, defaultEffort: 'medium' as const };
   assert.deepEqual(workbenchRuntime({ ...runtime, models: [{ ...restricted, efforts: [...restricted.efforts] }] }).models,
     [{ ...restricted, efforts: [...restricted.efforts] }], '不能伪造 CLI 不支持的 Ultra 档位');
   const cursor = { ...runtime, provider: 'cursor' as const };

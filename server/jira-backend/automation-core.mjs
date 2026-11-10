@@ -1,5 +1,11 @@
 import path from "node:path";
 import { isJiraSubtask } from "../../shared/automation-policy.mjs";
+import { chinaWorkingDates, splitWorkingDates } from "../../shared/china-work-calendar.mjs";
+import {
+  automationProjectRoutingProblem, issueWorkspaceCandidates, resolveAutomationProject,
+  sanitizeAutomationProjectProfiles
+} from "./automation-project-routing.mjs";
+export { automationProjectRoutingProblem, isAutomationProjectRoutingReady, resolveAutomationProject } from "./automation-project-routing.mjs";
 
 import { skillsRoot as codexSkillsRoot } from "./config.mjs";
 
@@ -10,6 +16,9 @@ export const DEFAULT_AUTOMATION_SETTINGS = Object.freeze({
   autoSplitLongTasks: false,
   maxTaskSpanDays: 3,
   autoCloseDueSplitTasks: false,
+  autoPrepareJiraDev: false,
+  jiraDevAutomationApproved: false,
+  jiraDevAutomationRouted: false,
   autoCreateCodex: false,
   autoTransitionJira: false,
   autoCreateMergeRequest: false,
@@ -65,7 +74,7 @@ export function sanitizeAutomationSettings(value = {}, current = DEFAULT_AUTOMAT
     ? Math.min(Math.floor(rawTaskSpanDays), 30)
     : current.maxTaskSpanDays || DEFAULT_AUTOMATION_SETTINGS.maxTaskSpanDays;
 
-  return {
+  const settings = {
     enabled: typeof value.enabled === "boolean" ? value.enabled : current.enabled,
     dailyTime,
     dailyTimes,
@@ -76,6 +85,14 @@ export function sanitizeAutomationSettings(value = {}, current = DEFAULT_AUTOMAT
     autoCloseDueSplitTasks: typeof value.autoCloseDueSplitTasks === "boolean"
       ? value.autoCloseDueSplitTasks
       : Boolean(current.autoCloseDueSplitTasks),
+    autoPrepareJiraDev: typeof value.autoPrepareJiraDev === "boolean" ? value.autoPrepareJiraDev : Boolean(current.autoPrepareJiraDev),
+    jiraDevAutomationApproved: typeof value.jiraDevAutomationApproved === "boolean"
+      ? value.jiraDevAutomationApproved
+      : Boolean(current.jiraDevAutomationApproved) && [
+        "enabled", "autoPrepareJiraDev", "autoCreateCodex", "autoTransitionJira", "autoCreateMergeRequest",
+        "startStatus", "completedStatus", "reviewer", "targetBranch", "repositoryUrl", "projectProfiles"
+      ].every(key => !Object.hasOwn(value, key) || JSON.stringify(value[key]) === JSON.stringify(current[key])),
+    jiraDevAutomationRouted: Boolean(value.jiraDevAutomationRouted || current.jiraDevAutomationRouted || value.jiraDevAutomationApproved === true),
     autoCreateCodex: typeof value.autoCreateCodex === "boolean"
       ? value.autoCreateCodex
       : current.autoCreateCodex,
@@ -97,6 +114,9 @@ export function sanitizeAutomationSettings(value = {}, current = DEFAULT_AUTOMAT
     reviewer: textValue("reviewer", current.reviewer, 80),
     repositoryUrl: textValue("repositoryUrl", current.repositoryUrl, 300)
   };
+  const profiles = Object.hasOwn(value, "projectProfiles") ? value.projectProfiles : current.projectProfiles;
+  settings.projectProfiles = sanitizeAutomationProjectProfiles(profiles, settings);
+  return settings;
 }
 
 export function getNextAutomationRun(settings, now = new Date()) {
@@ -156,11 +176,7 @@ export const THREE_DAY_SPLIT_LABEL = "delivery-3-day-split";
 function parseIsoDate(value) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value || "")) return null;
   const date = new Date(`${value}T00:00:00.000Z`);
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
-function dateIso(value) {
-  return value.toISOString().slice(0, 10);
+  return Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value ? null : date;
 }
 
 export function buildTaskDateSegments(issue, maxDays = 3) {
@@ -172,37 +188,10 @@ export function buildTaskDateSegments(issue, maxDays = 3) {
   const span = Math.max(1, Math.min(Math.floor(Number(maxDays) || 3), 30));
   if (!start || !end || end < start) return [];
 
-  const segments = [];
-  let cursor = new Date(start);
-  let workdayCount = 0;
-  while (cursor <= end) {
-    if ([0, 6].includes(cursor.getUTCDay())) {
-      cursor.setUTCDate(cursor.getUTCDate() + 1);
-      continue;
-    }
-    const segmentStart = new Date(cursor);
-    let segmentEnd = new Date(cursor);
-    let segmentDays = 1;
-    workdayCount += 1;
-    while (segmentDays < span) {
-      const next = new Date(segmentEnd);
-      next.setUTCDate(next.getUTCDate() + 1);
-      if (next > end || [0, 6].includes(next.getUTCDay())) break;
-      segmentEnd = next;
-      segmentDays += 1;
-      workdayCount += 1;
-    }
-    segments.push({
-      index: segments.length + 1,
-      total: 0,
-      startDate: dateIso(segmentStart),
-      endDate: dateIso(segmentEnd)
-    });
-    cursor = new Date(segmentEnd);
-    cursor.setUTCDate(cursor.getUTCDate() + 1);
-  }
-  if (workdayCount <= span) return [];
-  return segments.map((segment) => ({ ...segment, total: segments.length }));
+  const days = chinaWorkingDates(issue.startDate, issue.endDate || issue.dueDate);
+  if (days.length <= span) return [];
+  const segments = splitWorkingDates(days, span);
+  return segments.map((part, index) => ({ index: index + 1, total: segments.length, startDate: part[0], endDate: part.at(-1) }));
 }
 
 export function buildRequirementSegmentTitles(issue, total) {
@@ -322,29 +311,9 @@ export function getAutomationJobId(issueKey, category) {
   return `${String(issueKey || "").toUpperCase()}:${category}`;
 }
 
-function workspaceScore(issueKey, project) {
-  const key = String(issueKey || "").toLowerCase();
-  const branch = String(project.branch || "").toLowerCase();
-  const folder = String(project.folderName || "").toLowerCase();
-  const segments = String(project.path || "").toLowerCase().split(path.sep);
-  let score = 0;
-
-  if (folder === key) score += 120;
-  if (segments.includes(key)) score += 100;
-  if (branch === `feature/${key}`) score += 100;
-  else if (branch.includes(key)) score += 70;
-  return score;
-}
-
 export function matchIssueWorkspace(issue, projects = []) {
-  return projects
-    .map((project) => {
-      const issueScore = workspaceScore(issue?.key, project);
-      const parentScore = issue?.parent?.key ? workspaceScore(issue.parent.key, project) - 10 : 0;
-      return { project, score: Math.max(issueScore, parentScore) };
-    })
-    .filter((item) => item.score > 0)
-    .sort((left, right) => right.score - left.score)[0]?.project || null;
+  const matches = issueWorkspaceCandidates(issue, projects);
+  return matches.length === 1 ? matches[0] : null;
 }
 
 function branchMatchesIssue(issue, branch) {
@@ -375,7 +344,7 @@ function getCommitMessageStatus(message, issue) {
   return hasIssueKey && hasChineseSubject && hasDetailedBody ? "passed" : "failed";
 }
 
-export function getWorkspaceEvidence(workspace, issue = null, targetBranch = DEFAULT_AUTOMATION_SETTINGS.targetBranch) {
+export function getWorkspaceEvidence(workspace, issue = null, targetBranch = "i18n-test") {
   if (!workspace) {
     return {
       state: "missing",
@@ -386,8 +355,9 @@ export function getWorkspaceEvidence(workspace, issue = null, targetBranch = DEF
     };
   }
 
-  const commitsAheadTarget = Number(workspace.commitsAheadTarget || 0);
-  const diffFileCount = Number(workspace.diffFileCount || 0);
+  const targetEvidenceMatches = !workspace.gitEvidenceTargetBranch || workspace.gitEvidenceTargetBranch === targetBranch;
+  const commitsAheadTarget = targetEvidenceMatches ? Number(workspace.commitsAheadTarget || 0) : 0;
+  const diffFileCount = targetEvidenceMatches ? Number(workspace.diffFileCount || 0) : 0;
   const codePresent = commitsAheadTarget > 0 || diffFileCount > 0;
   const matchesIssue = issue ? branchMatchesIssue(issue, workspace.branch) : false;
   const targetRef = `origin/${targetBranch}`;
@@ -460,7 +430,7 @@ function jobSatisfiesDependency(job) {
   return job && (terminalJobStatuses.has(job.status) || job.status === "review");
 }
 
-function planAction(issue, classification, hasChildren, dependencyKeys, job, workspaceEvidence, deliveryOnly) {
+function planAction(issue, classification, hasChildren, dependencyKeys, job, workspaceEvidence, deliveryOnly, routingProblem) {
   if (isIssueDone(issue)) return "Jira 已完成";
   if (isJiraSubtask(issue)) return "子任务不参与自动派发";
   if (workspaceEvidence.alreadyDone) return "本地分支已合入，跳过重复执行";
@@ -468,6 +438,7 @@ function planAction(issue, classification, hasChildren, dependencyKeys, job, wor
   if (hasChildren) return "等待子任务汇总完成";
   if (classification.category === "unsupported") return "仅展示，不进入前端执行队列";
   if (dependencyKeys.length > 0) return "等待前置任务完成";
+  if (routingProblem) return routingProblem;
   if (!job) return deliveryOnly ? "代码已推送，仅核查交付" : "待创建 Codex 会话";
   if (job.status === "pending") return deliveryOnly ? "等待交付核查" : "等待 Codex 调度";
   if (job.status === "dispatching") return "正在创建 Codex 会话";
@@ -501,12 +472,15 @@ export function buildAutomationPlan(issues = [], projects = [], jobs = [], setti
 
   const workspaceByIssueKey = new Map();
   const evidenceByIssueKey = new Map();
+  const routingByIssueKey = new Map();
   automationIssues.forEach((issue) => {
-    const workspace = matchIssueWorkspace(issue, projects);
+    const routing = resolveAutomationProject(issue, projects, settings);
+    const workspace = routing.status === "matched" ? routing.workspace : null;
+    routingByIssueKey.set(issue.key, routing);
     workspaceByIssueKey.set(issue.key, workspace);
     evidenceByIssueKey.set(
       issue.key,
-      getWorkspaceEvidence(workspace, issue, settings.targetBranch)
+      getWorkspaceEvidence(workspace, issue, routing.profile?.targetBranch || "")
     );
   });
 
@@ -534,6 +508,8 @@ export function buildAutomationPlan(issues = [], projects = [], jobs = [], setti
       .map((sibling) => sibling.key);
     const workspace = workspaceByIssueKey.get(issue.key);
     const workspaceEvidence = evidenceByIssueKey.get(issue.key);
+    const projectRouting = routingByIssueKey.get(issue.key);
+    const routingProblem = automationProjectRoutingProblem(projectRouting, settings);
     const hasChildren = childKeys.length > 0;
     const localAlreadyDone = workspaceEvidence.alreadyDone;
     const deliveryOnly = ["implementation", "verification"].includes(classification.category)
@@ -544,7 +520,8 @@ export function buildAutomationPlan(issues = [], projects = [], jobs = [], setti
       && !hasChildren
       && classification.category !== "unsupported"
       && dependencyKeys.length === 0
-      && !jobSatisfiesDependency(job);
+      && !jobSatisfiesDependency(job)
+      && !routingProblem;
 
     return {
       issue,
@@ -560,6 +537,7 @@ export function buildAutomationPlan(issues = [], projects = [], jobs = [], setti
       dispatchable,
       localAlreadyDone,
       deliveryOnly,
+      projectRouting,
       workspace: workspace ? {
         path: workspace.path,
         displayPath: workspace.displayPath,
@@ -574,9 +552,10 @@ export function buildAutomationPlan(issues = [], projects = [], jobs = [], setti
         dependencyKeys,
         job,
         workspaceEvidence,
-        deliveryOnly
+        deliveryOnly,
+        routingProblem
       ),
-      targetBranch: settings.targetBranch
+      targetBranch: projectRouting.profile?.targetBranch || ""
     };
   });
 
@@ -600,16 +579,25 @@ function callbackInstructions(jobId, successStatus, fields) {
 export function buildCodexPrompt(planItem, settings = DEFAULT_AUTOMATION_SETTINGS) {
   const { issue, category, jobId } = planItem;
   const jiraLine = `[${issue.key}](${issue.url}) ${issue.summary}`;
+  const routingProblem = automationProjectRoutingProblem(planItem.projectRouting, settings);
+  if (routingProblem) return `Jira 任务 ${jiraLine} 暂不可执行：${routingProblem}。请先核对项目配置并重新巡检，不要启动开发或使用默认仓库。`;
+  const profile = planItem.projectRouting.profile;
+  settings = { ...settings, ...profile };
+  const projectLine = `已匹配项目：${profile.name || profile.id}；仓库：\`${profile.repositoryUrl}\`；目标分支：\`${profile.targetBranch}\`。${planItem.projectRouting.reason}。`;
+  const sourceLine = profile.localPath
+    ? `来源仓库目录为 \`${profile.localPath}\`；先核对 origin 与配置仓库一致。`
+    : `先定位或检出已匹配仓库 \`${profile.repositoryUrl}\`，核对 origin。`;
 
   if (category === "design") {
     const workspaceLine = planItem.workspace?.path
       ? `优先读取已匹配的需求工作区 \`${planItem.workspace.path}\`，当前分支 \`${planItem.workspace.branch}\`；保持工作区现有改动，不要修改产品代码。`
-      : "从本地 Apex 工作区中定位与父任务或 Jira Key 对应的仓库证据；找不到时明确标记，不要猜测代码现状。";
+      : `${sourceLine}仅从该项目读取代码证据；找不到时明确标记，不要猜测代码现状。`;
     return [
       `处理 Jira 技术方案任务：${jiraLine}`,
-      `使用 [$apex-frontend-tech-design-delivery](${path.join(codexSkillsRoot, "apex-frontend-tech-design-delivery", "SKILL.md")}) 和 [$jira-task-compliance](${path.join(codexSkillsRoot, "jira-task-compliance", "SKILL.md")})。`,
+      projectLine,
+      `遵循已匹配项目的技术方案流程，并使用 [$jira-task-compliance](${path.join(codexSkillsRoot, "jira-task-compliance", "SKILL.md")})。`,
       workspaceLine,
-      "这是现有技术方案事项：读取父任务、兄弟子任务、PRD、原型和当前 Apex 仓库，产出并发布可评审的前端技术方案；校验 Jira 层级与字段，但不要重复创建已有任务，也不要修改产品代码。",
+      "这是现有技术方案事项：读取父任务、兄弟子任务、PRD、原型和已匹配仓库，产出并发布可评审的前端技术方案；校验 Jira 层级与字段，但不要重复创建已有任务，也不要修改产品代码。",
       "给出需求覆盖矩阵，逐项对应 Jira/PRD 的范围、验收标准、异常场景和测试点，不能用概括性结论代替逐项核对。",
       "技术方案、覆盖矩阵以及本地生成的 Markdown、图片等只发布到 Confluence/Jira 或保留为本地交付证据，不得写入、暂存、提交或推送到产品代码仓库。",
       callbackInstructions(jobId, "completed", ["artifactUrl", "coverage=passed", "result"])
@@ -619,7 +607,7 @@ export function buildCodexPrompt(planItem, settings = DEFAULT_AUTOMATION_SETTING
   if (category === "implementation" || category === "verification") {
     const workspaceLine = planItem.workspace?.path
       ? `优先复用已匹配工作区 \`${planItem.workspace.path}\`，当前分支 \`${planItem.workspace.branch}\`。`
-      : "按使用者项目目录与 Skill 约定创建或复用隔离工作区和 `feature/<JIRA-KEY>` 分支。";
+      : `${sourceLine}按该项目规则为 ${issue.key} 创建或复用隔离工作区和 \`feature/${issue.key}\` 分支；来源仓库目录不等于已创建的任务工作区，保留已有改动。`;
     const delivery = settings.autoCreateMergeRequest
       ? `开发与验证全部通过后，用户已明确授权提交并推送当前需求分支，在 ${settings.repositoryUrl} 创建目标分支为 \`${settings.targetBranch}\` 的合并请求，指定 ${settings.reviewer} 审核；只创建 MR，不要自动合并。`
       : "完成实现与验证，但不要提交、推送或创建合并请求。";
@@ -638,7 +626,7 @@ export function buildCodexPrompt(planItem, settings = DEFAULT_AUTOMATION_SETTING
     ].filter(Boolean).join("\n");
     const reviewArtifacts = [
       `使用 [$hardcode-i18n-scanner](${path.join(codexSkillsRoot, "hardcode-i18n-scanner", "SKILL.md")}) 完成多语言门禁：先检查仓库现有扫描脚本和 locale 配置，再扫描本需求 diff 中的用户可见硬编码，按项目既有规则改造并校验新增/变更 key 的 Vue I18n 消息语法。`,
-      `将本需求涉及的多语言 key 导出为 \`tempdocs/${issue.key}-i18n.xlsx\`。必须使用批量导入模板、补齐英文原文与 en_text，并用 openpyxl 核验表头和代表行；即使没有新增 key，也要保留标准表头并在结果中明确记录 0 行。`,
+      `将本需求涉及的多语言 key 导出为 \`tempdocs/${issue.key}-多语言.xlsx\`。必须使用批量导入模板、补齐英文原文与 en_text，并用 openpyxl 核验表头和代表行；即使没有新增 key，也要保留标准表头并在结果中明确记录 0 行。`,
       `根据 Jira、PRD、原型和技术方案的验收项建立截图清单，使用 [@Chrome](plugin://chrome@openai-bundled) 在真实本地页面逐项自测，将截图保存到 \`tempdocs/${issue.key}-self-test/AC-xx-场景.png\`。截图必须覆盖本需求相关的正常、空态、异常或权限场景，不能用占位图；同时生成 \`tempdocs/${issue.key}-self-test.md\`，逐项写明 PRD 验收点、页面、操作、预期、结果和截图文件。`,
       "提交 MR 前确认 Excel 可以打开、截图文件真实存在且内容可辨识，并确保截图不包含密码、Token 或其他敏感信息。",
       "上述 Excel、截图、自测 Markdown、技术方案和覆盖矩阵只作为本地或平台交付证据，不属于代码提交范围；禁止加入 Git 暂存区、提交、推送或 MR diff。"
@@ -652,13 +640,14 @@ export function buildCodexPrompt(planItem, settings = DEFAULT_AUTOMATION_SETTING
     const runtimePolicy = [
       `本地运行和真实页面自测默认使用 \`${settings.runtimeEnvironment}\` 环境；仓库存在对应脚本时执行 \`${settings.runtimeCommand}\`。若脚本名称不同，先读取 package.json，使用等价的 ${settings.runtimeEnvironment} 开发服务命令，不得改用仅构建命令或其他环境。`,
       `浏览器操作统一使用 [@${settings.browser}](plugin://chrome@openai-bundled)，不要切换到其他浏览器或无登录态的浏览器会话。`,
-      `优先复用 Chrome 中已有的 ${settings.runtimeEnvironment} 登录态。登录账号为 \`${settings.loginKeychainAccount}\`，密码保存在 macOS 钥匙串服务 \`${settings.loginKeychainService}\`；确需登录时，在取得用户针对该登录动作的确认后，只允许在同一次浏览器工具调用中把钥匙串结果保存在局部内存变量并直接填入 Chrome 密码框，调用结束前立即清除变量。`,
-      "禁止通过 pbcopy、系统剪贴板、shell stdout、日志、截图、文件、提示词、提交或回调传递、打印或回显密码；原任务范围内的安全本地命令、已配置的本地服务和 tempdocs 证据操作不得主动请求 require_escalated。仅当登录请求被实际服务拒绝时才可按登录失败回传 blocked；工具调用、标签占用或剪贴板问题必须单列为运行环境问题，不得冒充业务 blocked。"
+      `优先复用 Chrome 中已有的 ${settings.runtimeEnvironment} 登录态。用户已明确授予的登录及验证权限在原任务、环境和账号范围内持续有效，续聊、重试或恢复执行时沿用，必要登录和会话续期无需逐次确认；登录授权不扩大提交、推送或外部业务写入范围。缺少真实授权、目标环境或账号发生变化，或确需验证码等用户交互时才询问。登录账号为 \`${settings.loginKeychainAccount}\`，密码保存在 macOS 钥匙串服务 \`${settings.loginKeychainService}\`；需要重新登录时，只允许在同一次浏览器工具调用中把钥匙串结果保存在局部内存变量并直接填入 Chrome 密码框，调用结束前立即清除变量。`,
+      "禁止通过 pbcopy、系统剪贴板、shell stdout、命令行参数、日志、截图、文件、提示词、提交或回调传递、打印或回显密码、Token、Cookie 等凭据；原任务范围内的安全本地命令、项目开发服务和 tempdocs 证据操作不得主动请求 require_escalated。仅当登录请求被实际服务拒绝时才可按登录失败回传 blocked；工具调用、标签占用或剪贴板问题必须单列为运行环境问题，不得冒充业务 blocked。"
     ].join("\n");
 
     return [
       `处理 Jira ${category === "verification" ? "联调自测" : "代码实现"}任务：${jiraLine}`,
-      `使用 [$apex-jira-feature-development](${path.join(codexSkillsRoot, "apex-jira-feature-development", "SKILL.md")}) 和 [$jira-task-compliance](${path.join(codexSkillsRoot, "jira-task-compliance", "SKILL.md")})。`,
+      projectLine,
+      `遵循已匹配项目的开发流程，并使用 [$jira-task-compliance](${path.join(codexSkillsRoot, "jira-task-compliance", "SKILL.md")})。`,
       workspaceLine,
       existingWork,
       "先读取该 Jira 的父任务、全部子任务、描述、评论、附件、PRD/原型/技术方案，再扫描本地分支及相对基线的完整 diff。建立“需求/验收项 -> 代码位置 -> 测试证据”覆盖清单，修复所有范围内遗漏后才能声称完成。",
@@ -700,9 +689,8 @@ export function buildCodexPromptFromJob(job, settings = DEFAULT_AUTOMATION_SETTI
     },
     category: job.category,
     jobId: job.id,
-    workspace: job.workspacePath
-      ? { path: job.workspacePath, branch: job.branch || `feature/${job.issueKey}` }
-      : null,
+    projectRouting: job.projectRouting || null,
+    workspace: job.projectRouting?.workspace || null,
     workspaceEvidence: job.workspaceEvidence || null,
     deliveryOnly: Boolean(job.deliveryOnly)
   }, settings);

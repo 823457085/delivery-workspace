@@ -7,8 +7,10 @@ import type { AgentProvider, AgentRunMode, AgentSkillOption } from '../../../sha
 import type { AgentBusinessMention } from './agent-business-context';
 import type { AgentNote } from '../../../shared/agent-notes';
 import { noteRequest } from './useAgentNotes';
+import { confluenceRequest } from './useConfluenceKnowledge';
+import type { ConfluencePage } from '../../../shared/confluence-knowledge';
 
-export type AgentMentionKind = 'business' | 'mode' | 'skill' | 'file' | 'note';
+export type AgentMentionKind = 'business' | 'mode' | 'skill' | 'file' | 'note' | 'confluence';
 
 export interface AgentMentionOption {
   id: string;
@@ -36,7 +38,7 @@ const modeDetails: Record<AgentRunMode, { label: string; detail: string }> = {
 export function shouldPrioritizeSkillMentions(query: string | undefined) {
   const term = query?.trim() || '';
   if (!term) return false;
-  if (/^(?:jira(?:任务)?|项目|接口|合入)(?:[:：\s]|$)/i.test(term)) return false;
+  if (/^(?:jira(?:任务)?|项目|接口|合入|文档|confluence)(?:[:：\s]|$)/i.test(term)) return false;
   return !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*-\d+$/i.test(term);
 }
 
@@ -45,6 +47,8 @@ export function useAgentMentions(draft: Ref<string>, context: () => AgentMention
   const files = shallowRef<string[]>([]);
   const skills = shallowRef<AgentSkillOption[]>([]);
   const notes = shallowRef<AgentNote[]>([]);
+  const documents = shallowRef<ConfluencePage[]>([]);
+  const documentError = shallowRef('');
   const loading = shallowRef(false);
   const open = shallowRef(false);
   const activeIndex = shallowRef(0);
@@ -53,6 +57,8 @@ export function useAgentMentions(draft: Ref<string>, context: () => AgentMention
   const options = computed<AgentMentionOption[]>(() => {
     const state = context();
     const term = (mentionQuery.value || '').toLowerCase();
+    if (/^(?:confluence|文档)[:：]/i.test(term)) return documents.value.map(page => ({ id: page.reference, kind: 'confluence' as const,
+      label: page.title, detail: `${page.spaceKey} · v${page.version}`, value: page.reference }));
     const availableModes = state.modeLocked && state.selectedMode ? [state.selectedMode] : state.modes;
     const modes = availableModes.filter((mode) => {
       const item = modeDetails[mode];
@@ -76,6 +82,8 @@ export function useAgentMentions(draft: Ref<string>, context: () => AgentMention
   const activeOption = computed(() => options.value[activeIndex.value]);
 
   watch([mentionQuery, () => context().workspacePath, () => context().provider, disabled], ([query, workspace, provider, isDisabled], _previous, onCleanup) => {
+    documentError.value = '';
+    documents.value = [];
     if (query === undefined || isDisabled) { open.value = false; files.value = []; skills.value = []; notes.value = []; loading.value = false; return; }
     open.value = true;
     activeIndex.value = 0;
@@ -84,6 +92,14 @@ export function useAgentMentions(draft: Ref<string>, context: () => AgentMention
     const timer = setTimeout(async () => {
       loading.value = true;
       try {
+        const documentQuery = query.match(/^(?:confluence|文档)[:：](.*)$/i);
+        if (documentQuery) {
+          try {
+            const data = await confluenceRequest<{ pages: ConfluencePage[] }>(`search?${new URLSearchParams({ workspacePath: workspace, q: documentQuery[1] })}`, undefined, controller.signal);
+            if (!controller.signal.aborted) documents.value = data.pages;
+          } catch (error) { if (!controller.signal.aborted) documentError.value = error instanceof Error ? error.message : String(error); }
+          return;
+        }
         const params = new URLSearchParams({ workspacePath: workspace, provider, q: query });
         const [workspaceResult, noteResult] = await Promise.allSettled([
           workspace ? fetch(`/api/agent-runtimes/mentions?${params}`, { signal: controller.signal }).then(async response => {
@@ -142,5 +158,5 @@ export function useAgentMentions(draft: Ref<string>, context: () => AgentMention
     return true;
   }
 
-  return { loading, open, options, activeOption, prioritizeSkills, select, insertTrigger, handleKeydown };
+  return { loading, open, options, activeOption, prioritizeSkills, documentError, select, insertTrigger, handleKeydown };
 }

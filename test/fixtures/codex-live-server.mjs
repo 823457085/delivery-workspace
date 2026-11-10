@@ -5,6 +5,7 @@ const output = value => process.stdout.write(JSON.stringify(value) + '\n');
 let threadId = 'thread-live-test';
 let started = false;
 let unarchived = false;
+let threadConfig;
 const requests = [];
 const recoverableId = '11111111-1111-1111-1111-111111111111';
 const rejectedId = '22222222-2222-2222-2222-222222222222';
@@ -13,6 +14,7 @@ const wrongId = '44444444-4444-4444-4444-444444444444';
 const wrongRestoreId = '55555555-5555-5555-5555-555555555555';
 createInterface({ input: process.stdin }).on('line', line => {
   const { id, method, params } = JSON.parse(line);
+  if (['thread/start', 'thread/resume', 'thread/fork'].includes(method)) threadConfig = params.config;
   if (method === 'initialize') return output({ id, result: {} });
   if (method?.startsWith('thread/') || method === 'turn/start') requests.push(method);
   if (method === 'thread/unarchive') {
@@ -58,9 +60,9 @@ createInterface({ input: process.stdin }).on('line', line => {
     started = true;
     output({ id, result: { turn: { id: 'turn-live-test' } } });
     output({ method: 'turn/started', params: { threadId, turn: { id: 'turn-live-test' } } });
-    if (params.input[0].text === 'speed-tier-test') {
+    if (['speed-tier-test', 'browser-config-test'].includes(params.input[0].text)) {
       output({ method: 'item/completed', params: { threadId, turnId: 'turn-live-test', item: {
-        type: 'agentMessage', text: JSON.stringify({ args: process.argv.slice(2) }),
+        type: 'agentMessage', text: JSON.stringify({ args: process.argv.slice(2), config: threadConfig }),
       } } });
       output({ method: 'turn/completed', params: { threadId, turn: { id: 'turn-live-test', status: 'completed' } } });
       return;

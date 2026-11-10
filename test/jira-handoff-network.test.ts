@@ -2,9 +2,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-// 测试显式提供端点，分享版本不再带企业 Jira 默认地址。
-process.env.JIRA_BASE_URL = 'https://jira.example.test';
-
 const query = '?fields=summary,status,reporter,assignee';
 const networkError = (code: string) => new TypeError('fetch failed', {
   cause: Object.assign(new Error('private connection detail'), { code }),
@@ -68,4 +65,13 @@ test('证书错误与超时不重试', async t => {
   reason = new DOMException('timed out', 'TimeoutError');
   await assert.rejects(backend.jiraFixHandoffRequest('TEST-123', query), /读取 Jira.*网络请求超时/);
   assert.equal(calls, 2);
+});
+
+test('事项请求使用固定来源、保留 Jira 错误文案且写入不重试', async t => {
+  auth(t);const seen:{url:string;options:RequestInit}[]=[];
+  t.mock.method(globalThis,'fetch',async (url:unknown,options:RequestInit)=>{seen.push({url:String(url),options});return Response.json({errorMessages:['L1001 原始校验文案']},{status:400});});
+  const backend=await import(new URL('../server/jira-backend/server.mjs',import.meta.url).href);
+  await assert.rejects(backend.jiraIssueRequest('https://evil.test/issue/TEST-1'),/不支持/);assert.equal(seen.length,0);
+  await assert.rejects(backend.jiraIssueRequest('issue/TEST-1/comment','POST',{body:'test'}),(error:Error&{definite?:boolean})=>error.message==='L1001 原始校验文案'&&error.definite===true);
+  assert.equal(seen.length,1);assert.equal(seen[0].options.redirect,'manual');assert.equal(seen[0].options.headers && (seen[0].options.headers as Record<string,string>).Authorization,'Bearer local-test-only');
 });

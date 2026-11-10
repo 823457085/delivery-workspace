@@ -1,8 +1,8 @@
 /** 根节点统一驱动 CSS 和传送到 body 的弹层；自定义主题仍只影响浏览器本地外观，不进入业务状态。 */
 import { computed, readonly, shallowRef } from 'vue';
 import { CUSTOM_THEME_STORAGE_KEY, DEFAULT_CUSTOM_THEME, deleteCustomWallpaper, normalizeCustomTheme, readCustomTheme, readCustomWallpaper, saveCustomTheme, saveCustomWallpaper, type CustomThemeSettings } from './customTheme';
-import { normalizeTheme, readTheme, resolveTheme, saveTheme, THEME_STORAGE_KEY, themeOptions, type ThemePreference } from './theme';
-const preference = shallowRef<ThemePreference>('studio');
+import { DEFAULT_THEME, normalizeTheme, readTheme, resolveTheme, saveTheme, THEME_STORAGE_KEY, themeOptions, type ThemePreference } from './theme';
+const preference = shallowRef<ThemePreference>(DEFAULT_THEME);
 const storageAvailable = shallowRef(true);
 const systemDark = shallowRef(false);
 const customTheme = shallowRef<CustomThemeSettings>({ ...DEFAULT_CUSTOM_THEME });
@@ -27,9 +27,10 @@ function applyCustomVariables() {
 function applyTheme() {
   applyCustomVariables();
   document.documentElement.dataset.theme = resolved.value;
-  const dark = themeOptions.find((option) => option.id === resolved.value)?.dark ?? false;
-  document.documentElement.classList.toggle('dark', dark);
-  document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
+  const theme = themeOptions.find((option) => option.id === resolved.value)!;
+  document.documentElement.classList.toggle('dark', theme.dark);
+  document.documentElement.style.colorScheme = theme.dark ? 'dark' : 'light';
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme.colors[0]);
 }
 function setTheme(value: ThemePreference) {
   preference.value = normalizeTheme(value);
@@ -59,7 +60,7 @@ async function resetCustomTheme() {
 export function initializeTheme() {
   const media = window.matchMedia('(prefers-color-scheme: dark)');
   systemDark.value = media.matches;
-  try { preference.value = readTheme(window.localStorage); } catch { preference.value = 'studio'; }
+  try { preference.value = readTheme(window.localStorage); } catch { preference.value = DEFAULT_THEME; }
   customTheme.value = readCustomTheme(window.localStorage);
   applyTheme();
   void readCustomWallpaper().then((blob) => { replaceWallpaperUrl(blob); applyCustomVariables(); });

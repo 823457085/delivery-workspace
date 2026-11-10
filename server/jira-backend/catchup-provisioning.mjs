@@ -207,10 +207,7 @@ function requirementDocumentPath(catchupDataRoot, requirement) {
   const directory = domainDirectories.get(requirement.businessDomain);
   if (!directory) return "";
   return path.resolve(
-    catchupDataRoot,
-    "..",
-    "..",
-    "APEX功能追平",
+    process.env.APEX_CATCHUP_DOCUMENTS_ROOT || path.join(catchupDataRoot, "docs"),
     "01-需求明细",
     directory,
     `${requirement.id}.md`
@@ -332,11 +329,11 @@ export async function provisionCatchupSessions({
   realpath = fs.realpath,
   mutateRegistry = mutateCatchupDispatchRegistryFile
 }) {
+  if (!sourceRepository || !/^[0-9a-f]{40}$/i.test(baseSha)) fail("SOURCE_REPOSITORY_UNCONFIGURED", "请配置 APEX_CATCHUP_SOURCE_REPOSITORY 和完整的 APEX_CATCHUP_BASE_SHA");
   const requirementsById = new Map((requirements || []).map((item) => [item.id, item]));
   const requested = [...new Set(requirementIds || [])];
   const excluded = requested.find(catchupAdminExclusionReason);
   if (excluded) fail("ADMIN_DELIVERY_EXCLUDED", catchupAdminExclusionReason(excluded));
-  if (!sourceRepository || !/^[0-9a-f]{40}$/i.test(baseSha)) fail("SOURCE_REPOSITORY_UNCONFIGURED", "请配置 APEX_CATCHUP_SOURCE_REPOSITORY 和完整的 APEX_CATCHUP_BASE_SHA");
   const createdRecords = [];
   await fs.mkdir(requirementsRoot, { recursive: true });
   await fs.mkdir(sessionsRoot, { recursive: true });

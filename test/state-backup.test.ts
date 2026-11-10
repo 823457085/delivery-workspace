@@ -10,6 +10,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { acquireStateServiceLease, assertStateOffline, createStateBackupStore, startPeriodicStateBackup, validateStateJson } from '../server/state-backup.js';
 import { emptyDeliveryEvidence } from '../shared/delivery-acceptance.js';
 import { emptyRequirementProgress } from '../shared/requirement-development.js';
+import { defaultTeamProfileConfig } from '../shared/agent-team.js';
 
 const exec = promisify(execFile);
 const relative = 'agent-runtimes/conversation-titles.json';
@@ -147,6 +148,25 @@ test('JSON 可解析但账本结构错误也拒绝；大小越界不备份', asy
   assert.throws(() => validateStateJson('agent-runtimes/agent-runs.json', [{}]), /结构校验失败/);
   assert.throws(() => validateStateJson('agent-runtimes/codex-sessions.json', { sessions: 'broken' }), /结构校验失败/);
   assert.deepEqual(await store.list(relative), []);
+}));
+
+test('岗位配置备份兼容旧版 Agent workspace 权限字段', () => {
+  const legacy = defaultTeamProfileConfig();
+  legacy.profiles = legacy.profiles.map(profile => ({ ...profile,
+    accessMode: profile.mode === 'agent' ? 'workspace' : profile.accessMode,
+  }));
+  assert.doesNotThrow(() => validateStateJson('agent-runtimes/agent-profiles.json', legacy));
+});
+
+test('Claude自定义模型可保存并回读备份，未知平台仍拒绝且原件保留', async () => fixture(async directory => {
+  const store = await createStateBackupStore(directory);
+  const file = 'agent-runtimes/custom-models.json';
+  const models = [{ id: randomUUID(), provider: 'claude', modelId: 'sonnet', label: 'Claude 自定义模型' }];
+  await store.writeJson(file, models);
+  assert.deepEqual(await store.readJson(file), models);
+  assert.ok((await store.list(file)).every(entry => entry.valid));
+  await assert.rejects(store.writeJson(file, [{ ...models[0], provider: 'unknown' }]), /结构校验失败/);
+  assert.deepEqual(await store.readJson(file), models);
 }));
 
 test('校验识别被篡改备份，latest 恢复跳过坏副本并完整保留损坏原件', async () => fixture(async directory => {
@@ -308,40 +328,6 @@ test('旧执行器锁和异常锁也阻止离线恢复', async () => fixture(asy
   await fs.writeFile(lock, '{}');
   await assert.rejects(assertStateOffline(directory, options), /PID 不合法/);
   assert.equal(await fs.readFile(lock, 'utf8'), '{}');
-}));
-
-test('主服务退出后账本中的当前或恢复 PID 存活仍禁止恢复，原运行及其他状态不变', async () => fixture(async directory => {
-  const store = await createStateBackupStore(directory);
-  const runsFile = 'agent-runtimes/agent-runs.json';
-  await store.writeJson(runsFile, []);
-  await store.writeJson(relative, { id: 'saved' });
-  const options = await offline(directory);
-  for (const state of [{ status: 'running', pid: process.pid },
-    { status: 'interrupted', pid: null, recovery: { previousPid: process.pid } }]) {
-    const current = JSON.stringify([{ id: 'active-run', createdAt: '2026-01-01', workspacePath: directory, ...state }]);
-    await fs.writeFile(path.join(directory, runsFile), current);
-    for (const target of [runsFile, relative]) {
-      await assert.rejects(store.restore(target, 'latest', options), /Agent 执行进程仍在运行，禁止恢复/);
-      assert.equal(await fs.readFile(path.join(directory, runsFile), 'utf8'), current);
-      assert.deepEqual(await store.readJson(relative), { id: 'saved' });
-    }
-    await assert.rejects(fs.access(path.join(directory, '.state-access.json')), { code: 'ENOENT' });
-  }
-}));
-
-test('账本中已退出或空 PID 不阻止离线恢复', async () => fixture(async directory => {
-  const store = await createStateBackupStore(directory);
-  const runsFile = 'agent-runtimes/agent-runs.json';
-  await store.writeJson(runsFile, []);
-  const { stdout } = await exec(process.execPath, ['-e', 'console.log(process.pid)']);
-  const deadPid = Number(stdout.trim());
-  await fs.writeFile(path.join(directory, runsFile), JSON.stringify([
-    { id: 'stopped-run', status: 'interrupted', createdAt: '2026-01-01', workspacePath: directory,
-      pid: deadPid, recovery: { previousPid: deadPid } },
-    { id: 'queued-run', status: 'queued', createdAt: '2026-01-01', workspacePath: directory, pid: null },
-  ]));
-  await store.restore(runsFile, 'latest', await offline(directory));
-  assert.deepEqual(await store.readJson(runsFile), []);
 }));
 
 test('死 PID lease 允许下一次启动并留存旧锁', async () => fixture(async directory => {

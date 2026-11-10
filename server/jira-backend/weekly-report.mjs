@@ -174,7 +174,7 @@ function unfinishedLine(issue) {
 }
 
 function planLine(issue) {
-  const owner = issue.assignee || "未分配";
+  const owner = issue.assignee || "未指定";
   return `【${businessLabel(issue)}】：完成【${cleanSummary(issue)}】，计划【${chineseDate(issue.endDate || issue.dueDate)}】完成，负责人【${owner}】。`;
 }
 

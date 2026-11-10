@@ -39,3 +39,11 @@ test('workflow panel keeps runs and parallel Agents scoped to the current conver
   assert.deepEqual(conversationWorkflowRuns(runs, 'current').map((run) => run.runId), ['bound']);
   assert.deepEqual(conversationWorkflowRuns(runs, ''), []);
 });
+
+
+test('new runtime providers do not masquerade as providers supported by the legacy workflow contract', () => {
+  for (const provider of ['api', 'deepseek', 'workbuddy', 'grok'] as const) {
+    const current = conversation('new-provider', '/workspace/apex'); current.latest.provider = provider;
+    assert.equal(workflowContext(current), undefined);
+  }
+});

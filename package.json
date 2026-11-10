@@ -22,8 +22,10 @@
     "@mastra/libsql": "1.22.3",
     "@tanstack/vue-query": "5.102.8",
     "element-plus": "2.14.5",
+    "monaco-editor": "0.57.0",
     "vue": "3.5.42",
     "vue-router": "5.3.1",
+    "yaml": "2.9.0",
     "zod": "4.5.4"
   },
   "devDependencies": {

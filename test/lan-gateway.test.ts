@@ -47,18 +47,18 @@ async function fixture(t: TestContext, allowedClients?: readonly string[]) {
 
 test('only physical private LAN IPv4 interfaces are exposed', () => {
   const entry = (address: string, internal = false): os.NetworkInterfaceInfoIPv4 => ({ address, internal, family: 'IPv4', netmask: '255.255.255.0', mac: '', cidr: null });
-  assert.deepEqual(lanInterfaces({ en0: [entry('192.168.1.5')], en7: [entry('172.20.100.50')], en8: [entry('10.2.3.4')], en9: [entry('8.8.8.8')], en10: [entry('172.32.0.1')], en11: [entry('10.0.0.1', true)], utun0: [entry('10.0.0.2')], lo0: [entry('127.0.0.1', true)] }), [
+  assert.deepEqual(lanInterfaces({ en0: [entry('192.168.1.5')], en7: [entry('172.16.88.50')], en8: [entry('10.2.3.4')], en9: [entry('8.8.8.8')], en10: [entry('172.32.0.1')], en11: [entry('10.0.0.1', true)], utun0: [entry('10.0.0.2')], lo0: [entry('127.0.0.1', true)] }), [
     { address: '192.168.1.5', netmask: '255.255.255.0' },
-    { address: '172.20.100.50', netmask: '255.255.255.0' },
+    { address: '172.16.88.50', netmask: '255.255.255.0' },
     { address: '10.2.3.4', netmask: '255.255.255.0' },
   ]);
 });
 
 test('clients must belong to the bound interface subnet', () => {
-  const network = { address: '172.20.100.50', netmask: '255.255.255.0' };
-  assert.equal(sameSubnet('172.20.100.10', network), true);
-  assert.equal(sameSubnet('::ffff:172.20.100.10', network), true);
-  for (const client of ['172.20.101.10', '8.8.8.8', '127.0.0.1', '::1', 'invalid']) assert.equal(sameSubnet(client, network), false);
+  const network = { address: '172.16.88.50', netmask: '255.255.255.0' };
+  assert.equal(sameSubnet('172.16.88.10', network), true);
+  assert.equal(sameSubnet('::ffff:172.16.88.10', network), true);
+  for (const client of ['172.16.89.10', '8.8.8.8', '127.0.0.1', '::1', 'invalid']) assert.equal(sameSubnet(client, network), false);
 });
 
 test('VPN allowlist rejects unlisted peers even on the same subnet or with spoofed forwarding headers', async (t) => {

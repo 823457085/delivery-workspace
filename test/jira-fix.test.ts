@@ -46,7 +46,7 @@ test('失败后新请求可重试，独立克隆指定基准，重复请求不�
   let executions = 0;
   const adapter: AgentRuntimeAdapter = { id: 'codex', health: async () => ({ provider: 'codex', label: 'Test', binary: '', version: 'test',
     ready: true, authenticated: true, message: '', modes: ['agent'], models: [{ id: 'gpt-6-astra', label: 'Test', efforts: ['xhigh'] }], defaultModel: 'gpt-6-astra', writable: true, checkedAt: '' }),
-  execute: async ({ run }) => { executions++; assert.equal(run.accessMode, 'workspace'); assert.match(run.task?.sourceId || '', /^jira-fix:/); return '测试执行器完成'; } };
+  execute: async ({ run }) => { executions++; assert.equal(run.accessMode, 'full'); assert.match(run.task?.sourceId || '', /^jira-fix:/); return '测试执行器完成'; } };
   const runtime = await createAgentRuntimeService(path.join(directory, 'runtime'), { adapters: [adapter] });
   let service: Awaited<ReturnType<typeof createJiraFixService>> | undefined;
   try {

@@ -4,10 +4,12 @@
  * 不引入消息队列或自动重试：超时可能已经送达，重复提醒须先核对群消息。
  */
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { loadIntegrationCatalog } from './integration-catalog.js';
+import type { IntegrationCatalog } from '../shared/integration-catalog.js';
 import type { BackendFeedbackPreview, BackendFeedbackRecord, WecomPublicConfig } from '../shared/wecom-integration.js';
 import { wecomMessageLimits, type WecomMessageInput, type WecomMessagePreview, type WecomMessageRecord, type WecomMessageSaved } from '../shared/wecom-messages.js';
 
@@ -70,15 +72,15 @@ function clip(text: string, bytes: number): string {
 }
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
-export async function createWecomIntegration(directory: string, options: { configFile?: string; fetch?: typeof fetch } = {}) {
-  const { inventory, plan } = await loadIntegrationCatalog();
-  const configFile = options.configFile || process.env.DELIVERY_WECOM_CONFIG_FILE || path.join(directory, 'credentials', 'wecom-integration.json');
+export async function createWecomIntegration(directory: string, options: { configFile?: string; fetch?: typeof fetch; catalog?: IntegrationCatalog } = {}) {
+  const { inventory, plan } = options.catalog ?? await loadIntegrationCatalog();
+  const configFile = options.configFile || process.env.DELIVERY_WECOM_CONFIG_FILE || path.join(os.homedir(), 'Library', 'Application Support', 'DeliveryWorkspace', 'credentials', 'wecom-integration.json');
   const reportsFile = path.join(directory, 'wecom-integration-reports.json');
   const messageHistoryFile = path.join(directory, 'wecom-messages-history.json');
   const messageLibraryFile = path.join(directory, 'wecom-messages-library.json');
   const operations = new Map(plan.stages.flatMap(stage => stage.operations).map(item => [item.path, item]));
   const catalog = new Map([
-    ...inventory.items.map(item => [item.id, { path: item.path, method: item.contract?.method || operations.get(item.path)?.method || '', name: item.name }] as const),
+    ...inventory.items.map(item => [item.id, { path: item.path, method: operations.get(item.path)?.method || item.contract?.method || '', name: operations.get(item.path)?.summary || item.name }] as const),
     ...[...operations.values()].filter(item => !inventory.items.some(record => record.path === item.path)).map(item => [`plan:${item.operationId}`, { path: item.path, method: item.method, name: item.summary }] as const),
   ]);
   let configuration: WecomPublicConfig & { webhook: string } = { groupName: '', webhook: '', hasWebhook: false };
@@ -145,7 +147,10 @@ export async function createWecomIntegration(directory: string, options: { confi
     return { ...snapshot, hash: hash({ snapshot, webhook: hash(configuration.webhook), groupName: configuration.groupName }) };
   }
   function checkRateLimit() {
-    if ([...reports, ...messages].filter(record => Date.parse(record.attemptedAt) > Date.now() - 60_000).length >= 10) throw new Error('本机器人每分钟最多提交 10 条消息或反馈，请稍后发送');
+    const attempts = [...reports, ...messages].map(record => Date.parse(record.attemptedAt)).filter(time => time > Date.now() - 60_000).sort((a, b) => b - a);
+    if (attempts.length >= 10) throw Object.assign(new Error('本机器人每分钟最多提交 10 条消息或反馈，请稍后发送'), {
+      code: 'WECOM_LOCAL_RATE_LIMIT', retryAfterMs: Math.max(1, Math.min(60_000, attempts[9] + 60_001 - Date.now())),
+    });
   }
   function preview(value: unknown): BackendFeedbackPreview {
     const raw = inputSchema.parse(value);
@@ -166,6 +171,7 @@ export async function createWecomIntegration(directory: string, options: { confi
   }
   return {
     config,
+    sanitizeContent: redactMessage,
     configure: (value: unknown) => serial(async () => {
       const data = configurationSchema.parse(value);
       const webhook = data.webhook ? webhookUrl(data.webhook) : configuration.webhook;

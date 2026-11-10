@@ -1,0 +1,101 @@
+/* ElMessageBox 挂载在 body，需全局样式并与 themes.css 语义色一致。 */
+.el-overlay.is-message-box { backdrop-filter: blur(4px); }
+.el-message-box {
+  --el-messagebox-width: 480px;
+  display: inline-flex;
+  flex-direction: column;
+  width: min(var(--el-messagebox-width), 100%);
+  max-width: calc(100vw - 32px);
+  max-height: calc(100dvh - 32px);
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--ui-border);
+  border-radius: 14px;
+  background: var(--ui-surface);
+  color: var(--ui-text);
+  font: 13px/1.65 var(--sans, sans-serif);
+  box-shadow: 0 12px 40px color-mix(in srgb, var(--ui-text) 14%, transparent);
+}
+.el-message-box__header {
+  flex-shrink: 0;
+  position: relative;
+  padding: 20px 48px 10px 22px;
+}
+.el-message-box__header.show-close { padding-right: 64px; }
+.el-message-box__title {
+  color: var(--ui-text);
+  font: 650 17px/1.45 var(--sans, sans-serif);
+  letter-spacing: -.02em;
+}
+:root[data-theme='ink'] .el-message-box__title {
+  font-family: 'Songti SC', 'STSong', 'Noto Serif SC', serif;
+  font-weight: 700;
+  letter-spacing: .02em;
+}
+.el-message-box__headerbtn {
+  top: 16px;
+  right: 14px;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  transition: background 160ms ease;
+}
+.el-message-box__headerbtn:hover { background: var(--ui-hover); }
+.el-message-box__content {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 22px 18px;
+}
+.el-message-box__container {
+  display: block;
+}
+.el-message-box__status {
+  display: none;
+}
+.el-message-box__message {
+  padding: 0;
+}
+.el-message-box__message p {
+  margin: 0;
+  color: var(--ui-secondary);
+  font-size: 13px;
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.el-message-box__btns {
+  display: flex;
+  flex-shrink: 0;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px 22px 18px;
+  border-top: 1px solid var(--ui-divider);
+  background: var(--ui-surface);
+}
+.el-message-box__btns .el-button {
+  height: 36px;
+  margin: 0;
+  padding-inline: 18px;
+  border-radius: 8px;
+  font: 550 13px var(--sans, sans-serif);
+}
+.el-message-box__btns .el-button--default {
+  border-color: var(--ui-border);
+  background: var(--ui-surface);
+  color: var(--ui-text);
+}
+.el-message-box__btns .el-button--default:hover {
+  border-color: var(--ui-accent);
+  color: var(--ui-accent);
+  background: var(--ui-hover);
+}
+.el-message-box__btns .el-button--primary {
+  border-color: var(--ui-primary);
+  background: var(--ui-primary);
+  color: var(--ui-on-primary);
+  box-shadow: none;
+}
+.el-message-box__btns .el-button--primary:hover:not(.is-disabled) {
+  border-color: var(--ui-primary-hover);
+  background: var(--ui-primary-hover);
+}

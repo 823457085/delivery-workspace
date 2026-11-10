@@ -16,6 +16,33 @@ test('明确业务查询仍优先展示 Jira 和业务上下文', () => {
   assert.equal(shouldPrioritizeSkillMentions('合入:REQ-008'), false);
   assert.equal(shouldPrioritizeSkillMentions('APEX-263'), false);
   assert.equal(shouldPrioritizeSkillMentions('REQ-CU-021'), false);
+  assert.equal(shouldPrioritizeSkillMentions('文档:技术方案'), false);
+  assert.equal(shouldPrioritizeSkillMentions('confluence:需求'), false);
+});
+
+test('明确文档查询使用当前工作区范围，选择后写入可由后端解析的 Confluence 引用', async () => {
+  const original = globalThis.fetch;
+  const requests: string[] = [];
+  const reference = 'confluence:https%3A%2F%2Fdocs.example.test/42';
+  globalThis.fetch = async input => {
+    requests.push(String(input));
+    return Response.json({ pages: [{ reference, title: '接口 L001', spaceKey: 'SOP', version: 3 }] });
+  };
+  const scope = effectScope();
+  const draft = shallowRef('');
+  const mentions = scope.run(() => useAgentMentions(draft, () => ({ workspacePath: '/selected-project', provider: 'codex', modes: [] }), () => false, () => {}))!;
+  try {
+    draft.value = '@文档:接口';
+    await nextTick();
+    await new Promise(resolve => setTimeout(resolve, 220));
+    assert.equal(requests.length, 1);
+    const params = new URL(requests[0], 'http://localhost').searchParams;
+    assert.equal(params.get('workspacePath'), '/selected-project');
+    assert.equal(params.get('q'), '接口');
+    assert.equal(mentions.options.value[0].label, '接口 L001');
+    mentions.select(mentions.options.value[0]);
+    assert.equal(draft.value, `@${reference} `);
+  } finally { scope.stop(); globalThis.fetch = original; }
 });
 
 test('输入法确认键不选中 @ 候选，合成结束后的 Enter 仍正常选择', async () => {

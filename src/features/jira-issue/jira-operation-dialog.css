@@ -1,0 +1,109 @@
+/* Jira operations are teleported to body, so their controls need the workspace tokens here. */
+.jira-operation-dialog.el-dialog {
+  display: flex;
+  flex-direction: column;
+  max-height: 88dvh;
+  margin-bottom: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ds-radius, 10px);
+  background: var(--ui-surface);
+  color: var(--ui-text);
+  font: 13px/1.6 var(--sans, sans-serif);
+  box-shadow: 0 12px 40px color-mix(in srgb, var(--ui-text) 12%, transparent);
+}
+.jira-operation-dialog .el-dialog__header {
+  flex: none;
+  margin: 0;
+  padding: 18px 54px 16px 22px;
+  border-bottom: 1px solid var(--ui-divider);
+}
+.jira-operation-heading h2.el-dialog__title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  color: var(--ui-text);
+  font: 600 16px/1.5 var(--sans, sans-serif);
+}
+.jira-operation-key {
+  padding: 2px 7px;
+  border: 1px solid var(--ui-divider);
+  border-radius: 5px;
+  background: var(--ui-raised);
+  color: var(--ui-secondary);
+  font: 500 12px/1.5 var(--mono, monospace);
+}
+.jira-operation-heading p { margin: 7px 0 0; color: var(--ui-muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.jira-operation-dialog .el-dialog__headerbtn { top: 14px; right: 14px; width: 32px; height: 32px; }
+.jira-operation-dialog .el-dialog__body { flex: 1 1 auto; min-height: 0; padding: 20px 22px; overflow: auto; color: var(--ui-text); }
+.jira-operation-dialog .el-dialog__footer {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  padding: 14px 22px;
+  border-top: 1px solid var(--ui-divider);
+  background: var(--ui-surface);
+}
+.jira-operation-dialog .el-button { height: 36px; margin: 0; padding-inline: 18px; border-radius: var(--ds-radius-sm, 8px); font: 13px var(--sans, sans-serif); }
+.jira-operation-dialog .el-button--primary { border-color: var(--ui-primary); background: var(--ui-primary); color: var(--ui-on-primary); box-shadow: none; }
+.jira-operation-dialog .el-button--primary:hover:not(.is-disabled) { border-color: var(--ui-primary-hover); background: var(--ui-primary-hover); }
+.jira-operation-form { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px 20px; }
+.jira-operation-form.is-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.jira-operation-form .jira-field-wide { grid-column: 1 / -1; }
+.jira-operation-form .el-form-item { min-width: 0; margin: 0; }
+.jira-operation-form .el-form-item__label { height: auto; margin-bottom: 6px; padding: 0; color: var(--ui-secondary); font: 500 12px/1.6 var(--sans, sans-serif); }
+.jira-operation-form .el-form-item__content { min-width: 0; line-height: 1.6; }
+.jira-operation-form :is(.el-input, .el-select, .el-input-number, .el-date-editor) { width: 100%; min-width: 0; }
+.jira-operation-form :is(.el-input__wrapper, .el-select__wrapper) {
+  min-height: 36px;
+  padding: 4px 11px;
+  border-radius: var(--ds-radius-sm, 8px);
+  background: var(--ui-surface);
+  box-shadow: 0 0 0 1px var(--ui-border) inset;
+}
+.jira-operation-form :is(.el-input__wrapper.is-focus, .el-select__wrapper.is-focused) { box-shadow: 0 0 0 1px var(--ui-accent) inset; }
+.jira-operation-form :is(.el-input__inner, .el-select__placeholder, .el-select__input) { color: var(--ui-text); font: 13px/1.6 var(--sans, sans-serif); }
+.jira-operation-form .el-textarea__inner {
+  padding: 10px 12px;
+  border-radius: var(--ds-radius-sm, 8px);
+  background: var(--ui-surface);
+  color: var(--ui-text);
+  box-shadow: 0 0 0 1px var(--ui-border) inset;
+  font: 13px/1.8 var(--sans, sans-serif);
+  overflow-wrap: anywhere;
+}
+.jira-operation-form .el-textarea__inner:focus { box-shadow: 0 0 0 1px var(--ui-accent) inset; }
+.jira-operation-form .el-select .el-tag { border: 0; border-radius: 5px; background: var(--ui-raised); color: var(--ui-text); font-size: 12px; }
+.jira-operation-form .el-radio { height: auto; min-height: 30px; margin-right: 22px; white-space: normal; }
+.jira-operation-form .el-radio__label { font-size: 13px; }
+.jira-operation-form .jira-datetime { min-height: 36px; padding: 6px 11px; border-radius: var(--ds-radius-sm, 8px); color: var(--ui-text); background: var(--ui-surface); font: 13px/1.6 var(--sans, sans-serif); }
+.jira-operation-form .jira-datetime:focus { outline: 1px solid var(--ui-accent); outline-offset: -1px; }
+.jira-operation-form .form-context { margin: 0; padding-bottom: 12px; border-bottom: 1px solid var(--ui-divider); color: var(--ui-secondary); font-size: 13px; }
+.jira-operation-popper.el-popper { max-width: calc(100vw - 24px); border-radius: var(--ds-radius-sm, 8px); font-family: var(--sans, sans-serif); }
+.jira-operation-popper .el-select-dropdown__item { font-size: 13px; }
+@media (max-width: 640px) {
+  .jira-operation-dialog.el-dialog { max-height: 92dvh; margin-top: 4dvh; }
+  .jira-operation-dialog .el-dialog__header { padding: 15px 48px 14px 16px; }
+  .jira-operation-dialog .el-dialog__body { padding: 16px; }
+  .jira-operation-dialog .el-dialog__footer { padding: 12px 16px; }
+  .jira-operation-form.is-grid { grid-template-columns: minmax(0, 1fr); }
+  .jira-operation-heading h2.el-dialog__title { font-size: 15px; gap: 8px; }
+}
+.jira-operation-dialog.is-description-expanded {
+  width: min(1320px, 96vw);
+  height: 94dvh;
+  max-height: 94dvh;
+  margin-top: 3dvh;
+}
+.jira-operation-dialog.is-description-expanded .el-dialog__body { display: flex; overflow: hidden; }
+.jira-operation-dialog.is-description-expanded .jira-operation-form { width: 100%; height: 100%; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+.jira-operation-dialog.is-description-expanded .jira-operation-form > :not([data-field-id='description']) { display: none; }
+.jira-operation-dialog.is-description-expanded [data-field-id='description'] { display: flex; flex-direction: column; min-height: 0; }
+.jira-operation-dialog.is-description-expanded [data-field-id='description'] .el-form-item__content { flex: 1; min-height: 0; flex-direction: column; flex-wrap: nowrap; align-items: stretch; }
+.jira-operation-dialog.is-description-expanded .jira-description-editor { flex: 1; min-height: 0; }
+.jira-operation-dialog.is-description-expanded .description-editor-content { flex: 1; height: auto; min-height: 0; }

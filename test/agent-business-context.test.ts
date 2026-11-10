@@ -5,7 +5,8 @@ import type { CatchupRequirement, JiraIssue, Job, LocalProject, MergeItem } from
 import type { AgentBusinessSnapshot } from '../src/features/agent-workbench/agent-business-context.js';
 import { buildAgentBusinessContext, buildAgentBusinessMentions } from '../src/features/agent-workbench/agent-business-context.js';
 import type { AgentConversation } from '../src/features/agent-workbench/conversation.js';
-import { projectQuickPrompt } from '../src/features/agent-workbench/agent-quick-actions.js';
+import { interfaceQuickPrompt, projectWorkspaceReviewDraft } from '../src/features/agent-workbench/agent-quick-actions.js';
+import { projectWorkspaceReference } from '../src/features/agent-workbench/agent-project-reference.js';
 
 function conversation(objective: string, workspacePath = '/repo/admin', branch = 'feature/APEX-263'): AgentConversation {
   const run: AgentRun = { id: 'run-1', provider: 'codex', mode: 'agent', accessMode: 'workspace', model: 'gpt-test', reasoningEffort: 'high', objective,
@@ -15,7 +16,7 @@ function conversation(objective: string, workspacePath = '/repo/admin', branch =
 }
 
 const issue: JiraIssue = { key: 'APEX-263', url: 'https://jira.example/APEX-263', summary: '新增支付渠道筛选', status: '进行中',
-  statusCategory: 'indeterminate', issueType: '需求', priority: 'Medium', project: 'APEX', projectName: 'Apex', assignee: '测试负责人',
+  statusCategory: 'indeterminate', issueType: '需求', priority: 'Medium', project: 'APEX', projectName: 'Apex', assignee: '李子锐',
   fixVersions: ['v3.0.0.9'], created: '', updated: '2026-09-17T00:00:00.000Z', dueDate: null, startDate: null, endDate: null,
   resolutionDate: null, parent: null, subtasks: [] };
 
@@ -39,12 +40,12 @@ const project: LocalProject = { projectId: 'apex-admin', projectName: 'admin', d
   detached: false, ahead: 0, behind: 0, webUrl: '', remoteUrl: '' };
 
 test('APEX 重构项目任务独立展示主任务和子任务，不冒充当前会话任务或交付', () => {
-  const parent = { ...issue, key: 'DEMO-934', summary: '【APEX重构】完成 Admin BFF 全量联调交付',
-    subtasks: [{ key: 'DEMO-938', summary: '国家区域配置', status: '开发中', statusCategory: '处理中' }] };
-  const done = { ...parent, key: 'DEMO-548', status: '已完成', statusCategory: '完成', subtasks: [] };
-  const child = { ...issue, key: 'DEMO-948', summary: '【APEX重构】交付验收', parent: { key: parent.key } };
-  const snapshot: AgentBusinessSnapshot = { refactorRepository: 'example-team/admin', issues: [done, child, parent, issue], projects: {
-    projects: [{ ...project, repository: 'example-team/admin' }], roots: [],
+  const parent = { ...issue, key: 'GBP-934', summary: '【APEX重构】完成 Admin BFF 全量联调交付',
+    subtasks: [{ key: 'GBP-938', summary: '国家区域配置', status: '开发中', statusCategory: '处理中' }] };
+  const done = { ...parent, key: 'GBP-548', status: '已完成', statusCategory: '完成', subtasks: [] };
+  const child = { ...issue, key: 'GBP-948', summary: '【APEX重构】交付验收', parent: { key: parent.key } };
+  const snapshot: AgentBusinessSnapshot = { issues: [done, child, parent, issue], refactorRepository: 'example-org/admin', projects: {
+    projects: [{ ...project, repository: 'example-org/admin' }], roots: [],
     directoryCount: 1, durationMs: 1, limited: false, unreadableCount: 0,
   } };
   const context = buildAgentBusinessContext(conversation('检查工作台'), snapshot);
@@ -72,34 +73,85 @@ test('会话关联任务保留来源子任务和状态，不使用旧的全局�
 });
 
 test('显式项目引用支持仓库来源类型的复合 ID', () => {
-  const complexProject = { ...project, projectId: 'git.example.test:example-team/example-repository' };
+  const complexProject = { ...project, projectId: 'codeup.aliyun.com:64ad9c/Raytheon_project/thor-admin2.0' };
   const context = buildAgentBusinessContext(conversation(`@项目:${complexProject.projectId} 检查项目`, '/unrelated'), {
     projects: { projects: [complexProject], roots: [], directoryCount: 1, durationMs: 1, limited: false, unreadableCount: 0 },
   });
   assert.equal(context.project?.projectId, complexProject.projectId);
 });
 
-test('接口页只响应显式 @接口 引用，不根据普通文案猜测', () => {
+test('同仓库 worktree 引用精确路径，保留路径和分支且不改变会话工作目录', () => {
+  const selected = { ...project, path: '/repo/工作区 A@50%', branch: 'feature/selected' };
+  const snapshot: AgentBusinessSnapshot = { projects: { projects: [project, selected], roots: [],
+    directoryCount: 2, durationMs: 1, limited: false, unreadableCount: 0 } };
+  const current = conversation(projectWorkspaceReference(selected));
+  assert.equal(buildAgentBusinessContext(current, snapshot).project, selected);
+  assert.equal(current.latest.workspacePath, project.path);
+  assert.equal(current.latest.branch, project.branch);
+  const mentions = buildAgentBusinessMentions(snapshot).filter(item => item.type === 'project');
+  assert.equal(new Set(mentions.map(item => item.id)).size, 2);
+  assert.notEqual(mentions[0]!.value, mentions[1]!.value);
+  assert.ok(mentions[1]!.value.includes(JSON.stringify(selected.path)));
+  assert.ok(mentions[1]!.value.includes(JSON.stringify(selected.branch)));
+  assert.equal(buildAgentBusinessContext(conversation(mentions[1]!.value), snapshot).project, selected);
+});
+
+test('从项目页带入的草稿通过源工作区识别项目，正文无需机器引用', () => {
+  const selected = { ...project, path: '/repo/工作区 A@50%' };
+  const snapshot: AgentBusinessSnapshot = { projects: { projects: [project, selected], roots: [],
+    directoryCount: 2, durationMs: 1, limited: false, unreadableCount: 0 } };
+  const objective = projectWorkspaceReviewDraft(selected.path);
+  const current = conversation(objective, '/sessions/isolated-run');
+  current.latest.sourceWorkspacePath = selected.path;
+  assert.equal(buildAgentBusinessContext(current, snapshot).project, selected);
+  assert.ok(objective.includes(selected.path));
+  assert.doesNotMatch(objective, /@项目:|@工作区:|"workspacePath"/);
+});
+
+test('旧项目引用多工作区时只匹配当前目录，歧义或失效工作区不回退首条', () => {
+  const second = { ...project, path: '/repo/second' };
+  const snapshot: AgentBusinessSnapshot = { projects: { projects: [project, second], roots: [],
+    directoryCount: 2, durationMs: 1, limited: false, unreadableCount: 0 } };
+  assert.equal(buildAgentBusinessContext(conversation(`@项目:${project.projectId}`, second.path), snapshot).project, second);
+  assert.equal(buildAgentBusinessContext(conversation(`@项目:${project.projectId}`, '/elsewhere'), snapshot).project, undefined);
+  assert.equal(buildAgentBusinessContext(conversation('检查当前工作区', second.path), snapshot).project, second);
+  assert.equal(buildAgentBusinessContext(conversation(`@项目:${project.projectId} @工作区:%broken`), snapshot).project, undefined);
+  assert.equal(buildAgentBusinessContext(conversation(projectWorkspaceReference({ ...second, path: '/removed' })), snapshot).project, undefined);
+  assert.equal(buildAgentBusinessContext(conversation(`@项目:other @工作区:${encodeURIComponent(second.path)}`), snapshot).project, undefined);
+});
+
+test('最新用户工作区引用覆盖旧轮次和会话标题，不采用 Agent 回复里的另一个引用', () => {
+  const second = { ...project, path: '/repo/second' };
+  const current = conversation(projectWorkspaceReference(project));
+  const latest = { ...current.latest, id: 'run-2', objective: projectWorkspaceReference(second), result: projectWorkspaceReference(project) };
+  current.runs.push(latest); current.latest = latest;
+  const snapshot: AgentBusinessSnapshot = { projects: { projects: [project, second], roots: [],
+    directoryCount: 2, durationMs: 1, limited: false, unreadableCount: 0 } };
+  assert.equal(buildAgentBusinessContext(current, snapshot).project, second);
+  assert.equal(buildAgentBusinessContext(conversation(`${projectWorkspaceReference(project)}\n\n${projectWorkspaceReference(second)}`), snapshot).project, second);
+});
+
+test('接口页只响应显式引用和草稿中的接口页编号', () => {
   const page = { id: 'country-config', menu: '系统配置', title: '国家基础配置', routes: ['/country'], operations: [] };
   assert.equal(buildAgentBusinessContext(conversation('检查国家基础配置'), { pages: [page] }).interfacePage, undefined);
   assert.equal(buildAgentBusinessContext(conversation('@接口:country-config 检查报错'), { pages: [page] }).interfacePage?.page.id, 'country-config');
+  assert.equal(buildAgentBusinessContext(conversation(interfaceQuickPrompt({ page })), { pages: [page] }).interfacePage?.page.id, 'country-config');
 });
 
 test('Agent 接口页进度只统计人工审核确认，不使用旧联调状态', () => {
   const page = { id: 'settings', menu: '系统配置', title: '平台功能设置', routes: ['/SystemConfig/GlobalConfig/PlatformSetting'], operations: [
-    { operationId: 'exampleList', method: 'GET', path: '/api/v1/examples/list', summary: '地址格式', contractStatus: '未标记', stageId: '02', stageTitle: '系统配置' },
+    { operationId: 'listAddressFormats', method: 'GET', path: '/admin/v1/system/address-formats', summary: '地址格式', contractStatus: '未标记', stageId: '02', stageTitle: '系统配置' },
   ] };
   const record = { evidence: '真实环境请求与页面回读', blocker: '', confirmedAt: '', updatedAt: '' };
-  const pending = buildAgentBusinessContext(conversation('@接口:settings 检查联调'), { pages: [page], review: { 'example-1': record } });
+  const catalog = [{ id: 'fixture-address', path: page.operations[0].path }];
+  const pending = buildAgentBusinessContext(conversation('@接口:settings 检查联调'), { pages: [page], catalog, review: { 'fixture-address': record } });
   assert.deepEqual(pending.interfacePage?.progress, { total: 1, confirmed: 0, blocked: 0 });
-  const confirmed = buildAgentBusinessContext(conversation('@接口:settings 检查联调'), { pages: [page], review: { 'example-1': { ...record, confirmedAt: '2026-09-22T00:00:00.000Z' } } });
+  const confirmed = buildAgentBusinessContext(conversation('@接口:settings 检查联调'), { pages: [page], catalog, review: { 'fixture-address': { ...record, confirmedAt: '2026-09-22T00:00:00.000Z' } } });
   assert.equal(confirmed.interfacePage?.progress?.confirmed, 1);
-  const custom = buildAgentBusinessContext(conversation('@接口:settings 检查联调'), { pages: [page], catalog: [{ path: '/api/v1/examples/list', id: 'custom-interface' }], review: { 'custom-interface': { ...record, confirmedAt: '2026-09-22T00:00:00.000Z' } } });
-  assert.equal(custom.interfacePage?.progress?.confirmed, 1);
 });
 
 test('合入记录按需求 ID 关联，业务选择项写入稳定引用', () => {
-  const merge: MergeItem = { requirementId: 'REQ-008', title: '授权平台预处理', jiraKey: 'DEMO-577', status: '待审核', merged: false,
+  const merge: MergeItem = { requirementId: 'REQ-008', title: '授权平台预处理', jiraKey: 'GBP-577', status: '待审核', merged: false,
     sourceBranch: 'feature/REQ-008', deliveryWorkspacePath: '/other', sessionWorkspacePath: '/other', pipeline: { threadId: '', clientThreadId: '' } } as MergeItem;
   const snapshot = { issues: [issue], projects: { projects: [project], roots: [], directoryCount: 1, durationMs: 1, limited: false,
     unreadableCount: 0 }, merge: { source: { checkedAt: '', targetFresh: true, remoteChecked: true }, target: { branch: '', localSha: '', remoteSha: '', url: '' },
@@ -150,45 +202,4 @@ test('一个会话展示全部明确引用的 Jira，空合入 ID 不会匹配',
   const result = buildAgentBusinessContext(conversation('APEX-263 和 APEX-264 一起检查'), snapshot);
   assert.deepEqual(result.jiraIssues.map(item => item.key), ['APEX-263', 'APEX-264']);
   assert.deepEqual(result.merges, []);
-});
-
-test('同仓库 worktree 引用精确路径，保留路径和分支且不改变会话工作目录', () => {
-  const selected = { ...project, path: '/repo/工作区 A@50%', branch: 'feature/selected' };
-  const snapshot: AgentBusinessSnapshot = { projects: { projects: [project, selected], roots: [],
-    directoryCount: 2, durationMs: 1, limited: false, unreadableCount: 0 } };
-  const current = conversation(projectQuickPrompt(selected));
-  assert.equal(buildAgentBusinessContext(current, snapshot).project, selected);
-  assert.equal(current.latest.workspacePath, project.path);
-  assert.equal(current.latest.branch, project.branch);
-  const mentions = buildAgentBusinessMentions(snapshot).filter(item => item.type === 'project');
-  assert.equal(new Set(mentions.map(item => item.id)).size, 2);
-  assert.notEqual(mentions[0]!.value, mentions[1]!.value);
-  assert.ok(mentions[1]!.value.includes(JSON.stringify(selected.path)));
-  assert.ok(mentions[1]!.value.includes(JSON.stringify(selected.branch)));
-  assert.equal(buildAgentBusinessContext(conversation(mentions[1]!.value), snapshot).project, selected);
-});
-
-
-test('旧项目引用多工作区时只匹配当前目录，歧义或失效工作区不回退首条', () => {
-  const second = { ...project, path: '/repo/second' };
-  const snapshot: AgentBusinessSnapshot = { projects: { projects: [project, second], roots: [],
-    directoryCount: 2, durationMs: 1, limited: false, unreadableCount: 0 } };
-  assert.equal(buildAgentBusinessContext(conversation(`@项目:${project.projectId}`, second.path), snapshot).project, second);
-  assert.equal(buildAgentBusinessContext(conversation(`@项目:${project.projectId}`, '/elsewhere'), snapshot).project, undefined);
-  assert.equal(buildAgentBusinessContext(conversation('检查当前工作区', second.path), snapshot).project, second);
-  assert.equal(buildAgentBusinessContext(conversation(`@项目:${project.projectId} @工作区:%broken`), snapshot).project, undefined);
-  assert.equal(buildAgentBusinessContext(conversation(projectQuickPrompt({ ...second, path: '/removed' })), snapshot).project, undefined);
-  assert.equal(buildAgentBusinessContext(conversation(`@项目:other @工作区:${encodeURIComponent(second.path)}`), snapshot).project, undefined);
-});
-
-
-test('最新用户工作区引用覆盖旧轮次和会话标题，不采用 Agent 回复里的另一个引用', () => {
-  const second = { ...project, path: '/repo/second' };
-  const current = conversation(projectQuickPrompt(project));
-  const latest = { ...current.latest, id: 'run-2', objective: projectQuickPrompt(second), result: projectQuickPrompt(project) };
-  current.runs.push(latest); current.latest = latest;
-  const snapshot: AgentBusinessSnapshot = { projects: { projects: [project, second], roots: [],
-    directoryCount: 2, durationMs: 1, limited: false, unreadableCount: 0 } };
-  assert.equal(buildAgentBusinessContext(current, snapshot).project, second);
-  assert.equal(buildAgentBusinessContext(conversation(`${projectQuickPrompt(project)}\n\n${projectQuickPrompt(second)}`), snapshot).project, second);
 });

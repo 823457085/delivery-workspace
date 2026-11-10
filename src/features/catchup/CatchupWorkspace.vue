@@ -17,6 +17,7 @@ import CodexQueue from './CodexQueue.vue';
 import type { QueueEntry } from './domain';
 import { directMergeReasonError } from './domain';
 import { displayCatchupBoard, readCatchupIncrement } from './increment';
+import { dateTime } from '../../shared/format';
 const props = defineProps<{ mode: string }>();
 const route = useRoute();
 const boardQuery = useSource<CatchupData>('catchup'), mergeQuery = useSource<MergeData>('merge');
@@ -28,7 +29,12 @@ const displayBoard = computed(() => board.value && displayCatchupBoard(board.val
 const actions = useSourceActions();
 const selectedRequirementId = shallowRef(''), selectedMergeId = shallowRef('');
 const requirementOpen = shallowRef(false), mergeOpen = shallowRef(false), jiraOpen = shallowRef(false), jiraLoading = shallowRef(false), acting = shallowRef(false);
-const jiraReport = shallowRef<unknown>();
+interface JiraCompletionReport {
+  checkedAt?: string; targetStatus?: string; message?: string;
+  total?: number; completed?: number; updated?: number; pending?: number; blocked?: number;
+  results?: { requirementId: string; jiraKey: string; summary?: string; currentStatus?: string; message: string }[];
+}
+const jiraReport = shallowRef<JiraCompletionReport>();
 const selectedRequirement = computed(() => displayBoard.value?.requirements.find((item) => item.id === selectedRequirementId.value));
 const selectedMerge = computed(() => merge.value?.items.find((item) => item.requirementId === selectedMergeId.value));
 const title = computed(() => props.mode === 'execution' ? '追平执行' : props.mode === 'merge' ? '合入审核' : '追平 Codex 队列');
@@ -68,7 +74,7 @@ async function directMerge() {
     await actions.execute('merge-action', { ...payload, reason }, `确认例外直接合入 ${payload.requirementId}`, `原因：${reason}。源分支 ${item.sourceBranch}，源提交 ${payload.expectedSourceSha}，目标分支 ${targetBranch}。确认后会跳过当前自测门槛，授权合入调度器执行该提交的真实合入、提交和推送；Git 冲突、版本与源 SHA 校验仍保留。此操作不代表自测通过，也不自动完成 Jira。后续状态在当前面板查看，无需切换页面。`);
   } finally { acting.value = false; }
 }
-async function checkJira() { jiraLoading.value = true; jiraReport.value = undefined; try { jiraReport.value = await readSource('merge-jira'); jiraOpen.value = true; } catch (error) { ElMessage.error(error instanceof Error ? error.message : String(error)); } finally { jiraLoading.value = false; } }
+async function checkJira() { jiraLoading.value = true; jiraReport.value = undefined; try { jiraReport.value = await readSource<JiraCompletionReport>('merge-jira'); jiraOpen.value = true; } catch (error) { ElMessage.error(error instanceof Error ? error.message : String(error)); } finally { jiraLoading.value = false; } }
 async function syncJira() {
   const ok = await actions.execute('merge-jira', {}, '确认同步 Jira 完成状态', '这会按交付规则更新真实 Jira 事项状态。请核对本次只读报告后再执行。');
   if (ok) await checkJira();
@@ -86,5 +92,18 @@ watch([() => route.query.requirement, () => props.mode, () => !!displayBoard.val
   <p v-if="jiraLoading" class="source-footnote">正在只读核对 Jira，没有同步或关闭事项…</p>
   <RecordDrawer v-model="requirementOpen" :title="selectedRequirement?.title || '需求详情'" :subtitle="selectedRequirement?.id" :record="selectedRequirement"><RequirementDetail v-if="selectedRequirement" :item="selectedRequirement" /><template #footer><el-button v-for="action in selectedRequirement?.execution.allowedActions || []" :key="action" :loading="acting" :disabled="acting" :type="action === 'finish' ? 'warning' : 'primary'" plain @click="executionAction(action)">{{ actionLabels[action] || action }}</el-button></template></RecordDrawer>
   <RecordDrawer v-model="mergeOpen" :title="selectedMerge?.title || '合入详情'" :subtitle="selectedMerge?.requirementId" :record="selectedMerge"><MergeDetail v-if="selectedMerge && merge" :key="selectedMerge.requirementId" :item="selectedMerge" :target-branch="merge.target.branch" /><template #footer><el-button v-if="selectedMerge?.directMergeAction?.enabled" type="warning" plain :disabled="acting" @click="directMerge">例外直接合入</el-button><el-button v-if="selectedMerge?.reviewRetryAction?.enabled" :disabled="acting" @click="mergeAction(selectedMerge.reviewRetryAction.action, selectedMerge.reviewRetryAction.label)">{{ selectedMerge.reviewRetryAction.label }}</el-button><el-button v-if="selectedMerge?.action?.enabled" type="primary" :loading="acting" @click="mergeAction(selectedMerge.action.action, selectedMerge.action.label)">{{ selectedMerge.action.label }}</el-button></template></RecordDrawer>
-  <RecordDrawer v-model="jiraOpen" title="Jira 完成情况 · 只读核对" :record="jiraReport"><template #footer><el-button type="warning" :disabled="!jiraReport" :loading="actions.pending.value || jiraLoading" @click="syncJira">同步 Jira 完成状态</el-button></template></RecordDrawer>
+  <RecordDrawer v-model="jiraOpen" title="Jira 完成情况 · 只读核对" :record="jiraReport">
+    <template v-if="jiraReport">
+      <p v-if="jiraReport.message">{{ jiraReport.message }}</p>
+      <dl class="detail-facts">
+        <div><dt>核对时间</dt><dd>{{ dateTime(jiraReport.checkedAt) }}</dd></div>
+        <div><dt>目标状态</dt><dd>{{ jiraReport.targetStatus || '未返回' }}</dd></div>
+        <div><dt>核对事项</dt><dd>{{ jiraReport.total ?? '未返回' }}</dd></div>
+        <div><dt>已完成 / 本次更新</dt><dd>{{ jiraReport.completed ?? '未返回' }} / {{ jiraReport.updated ?? '未返回' }}</dd></div>
+        <div><dt>待推进 / 受阻</dt><dd>{{ jiraReport.pending ?? '未返回' }} / {{ jiraReport.blocked ?? '未返回' }}</dd></div>
+      </dl>
+      <el-table :data="jiraReport.results || []"><el-table-column prop="jiraKey" label="Jira" width="115" /><el-table-column prop="summary" label="任务" min-width="160" /><el-table-column prop="currentStatus" label="当前状态" width="120" /><el-table-column prop="message" label="核对结果" min-width="220" /></el-table>
+    </template>
+    <template #footer><el-button type="warning" :disabled="!jiraReport" :loading="actions.pending.value || jiraLoading" @click="syncJira">同步 Jira 完成状态</el-button></template>
+  </RecordDrawer>
 </template>

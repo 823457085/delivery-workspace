@@ -26,7 +26,7 @@ function selectModule(name: string) { module.value = name; page.value = ''; }
 
 <template>
   <aside class="surface review-navigation" aria-label="接口模块与页面">
-    <div class="navigation-title"><strong>模块 / 页面</strong><small>已联调 / 接口</small></div>
+    <div class="navigation-title"><strong>模块 / 页面</strong><small>确认通过 / 接口</small></div>
     <button type="button" class="module-item" :class="{ active: !module }" @click="selectModule('')">
       <span>全部模块</span><small>{{ available ? totalConfirmed : '—' }}/{{ items.length }}</small>
     </button>

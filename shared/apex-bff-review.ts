@@ -12,7 +12,6 @@ export interface ApexBffInterface {
   completion: string;
   remark: string;
   contract: { method: string; status: string; operationId: string } | null;
-  /** 自有项目可显式提供页面归属，避免套用内置兼容映射。 */
   ui?: { module: string; page: string; route: string; kind: 'route' | 'shared' | 'multiple' | 'unmapped' };
 }
 

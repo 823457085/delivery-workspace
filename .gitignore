@@ -26,3 +26,11 @@ credentials/
 *.sqlite-*
 *.db
 *.db-*
+
+.local/
+workspaces/
+.verify/
+.delivery-artifacts/
+.pnpm-store/
+__pycache__/
+server/jira-dev/sync-state.json

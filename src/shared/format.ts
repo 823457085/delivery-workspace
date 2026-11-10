@@ -33,3 +33,12 @@ export function statusTone(value?: string) {
   if (/running|progress|active|dispatch|进行/i.test(value || '')) return 'primary';
   return 'info';
 }
+/** 列表中缩短本机路径：用户目录显示为 ~，过深时保留首两级和末两级；完整路径应放在 title 中。 */
+export function shortPath(value?: string | null) {
+  if (!value) return '';
+  const path = value.replace(/^\/Users\/[^/]+(?=\/|$)/, '~');
+  const parts = path.split('/').filter(Boolean);
+  if (parts.length <= 5) return path;
+  const prefix = path.startsWith('/') ? '/' : '';
+  return prefix + [...parts.slice(0, 2), '…', ...parts.slice(-2)].join('/');
+}

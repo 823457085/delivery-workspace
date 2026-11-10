@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import AgentMarkdown from '../agent-workbench/AgentMarkdown.vue';
 /** 交接表单只负责展示证据、编辑评论和确认目标；请求与幂等状态由 composable / 服务端负责。 */
 import { computed, ref, watch } from 'vue';
 import { jiraFixHandoffComment, type JiraFixHandoffContext, type JiraHandoffDateField } from '../../../shared/jira-fix-handoff';
@@ -27,7 +28,7 @@ watch(() => props.generating, (value, previous) => { if (!value && previous) vie
         <p class="handoff-issue"><strong>{{ context.issue.key }}</strong> · {{ context.issue.summary }}</p>
         <p>当前状态：{{ context.issue.status.name }}　报告人：{{ context.issue.reporter?.name || '未设置' }}</p>
         <p class="handoff-hint">先生成评论并预览，可直接修改或补充意见后重新生成。生成不写 Jira；确认后才发布评论、流转状态并指派给报告人。</p>
-        <details class="handoff-evidence"><summary>查看本轮执行结果</summary><pre>{{ context.result || '未保存执行结果，请先打开修复会话核对。' }}</pre></details>
+        <details class="handoff-evidence"><summary>查看本轮执行结果</summary><AgentMarkdown class="handoff-result" :source="context.result || '未保存执行结果，请先打开修复会话核对。'" /></details>
         <el-form label-position="top" :disabled="submitting || locked || generating || applyingStatus">
           <el-form-item label="目标状态" required>
             <div class="handoff-status-action">
@@ -50,7 +51,7 @@ watch(() => props.generating, (value, previous) => { if (!value && previous) vie
             <el-button :loading="generating" :disabled="submitting || loading || applyingStatus" @click="emit('generate')">{{ hasDraft ? '按当前草稿和意见重新生成' : '生成评论' }}</el-button>
           </template>
           <el-tabs v-if="hasDraft" v-model="view" class="comment-tabs">
-            <el-tab-pane label="评论预览" name="preview"><pre class="comment-preview">{{ preview }}</pre></el-tab-pane>
+            <el-tab-pane label="评论预览" name="preview"><AgentMarkdown class="comment-preview" :source="preview" /></el-tab-pane>
             <el-tab-pane label="直接修改" name="edit">
               <el-form-item label="问题原因" required><el-input v-model="form.cause" type="textarea" :rows="2" maxlength="6000" placeholder="填写已确认的根因及修复说明" /></el-form-item>
               <el-form-item label="影响范围" required><el-input v-model="form.impact" type="textarea" :rows="2" maxlength="6000" placeholder="涉及的模块、页面或场景" /></el-form-item>
@@ -77,7 +78,7 @@ watch(() => props.generating, (value, previous) => { if (!value && previous) vie
 </template>
 
 <style scoped>
-.handoff-body{min-height:100px;max-height:65vh;overflow:auto;padding:0 4px}.handoff-issue{margin-top:0}.handoff-hint{color:var(--el-text-color-secondary);font-size:12px;line-height:1.6}.handoff-evidence{margin:16px 0}.handoff-evidence summary{cursor:pointer}.handoff-evidence pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:240px;overflow:auto;font:12px/1.6 var(--mono)}.handoff-error{color:var(--el-color-danger);font-size:13px;line-height:1.6}.handoff-progress{font-size:12px;line-height:1.6}.el-select{width:100%}
-.comment-tabs{margin-top:16px}.comment-preview{white-space:pre-wrap;overflow-wrap:anywhere;font-family:inherit;font-size:14px;line-height:1.8;margin:0 0 16px}
+.handoff-body{min-height:100px;max-height:65vh;overflow:auto;padding:0 4px}.handoff-issue{margin-top:0}.handoff-hint{color:var(--el-text-color-secondary);font-size:12px;line-height:1.6}.handoff-evidence{margin:16px 0}.handoff-evidence summary{cursor:pointer}.handoff-result{overflow-wrap:anywhere;max-height:240px;overflow:auto;font:12px/1.6 var(--sans)}.handoff-error{color:var(--el-color-danger);font-size:13px;line-height:1.6}.handoff-progress{font-size:12px;line-height:1.6}.el-select{width:100%}
+.comment-tabs{margin-top:16px}.comment-preview{overflow-wrap:anywhere;font-family:inherit;font-size:14px;line-height:1.8;margin:0 0 16px}
 .handoff-status-action{display:flex;gap:12px;width:100%}.handoff-status-action .el-select{flex:1;min-width:0}.handoff-status-action .el-button{flex-shrink:0}
 </style>

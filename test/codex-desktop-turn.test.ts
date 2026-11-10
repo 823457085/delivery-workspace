@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import os from 'node:os';
-import { desktopTurnFromSnapshot, runCodexDesktopTurn } from '../server/codex-desktop-turn.js';
+import { CodexDesktopTurnUnconfirmedError, desktopTurnFromSnapshot, runCodexDesktopTurn } from '../server/codex-desktop-turn.js';
 import type { DesktopObject } from '../server/codex-desktop-ipc.js';
 import type { LiveContext } from '../server/codex-live-turn.js';
 
@@ -39,6 +39,25 @@ function fixture() {
   const options = { connect: async () => desktop, pollMs: 0 };
   return { context, controller, desktop, options, calls, sessions, outputs, events, monitor, get closed() { return closed; } };
 }
+
+test('轮次已启动后状态超时会重连原轮次，提示词只发送一次', async () => {
+  const f = fixture(); let reads = 0, connections = 0;
+  const result = f.monitor.snapshot;
+  f.monitor.snapshot = async () => { if (++reads === 1) throw new Error('Codex 桌面会话状态读取超时'); return result(); };
+  f.options.connect = async () => { connections++; return f.desktop; };
+  assert.equal(await runCodexDesktopTurn(f.context, 'prompt', f.options), 'done');
+  assert.equal(connections, 2);
+  assert.equal(f.calls.filter(call => call.method === 'thread-follower-start-turn').length, 1);
+});
+
+test('持续观察超时返回可恢复的未知状态，不重复启动或中断业务轮次', async () => {
+  const f = fixture(); let connections = 0;
+  f.monitor.snapshot = async () => { throw new Error('Codex 桌面会话状态读取超时'); };
+  f.options.connect = async () => { connections++; if (connections === 2) throw new Error('ECONNRESET'); return f.desktop; };
+  await assert.rejects(runCodexDesktopTurn(f.context, 'prompt', f.options), CodexDesktopTurnUnconfirmedError);
+  assert.equal(connections, 3);
+  assert.deepEqual(f.calls.map(call => call.method), ['thread-follower-start-turn']);
+});
 
 test('空闲 desktop owner 续接原会话，按精确轮次读取增量和最终结果', async () => {
   const f = fixture();
@@ -82,22 +101,113 @@ test('desktop 续接显式保留权限、工作区、模型、速度和图片，
   }
 });
 
-test('真实运行、待处理授权、未确认提交均不得启动或中断原会话', async () => {
+test('等待真实运行、待处理授权、未确认提交时取消，不启动或中断原会话', async () => {
   for (const patch of [{ threadRuntimeStatus: { type: 'active' } }, { requests: [{ id: 'approval' }] },
     { unconfirmedTurnSubmissions: [{ requestId: 'pending' }] }]) {
-    const f = fixture(); f.desktop.snapshot = async () => ({ ...idle(), ...patch });
-    await assert.rejects(runCodexDesktopTurn(f.context, 'prompt', f.options), /确有任务正在执行/);
+    const f = fixture(); f.desktop.snapshot = async () => { f.controller.abort(); return { ...idle(), ...patch }; };
+    await assert.rejects(runCodexDesktopTurn(f.context, 'prompt', f.options), /中断/);
     assert.deepEqual(f.calls, []); assert.equal(f.closed, true);
   }
 });
 
-test('发送前重新确认状态，期间变忙或目录改变时不发送', async () => {
-  for (const patch of [{ threadRuntimeStatus: { type: 'active' } }, { cwd: '/' }]) {
-    const f = fixture(); let count = 0;
-    f.desktop.snapshot = async () => ++count === 1 ? idle() : { ...idle(), ...patch };
-    await assert.rejects(runCodexDesktopTurn(f.context, 'prompt', f.options), /本次未启动/);
-    assert.equal(f.calls.length, 0);
+test('原会话忙时自动等待，空闲后只启动一次，不采纳前一轮输出', async () => {
+  const f = fixture(); let reads = 0, baselineAt = 0;
+  f.desktop.snapshot = async () => {
+    reads++;
+    if (f.calls.length) return f.monitor.snapshot();
+    return reads <= 3 ? { ...snapshot([{ id: 'previous-turn', status: 'completed', items: [{ type: 'agentMessage', text: '旧轮结果' }] }]),
+      threadRuntimeStatus: { type: 'active' } } : idle();
+  };
+  f.context.onBeforeTurn = () => { baselineAt = reads; };
+  assert.equal(await runCodexDesktopTurn(f.context, 'prompt', f.options), 'done');
+  assert.equal(baselineAt, 4);
+  assert.deepEqual(f.outputs, ['done']);
+  assert.deepEqual(f.calls.map(call => call.method), ['thread-follower-start-turn']);
+  assert.equal(f.events.filter(event => event.includes('等待空闲后自动开始')).length, 1);
+});
+
+test('模型容量失败留下 systemError，原轮次均已结束时可以续接且只发送一次', async () => {
+  for (const canonical of [true, false]) {
+    const f = fixture();
+    const turns = [{ id: 'previous-turn', status: 'failed', error: { message: 'Selected model is at capacity.' },
+      items: [{ type: 'agentMessage', text: '旧轮结果' }] }];
+    const state = { ...(canonical ? snapshot(turns) : { ...idle(), turns }), threadRuntimeStatus: { type: 'systemError' } };
+    f.desktop.snapshot = async () => f.calls.length ? f.monitor.snapshot() : state;
+    assert.equal(await runCodexDesktopTurn(f.context, 'retry prompt', f.options), 'done');
+    assert.deepEqual(f.outputs, ['done']);
+    assert.deepEqual(f.calls.map(call => call.method), ['thread-follower-start-turn']);
   }
+});
+
+test('systemError 缺少终态证据或包含未知轮次状态时不启动', async () => {
+  for (const state of [idle(), snapshot([]), snapshot([{ id: 'previous-turn' }]),
+    snapshot([{ id: 'previous-turn', status: 'unknown' }]), snapshot([{ status: 'failed' }]),
+    snapshot([{ id: '', status: 'failed' }])]) {
+    const f = fixture();
+    f.desktop.snapshot = async () => ({ ...state, threadRuntimeStatus: { type: 'systemError' } });
+    await assert.rejects(runCodexDesktopTurn(f.context, 'prompt', f.options), /未能确认.*空闲/);
+    assert.deepEqual(f.calls, []);
+  }
+});
+
+test('systemError 仍有活动轮次、请求或未确认提交时仅等待，不启动或中断', async () => {
+  for (const patch of [
+    { ...snapshot([{ id: 'previous-turn', status: 'inProgress' }]) },
+    { requests: [{ id: 'approval' }] },
+    { unconfirmedTurnSubmissions: [{ requestId: 'pending' }] },
+  ]) {
+    const f = fixture();
+    f.desktop.snapshot = async () => ({ ...snapshot([{ id: 'previous-turn', status: 'failed' }]),
+      ...patch, threadRuntimeStatus: { type: 'systemError' } });
+    f.context.onEvent = (_type, text) => { if (text.includes('等待空闲')) f.controller.abort(); };
+    await assert.rejects(runCodexDesktopTurn(f.context, 'prompt', f.options), /中断/);
+    assert.deepEqual(f.calls, []);
+  }
+});
+
+test('idle 与原会话活动轮次证据矛盾时仅等待，不发送或中断', async () => {
+  const f = fixture();
+  f.desktop.snapshot = async () => snapshot([{ id: 'previous-turn', status: 'inProgress' }]);
+  f.context.onEvent = (_type, text) => { if (text.includes('等待空闲')) f.controller.abort(); };
+  await assert.rejects(runCodexDesktopTurn(f.context, 'prompt', f.options), /中断/);
+  assert.deepEqual(f.calls, []);
+});
+
+test('发送前 systemError 出现活动轮次会重新等待，结束后刷新基线且只续接一次', async () => {
+  const f = fixture(); let reads = 0; const baselines: number[] = [];
+  f.desktop.snapshot = async () => {
+    reads++;
+    if (f.calls.length) return f.monitor.snapshot();
+    return { ...snapshot([{ id: 'previous-turn', status: reads === 2 ? 'inProgress' : 'failed' }]),
+      threadRuntimeStatus: { type: 'systemError' } };
+  };
+  f.context.onBeforeTurn = () => { baselines.push(reads); };
+  assert.equal(await runCodexDesktopTurn(f.context, 'prompt', f.options), 'done');
+  assert.deepEqual(baselines, [1, 3]);
+  assert.deepEqual(f.calls.map(call => call.method), ['thread-follower-start-turn']);
+});
+
+test('自动等待可以取消，只取消待发步骤，不中断桌面正在执行的另一轮', async () => {
+  const f = fixture();
+  f.desktop.snapshot = async () => ({ ...idle(), threadRuntimeStatus: { type: 'active' } });
+  f.context.onEvent = (_type, text) => { if (text.includes('等待空闲')) f.controller.abort(); };
+  await assert.rejects(runCodexDesktopTurn(f.context, 'prompt', f.options), /中断/);
+  assert.equal(f.calls.length, 0);
+});
+
+test('发送前变忙重新等待并刷新差异基线；目录改变则停止', async () => {
+  const f = fixture(); let reads = 0; const baselines: number[] = [];
+  f.desktop.snapshot = async () => {
+    reads++; if (f.calls.length) return f.monitor.snapshot();
+    return reads === 2 ? { ...idle(), threadRuntimeStatus: { type: 'active' } } : idle();
+  };
+  f.context.onBeforeTurn = () => { baselines.push(reads); };
+  assert.equal(await runCodexDesktopTurn(f.context, 'prompt', f.options), 'done');
+  assert.deepEqual(baselines, [1, 3]); assert.equal(f.calls.length, 1);
+  const changed = fixture(); let checks = 0;
+  changed.desktop.snapshot = async () => ++checks === 1 ? idle() : { ...idle(), cwd: '/' };
+  await assert.rejects(runCodexDesktopTurn(changed.context, 'prompt', changed.options), /本次未启动/);
+  assert.equal(changed.calls.length, 0);
 });
 
 test('未知状态、不同会话、不同主机或不同工作区均保守失败，不谎报运行中', async () => {
@@ -116,7 +226,8 @@ test('发出前取消不发送；发送后取消只中断本轮的 expectedTurnI
   assert.deepEqual(before.calls, []);
   const after = fixture();
   after.monitor.snapshot = async () => {
-    after.controller.abort(); return snapshot([{ id: turnId, status: 'inProgress', items: [] }]);
+    after.controller.abort(); return snapshot([{ id: turnId,
+      status: after.calls.some(call => call.method === 'thread-follower-interrupt-turn') ? 'interrupted' : 'inProgress', items: [] }]);
   };
   await assert.rejects(runCodexDesktopTurn(after.context, 'prompt', after.options), /中断/);
   assert.equal(after.calls.length, 2);
@@ -133,8 +244,37 @@ test('中断回执失败必须报告未确认，不泛化中断其他轮次', as
   f.monitor.snapshot = async () => {
     f.controller.abort(); return snapshot([{ id: turnId, status: 'inProgress', items: [] }]);
   };
-  await assert.rejects(runCodexDesktopTurn(f.context, 'prompt', f.options), /中断未获桌面端确认/);
+  await assert.rejects(runCodexDesktopTurn(f.context, 'prompt', f.options), error => {
+    assert.ok(error instanceof CodexDesktopTurnUnconfirmedError);
+    assert.match(error.message, /中断未获桌面端确认/); return true;
+  });
   assert.equal(f.closed, true);
+});
+
+test('中断请求已回执但确切轮次未结束时仍保留未知状态，其他轮次结束也不能释放', async () => {
+  for (const status of ['inProgress', 'missing']) {
+    const f = fixture();
+    f.monitor.snapshot = async () => {
+      f.controller.abort();
+      return snapshot([{ id: 'other-turn', status: 'interrupted', items: [] },
+        ...(status === 'inProgress' ? [{ id: turnId, status, items: [] }] : [])]);
+    };
+    await assert.rejects(runCodexDesktopTurn(f.context, 'prompt', f.options), CodexDesktopTurnUnconfirmedError);
+    assert.deepEqual(f.calls.map(call => call.method), ['thread-follower-start-turn', 'thread-follower-interrupt-turn']);
+  }
+});
+
+test('停止请求与原轮次完成同时发生时采信确切最终结果，不将已完成成果误标取消', async () => {
+  const f = fixture();
+  f.monitor.snapshot = async () => {
+    f.controller.abort();
+    const stopped = f.calls.some(call => call.method === 'thread-follower-interrupt-turn');
+    return snapshot([{ id: turnId, status: stopped ? 'completed' : 'inProgress',
+      items: [{ type: 'agentMessage', text: stopped ? '真实最终结果' : '过程片段' }] }]);
+  };
+  assert.equal(await runCodexDesktopTurn(f.context, 'prompt', f.options), '真实最终结果');
+  assert.equal(f.outputs.at(-1), '真实最终结果');
+  assert.equal(f.calls.filter(call => call.method === 'thread-follower-start-turn').length, 1);
 });
 
 test('启动回执超时或缺失轮次 ID 时不重发、不复制会话、不声明完成', async () => {
@@ -142,7 +282,10 @@ test('启动回执超时或缺失轮次 ID 时不重发、不复制会话、不�
     const f = fixture(); let starts = 0;
     f.desktop.request = async () => { starts++; if (outcome === 'timeout') throw new Error('timeout'); return {}; };
     f.monitor.snapshot = async () => { assert.fail('不得读取未知轮次'); };
-    await assert.rejects(runCodexDesktopTurn(f.context, 'prompt', f.options), /未自动重复发送/);
+    await assert.rejects(runCodexDesktopTurn(f.context, 'prompt', f.options), error => {
+      assert.ok(error instanceof CodexDesktopTurnUnconfirmedError);
+      assert.match(error.message, /未自动重复发送/); return true;
+    });
     assert.equal(starts, 1); assert.deepEqual(f.sessions, []); assert.equal(f.closed, true);
   }
 });
@@ -158,8 +301,8 @@ test('已知轮次失败、被中断及桌面断连均不声明成功', async ()
     f.monitor.snapshot = async () => snapshot([{ id: turnId, status, error: { message: 'failure' } }]);
     await assert.rejects(runCodexDesktopTurn(f.context, 'prompt', f.options), /failure/);
   }
-  const f = fixture(); let checks = 0;
-  f.desktop.assertConnected = () => { if (++checks > 1) throw new Error('desktop disconnected'); };
+  const f = fixture();
+  f.desktop.assertConnected = () => { if (f.calls.length) throw new Error('desktop disconnected'); };
   f.monitor.snapshot = async () => snapshot([{ id: turnId, status: 'inProgress', items: [] }]);
   await assert.rejects(runCodexDesktopTurn(f.context, 'prompt', f.options), /desktop disconnected/);
   assert.equal(f.calls.length, 1);

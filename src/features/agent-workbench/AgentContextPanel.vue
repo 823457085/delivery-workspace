@@ -8,7 +8,7 @@ import { computed, shallowRef } from 'vue';
 import { useRouter } from 'vue-router';
 import type { JiraIssue } from '../../../shared/hub';
 import type { AgentBusinessContext } from './agent-business-context';
-import { interfaceQuickPrompt, jiraQuickPrompt, projectQuickPrompt } from './agent-quick-actions';
+import { interfaceQuickPrompt, jiraQuickPrompt, projectWorkspaceReviewDraft } from './agent-quick-actions';
 import { isDone } from '../../shared/format';
 
 const props = defineProps<{ context: AgentBusinessContext; loading: boolean }>();
@@ -93,7 +93,7 @@ function subtaskUrl(issue: JiraIssue, subtaskKey: string) {
           <div><dt>工作树</dt><dd>{{ context.project.clean ? '干净' : `${context.project.changed} 处变更` }}</dd></div>
           <div><dt>远程差异</dt><dd>领先 {{ context.project.ahead }} · 落后 {{ context.project.behind }}</dd></div>
         </dl>
-        <nav><button type="button" @click="emit('compose', projectQuickPrompt(context.project))">检查项目</button><button type="button" @click="openProject">在项目页查看</button></nav>
+        <nav><button type="button" @click="emit('compose', projectWorkspaceReviewDraft(context.project.path))">检查项目</button><button type="button" @click="openProject">在项目页查看</button></nav>
       </article>
 
       <article v-if="context.interfacePage" class="context-card interface-card">

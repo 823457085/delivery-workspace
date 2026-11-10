@@ -3,7 +3,7 @@
  * 左右侧栏共用的拖动边界：只调整宽度并保存本机偏好，不参与会话状态。
  * 使用原生指针捕获而非全局鼠标监听，拖出边界或松手后也能正确结束。
  */
-import { onMounted, shallowRef } from 'vue';
+import { nextTick, onMounted, shallowRef } from 'vue';
 
 const props = defineProps<{ side: 'left' | 'right'; variant?: string }>();
 const width = defineModel<number>({ required: true });
@@ -60,7 +60,7 @@ function keydown(event: KeyboardEvent) {
   event.preventDefault();
   const direction = (event.key === 'ArrowRight' ? 1 : -1) * (props.side === 'left' ? 1 : -1);
   resize(measuredWidth(event.currentTarget as HTMLElement) + direction * 16);
-  save();
+  void nextTick(save);
 }
 </script>
 
@@ -74,7 +74,7 @@ function keydown(event: KeyboardEvent) {
 <style scoped>
 .panel-resize{grid-row:1;position:relative;z-index:5;width:8px;min-height:0;cursor:col-resize;touch-action:none;user-select:none;outline:none}
 .panel-resize.left{grid-column:1;justify-self:end;margin-right:-4px}
-.panel-resize.right{grid-column:3;justify-self:start;margin-left:-4px}
+.panel-resize.right{grid-column:3;justify-self:start;margin-left:0}
 .panel-resize::after{position:absolute;content:"";inset:0 3px;background:transparent;transition:background .12s}
 .panel-resize:hover::after,.panel-resize:focus-visible::after,.panel-resize.active::after{background:var(--agent-accent)}
 </style>

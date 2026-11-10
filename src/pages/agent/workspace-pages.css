@@ -1,14 +1,5 @@
 /* 工作室与并排布局的业务页面共用阅读密度；仅作用于工作面板，不进入会话和旧主题。 */
-.studio-layout .workspace-panel { background: var(--ui-surface); font-size: 13px; line-height: 1.65; }
-.studio-layout .workspace-panel-header { min-height: 50px; align-items: center; gap: 20px; padding: 0 24px; border-color: var(--ui-divider); background: var(--ui-surface); }
-.studio-layout .workspace-panel-header nav { flex: 1 1 auto; align-self: stretch; align-items: center; flex-wrap: nowrap; min-width: 0; gap: 20px; overflow-x: auto; scrollbar-width: thin; }
-.studio-layout .workspace-panel-header nav button { align-self: stretch; flex-shrink: 0; padding: 0 1px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--ui-muted); font-size: 13px; white-space: nowrap; }
-.studio-layout .workspace-panel-header nav button.active { border-bottom-color: var(--ui-accent); background: transparent; color: var(--ui-text); font-weight: 550; }
-.studio-layout .workspace-panel-header nav button:hover { color: var(--ui-accent); }
-.studio-layout .workspace-panel-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; min-width: 0; max-width: 100%; }
-.studio-layout #workspace-panel-toolbar { min-width: 0; }
-.studio-layout #workspace-panel-toolbar:empty { display: none; }
-.studio-layout .workspace-panel-header .workspace-back { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; padding: 6px 0 6px 10px; color: var(--ui-muted); font-size: 12px; white-space: nowrap; }
+.studio-layout .workspace-panel { background: var(--ui-bg); font-size: 13px; line-height: 1.65; }
 .studio-layout .workspace-panel-content { container: workspace-page / inline-size; padding: 16px 24px 24px; }
 .studio-layout .workspace-page-body { width: 100%; max-width: 1480px; min-width: 0; margin: 0 auto; }
 .studio-layout .workspace-panel .page-heading { min-height: 0; margin: 0; }
@@ -17,8 +8,6 @@
 .studio-layout .workspace-panel .el-button + .el-button { margin-left: 0; }
 .studio-layout .workspace-panel .el-button.is-link { min-height: 24px; padding: 2px 0; }
 .studio-layout .workspace-panel .el-button-group > .el-button + .el-button { margin-left: -1px; }
-.studio-layout .workspace-panel-actions .heading-actions .el-button { min-height: 30px; padding: 5px 10px; font-size: 12px; }
-.studio-layout .workspace-panel-actions .heading-actions .el-button:not(.is-link):not(.el-button--primary) { border: 1px solid var(--ui-border); background: var(--ui-surface); }
 .studio-layout .workspace-panel .el-input__wrapper,
 .studio-layout .workspace-panel .el-select__wrapper { min-height: 34px; border-radius: 6px; font-size: 12px; }
 .studio-layout .workspace-panel .el-input__inner,
@@ -110,17 +99,9 @@
   .studio-layout .workspace-panel .hub-metrics > .metric-card:nth-child(n + 2) { border-top: 1px solid var(--ui-divider); }
 }
 @media (max-width: 1079px) {
-  .studio-layout .workspace-panel-header { gap: 12px; padding-inline: 16px; }
-  .studio-layout .workspace-panel-header nav { gap: 18px; }
   .studio-layout .workspace-panel-content { padding: 14px 16px 20px; }
 }
 @media (max-width: 550px) {
-  .studio-layout .workspace-panel-header { flex-wrap: wrap; gap: 0 12px; padding-inline: 12px; }
-  .studio-layout .workspace-panel-header nav { order: 1; flex: 1 1 0; min-height: 50px; }
-  .studio-layout .workspace-panel-actions { display: contents; }
-  .studio-layout #workspace-panel-toolbar { order: 3; flex: 1 0 100%; padding: 7px 0; border-top: 1px solid var(--ui-divider); }
-  .studio-layout .workspace-panel-header .workspace-back { order: 2; padding: 8px 2px; }
-  .studio-layout .workspace-panel-header .workspace-back span { display: none; }
   .studio-layout .workspace-panel-content { padding: 12px 12px 18px; }
 }
 
@@ -179,10 +160,6 @@
 
 /* 筛选条件依据面板宽度重排，保留全部字段与选项。 */
 .studio-layout .workspace-panel .task-filters { padding: 10px 0; }
-.studio-layout .workspace-panel .task-filter-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0 14px; }
-.studio-layout .workspace-panel .task-filter-grid .el-form-item { min-width: 0; margin-bottom: 10px; }
-.studio-layout .workspace-panel .task-filter-grid .el-form-item__label { font-size: 12px; line-height: 1.5; margin-bottom: 6px; }
-.studio-layout .workspace-panel .task-filter-grid :is(.el-input, .el-select, .el-date-editor) { width: 100%; min-width: 0; }
 .studio-layout .workspace-panel .task-filter-bottom { gap: 8px 16px; padding-top: 2px; }
 .studio-layout .workspace-panel .task-filter-bottom .el-checkbox { min-width: 0; }
 .studio-layout .workspace-panel .task-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -228,7 +205,6 @@
 @container workspace-page (max-width: 980px) {
   .studio-layout .workspace-panel :is(.workbench-top, .overview-grid) { grid-template-columns: minmax(0, 1fr); }
   .studio-layout .workspace-panel .quick-entry-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .studio-layout .workspace-panel .task-filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .studio-layout .workspace-panel .progress-panel .surface-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px 24px; }
   .studio-layout .workspace-panel .progress-panel .el-progress { align-self: center; }
   .studio-layout .workspace-panel .progress-panel .progress-legend { margin: 0; }
@@ -250,7 +226,6 @@
   .studio-layout .workspace-panel :is(.jira-sync-status, .task-filters) { padding: 10px 0; }
   .studio-layout .workspace-panel .today-list > button { padding: 9px 0; }
   .studio-layout .workspace-panel .record-filters { padding: 8px 0; }
-  .studio-layout .workspace-panel .task-filter-grid { grid-template-columns: minmax(0, 1fr); }
   .studio-layout .workspace-panel .task-filter-bottom { gap: 6px 12px; }
   .studio-layout .workspace-panel .task-filter-bottom > .el-button { width: 100%; margin-left: 0; }
   .studio-layout .workspace-panel .quick-entry-grid { grid-template-columns: minmax(0, 1fr); }
@@ -311,9 +286,8 @@
   line-height: 1.7;
 }
 .studio-layout .workspace-panel .daily-actions { gap: 8px; }
-.studio-layout .workspace-panel .daily-actions input {
+.studio-layout .workspace-panel .daily-report .daily-date {
   min-height: 34px;
-  flex: 0 1 240px;
   padding: 6px 10px;
   background: var(--ui-surface);
   color: var(--ui-text);
@@ -346,7 +320,6 @@
 .studio-layout .workspace-panel .automation-job > strong { font-size: 13px; font-weight: 550; line-height: 1.7; }
 .studio-layout .workspace-panel .automation-panel .status-pill { font-size: 12px; }
 .studio-layout .workspace-panel .weekly-result { margin-top: 10px; font-size: 12px; }
-.studio-layout .workspace-panel .weekly-result summary { padding-top: 10px; line-height: 1.7; }
 .studio-layout .workspace-panel .weekly-result p { color: var(--ui-danger); }
 .studio-layout .workspace-panel .weekly-result pre {
   max-height: 360px;

@@ -5,6 +5,16 @@ export interface JiraIssue {
   endDate: string | null; resolutionDate: string | null;
   parent: { key: string; summary?: string } | null;
   subtasks: { key: string; summary?: string; status: string; statusCategory: string }[];
+  components?: (string | { id?: string; name: string })[]; labels?: string[];
+}
+export interface AutomationProjectProfile {
+  id: string; name: string; repositoryUrl: string; localPath: string;
+  runtimeCommand: string; runtimeEnvironment: string; targetBranch: string;
+  jiraProjects: string[]; components: string[]; labels: string[];
+}
+export interface AutomationProjectRouting {
+  status: 'matched' | 'unmatched' | 'ambiguous' | 'incomplete'; reason: string;
+  profile: AutomationProjectProfile | null; candidates: AutomationProjectProfile[];
 }
 export interface IssueResponse { source: string; baseUrl: string; jql: string; total: number; issues: JiraIssue[]; warning?: string }
 export interface Job {
@@ -15,6 +25,7 @@ export interface Job {
   result?: string; error?: string; mrUrl?: string; artifactUrl?: string;
   coverage?: string; tests?: string; i18n?: string; i18nXlsxPath?: string; selfTestReportPath?: string;
   selfTestScreenshots?: string[]; workspaceEvidence?: { label: string; state: string; codePresent: boolean; alreadyDone: boolean };
+  projectRouting?: AutomationProjectRouting;
 }
 export interface PlanItem {
   issue: JiraIssue; jobId: string; category: string; categoryLabel: string; model: string;
@@ -22,18 +33,32 @@ export interface PlanItem {
   jobStatus: string; localAlreadyDone: boolean; targetBranch: string;
   workspace: { path: string; displayPath: string; branch: string } | null;
   workspaceEvidence?: { label: string; state: string };
+  projectRouting?: AutomationProjectRouting;
+}
+export interface AutomationProjectPreview {
+  plan: PlanItem[]; source: 'snapshot'; checkedAt: string; issueCount: number;
+}
+export interface JiraDevScanPreview {
+  issueKey: string; summary: string; workflow: 'jira' | 'requirement';
+  taskId?: string; projectPath?: string; error?: string;
+  runId?: string; launchStatus?: 'started' | 'existing' | 'awaiting_confirmation' | 'blocked';
 }
 export interface ScanRun {
   id: string; trigger: string; source: string; localDate: string; startedAt: string; completedAt: string;
   issueCount: number; workspaceCount: number; dispatchableCount?: number; enqueuedCount: number; alreadyDoneCount: number;
   transitionUpdatedCount: number; transitionBlockedCount: number;
+  jiraDevPreviews?: JiraDevScanPreview[]; jiraDevPreviewError?: string;
   transitionResults?: { issueKey: string; reason: string; message?: string; status?: string }[];
 }
 export interface AutomationSettings {
   enabled: boolean; dailyTime: string; dailyTimes: string[]; maxDispatchPerRun: number;
+  autoPrepareJiraDev?: boolean;
+  jiraDevAutomationApproved?: boolean;
+  jiraDevAutomationRouted?: boolean;
   autoCreateCodex: boolean; autoTransitionJira: boolean; autoCreateMergeRequest: boolean;
   startStatus: string; completedStatus: string; targetBranch: string; reviewer: string;
   runtimeEnvironment?: string; runtimeCommand?: string; browser?: string; repositoryUrl?: string;
+  projectProfiles?: AutomationProjectProfile[];
 }
 export interface WeeklyReportRun {
   id: string; trigger: string; scheduledSlot: string; status: 'completed' | 'failed'; source: string;
@@ -107,6 +132,7 @@ export interface MergeData {
 export interface LocalProject {
   projectId: string; projectName: string; displayName: string; suggestedDisplayName: string; repository: string;
   path: string; displayPath: string; relativePath: string; rootPath: string; rootLabel: string; folderName: string;
+  createdAt?: string; lastActivityAt?: string;
   branch: string; upstream: string; clean: boolean; changed: number; staged: number; modified: number; untracked: number;
   detached: boolean; ahead: number; behind: number; webUrl: string; remoteUrl: string;
 }

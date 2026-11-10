@@ -1,0 +1,4 @@
+interface:
+  display_name: "Jira 评论交接"
+  short_description: "从真实改动和验证证据整理评论草稿，保留在对应任务聊天供用户审阅"
+  default_prompt: "请使用 $jira-dev-handoff 根据本次代码改动和验证结果生成 Jira 交接评论草稿。"

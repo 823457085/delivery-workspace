@@ -1,0 +1,4 @@
+interface:
+  display_name: "海外项目多语言"
+  short_description: "处理 Apex、PC、App 需求中的新增文案、位置码、消息校验和多语言导入表"
+  default_prompt: "使用 $jira-dev-i18n 按当前任务所选海外项目的实际规则，完成本次需求的多语言接入、校验和导入表。"

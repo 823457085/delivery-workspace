@@ -9,10 +9,12 @@ export function createRuntimeStreamState() {
   function merge(snapshot: AgentRuntimeDashboard) {
     const fresh = [...updates.values()].filter(item => item.revision > (snapshot.revision || 0));
     if (!fresh.length) return snapshot;
-    const runs = new Map(snapshot.runs.map(run => [run.id, run]));
+    let runs = new Map(snapshot.runs.map(run => [run.id, run]));
     const locks = new Map(snapshot.activeWorkspaceLocks.map(lock => [lock.runId, lock]));
     for (const { run } of fresh) {
-      runs.set(run.id, run);
+      // 同毫秒的新运行保持后端的新到旧顺序；正文更新不改变已有运行的位置。
+      if (runs.has(run.id)) runs.set(run.id, run);
+      else runs = new Map([[run.id, run], ...runs]);
       if (run.status === 'running') locks.set(run.id, { runId: run.id, workspacePath: run.workspacePath, provider: run.provider });
       else locks.delete(run.id);
     }

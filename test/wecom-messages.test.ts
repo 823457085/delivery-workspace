@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createWecomIntegration } from '../server/wecom-integration.js';
+import { integrationCatalogFixture } from './fixtures/integration-catalog';
 import { buildReviewCatalog } from '../src/features/api-integration/review-catalog.js';
 import type { BackendFeedbackInput } from '../shared/wecom-integration.js';
 import { wecomMessageLimits, type WecomMessageInput, type WecomMessagePreview } from '../shared/wecom-messages.js';
@@ -13,7 +14,7 @@ const input: WecomMessageInput = { title: '本地消息名称', msgtype: 'text',
 const config = { groupName: '消息测试群', webhook: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=message-fixture-secret' };
 const toSend = (preview: WecomMessagePreview) => ({ input: preview.input, previewId: preview.previewId, hash: preview.hash });
 const feedbackInput: BackendFeedbackInput = {
-  interfaceId: buildReviewCatalog().find(item => item.path === '/api/v1/examples/detail')!.id,
+  interfaceId: buildReviewCatalog(integrationCatalogFixture).find(item => item.path === '/admin/v1/merchants/detail')!.id,
   summary: '仅测试共享限额', environment: 'fixture', parameters: '{}', actual: '缺少字段', expected: '返回字段', contractReference: 'fixture', traceId: '',
 };
 
@@ -23,7 +24,7 @@ async function fixture(t: TestContext, respond: (url: string, init?: RequestInit
   const configFile = path.join(directory, 'credentials', 'fixture.json');
   const requests: { url: string; init?: RequestInit }[] = [];
   const fetchMock: typeof fetch = async (url, init) => { requests.push({ url: String(url), init }); return respond(String(url), init); };
-  const service = await createWecomIntegration(directory, { configFile, fetch: fetchMock });
+  const service = await createWecomIntegration(directory, { catalog: integrationCatalogFixture, configFile, fetch: fetchMock });
   return { directory, configFile, requests, fetchMock, service };
 }
 
@@ -79,7 +80,7 @@ test('同一预览并发、重启后幂等；用户主动新预览可再次发�
   const [first, duplicate] = await Promise.all([f.service.sendMessage(toSend(preview)), f.service.sendMessage(toSend(preview))]);
   assert.equal(first.record.id, duplicate.record.id);
   assert.equal(f.requests.length, 1);
-  const restored = await createWecomIntegration(f.directory, { configFile: f.configFile, fetch: f.fetchMock });
+  const restored = await createWecomIntegration(f.directory, { catalog: integrationCatalogFixture, configFile: f.configFile, fetch: f.fetchMock });
   const repeated = await restored.sendMessage(toSend(preview));
   assert.equal(repeated.record.id, first.record.id);
   assert.equal(f.requests.length, 1);
@@ -160,7 +161,7 @@ test('草稿和模板只保存脱敏内容，支持更新、并发保存、重�
   const stored = await fs.readFile(path.join(f.directory, 'wecom-messages-library.json'), 'utf8');
   assert.ok(!stored.includes('body-secret'));
   assert.equal((await fs.stat(path.join(f.directory, 'wecom-messages-library.json'))).mode & 0o777, 0o600);
-  const restored = await createWecomIntegration(f.directory, { configFile: f.configFile, fetch: f.fetchMock });
+  const restored = await createWecomIntegration(f.directory, { catalog: integrationCatalogFixture, configFile: f.configFile, fetch: f.fetchMock });
   assert.equal(restored.messageLibrary().find(item => item.id === draft.id)?.content, '新的正文');
   await restored.deleteMessage({ id: template.id });
   assert.deepEqual(restored.messageLibrary().map(item => item.id), [draft.id]);
@@ -184,7 +185,7 @@ test('发送前落盘 sending；服务中断恢复为 unknown，同一预览不�
   const records = f.service.messageHistory();
   records[0].status = 'sending'; records[0].finishedAt = '';
   await fs.writeFile(path.join(f.directory, 'wecom-messages-history.json'), JSON.stringify(records));
-  const restored = await createWecomIntegration(f.directory, { configFile: f.configFile, fetch: f.fetchMock });
+  const restored = await createWecomIntegration(f.directory, { catalog: integrationCatalogFixture, configFile: f.configFile, fetch: f.fetchMock });
   assert.equal(restored.messageHistory()[0].status, 'unknown');
   assert.match(restored.messageHistory()[0].message, /服务中断/);
   assert.equal((await restored.sendMessage(toSend(preview))).record.status, 'unknown');
@@ -203,7 +204,7 @@ test('通用消息与旧联调反馈共享每分钟 10 次限额，明确失败�
   const blockedFeedback = f.service.preview({ ...feedbackInput, summary: 'blocked feedback' });
   await assert.rejects(f.service.send({ input: blockedFeedback.input, hash: blockedFeedback.hash }), /10 条/);
   await assert.rejects(f.service.sendMessage(toSend(f.service.messagePreview(input))), /10 条/);
-  const restored = await createWecomIntegration(f.directory, { configFile: f.configFile, fetch: f.fetchMock });
+  const restored = await createWecomIntegration(f.directory, { catalog: integrationCatalogFixture, configFile: f.configFile, fetch: f.fetchMock });
   await assert.rejects(restored.sendMessage(toSend(restored.messagePreview(input))), /10 条/);
   assert.equal(f.requests.length, 10);
 });

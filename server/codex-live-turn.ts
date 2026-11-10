@@ -14,6 +14,7 @@ export type LiveInput = { text: string; imagePaths: string[]; id: string };
 export type LiveSteer = (input: LiveInput) => Promise<void>;
 export interface LiveContext {
   run: AgentRun;
+  browserConfig?: Record<string, unknown>;
   resumeSessionId?: string;
   forkSessionId?: string;
   forkLastTurnId?: string;
@@ -21,7 +22,9 @@ export interface LiveContext {
   signal: AbortSignal;
   onPid(pid: number): void | Promise<void>;
   onSession(id: string): void | Promise<void>;
+  onBeforeTurn?(): void | Promise<void>;
   onTurn?(id: string): void | Promise<void>;
+  onUsage?(event: unknown): void;
   onEvent(type: AgentRunEvent['type'], message: string): void;
   onOutput?(text: string): void;
   onSteer?(steer: LiveSteer | undefined): void;
@@ -143,6 +146,7 @@ export function runCodexLiveTurn(binary: string, context: LiveContext, prompt: s
         write({ id: message.id, error: { code: -32601, message: 'Delivery does not support this interactive request' } });
         return;
       }
+      context.onUsage?.(message);
       const params = object(message.params);
       if (!threadId || params.threadId !== threadId) return;
       const turn = object(params.turn);
@@ -195,7 +199,7 @@ export function runCodexLiveTurn(binary: string, context: LiveContext, prompt: s
         ...(run.model ? { model: run.model } : {}),
         ...(context.forkSessionId || context.resumeSessionId ? { threadId: context.forkSessionId || context.resumeSessionId } : {}),
         ...(method === 'thread/fork' && context.forkLastTurnId ? { lastTurnId: context.forkLastTurnId } : {}),
-        config: { ...(run.reasoningEffort ? { model_reasoning_effort: run.reasoningEffort } : {}),
+        config: { ...context.browserConfig, ...(run.reasoningEffort ? { model_reasoning_effort: run.reasoningEffort } : {}),
           ...(sandbox === 'workspace-write' ? { 'sandbox_workspace_write.network_access': true } : {}) } };
       let response: JsonObject;
       try { response = await request(method, params); }
@@ -203,6 +207,7 @@ export function runCodexLiveTurn(binary: string, context: LiveContext, prompt: s
         const writerId = error instanceof Error ? codexWriterThreadId(String(object(error.cause).message || '')) : undefined;
         if (method === 'thread/resume' && writerId && writerId.toLowerCase() === context.resumeSessionId?.toLowerCase()) {
           desktopRunning = true;
+          if (context.browserConfig) context.onEvent('lifecycle', '原会话由桌面持有；若浏览器工具未出现在原会话中，将使用同一任务浏览器的命令通道');
           result = await resumeDesktopTurn(context, prompt);
           finish();
           return;

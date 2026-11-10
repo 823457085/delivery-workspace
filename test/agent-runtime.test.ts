@@ -7,7 +7,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import {
   agentCliFailureMessage, changedFilesSince, codexForkArguments, codexRunArguments, createAgentRuntimeService, cursorModels, cursorRunArguments,
-  isAgentSessionBusyDiagnostic, listGitBranches, resolveWorkspace, snapshotGitWorkspace, switchGitWorkspaceBranch,
+  hasAgentTaskDependencyCycle, isAgentSessionBusyDiagnostic, listGitBranches, resolveWorkspace, snapshotGitWorkspace, switchGitWorkspaceBranch,
   resultArtifactFiles,
   type AgentRuntimeAdapter,
 } from '../server/agent-runtime.js';
@@ -18,6 +18,20 @@ import type { AgentRun, CodexSessionSummary, CodexSessionTurn } from '../shared/
 
 const exec = promisify(execFile);
 const workspace = { workspacePath: '/test/repository', branch: 'feature/test', headSha: 'abc123' };
+
+test('Agent 任务依赖拒绝直接或间接循环，保持可调度图', () => {
+  const task = (dependsOnConversationIds: string[]) => ({ task: {
+    parentConversationId: 'main', dependsOnConversationIds, role: 'worker' as const, title: 'task', source: 'manual' as const,
+  } });
+  const graph = new Map([
+    ['worker-a', task(['worker-b'])],
+    ['worker-b', task([])],
+  ]);
+  const resolve = (id: string) => graph.get(id);
+  assert.equal(hasAgentTaskDependencyCycle('worker-b', ['worker-a'], resolve), true);
+  assert.equal(hasAgentTaskDependencyCycle('main', ['worker-a'], resolve), false);
+});
+
 const health = (provider: 'codex' | 'cursor') => ({ provider, label: `${provider} test`, binary: `/test/${provider}`,
   version: 'test', authenticated: true, ready: true, message: 'ready', modes: ['agent', 'plan', 'ask'] as ('agent' | 'plan' | 'ask')[],
   models: [{ id: '', label: '默认', ...(provider === 'codex' ? { efforts: ['low', 'high'] as ('low' | 'high')[], defaultEffort: 'high' as const } : {}) },
@@ -40,36 +54,28 @@ function controlledAdapter(provider: 'codex' | 'cursor') {
   return { adapter, finish };
 }
 
-type RuntimeService = Awaited<ReturnType<typeof createAgentRuntimeService>>;
-type RuntimeDashboard = Awaited<ReturnType<RuntimeService['dashboard']>>;
-function waitForAgentState(service: RuntimeService, predicate: (dashboard: RuntimeDashboard) => boolean, description: string) {
-  return new Promise<RuntimeDashboard>((resolve, reject) => {
-    let settled = false;
-    const finish = (dashboard?: RuntimeDashboard, error?: unknown) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      unsubscribe();
-      if (error) reject(error); else resolve(dashboard!);
-    };
-    const observe = async () => {
-      try {
-        const dashboard = await service.dashboard();
-        if (predicate(dashboard)) finish(dashboard);
-      } catch (error) { finish(undefined, error); }
-    };
-    const unsubscribe = service.subscribe(() => { void observe(); });
-    const timer = setTimeout(() => finish(undefined, new Error(`等待 ${description} 超时`)), 10_000);
-    void observe();
-  });
-}
-function waitForSettledRun(service: RuntimeService, runId: string, status: AgentRun['status'] = 'completed') {
-  // 完成通知早于 Git 变更收尾；会话锁释放后才能继续分叉、删除或核对最终结果。
-  return waitForAgentState(service, dashboard => dashboard.runs.find(run => run.id === runId)?.status === status
-    && !dashboard.activeWorkspaceLocks.some(lock => lock.runId === runId), `${runId} ${status} 并释放会话锁`);
-}
+test('桌面等待结束后重新采集基线，不把其他轮次的改动归到新步骤', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'desktop-wait-baseline-'));
+  const source = path.join(root, 'source'); await fs.mkdir(source);
+  await fs.writeFile(path.join(source, 'previous.txt'), 'before');
+  await fs.writeFile(path.join(source, 'current.txt'), 'before');
+  const adapter: AgentRuntimeAdapter = { id: 'codex', health: async () => health('codex'), execute: async context => {
+    await fs.writeFile(path.join(source, 'previous.txt'), 'other native turn finished');
+    await context.onBeforeTurn!();
+    await fs.writeFile(path.join(source, 'current.txt'), 'this turn changed');
+    return 'done';
+  } };
+  const service = await createAgentRuntimeService(path.join(root, 'data'), { adapters: [adapter] });
+  try {
+    const run = await service.start({ provider: 'codex', model: '', mode: 'agent', objective: 'test', workspacePath: source });
+    for (let i = 0; i < 100 && !run.resultReady; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(run.status, 'completed');
+    assert.equal(run.resultReady, true);
+    assert.deepEqual(run.changedFiles?.map(file => file.path), ['current.txt']);
+  } finally { await service.close(); await fs.rm(root, { recursive: true, force: true }); }
+});
 
-test('Cursor 信任只绑定确认后的实际隔离目录；旧失败会话可确认重试，不向新目录继承', async () => {
+test('Cursor 默认信任本轮实际目录，隔离与重试不沿用其他路径且权限不变', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'cursor-trust-'));
   const received: AgentRun[] = [];
   const adapter: AgentRuntimeAdapter = { id: 'cursor', health: async () => health('cursor'),
@@ -81,17 +87,21 @@ test('Cursor 信任只绑定确认后的实际隔离目录；旧失败会话可�
   try {
     const input = { provider: 'cursor' as const, mode: 'agent' as const, model: 'test-model', objective: 'test', workspacePath: workspace.workspacePath };
     await assert.rejects(service.start({ ...input, cursorTrustPath: '/unconfirmed' }), /信任确认/);
-    const isolated = await service.start({ ...input, isolateWorkspace: true, cursorTrustPath: input.workspacePath });
+    const isolated = await service.start({ ...input, isolateWorkspace: true });
     assert.equal(isolated.cursorTrustPath, '/test/isolated');
-    assert.equal(isolated.accessMode, 'workspace');
+    assert.equal(isolated.accessMode, 'full');
     for (let attempt = 0; attempt < 50 && isolated.status !== 'failed'; attempt++) await new Promise(resolve => setTimeout(resolve, 10));
     assert.equal(isolated.status, 'failed');
     await assert.rejects(service.retry(isolated.id, input.workspacePath), /当前会话目录不一致/);
-    const retried = await service.retry(isolated.id, isolated.workspacePath);
+    const retried = await service.retry(isolated.id);
     assert.equal(retried.cursorTrustPath, isolated.workspacePath);
     assert.equal(retried.parentRunId, isolated.id);
     const fresh = await service.start(input);
-    assert.equal(fresh.cursorTrustPath, undefined);
+    assert.equal(fresh.cursorTrustPath, fresh.workspacePath);
+    const readOnly = await service.start({ ...input, mode: 'ask', accessMode: 'workspace', workspacePath: '/test/read-only' });
+    assert.equal(readOnly.cursorTrustPath, '/test/read-only');
+    assert.equal(readOnly.mode, 'ask');
+    assert.equal(readOnly.accessMode, 'workspace');
     assert.ok(received.some(run => run.cursorTrustPath === '/test/isolated'));
   } finally { await service.close(); await fs.rm(directory, { recursive: true, force: true }); }
 });
@@ -136,7 +146,7 @@ test('两种执行器收到发送时的笔记快照；引用解析失败不创�
   } finally { await service.close(); await fs.rm(directory, { recursive: true, force: true }); }
 });
 
-test('双 CLI 默认限制在工作区，仅在显式选择时开启完全访问', () => {
+test('只读模式保持工作区限制，Agent 模式默认使用完全访问', () => {
   const codex = codexRunArguments('/repo', 'ask', 'test-model', 'high', '', ['/private/image-a.png', '/private/image-b.webp']);
   assert.deepEqual(codex.slice(0, 3), ['exec', '--cd', '/repo']);
   assert.ok(codex.includes('sandbox_mode="read-only"'));
@@ -149,13 +159,13 @@ test('双 CLI 默认限制在工作区，仅在显式选择时开启完全访问
   assert.ok(!codex.some((value) => /dangerously|bypass/i.test(value)));
   const forkedCodex = codexForkArguments('agent', 'test-model', 'high', 'codex-session-1234');
   assert.deepEqual(forkedCodex.slice(0, 4), ['exec', 'fork', 'codex-session-1234', '-c']);
-  assert.ok(forkedCodex.includes('sandbox_mode="workspace-write"'));
-  assert.ok(forkedCodex.includes('sandbox_workspace_write.network_access=true'));
+  assert.ok(forkedCodex.includes('sandbox_mode="danger-full-access"'));
+  assert.ok(!forkedCodex.includes('sandbox_workspace_write.network_access=true'));
   assert.ok(!forkedCodex.some((value) => /dangerously|bypass/i.test(value)));
   const resumedCodex = codexRunArguments('/repo', 'agent', 'test-model', 'xhigh', 'codex-session-1234', ['/private/resume.png']);
   assert.deepEqual(resumedCodex.slice(0, 3), ['exec', 'resume', 'codex-session-1234']);
-  assert.ok(resumedCodex.includes('sandbox_mode="workspace-write"'));
-  assert.ok(resumedCodex.includes('sandbox_workspace_write.network_access=true'));
+  assert.ok(resumedCodex.includes('sandbox_mode="danger-full-access"'));
+  assert.ok(!resumedCodex.includes('sandbox_workspace_write.network_access=true'));
   assert.deepEqual(resumedCodex.slice(-3), ['--image', '/private/resume.png', '-']);
   const fullCodex = codexRunArguments('/repo', 'agent', 'test-model', 'high', '', [], 'full');
   assert.ok(fullCodex.includes('sandbox_mode="danger-full-access"'));
@@ -172,9 +182,10 @@ test('双 CLI 默认限制在工作区，仅在显式选择时开启完全访问
   assert.ok(cursor.includes('cursor-session-1234'));
   assert.ok(!cursor.some((value) => ['--force', '--yolo', '--trust'].includes(value)));
   const cursorAgent = cursorRunArguments('/repo', 'agent', 'test-model');
-  assert.ok(cursorAgent.includes('--auto-review'));
+  assert.ok(cursorAgent.includes('--force'));
+  assert.deepEqual(cursorAgent.slice(cursorAgent.indexOf('--sandbox'), cursorAgent.indexOf('--sandbox') + 2), ['--sandbox', 'disabled']);
   assert.ok(!cursorAgent.includes('--mode'));
-  assert.ok(!cursorAgent.some((value) => ['--force', '--yolo', '--trust'].includes(value)));
+  assert.ok(!cursorAgent.some((value) => ['--yolo', '--trust'].includes(value)));
   const fullCursor = cursorRunArguments('/repo', 'agent', 'test-model', '', '', 'full');
   assert.ok(fullCursor.includes('--force'));
   assert.deepEqual(fullCursor.slice(fullCursor.indexOf('--sandbox'), fullCursor.indexOf('--sandbox') + 2), ['--sandbox', 'disabled']);
@@ -241,6 +252,81 @@ test('Agent 工作区快照只返回本轮真实改动的文件', async () => {
   } finally { await fs.rm(repository, { recursive: true, force: true }); }
 });
 
+test('宿主数据和日志不计入 Agent 本轮改动，源码与其他 .local 文件仍保留', async () => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'agent-host-snapshot-')));
+  const data = path.join(root, '.local', 'data'), logs = path.join(root, '.local', 'logs');
+  await fs.mkdir(data, { recursive: true }); await fs.mkdir(logs, { recursive: true });
+  await fs.mkdir(path.join(root, 'src'));
+  await fs.writeFile(path.join(data, 'port-monitor-state.json'), '{}');
+  await fs.writeFile(path.join(logs, 'pm2-out.log'), 'before');
+  await fs.writeFile(path.join(root, 'src', 'feature.ts'), 'before');
+  const adapter: AgentRuntimeAdapter = { id: 'codex', health: async () => health('codex'), execute: async context => {
+    await context.onBeforeTurn!();
+    await fs.writeFile(path.join(data, 'port-monitor-state.json'), '{"updated":true}');
+    await fs.writeFile(path.join(logs, 'pm2-out.log'), 'host updated');
+    await fs.writeFile(path.join(root, 'src', 'feature.ts'), 'source changed');
+    await fs.writeFile(path.join(root, '.local', 'project-note.txt'), 'project changed');
+    return 'done';
+  } };
+  const service = await createAgentRuntimeService(path.join(data, 'agent-runtimes'), { adapters: [adapter],
+    workspaceSnapshotExclusions: [data, logs] });
+  try {
+    const run = await service.start({ provider: 'codex', model: '', mode: 'agent', objective: 'test', workspacePath: root });
+    for (let i = 0; i < 100 && !run.resultReady; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(run.resultReady, true);
+    assert.deepEqual(run.changedFiles?.map(file => file.path), ['.local/project-note.txt', 'src/feature.ts']);
+  } finally { await service.close(); await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('数据目录中的业务工作区不被宿主目录或自身排除项整体忽略', async () => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'agent-nested-snapshot-')));
+  const data = path.join(root, 'data'), source = path.join(data, 'workspaces', 'business');
+  await fs.mkdir(source, { recursive: true });
+  await fs.writeFile(path.join(source, 'value.ts'), 'before');
+  const adapter: AgentRuntimeAdapter = { id: 'codex', health: async () => health('codex'), execute: async () => {
+    await fs.writeFile(path.join(source, 'value.ts'), 'business changed'); return 'done';
+  } };
+  const service = await createAgentRuntimeService(path.join(data, 'agent-runtimes'), { adapters: [adapter],
+    workspaceSnapshotExclusions: [data, source] });
+  try {
+    const run = await service.start({ provider: 'codex', model: '', mode: 'agent', objective: 'test', workspacePath: source });
+    for (let i = 0; i < 100 && !run.resultReady; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(run.resultReady, true);
+    assert.deepEqual(run.changedFiles?.map(file => file.path), ['value.ts']);
+  } finally { await service.close(); await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('旧快照与 Git 提交差异同样排除宿主目录，保留其他真实改动', async context => {
+  for (const git of [false, true]) {
+    await context.test(git ? 'Git 提交差异' : '旧普通目录快照', async () => {
+      const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'agent-excluded-diff-')));
+      const data = path.join(root, '.local', 'data');
+      try {
+        await fs.mkdir(data, { recursive: true });
+        await fs.writeFile(path.join(data, 'state.json'), '{}');
+        await fs.writeFile(path.join(root, 'source.ts'), 'before');
+        if (git) {
+          await exec('git', ['init', '-b', 'main', root]);
+          await exec('git', ['-C', root, 'config', 'user.email', 'delivery@example.test']);
+          await exec('git', ['-C', root, 'config', 'user.name', 'Delivery Test']);
+          await exec('git', ['-C', root, 'add', '.']);
+          await exec('git', ['-C', root, 'commit', '-m', 'initial']);
+        }
+        const before = await snapshotGitWorkspace(root);
+        await fs.writeFile(path.join(data, 'state.json'), '{"host":true}');
+        await fs.writeFile(path.join(root, 'source.ts'), 'source changed');
+        await fs.writeFile(path.join(root, '.local', 'project-note.txt'), 'project changed');
+        if (git) {
+          await exec('git', ['-C', root, 'add', '.']);
+          await exec('git', ['-C', root, 'commit', '-m', 'changes']);
+        }
+        const changed = await changedFilesSince(root, before, [path.join(data, '.')]);
+        assert.deepEqual(changed.map(file => file.path), ['.local/project-note.txt', 'source.ts']);
+      } finally { await fs.rm(root, { recursive: true, force: true }); }
+    });
+  }
+});
+
 test('普通文件夹可作为 Agent 工作区并保留文件候选与改动记录', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-plain-runtime-'));
   const plainWorkspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-plain-workspace-'));
@@ -304,6 +390,25 @@ test('Agent 最终回复中的本地文件链接会记录为生成产物', async
   } finally { await fs.rm(directory, { recursive: true, force: true }); }
 });
 
+test('复核轮无文件改动时仍从结构化报告恢复交付文件，拒绝不存在和越界产物', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-report-output-'));
+  const workspace = path.join(await fs.realpath(directory), 'workspace');
+  await fs.mkdir(workspace);
+  const filename = '最新 复测.xlsx', artifact = path.join(workspace, filename);
+  const outside = path.join(directory, 'outside.xlsx');
+  const report = (output: object) => '```delivery-report\n' + JSON.stringify({ taskResult: { status: 'succeeded', ...output } }) + '\n```';
+  try {
+    await fs.writeFile(artifact, 'xlsx'); await fs.writeFile(outside, 'private');
+    await fs.symlink(outside, path.join(workspace, 'linked.xlsx'));
+    assert.deepEqual(await resultArtifactFiles(workspace, report({ output: { path: artifact, sha256: 'hash' }, outputFile: filename })),
+      [{ path: filename, status: 'generated' }]);
+    for (const outputFile of ['missing.xlsx', '../outside.xlsx', outside, 'linked.xlsx']) {
+      assert.deepEqual(await resultArtifactFiles(workspace, report({ outputFile })), []);
+    }
+    assert.deepEqual(await resultArtifactFiles(workspace, '```delivery-report\ninvalid\n```'), []);
+  } finally { await fs.rm(directory, { recursive: true, force: true }); }
+});
+
 test('CLI 诊断只在明确占用时标记会话忙，并区分会话不存在', () => {
   assert.equal(isAgentSessionBusyDiagnostic('thread already running with an active turn'), true);
   assert.match(agentCliFailureMessage('codex', 1, 'session is locked by another process'), /其他 Codex 窗口运行/);
@@ -346,13 +451,13 @@ test('两种 CLI 都接收纯图片，Cursor 使用验证后的文件路径且�
   try {
     const run = await service.start({ provider: 'codex', mode: 'ask', model: 'test-model', objective: '', workspacePath: '/selected',
       attachmentIds: [attachment.id] });
-    await waitForSettledRun(service, run.id);
+    await new Promise((resolve) => setTimeout(resolve, 20));
     assert.equal(run.objective, '请分析已附加的图片。');
     assert.deepEqual(run.attachments, [attachment]);
     assert.deepEqual(receivedImages, [['/private/validated-image.png']]);
     const cursorRun = await service.start({ provider: 'cursor', mode: 'ask', model: 'test-model', objective: '',
       workspacePath: '/selected', attachmentIds: [attachment.id] });
-    await waitForSettledRun(service, cursorRun.id);
+    await new Promise(resolve => setTimeout(resolve, 20));
     assert.equal(cursorRun.objective, '请分析已附加的图片。');
     assert.deepEqual(cursorFiles, [[{ name: attachment.name, path: '/private/validated-image.png' }]]);
     assert.deepEqual(await service.removeConversation(run.id), { deleted: 1 });
@@ -378,7 +483,7 @@ test('XLSX 附件作为本地文件路径传给 Codex，不混入图片输入', 
   try {
     const run = await service.start({ provider: 'codex', mode: 'ask', model: 'test-model', objective: '',
       workspacePath: '/selected', attachmentIds: [attachment.id] });
-    await waitForSettledRun(service, run.id);
+    await new Promise(resolve => setTimeout(resolve, 20));
     assert.equal(run.objective, '请分析已附加的文件。');
     assert.deepEqual(run.attachments, [attachment]);
     assert.deepEqual(received, [{ images: [], files: [{ name: '报表.xlsx', path: '/private/validated-report.xlsx' }] }]);
@@ -539,7 +644,7 @@ test('新会话从所选分支创建隔离工作区，不切换或覆盖源仓�
     assert.equal(await fs.readFile(path.join(repository, 'README.md'), 'utf8'), '# dirty main\n');
     assert.match((await exec('git', ['-C', repository, 'status', '--porcelain'])).stdout, /README\.md/);
 
-    await waitForSettledRun(service, first.id);
+    await new Promise((resolve) => setTimeout(resolve, 20));
     const resumed = await service.resume(first.id, '继续同一会话');
     assert.equal(resumed.workspacePath, first.workspacePath);
     assert.equal(resumed.sourceWorkspacePath, first.sourceWorkspacePath);
@@ -559,7 +664,7 @@ test('新会话从所选分支创建隔离工作区，不切换或覆盖源仓�
   }
 });
 
-test('同一工作区的不同 Agent 会话并行执行，分支切换仍受保护', async () => {
+test('同一工作区的不同写入会话串行执行，分支切换仍受保护', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-runtime-test-'));
   const codex = controlledAdapter('codex');
   const cursor = controlledAdapter('cursor');
@@ -567,18 +672,22 @@ test('同一工作区的不同 Agent 会话并行执行，分支切换仍受保�
   try {
     const run = await service.start({ provider: 'codex', mode: 'agent', model: 'test-model', objective: '审查并修改当前模块', workspacePath: '/selected' });
     assert.equal(run.status, 'running');
-    await waitForAgentState(service, dashboard => dashboard.runs.find(item => item.id === run.id)?.sessionId === 'codex-session-1234', 'Codex 会话启动');
+    await new Promise((resolve) => setTimeout(resolve, 20));
     assert.equal((await service.dashboard()).runs.find((item) => item.id === run.id)?.sessionId, 'codex-session-1234');
     assert.equal((await service.dashboard()).activeWorkspaceLocks.length, 1);
     const parallel = await service.start({ provider: 'cursor', mode: 'agent', model: '', objective: '新开第二个 Agent', workspacePath: '/selected' });
-    assert.equal(parallel.status, 'running');
-    await waitForAgentState(service, dashboard => dashboard.runs.find(item => item.id === parallel.id)?.sessionId === 'cursor-session-1234', 'Cursor 会话启动');
-    assert.equal(parallel.sessionId, 'cursor-session-1234');
-    assert.equal((await service.dashboard()).activeWorkspaceLocks.length, 2);
+    assert.equal(parallel.status, 'queued');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(parallel.sessionId, '');
+    assert.equal((await service.dashboard()).activeWorkspaceLocks.length, 1);
     await assert.rejects(service.start({ provider: 'cursor', mode: 'agent', model: '', objective: '并发时切换分支',
       workspacePath: '/selected', branch: 'feature/other' }), /已有 Agent 运行或排队/);
     await service.stop(run.id);
-    await waitForSettledRun(service, run.id, 'cancelled');
+    for (let attempt = 0; attempt < 200; attempt++) {
+      const current = (await service.dashboard()).runs.find(item => item.id === parallel.id);
+      if (current?.status === 'running' && current.sessionId) break;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
     const stopped = (await service.dashboard()).runs.find((item) => item.id === run.id)!;
     assert.equal(stopped.status, 'cancelled');
     assert.equal(stopped.pid, null);
@@ -588,7 +697,7 @@ test('同一工作区的不同 Agent 会话并行执行，分支切换仍受保�
     assert.equal(stillRunning.sessionId, 'cursor-session-1234');
     assert.equal((await service.dashboard()).activeWorkspaceLocks[0]?.runId, parallel.id);
     await service.stop(parallel.id);
-    await waitForSettledRun(service, parallel.id, 'cancelled');
+    await new Promise((resolve) => setTimeout(resolve, 20));
     assert.equal((await service.dashboard()).activeWorkspaceLocks.length, 0);
   } finally { codex.finish('done'); cursor.finish('done'); await service.close(); await fs.rm(directory, { recursive: true, force: true }); }
 });
@@ -636,8 +745,8 @@ test('真实 Agent 模板创建隔离执行节点，并在依赖完成后自动�
     assert.equal(worker.accessMode, 'full');
     assert.equal(reviewer.model, 'second-model');
     assert.equal(reviewer.reasoningEffort, 'low');
-    assert.equal(reviewer.mode, 'ask');
-    assert.equal(reviewer.accessMode, 'workspace');
+    assert.equal(reviewer.mode, 'agent');
+    assert.equal(reviewer.accessMode, 'full');
     await waitFor(() => executions.has(worker.id));
     assert.equal(worker.status, 'running');
     assert.equal(worker.task?.parentConversationId, main.id);
@@ -913,6 +1022,7 @@ test('调整方向会停止当前轮并立即执行指定的排队消息', async
     const third = await service.resume(second.id, '第三条', 'test-model', 'high');
 
     await service.steer(third.id);
+    assert.equal(third.roundContinuationOfRunId, first.id);
     await waitFor(() => executions.length === 2);
     const dashboard = await service.dashboard();
     assert.equal(dashboard.runs.find((run) => run.id === first.id)?.status, 'cancelled');
@@ -944,10 +1054,10 @@ test('运行成功后保存结果，并按精确 session id 创建续接运行',
   const service = await createAgentRuntimeService(directory, { adapters: [adapter], resolveWorkspace: async () => workspace });
   try {
     const first = await service.start({ provider: 'cursor', mode: 'agent', model: 'test-model', objective: '解释并修改模块', workspacePath: '/selected' });
-    await waitForSettledRun(service, first.id);
+    await new Promise((resolve) => setTimeout(resolve, 20));
     assert.equal((await service.dashboard()).runs[0].result, '初次结果');
     const resumed = await service.resume(first.id, '继续解释边界', 'second-model');
-    await waitForSettledRun(service, resumed.id);
+    await new Promise((resolve) => setTimeout(resolve, 20));
     const runs = (await service.dashboard()).runs;
     assert.equal(resumed.parentRunId, first.id);
     assert.equal(runs[0].sessionId, 'cursor-session-5678');
@@ -977,29 +1087,78 @@ test('基于已完成的 Codex 会话创建独立分叉，不归入原会话链'
     return context.forkSessionId ? '分叉完成' : '原会话完成';
   } };
   const service = await createAgentRuntimeService(directory, { adapters: [adapter] });
+  const waitCompleted = async (runId: string) => {
+    for (let attempt = 0; attempt < 200; attempt++) {
+      const state = await service.dashboard();
+      if (state.runs.find(run => run.id === runId)?.status === 'completed'
+        && !state.activeWorkspaceLocks.some(lock => lock.runId === runId)) return;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.fail('等待可观察的已完成轮次及工作区锁释放超时');
+  };
   try {
     const source = await service.start({ provider: 'codex', mode: 'agent', model: 'test-model', reasoningEffort: 'high', serviceTier: 'priority',
       objective: '原会话任务', workspacePath: repository });
-    await waitForSettledRun(service, source.id);
+    await waitCompleted(source.id);
     const forked = await service.fork(source.id, '新会话继续处理');
-    await waitForSettledRun(service, forked.id);
+    await waitCompleted(forked.id);
     assert.equal(forked.parentRunId, undefined);
     assert.equal(forked.sessionId, 'forked-session-5678');
     assert.match(forked.branch, /^feature\//);
     assert.notEqual(forked.workspacePath, source.workspacePath);
     assert.equal(forked.serviceTier, 'priority');
     const standard = await service.resume(source.id, '常速继续', undefined, undefined, [], undefined, 'append', 'default');
-    await waitForSettledRun(service, standard.id);
     assert.equal(standard.serviceTier, 'default');
     const stored = JSON.parse(await fs.readFile(path.join(directory, 'agent-runs.json'), 'utf8')) as AgentRun[];
     assert.equal(stored.find(run => run.id === source.id)?.serviceTier, 'priority');
     assert.equal(stored.find(run => run.id === standard.id)?.serviceTier, 'default');
+    for (let i = 0; i < 50 && executions.length < 3; i++) await new Promise(resolve => setTimeout(resolve, 10));
     assert.deepEqual(executions, [
       { resumeSessionId: '', forkSessionId: '', forkLastTurnId: '' },
       { resumeSessionId: '', forkSessionId: 'source-session-1234', forkLastTurnId: sourceTurnId },
       { resumeSessionId: 'source-session-1234', forkSessionId: '', forkLastTurnId: '' },
     ]);
   } finally { await service.close(); await fs.rm(directory, { recursive: true, force: true }); }
+});
+
+test('未绑定项目的 Codex 侧边会话继承已完成轮次并使用独立目录', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-side-chat-'));
+  const sourceTurn = '11111111-1111-1111-1111-111111111111';
+  const childTurn = '22222222-2222-2222-2222-222222222222';
+  const calls: { session?: string; turn?: string }[] = [];
+  const adapter: AgentRuntimeAdapter = { id: 'codex', health: async () => health('codex'), execute: async context => {
+    calls.push({ session: context.forkSessionId, turn: context.forkLastTurnId });
+    await context.onSession(context.forkSessionId ? 'child-session' : 'source-session');
+    await context.onTurn?.(context.forkSessionId ? childTurn : sourceTurn);
+    return '已完成';
+  } };
+  const service = await createAgentRuntimeService(directory, { adapters: [adapter] });
+  async function settled(id: string) {
+    for (let attempt = 0; attempt < 150; attempt++) {
+      const run = service.snapshot().runs.find(item => item.id === id);
+      if (run?.resultReady) return run;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.fail('测试轮次未落盘');
+  }
+  try {
+    const first = await service.start({ provider: 'codex', mode: 'ask', model: 'test-model', objective: '原会话', workspacePath: '' });
+    assert.equal(service.snapshot().projectlessFork, true);
+    const source = await settled(first.id);
+    await fs.writeFile(path.join(source.workspacePath, 'source-only.txt'), '原会话文件');
+    const next = await service.fork(source.id, '侧边会话');
+    const side = await settled(next.id);
+    assert.deepEqual(calls.at(-1), { session: source.sessionId, turn: sourceTurn });
+    assert.notEqual(side.conversationId, source.conversationId);
+    assert.notEqual(side.sessionId, source.sessionId);
+    assert.notEqual(side.workspacePath, source.workspacePath);
+    assert.equal(side.sourceWorkspacePath, '');
+    assert.deepEqual(await fs.readdir(side.workspacePath), []);
+    assert.equal(await fs.readFile(path.join(source.workspacePath, 'source-only.txt'), 'utf8'), '原会话文件');
+  } finally {
+    await service.close();
+    await fs.rm(directory, { recursive: true, force: true });
+  }
 });
 
 function codexSourceFromRuns(sessionId: string, completedRuns: AgentRun[]): CodexSessionSource {
@@ -1535,14 +1694,14 @@ test('已关联的历史 Codex 会话可按原 session id 续接并保留来源�
   try {
     await service.syncCodexSessions();
     const first = await service.resume(imported.id, '继续处理', 'test-model', 'high', [], 'workspace', 'append', 'default');
-    await waitForSettledRun(service, first.id);
+    await new Promise((resolve) => setTimeout(resolve, 20));
     assert.equal(resumedIds[0], session.id);
     assert.equal(first.originSessionId, session.id);
     assert.equal(first.sessionId, session.id);
     assert.equal(first.mode, 'agent');
     assert.equal(first.serviceTier, 'default');
     const second = await service.resume(first.id, '再次继续', 'second-model', 'high');
-    await waitForSettledRun(service, second.id);
+    await new Promise((resolve) => setTimeout(resolve, 20));
     assert.equal(second.parentRunId, first.id);
     assert.equal(second.serviceTier, 'default');
     assert.equal(second.originSessionId, session.id);
@@ -1551,6 +1710,45 @@ test('已关联的历史 Codex 会话可按原 session id 续接并保留来源�
     assert.deepEqual((await service.dashboard()).codexSessions, []);
     assert.equal((await service.dashboard()).codexSync.hidden, 1);
   } finally { await service.close(); await fs.rm(directory, { recursive: true, force: true }); }
+});
+
+test('工具执行标记不随199条事件截断丢失，重载保留true/false且历史未知不变', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-tool-evidence-test-'));
+  const now = new Date().toISOString();
+  const legacy: AgentRun = { id: 'legacy-unknown-tools', provider: 'cursor', mode: 'ask', accessMode: 'workspace',
+    model: '', reasoningEffort: '', objective: '历史未知工具状态', ...workspace, status: 'completed', sessionId: 'legacy-session',
+    pid: null, result: '旧结果', error: '', events: [], createdAt: now, updatedAt: now };
+  await fs.writeFile(path.join(directory, 'agent-runs.json'), JSON.stringify([legacy]));
+  const initialFlags: (boolean | undefined)[] = [];
+  const adapter: AgentRuntimeAdapter = { id: 'cursor', health: async () => health('cursor'), execute: async context => {
+    initialFlags.push(context.run.toolExecutionStarted);
+    await context.onSession(`session-${context.run.id}`);
+    if (context.run.objective === '调用工具后继续输出') context.onEvent('tool', '第一次工具调用');
+    for (let index = 0; index < 230; index++) context.onEvent('lifecycle', `后续消息 ${index}`);
+    return '完成';
+  } };
+  const options = { adapters: [adapter], resolveWorkspace: async () => workspace };
+  const service = await createAgentRuntimeService(directory, options);
+  let reopened: Awaited<ReturnType<typeof createAgentRuntimeService>> | undefined;
+  try {
+    const withTool = await service.start({ provider: 'cursor', mode: 'ask', model: '', objective: '调用工具后继续输出', workspacePath: '/selected' });
+    for (let attempt = 0; attempt < 100 && !withTool.resultReady; attempt++) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(withTool.resultReady, true);
+    assert.equal(withTool.events.length, 199);
+    assert.equal(withTool.events.some(event => event.type === 'tool'), false);
+    assert.equal(withTool.toolExecutionStarted, true);
+    const withoutTool = await service.start({ provider: 'cursor', mode: 'ask', model: '', objective: '仅文本', workspacePath: '/selected' });
+    for (let attempt = 0; attempt < 100 && !withoutTool.resultReady; attempt++) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(withoutTool.resultReady, true);
+    assert.deepEqual(initialFlags, [false, false]);
+    assert.equal(withoutTool.toolExecutionStarted, false);
+    assert.equal(service.getRun(legacy.id)?.toolExecutionStarted, undefined);
+    await service.close();
+    reopened = await createAgentRuntimeService(directory, options);
+    assert.equal(reopened.getRun(withTool.id)?.toolExecutionStarted, true);
+    assert.equal(reopened.getRun(withoutTool.id)?.toolExecutionStarted, false);
+    assert.equal(reopened.getRun(legacy.id)?.toolExecutionStarted, undefined);
+  } finally { await reopened?.close(); await service.close(); await fs.rm(directory, { recursive: true, force: true }); }
 });
 
 test('Agent 运行变化会通知已订阅的实时客户端，取消订阅后停止通知', async () => {
@@ -1565,14 +1763,14 @@ test('Agent 运行变化会通知已订阅的实时客户端，取消订阅后�
   const revisions: number[] = [];
   const unsubscribe = service.subscribe((revision) => revisions.push(revision));
   try {
-    const first = await service.start({ provider: 'codex', mode: 'ask', model: '', objective: '验证实时更新', workspacePath: '/selected' });
-    await waitForSettledRun(service, first.id);
+    await service.start({ provider: 'codex', mode: 'ask', model: '', objective: '验证实时更新', workspacePath: '/selected' });
+    await new Promise((resolve) => setTimeout(resolve, 20));
     assert.ok(revisions.length >= 4);
     assert.deepEqual(revisions, [...revisions].sort((left, right) => left - right));
     unsubscribe();
     const received = revisions.length;
-    const second = await service.start({ provider: 'codex', mode: 'ask', model: '', objective: '取消订阅后的运行', workspacePath: '/selected' });
-    await waitForSettledRun(service, second.id);
+    await service.start({ provider: 'codex', mode: 'ask', model: '', objective: '取消订阅后的运行', workspacePath: '/selected' });
+    await new Promise((resolve) => setTimeout(resolve, 20));
     assert.equal(revisions.length, received);
   } finally { unsubscribe(); await service.close(); await fs.rm(directory, { recursive: true, force: true }); }
 });
@@ -1730,6 +1928,88 @@ test('删除已隔离会话不会隐藏仍共享的旧线程，独占的新线�
   } finally { await service.close(); await fs.rm(directory, { recursive: true, force: true }); }
 });
 
+test('Codex 同步仅保留已关联线程，启动清理旧摘要及孤立正文且重启不复活', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-codex-owned-sync-test-'));
+  const ids = {
+    session: '11111111-1111-1111-1111-111111111111', origin: '22222222-2222-2222-2222-222222222222',
+    continuation: '33333333-3333-3333-3333-333333333333', personal: '44444444-4444-4444-4444-444444444444',
+    orphan: '55555555-5555-5555-5555-555555555555', cursor: '66666666-6666-6666-6666-666666666666',
+    archived: '77777777-7777-7777-7777-777777777777', hidden: '88888888-8888-8888-8888-888888888888',
+    detailOnly: '99999999-9999-9999-9999-999999999999', cursorOrigin: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+    cursorContinuation: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+  };
+  const sessions: CodexSessionSummary[] = Object.entries(ids).filter(([kind]) => kind !== 'detailOnly')
+    .map(([kind, id]) => ({ id, title: kind === 'session' || kind === 'orphan'
+      ? '你由 Delivery Workspace 以 Agent 模式调用。' : kind, preview: '测试预览',
+      ...workspace, model: 'test-model', reasoningEffort: 'high', archived: kind === 'archived',
+      createdAt: '2026-10-15T00:00:00.000Z', updatedAt: '2026-10-15T00:01:00.000Z' }));
+  const base: AgentRun = { id: 'managed-run', provider: 'codex', mode: 'ask', accessMode: 'workspace',
+    ...workspace, model: 'test-model', reasoningEffort: 'high', objective: '工作台任务', status: 'completed',
+    sessionId: ids.session, pid: null, result: '已完成', error: '', events: [],
+    createdAt: sessions[0].createdAt, updatedAt: sessions[0].updatedAt };
+  const continuation = { sessionId: ids.continuation, workspacePath: '/isolated', sourceWorkspacePath: workspace.workspacePath,
+    branch: 'feature/isolated', baseBranch: workspace.branch, headSha: 'def', isolatedWorkspace: true as const };
+  const stored: AgentRun[] = [
+    { ...base, originSessionId: ids.origin, continuation },
+    { ...base, id: 'archived-run', sessionId: ids.archived },
+    { ...base, id: 'hidden-run', sessionId: ids.hidden },
+    { ...base, id: 'cursor-run', provider: 'cursor', sessionId: ids.cursor, originSessionId: ids.cursorOrigin,
+      continuation: { ...continuation, sessionId: ids.cursorContinuation } },
+  ];
+  const oldDetails = Object.fromEntries([...sessions, { ...sessions[0], id: ids.detailOnly }].map(session => [session.id,
+    { ...session, turns: [{ id: 'old-turn', userMessage: '旧缓存问题', agentMessage: '旧缓存回答',
+      createdAt: session.createdAt, updatedAt: session.updatedAt }] }]));
+  const cacheFile = path.join(directory, 'codex-sessions.json');
+  await fs.writeFile(path.join(directory, 'agent-runs.json'), JSON.stringify(stored));
+  await fs.writeFile(path.join(directory, 'hidden-codex-sessions.json'), JSON.stringify([ids.hidden]));
+  await fs.writeFile(cacheFile, JSON.stringify({ syncedAt: sessions[0].updatedAt, sessions, details: oldDetails }));
+  const expected = [ids.session, ids.origin, ids.continuation].sort();
+  let listReads = 0;
+  const detailReads: string[] = [];
+  const source: CodexSessionSource = { listSessions: async () => { listReads++; return sessions; }, session: async id => {
+    detailReads.push(id);
+    const session = sessions.find(item => item.id === id)!;
+    return { ...session, turns: [{ id: 'new-turn', userMessage: '已关联会话问题', agentMessage: '已关联会话回答',
+      createdAt: session.createdAt, updatedAt: session.updatedAt }] };
+  } };
+  let service: Awaited<ReturnType<typeof createAgentRuntimeService>> | undefined;
+  try {
+    service = await createAgentRuntimeService(directory, { adapters: [], codexSessionSource: source });
+    assert.deepEqual((await service.dashboard()).codexSessions.map(session => session.id).sort(), expected);
+    assert.equal((await service.dashboard()).codexSync.total, expected.length);
+    assert.equal(listReads, 0);
+    assert.deepEqual(detailReads, []);
+    const cleaned = JSON.parse(await fs.readFile(cacheFile, 'utf8'));
+    assert.deepEqual(cleaned.sessions.map((session: CodexSessionSummary) => session.id).sort(), expected);
+    assert.deepEqual(Object.keys(cleaned.details).sort(), expected);
+    await assert.rejects(service.codexSession(ids.personal), /尚未同步/);
+    await assert.rejects(service.codexSession(ids.detailOnly), /尚未同步/);
+
+    await service.syncCodexSessions();
+    assert.equal(listReads, 1);
+    assert.deepEqual(detailReads.sort(), expected);
+    assert.deepEqual((await service.dashboard()).codexSessions.map(session => session.id).sort(), expected);
+    assert.equal((await service.codexSession(ids.origin)).turns[0].agentMessage, '已关联会话回答');
+    const synced = JSON.parse(await fs.readFile(cacheFile, 'utf8'));
+    assert.deepEqual(synced.sessions.map((session: CodexSessionSummary) => session.id).sort(), expected);
+    assert.deepEqual(Object.keys(synced.details).sort(), expected);
+    await service.close();
+    service = undefined;
+
+    const unavailableSource: CodexSessionSource = {
+      listSessions: async () => { throw new Error('重启不应扫描本机历史'); },
+      session: async () => { throw new Error('重启不应重新读取正文'); },
+    };
+    service = await createAgentRuntimeService(directory, { adapters: [], codexSessionSource: unavailableSource });
+    assert.deepEqual((await service.dashboard()).codexSessions.map(session => session.id).sort(), expected);
+    assert.equal((await service.codexSession(ids.origin)).turns[0].agentMessage, '已关联会话回答');
+    await assert.rejects(service.codexSession(ids.orphan), /尚未同步/);
+    const restarted = JSON.parse(await fs.readFile(cacheFile, 'utf8'));
+    assert.deepEqual(restarted.sessions.map((session: CodexSessionSummary) => session.id).sort(), expected);
+    assert.deepEqual(Object.keys(restarted.details).sort(), expected);
+  } finally { await service?.close(); await fs.rm(directory, { recursive: true, force: true }); }
+});
+
 test('Codex 会话同步排除归档记录，重复执行且删除后不会再次出现', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-codex-sync-test-'));
   const sessions: CodexSessionSummary[] = [
@@ -1849,11 +2129,44 @@ test('服务重启把未完成运行标为 interrupted，绝不自动重复派�
     assert.match(recovered.error, /未自动重复执行/);
     assert.equal(executions, 0);
     const resumed = await service.retry(recovered.id);
-    await waitForSettledRun(service, resumed.id);
+    await new Promise((resolve) => setTimeout(resolve, 20));
     assert.equal(resumed.parentRunId, recovered.id);
     assert.equal((await service.dashboard()).runs.find((run) => run.id === resumed.id)?.status, 'completed');
     assert.equal(executions, 1);
   } finally { await service.close(); await fs.rm(directory, { recursive: true, force: true }); }
+});
+
+test('下载仅允许所属运行已记录的文件，拒绝越界链接、删除和任意路径', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-download-file-test-'));
+  const directory = path.join(root, 'data'), workspacePath = path.join(root, 'workspace');
+  await fs.mkdir(workspacePath); await fs.mkdir(directory);
+  const filename = '复测结果.xlsx', content = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0, 255]);
+  await fs.writeFile(path.join(workspacePath, filename), content);
+  await fs.writeFile(path.join(workspacePath, 'declared.xlsx'), content);
+  await fs.writeFile(path.join(root, 'outside.txt'), 'outside');
+  await fs.symlink(path.join(root, 'outside.txt'), path.join(workspacePath, 'linked.txt'));
+  const external = path.join(root, 'generated.xlsx'); await fs.writeFile(external, content);
+  const run = { id: 'download-run', provider: 'codex', mode: 'agent', accessMode: 'workspace', model: '', reasoningEffort: '', sessionId: '', pid: null, objective: '生成文件', workspacePath,
+    branch: '', headSha: '', status: 'completed', result: '```delivery-report\n' + JSON.stringify({ taskResult: { output: { path: 'declared.xlsx' } } }) + '\n```', error: '', events: [],
+    changedFiles: [{ path: filename, status: 'generated' }, { path: 'removed.xlsx', status: 'deleted' },
+      { path: 'missing.xlsx', status: 'generated' }, { path: '../outside.txt', status: 'generated' },
+      { path: 'linked.txt', status: 'generated' }, { path: external, status: 'generated' }],
+    createdAt: '2026-10-30T00:00:00.000Z', updatedAt: '2026-10-30T00:00:00.000Z' } as AgentRun;
+  await fs.writeFile(path.join(directory, 'agent-runs.json'), JSON.stringify([run]));
+  const service = await createAgentRuntimeService(directory, { adapters: [] });
+  try {
+    const file = await service.downloadChangedFile(run.id, filename);
+    assert.equal(file.name, filename); assert.equal(file.size, content.length);
+    assert.deepEqual(await fs.readFile(file.path), content);
+    assert.deepEqual(await fs.readFile((await service.downloadChangedFile(run.id, 'declared.xlsx')).path), content, '重启后可下载只在报告中声明的现有文件');
+    assert.equal((await service.downloadChangedFile(run.id, external)).path, await fs.realpath(external));
+    await assert.rejects(service.downloadChangedFile('other-run', filename), /找不到/);
+    await assert.rejects(service.downloadChangedFile(run.id, path.join(root, 'outside.txt')), /不属于/);
+    await assert.rejects(service.downloadChangedFile(run.id, '../outside.txt'), /超出/);
+    await assert.rejects(service.downloadChangedFile(run.id, 'linked.txt'), /超出/);
+    await assert.rejects(service.downloadChangedFile(run.id, 'removed.xlsx'), /已删除/);
+    await assert.rejects(service.downloadChangedFile(run.id, 'missing.xlsx'), /不存在/);
+  } finally { await service.close(); await fs.rm(root, { recursive: true, force: true }); }
 });
 
 test('浏览器仅打开本轮记录中的 HTML/SVG 文件', async () => {
@@ -1887,86 +2200,4 @@ test('浏览器仅打开本轮记录中的 HTML/SVG 文件', async () => {
       await fs.realpath(path.join(workspacePath, 'outputs', 'drawing.SVG')),
     ]);
   } finally { await service.close(); await fs.rm(root, { recursive: true, force: true }); }
-});
-
-test('Codex 同步仅保留已关联线程，启动清理旧摘要及孤立正文且重启不复活', async () => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-codex-owned-sync-test-'));
-  const ids = {
-    session: '11111111-1111-1111-1111-111111111111', origin: '22222222-2222-2222-2222-222222222222',
-    continuation: '33333333-3333-3333-3333-333333333333', personal: '44444444-4444-4444-4444-444444444444',
-    orphan: '55555555-5555-5555-5555-555555555555', cursor: '66666666-6666-6666-6666-666666666666',
-    archived: '77777777-7777-7777-7777-777777777777', hidden: '88888888-8888-8888-8888-888888888888',
-    detailOnly: '99999999-9999-9999-9999-999999999999', cursorOrigin: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
-    cursorContinuation: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
-  };
-  const sessions: CodexSessionSummary[] = Object.entries(ids).filter(([kind]) => kind !== 'detailOnly')
-    .map(([kind, id]) => ({ id, title: kind === 'session' || kind === 'orphan'
-      ? '你由 Delivery Workspace 以 Agent 模式调用。' : kind, preview: '测试预览',
-      ...workspace, model: 'test-model', reasoningEffort: 'high', archived: kind === 'archived',
-      createdAt: '2026-10-15T00:00:00.000Z', updatedAt: '2026-10-15T00:01:00.000Z' }));
-  const base: AgentRun = { id: 'managed-run', provider: 'codex', mode: 'ask', accessMode: 'workspace',
-    ...workspace, model: 'test-model', reasoningEffort: 'high', objective: '工作台任务', status: 'completed',
-    sessionId: ids.session, pid: null, result: '已完成', error: '', events: [],
-    createdAt: sessions[0].createdAt, updatedAt: sessions[0].updatedAt };
-  const continuation = { sessionId: ids.continuation, workspacePath: '/isolated', sourceWorkspacePath: workspace.workspacePath,
-    branch: 'feature/isolated', baseBranch: workspace.branch, headSha: 'def', isolatedWorkspace: true as const };
-  const stored: AgentRun[] = [
-    { ...base, originSessionId: ids.origin, continuation },
-    { ...base, id: 'archived-run', sessionId: ids.archived },
-    { ...base, id: 'hidden-run', sessionId: ids.hidden },
-    { ...base, id: 'cursor-run', provider: 'cursor', sessionId: ids.cursor, originSessionId: ids.cursorOrigin,
-      continuation: { ...continuation, sessionId: ids.cursorContinuation } },
-  ];
-  const oldDetails = Object.fromEntries([...sessions, { ...sessions[0], id: ids.detailOnly }].map(session => [session.id,
-    { ...session, turns: [{ id: 'old-turn', userMessage: '旧缓存问题', agentMessage: '旧缓存回答',
-      createdAt: session.createdAt, updatedAt: session.updatedAt }] }]));
-  const cacheFile = path.join(directory, 'codex-sessions.json');
-  await fs.writeFile(path.join(directory, 'agent-runs.json'), JSON.stringify(stored));
-  await fs.writeFile(path.join(directory, 'hidden-codex-sessions.json'), JSON.stringify([ids.hidden]));
-  await fs.writeFile(cacheFile, JSON.stringify({ syncedAt: sessions[0].updatedAt, sessions, details: oldDetails }));
-  const expected = [ids.session, ids.origin, ids.continuation].sort();
-  let listReads = 0;
-  const detailReads: string[] = [];
-  const source: CodexSessionSource = { listSessions: async () => { listReads++; return sessions; }, session: async id => {
-    detailReads.push(id);
-    const session = sessions.find(item => item.id === id)!;
-    return { ...session, turns: [{ id: 'new-turn', userMessage: '已关联会话问题', agentMessage: '已关联会话回答',
-      createdAt: session.createdAt, updatedAt: session.updatedAt }] };
-  } };
-  let service: Awaited<ReturnType<typeof createAgentRuntimeService>> | undefined;
-  try {
-    service = await createAgentRuntimeService(directory, { adapters: [], codexSessionSource: source });
-    assert.deepEqual((await service.dashboard()).codexSessions.map(session => session.id).sort(), expected);
-    assert.equal((await service.dashboard()).codexSync.total, expected.length);
-    assert.equal(listReads, 0);
-    assert.deepEqual(detailReads, []);
-    const cleaned = JSON.parse(await fs.readFile(cacheFile, 'utf8'));
-    assert.deepEqual(cleaned.sessions.map((session: CodexSessionSummary) => session.id).sort(), expected);
-    assert.deepEqual(Object.keys(cleaned.details).sort(), expected);
-    await assert.rejects(service.codexSession(ids.personal), /尚未同步/);
-    await assert.rejects(service.codexSession(ids.detailOnly), /尚未同步/);
-
-    await service.syncCodexSessions();
-    assert.equal(listReads, 1);
-    assert.deepEqual(detailReads.sort(), expected);
-    assert.deepEqual((await service.dashboard()).codexSessions.map(session => session.id).sort(), expected);
-    assert.equal((await service.codexSession(ids.origin)).turns[0].agentMessage, '已关联会话回答');
-    const synced = JSON.parse(await fs.readFile(cacheFile, 'utf8'));
-    assert.deepEqual(synced.sessions.map((session: CodexSessionSummary) => session.id).sort(), expected);
-    assert.deepEqual(Object.keys(synced.details).sort(), expected);
-    await service.close();
-    service = undefined;
-
-    const unavailableSource: CodexSessionSource = {
-      listSessions: async () => { throw new Error('重启不应扫描本机历史'); },
-      session: async () => { throw new Error('重启不应重新读取正文'); },
-    };
-    service = await createAgentRuntimeService(directory, { adapters: [], codexSessionSource: unavailableSource });
-    assert.deepEqual((await service.dashboard()).codexSessions.map(session => session.id).sort(), expected);
-    assert.equal((await service.codexSession(ids.origin)).turns[0].agentMessage, '已关联会话回答');
-    await assert.rejects(service.codexSession(ids.orphan), /尚未同步/);
-    const restarted = JSON.parse(await fs.readFile(cacheFile, 'utf8'));
-    assert.deepEqual(restarted.sessions.map((session: CodexSessionSummary) => session.id).sort(), expected);
-    assert.deepEqual(Object.keys(restarted.details).sort(), expected);
-  } finally { await service?.close(); await fs.rm(directory, { recursive: true, force: true }); }
 });

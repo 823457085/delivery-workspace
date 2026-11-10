@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import AgentMarkdown from '../agent-workbench/AgentMarkdown.vue';
 /**
  * 设计说明：配置和反馈只在联调页的一个对话框承接，保持表格、人员分工和审核结论独立。
  * 预览及发送都由服务端校验，客户端不持有已保存的 Webhook；不使用聊天式机器人或自动重试。
@@ -108,7 +109,7 @@ async function send() {
         <p class="wecom-note">{{ configuration.data.value?.hasWebhook ? `目标群：${configuration.data.value.groupName}` : '群机器人尚未配置，请在联调页顶部“企业微信机器人”中配置。' }}</p>
         <template v-if="preview">
           <p class="wecom-note">发送预览 · {{ preview.bytes }} 字节</p>
-          <pre class="wecom-preview">{{ preview.content }}</pre>
+          <AgentMarkdown class="wecom-preview" :source="preview.content" />
           <p class="wecom-note">{{ preview.truncated ? '群消息已截取摘要，完整脱敏反馈保留在本机。' : '完整脱敏反馈与发送结果保留在本机。' }}发送前请核对脱敏结果。</p>
         </template>
         <el-collapse v-if="latest">
@@ -137,4 +138,5 @@ async function send() {
 <style scoped>
 .wecom-note{color:var(--ui-muted);font-size:12px;line-height:1.7}.wecom-context{line-height:1.8;font-size:12px;overflow-wrap:anywhere}
 .wecom-preview{margin:8px 0 16px;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.7 var(--mono);color:var(--ui-text)}
+.wecom-preview.agent-markdown{white-space:normal;font-family:var(--sans)}
 </style>

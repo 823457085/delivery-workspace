@@ -52,31 +52,3 @@ description: >
     }]);
   } finally { await fs.rm(workspace, { recursive: true, force: true }); }
 });
-
-test('附包 Skill 可从其他工作区发现，同名 Skill 保留当前项目版本', async () => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'delivery-bundled-skills-'));
-  const workspace = path.join(directory, 'workspace');
-  const bundled = path.join(directory, 'bundled');
-  const previous = process.env.DELIVERY_SKILLS_ROOT;
-  try {
-    for (const [base, name, description] of [
-      [path.join(workspace, '.agents/skills'), 'delivery-scoped-skill', 'Project-owned version'],
-      [bundled, 'delivery-scoped-skill', 'Bundled version'],
-      [bundled, 'delivery-bundled-only', 'Available from the workbench bundle'],
-    ]) {
-      const target = path.join(base, name);
-      await fs.mkdir(target, { recursive: true });
-      await fs.writeFile(path.join(target, 'SKILL.md'), `---\nname: ${name}\ndescription: ${description}\n---\n`);
-    }
-    process.env.DELIVERY_SKILLS_ROOT = path.relative(process.cwd(), bundled);
-    const skills = await listCodexSkills(workspace, 'delivery-');
-    const projectSkill = skills.find(item => item.name === 'delivery-scoped-skill');
-    assert.equal(projectSkill?.description, 'Project-owned version');
-    assert.equal(projectSkill?.sourceLabel, '当前项目');
-    assert.equal(skills.filter(item => item.name === 'delivery-scoped-skill').length, 1);
-    assert.equal(skills.find(item => item.name === 'delivery-bundled-only')?.sourceLabel, '工作台配套 Skill');
-  } finally {
-    if (previous === undefined) delete process.env.DELIVERY_SKILLS_ROOT; else process.env.DELIVERY_SKILLS_ROOT = previous;
-    await fs.rm(directory, { recursive: true, force: true });
-  }
-});

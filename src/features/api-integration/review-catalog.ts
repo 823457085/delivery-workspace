@@ -1,10 +1,11 @@
 /**
- * 为什么需要：两份清单有重合但范围不同，审核页必须按路径去重并保留各自来源。
- * 边界：这里只整理接口与页面归属，不根据旧计划状态推断联调完成。
- * 替代方案：不迁移或覆盖旧记录；工作簿接口沿用原审核 ID，旧清单独有接口使用稳定 ID。
+ * 为什么需要：当前目录以最新契约为准，按路径匹配工作簿以保留已有审核 ID 和页面归属。
+ * 边界：契约外的旧工作簿项退出当前目录，原记录不删除；广告历史单独保留，不推断联调完成。
+ * 替代方案：不重建或迁移审核记录；匹配接口沿用工作簿 ID，其余契约接口使用稳定 ID。
  */
 import inventory from '../../../shared/apex-bff-interface-inventory.json';
 import plan from '../../../shared/refactor-integration-plan.json';
+import archivedAdvertising from './archived-advertising.json';
 import type { ApexBffInterface } from '../../../shared/apex-bff-review';
 import type { IntegrationCatalog } from '../../../shared/integration-catalog';
 import { classifyApexInterface, type InterfacePage } from './page-classification';
@@ -16,6 +17,7 @@ export interface ReviewCatalogItem {
   method: string;
   name: string;
   source: 'workbook' | 'plan';
+  archived?: boolean;
   workbook?: ApexBffInterface;
   plan?: PlannedOperation;
   ui: InterfacePage;
@@ -35,11 +37,11 @@ export function buildReviewCatalog(source: IntegrationCatalog = { plan, inventor
       planPages.set(operation.operationId, associated);
     }
   }
-  const workbook = (inventory.items as ApexBffInterface[]).map(item => ({
+  const workbook = (inventory.items as ApexBffInterface[]).filter(item => byPath.has(item.path)).map(item => ({
     id: item.id,
     path: item.path,
-    method: item.contract?.method || byPath.get(item.path)?.method || '',
-    name: item.name,
+    method: byPath.get(item.path)!.method,
+    name: byPath.get(item.path)!.summary,
     source: 'workbook' as const,
     workbook: item,
     plan: byPath.get(item.path),
@@ -53,10 +55,11 @@ export function buildReviewCatalog(source: IntegrationCatalog = { plan, inventor
     if (matches.length > 1) ui = { module: '公共能力', page: '关联多个页面', route: '', kind: 'multiple' };
     else if (!match?.routes.length) ui = { module: '待定位模块', page: match?.title || '待定位页面', route: '', kind: 'unmapped' };
     else ui = { module: match.menu.split(' / ')[0] === '登录' ? '账号与权限' : match.menu.split(' / ')[0], page: match.title, route: match.routes[0], kind: 'route' };
+    if (operation.path.startsWith('/admin/v1/system/translations/')) ui = { module: '系统配置', page: '语料管理', route: '/SystemConfig/MultilanguageManage', kind: 'route' };
     return {
       id: planOnlyReviewId(operation.operationId), path: operation.path, method: operation.method,
       name: operation.summary, source: 'plan' as const, plan: operation, ui,
     };
   });
-  return [...workbook, ...planOnly];
+  return [...workbook, ...planOnly, ...(archivedAdvertising as ReviewCatalogItem[]).map(item => ({ ...item, archived: true }))];
 }

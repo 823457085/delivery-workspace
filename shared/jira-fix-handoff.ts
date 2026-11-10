@@ -8,7 +8,7 @@ const text = z.string().trim().min(1, '请填写完整交接说明').max(6000)
 export const jiraCommentDraftSchema = z.object({ cause: text, impact: text, suggestion: text, conclusion: text }).strict();
 export type JiraCommentDraft = z.infer<typeof jiraCommentDraftSchema>;
 const jiraHandoffReportSchema = z.object({ version: z.literal(1), jiraHandoff: jiraCommentDraftSchema,
-  validationEvidence: z.unknown().optional() }).strict();
+  validationEvidence: z.unknown().optional(), taskResult: z.unknown().optional(), jiraDevDelivery: z.unknown().optional() }).strict();
 export function readJiraHandoffReport(result: string): JiraCommentDraft {
   return jiraHandoffReportSchema.parse(readDeliveryReport(result)).jiraHandoff;
 }

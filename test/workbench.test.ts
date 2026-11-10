@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import type { AutomationData, CatchupData, JiraIssue } from '../shared/hub';
 import type { ExecutionDashboard } from '../shared/design-execution';
 import { emptyArtifacts } from '../shared/design-execution';
-import { deliveryRecords, forIssue, hasDeliveryResult, plannedToday, recordGroup, recordMatchesFilter, threadUrl } from '../src/features/workbench/domain';
+import { deliveryRecords, deliveryRecordState, forIssue, hasDeliveryResult, plannedToday, recordGroup, recordMatchesFilter, threadUrl, type DeliveryRecord } from '../src/features/workbench/domain';
 
 const threadId = '01a08b3e-f123-7cb3-9dd3-6db3d9313032';
 const automation = { jobs: [
@@ -70,7 +70,7 @@ test('追平尚未创建会话时 session 为 null，不阻止已有交付记录
   assert.equal(forIssue(records, 'APEX-900')[0].result, '已有结果');
   assert.equal(forIssue(records, 'APEX-295').length, 2);
 });
-test('工作台默认待处理只聚合运行、待审和阻塞，结果判定不依赖会话', () => {
+test('兼容待处理筛选仍聚合运行、待审和阻塞，结果判定不依赖会话', () => {
   const records = deliveryRecords(automation);
   const running = records.find(record => record.status === 'dispatching')!;
   const blocked = records.find(record => record.status === 'blocked')!;
@@ -81,4 +81,28 @@ test('工作台默认待处理只聚合运行、待审和阻塞，结果判定�
   assert.equal(recordMatchesFilter(completed, 'actionable'), false);
   assert.equal(hasDeliveryResult(blocked), true);
   assert.equal(hasDeliveryResult({ ...completed, threadId, result: '', error: '', links: [] }), false);
+});
+test('顶部状态互斥，历史错误不重复计数，同名记录仍逐条保留', () => {
+  const base = { ...deliveryRecords(automation)[0], title: '审查', error: '历史错误', links: [], agentStateKnown: true };
+  const cases: [Partial<DeliveryRecord>, string][] = [
+    [{ currentStatus: 'pending', agentStateKnown: false }, 'pending'],
+    [{ currentStatus: 'queued', agentStatus: 'queued', jiraSubtask: true }, 'pending'],
+    [{ currentStatus: 'running', agentStatus: 'running', jiraSubtask: true }, 'running'],
+    [{ currentStatus: 'review', result: '待审核结果' }, 'review'],
+    [{ currentStatus: 'blocked' }, 'blocked'],
+    [{ currentStatus: 'blocked' }, 'blocked'],
+    [{ currentStatus: 'ended' }, 'history'],
+    [{ currentStatus: 'completed', status: 'failed', agentStateKnown: false }, 'history'],
+    [{ currentStatus: 'cancelled' }, 'history'],
+    [{ currentStatus: 'blocked', jiraSubtask: true, agentStatus: 'failed' }, 'history'],
+    [{ currentStatus: 'blocked', source: 'Jira 修复', sourceKind: 'launch', status: 'failed', runId: '', updatedAt: '2000-01-01T00:00:00Z' }, 'history'],
+    [{ currentStatus: 'unknown', status: 'running', agentStateKnown: false }, 'unknown'],
+  ];
+  const records = cases.map(([values], index) => ({ ...base, ...values, id: `record:${index}` }));
+  assert.deepEqual(records.map(deliveryRecordState), cases.map(([, expected]) => expected));
+  const counts = ['pending', 'running', 'review', 'blocked', 'history', 'unknown']
+    .map(state => records.filter(record => deliveryRecordState(record) === state).length);
+  assert.deepEqual(counts, [2, 1, 1, 2, 5, 1]);
+  assert.equal(counts.reduce((sum, count) => sum + count, 0), records.length);
+  assert.equal(records.filter(record => deliveryRecordState(record) === 'blocked').length, 2);
 });

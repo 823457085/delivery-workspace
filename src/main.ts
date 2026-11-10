@@ -10,6 +10,8 @@ import 'element-plus/theme-chalk/dark/css-vars.css';
 import './style.css';
 import './app/hub.css';
 import './app/themes.css';
+import './app/delivery-confirm.css';
+import './app/bento-controls.css';
 const disposeTheme = initializeTheme();
 if (import.meta.hot) import.meta.hot.dispose(disposeTheme);
 

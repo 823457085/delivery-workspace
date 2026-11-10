@@ -8,7 +8,7 @@ import type { AgentAttachment, AgentRun } from '../../../shared/agent-runtime';
 import AgentPromptEditor from './AgentPromptEditor.vue';
 import type { AgentAttachmentDraft } from './useAgentAttachments';
 
-const props = defineProps<{ open: boolean; source?: AgentRun; submitting: boolean; attachmentDraft?: AgentAttachmentDraft }>();
+const props = defineProps<{ open: boolean; source?: AgentRun; submitting: boolean; inSide?: boolean; attachmentDraft?: AgentAttachmentDraft }>();
 const objective = defineModel<string>('objective', { required: true });
 const attachments = defineModel<AgentAttachment[]>('attachments', { required: true });
 const emit = defineEmits<{ submit: []; cancel: [] }>();
@@ -26,10 +26,10 @@ function submit() {
 </script>
 
 <template>
-  <el-dialog :model-value="open" title="基于此会话新建" width="min(600px, 92vw)" class="agent-fork-dialog"
+  <el-dialog :model-value="open" :title="inSide ? '在侧边新建继承会话' : '基于此会话新建'" width="min(600px, 92vw)" class="agent-fork-dialog"
     :close-on-click-modal="false" :close-on-press-escape="!submitting" :show-close="!submitting"
     @opened="focusPrompt" @update:model-value="!$event && emit('cancel')">
-    <p class="fork-description">新会话会继承当前会话已完成的上下文，原会话保留不变。</p>
+    <p class="fork-description">新会话会继承当前会话截至已完成轮次的上下文。分叉后，两边可以各自继续。</p>
     <AgentPromptEditor v-if="source" ref="promptEditor" v-model="objective" v-model:attachments="attachments"
       :attachment-draft="attachmentDraft"
       :workspace-path="source.workspacePath" provider="codex" :modes="[source.mode]" :selected-mode="source.mode" mode-locked

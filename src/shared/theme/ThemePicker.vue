@@ -2,12 +2,13 @@
 /** 主面板与实验室共用同一偏好入口；自定义项只写浏览器本地图片与配色，不触发任何业务接口。 */
 import { Check, ImagePlus, Monitor, Palette, RotateCcw, Trash2 } from '@lucide/vue';
 import { ElMessage } from 'element-plus';
-import { computed, shallowRef } from 'vue';
+import { computed, shallowRef, useId } from 'vue';
 import { themeOptions } from './theme';
 import { useTheme } from './useTheme';
 
 const { preference, current, customTheme, wallpaperUrl, storageAvailable, setTheme, updateCustomTheme, updateCustomWallpaper, resetCustomTheme } = useTheme();
 const visible = shallowRef(false);
+const themeGroup = useId();
 const trigger = shallowRef<HTMLButtonElement>();
 const imageInput = shallowRef<HTMLInputElement>();
 const uploading = shallowRef(false);
@@ -50,10 +51,10 @@ async function removeWallpaper() {
       <button ref="trigger" class="theme-trigger" aria-label="切换皮肤" :aria-expanded="visible" @keydown.esc.stop="closeWithKeyboard"><Palette :size="17" /><span>{{ current.name }}</span></button>
     </template>
     <div class="theme-content" @keydown.esc.stop="closeWithKeyboard">
-      <div class="theme-heading"><strong>选择主题颜色</strong><span>仅改变配色，布局与任务数据保持不变</span></div>
+      <div class="theme-heading"><strong>选择主题</strong><span>切换工作台外观，偏好保存在当前浏览器</span></div>
       <fieldset class="theme-options"><legend class="visually-hidden">面板皮肤</legend>
         <label v-for="option in displayedOptions" :key="option.id" class="theme-option" :class="{ selected: preference === option.id }">
-          <input type="radio" name="workspace-theme" :value="option.id" :checked="preference === option.id" @change="setTheme(option.id)" />
+          <input type="radio" :name="themeGroup" :value="option.id" :checked="preference === option.id" @change="setTheme(option.id)" />
           <span class="theme-swatch" aria-hidden="true"><i v-for="color in option.colors" :key="color" :style="{ background: color }"></i><Monitor v-if="option.id === 'system'" :size="14" /></span>
           <span class="theme-copy"><strong>{{ option.name }}</strong><small>{{ option.description }}</small></span><Check v-if="preference === option.id" class="theme-check" :size="16" aria-hidden="true" />
         </label>

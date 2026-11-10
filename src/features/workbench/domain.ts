@@ -1,9 +1,11 @@
 import type { AutomationData, CatchupData, JiraIssue, MergeData } from '../../../shared/hub';
 import { isCurrentStepResult, type ExecutionDashboard } from '../../../shared/design-execution';
-import type { AgentRun } from '../../../shared/agent-runtime';
+import type { AgentRun, AgentWorkflowSummary } from '../../../shared/agent-runtime';
+import { teamDeliveryEvidence } from '../../../shared/agent-workflow-evidence';
 import type { RequirementDevelopmentRecord, RequirementProgress } from '../../../shared/requirement-development';
-import { deliveryAcceptanceStatus, type DeliveryAcceptanceRecord, type DeliveryAcceptanceStatus } from '../../../shared/delivery-acceptance';
+import { deliveryAcceptanceStatus, type DeliveryAcceptanceRecord, type DeliveryAcceptanceStatus, type DeliveryEvidence } from '../../../shared/delivery-acceptance';
 import { jiraIssueKey, type JiraFixRecord } from '../../../shared/jira-fix';
+import { groupRunStatus, groupProgressText, type GroupExecutionProgress } from '../../../shared/agent-group-chat';
 import { plannedOn } from '../../shared/task-schedule';
 import { agentRunProjectPath, buildAgentConversations } from '../agent-workbench/conversation';
 
@@ -27,13 +29,20 @@ export interface DeliveryRecord {
   acceptanceStatus?: DeliveryAcceptanceStatus;
   acceptanceKnown?: boolean;
   requirementProgress?: RequirementProgress;
+  reportedEvidence?: DeliveryEvidence;
+  acceptanceOverview?: {
+    summary: string; reviews: string[];
+    criteria: { id: string; text: string; status: string; evidence: string }[];
+  };
+  workflowActive?: boolean;
+  groupRoomId?: string; groupProgress?: GroupExecutionProgress;
 }
 /** 历史记录不可充当运行心跳；当前状态只使用已关联 Jira 和本机运行快照，不按标题猜关联。 */
 export function reconcileDeliveryRecords(records: DeliveryRecord[], issues: JiraIssue[], runs: AgentRun[],
-  options: { includeStandalone?: boolean; runtimeKnown?: boolean; acceptances?: DeliveryAcceptanceRecord[]; acceptanceKnown?: boolean } = {}) {
+  options: { includeStandalone?: boolean; runtimeKnown?: boolean; acceptances?: DeliveryAcceptanceRecord[]; acceptanceKnown?: boolean; workflows?: AgentWorkflowSummary[] } = {}) {
   const jira = new Map(issues.map(issue => [issue.key.toUpperCase(), issue]));
   const acceptances = new Map((options.acceptances || []).map(record => [record.recordId, record]));
-  const conversations = buildAgentConversations(runs);
+  const conversations = buildAgentConversations(runs.filter(run => run.team?.interactionMode !== 'group'));
   const direct = (record: DeliveryRecord) => {
     const source = record.sourceId ? conversations.filter(group => group.runs.some(run => run.task?.sourceId === record.sourceId)) : [];
     return source.length ? source : conversations.filter(group => group.runs.some(run => run.id === (record.runId || record.threadId)));
@@ -67,20 +76,25 @@ export function reconcileDeliveryRecords(records: DeliveryRecord[], issues: Jira
     const related = (associated.get(record.id) || []).flatMap(group => group.runs)
       .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
     const latest = related.find(run => run.status === 'running') || related.find(run => run.status === 'queued') || related[0];
-    const agentStatus = options.runtimeKnown === false ? undefined : latest?.status;
+    const team = teamDeliveryEvidence(latest, runs, options.workflows);
+    const agentStatus = options.runtimeKnown === false ? undefined : record.groupProgress ? groupRunStatus(record.groupProgress) : latest?.status;
     const active = ['running', 'queued'].includes(agentStatus || '') ? agentStatus : undefined;
     const done = linked.length > 0 && linked.length === record.issueKeys.length
       && linked.every(issue => /^(done|完成|已完成|关闭|已关闭|resolved|closed)$/i.test(issue.statusCategory) || /^(done|完成|已完成|关闭|已关闭|resolved|closed)$/i.test(issue.status));
     const launchStatus = !latest && record.sourceKind === 'launch' && record.sourceKnown !== false
       ? ['failed', 'uncertain'].includes(record.status) ? 'blocked' : ['preparing', 'starting'].includes(record.status) ? 'pending' : undefined : undefined;
-    const currentStatus = active || (done ? 'completed' : record.source === '合入审核' && recordGroup(record.status) === 'review' ? 'review' : agentStatus === 'failed' ? 'blocked'
+    const currentStatus = record.groupProgress && options.runtimeKnown !== false
+      ? active || (['failed', 'paused'].includes(record.groupProgress.state) ? 'blocked' : record.groupProgress.state === 'completed' ? 'ended' : record.groupProgress.state)
+      : active || (done ? 'completed' : record.source === '合入审核' && recordGroup(record.status) === 'review' ? 'review' : agentStatus === 'failed' ? 'blocked'
       : linked.length ? 'pending' : launchStatus || (agentStatus === 'completed' ? 'ended' : agentStatus) || 'unknown');
     const result: DeliveryRecord = { ...record, currentStatus, jiraSubtask, jiraStatuses: linked.map(issue => ({ key: issue.key, status: issue.status })),
       agentStatus, agentStateKnown: options.runtimeKnown !== false, agentRuns: related, runId: latest?.id || record.runId,
       threadId: record.threadId || (latest?.provider === 'codex' ? latest.sessionId || latest.originSessionId || '' : ''),
       project: record.project || (latest ? agentRunProjectPath(latest) : ''),
       workspacePath: record.workspacePath || latest?.workspacePath || '', branch: record.branch || latest?.branch || '',
-      updatedAt: latest && Date.parse(latest.updatedAt) > (Date.parse(record.updatedAt) || 0) ? latest.updatedAt : record.updatedAt };
+      ...(team ? { reportedEvidence: team.checks, workflowActive: team.active } : {}),
+      updatedAt: [record.updatedAt, latest?.updatedAt || '', team?.updatedAt || ''].filter(Boolean)
+        .sort((left, right) => Date.parse(right) - Date.parse(left))[0]! };
     const acceptance = acceptances.get(record.id);
     return { ...result, acceptance, acceptanceKnown: options.acceptanceKnown !== false,
       acceptanceStatus: deliveryAcceptanceStatus(acceptance, { runId: result.runId || '', updatedAt: result.updatedAt }) };
@@ -89,6 +103,7 @@ export function reconcileDeliveryRecords(records: DeliveryRecord[], issues: Jira
 export function agentRunPath(id: string) { return `/agent?run=${encodeURIComponent(id)}`; }
 export function agentStatusLabel(status?: string) { return status === 'completed' ? '本轮已结束' : undefined; }
 export function deliveryStatusLabel(record: DeliveryRecord) {
+  if (record.groupProgress) return groupProgressText(record.groupProgress);
   if (record.sourceKind === 'agent') return agentStatusLabel(record.status);
   if (record.sourceKind === 'launch') return ({ preparing: '准备中', starting: '启动中', started: '已启动', uncertain: '启动状态待核实' } as Record<string, string>)[record.status];
   return undefined;
@@ -98,13 +113,13 @@ export function launchDeliveryRecords(requirements: RequirementDevelopmentRecord
   return [...new Map([
     ...requirements.map(record => ({ id: `requirement:${record.id}`, sourceId: `requirement:${record.id}`, source: '需求开发', sourceKind: 'launch' as const,
       sourceKnown: known.requirements !== false, issueKeys: keys(jiraIssueKey(record.input.issueKey), ...(record.progress?.issueKeys || [])), title: record.input.title,
-      status: record.status, threadId: '', workspacePath: record.workspacePath, project: record.input.project, branch: record.input.branch,
-      updatedAt: record.progress?.updatedAt || record.createdAt, result: '', error: record.error, detailPath: '/design', links: [], runId: record.runId,
+      status: record.status, threadId: '', groupRoomId: record.groupRoomId, groupProgress: record.groupProgress, workspacePath: record.workspacePath, project: record.input.project, branch: record.input.branch,
+      updatedAt: record.progress?.updatedAt || record.createdAt, result: '', error: record.error || record.groupProgress?.error || '', detailPath: record.groupRoomId ? `/agent?group=1&room=${encodeURIComponent(record.groupRoomId)}` : '/design', links: [], runId: record.runId,
       requirementProgress: record.progress })),
     ...fixes.map(record => ({ id: `jira-fix:${record.id}`, sourceId: `jira-fix:${record.id}`, source: 'Jira 修复', sourceKind: 'launch' as const,
       sourceKnown: known.fixes !== false, issueKeys: keys(record.issue?.key || jiraIssueKey(record.input.issueKey)), title: record.issue?.summary || record.input.issueKey,
-      status: record.status, threadId: '', workspacePath: record.workspacePath, project: record.issue?.project || '', branch: record.input.branch,
-      updatedAt: record.createdAt, result: '', error: record.error, detailPath: '/agent?view=jira-fix', links: [], runId: record.runId })),
+      status: record.status, threadId: '', groupRoomId: record.groupRoomId, groupProgress: record.groupProgress, workspacePath: record.workspacePath, project: record.issue?.project || '', branch: record.input.branch,
+      updatedAt: record.createdAt, result: '', error: record.error || record.groupProgress?.error || '', detailPath: record.groupRoomId ? `/agent?group=1&room=${encodeURIComponent(record.groupRoomId)}` : '/agent?view=jira-fix', links: [], runId: record.runId })),
   ].map(record => [record.id, record])).values()];
 }
 export type DeliveryRecordFilter = 'actionable' | 'running' | 'review' | 'blocked' | 'results' | 'all';
@@ -123,14 +138,34 @@ export function recordGroup(status: string) {
 export function hasDeliveryResult(record: DeliveryRecord) {
   return !!record.result.trim() || !!record.error.trim() || record.links.length > 0 || !!record.agentRuns?.some(run => run.result || run.error);
 }
+/** 失败但从未创建运行的旧 Jira 修复启动记录只保留在历史结果中，不再占用当前待处理区。 */
+function isHistoricalJiraFixLaunchFailure(record: DeliveryRecord) {
+  const updatedAt = Date.parse(record.updatedAt);
+  const oneWeekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  return record.source === 'Jira 修复' && record.sourceKind === 'launch' && record.status === 'failed'
+    && !record.runId && Number.isFinite(updatedAt) && updatedAt < oneWeekAgo;
+}
 export function recordMatchesFilter(record: DeliveryRecord, filter: DeliveryRecordFilter) {
   const group = recordGroup(record.currentStatus ?? record.status);
   if (filter === 'all') return true;
   if (filter === 'results') return hasDeliveryResult(record);
+  if (isHistoricalJiraFixLaunchFailure(record)) return false;
   // 子任务只保留历史和真实 Agent 活动，不再仅凭 Jira 或旧失败记录产生待办。
   if (record.jiraSubtask && !['running', 'queued'].includes(record.agentStatus || '')) return false;
   if (filter === 'actionable') return ['running', 'review', 'blocked'].includes(group) || ['pending', 'queued'].includes(record.currentStatus || '');
   return group === filter;
+}
+export type DeliveryRecordState = 'pending' | 'running' | 'review' | 'blocked' | 'history' | 'unknown';
+/** 顶部按当前状态互斥分类；有结果或错误信息不代表本轮已经结束。 */
+export function deliveryRecordState(record: DeliveryRecord): DeliveryRecordState {
+  for (const state of ['running', 'review', 'blocked'] as const) {
+    if (recordMatchesFilter(record, state)) return state;
+  }
+  if (recordMatchesFilter(record, 'actionable')) return 'pending';
+  return record.currentStatus === 'unknown' ? 'unknown' : 'history';
+}
+export function workbenchDismissalKey(record: DeliveryRecord) {
+  return JSON.stringify([record.id, record.runId ?? '', record.updatedAt]);
 }
 export function deliveryRecordCount(records: DeliveryRecord[], filter: DeliveryRecordFilter,
   readiness: { incomplete: boolean; runtimeKnown: boolean }) {

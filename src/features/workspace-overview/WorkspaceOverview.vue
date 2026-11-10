@@ -1,9 +1,9 @@
 <script setup lang="ts">
-/** 总览只汇总独立来源，不用 Mastra 演示状态替代 Jira、Git 或真实调度结论。 */
+/** 总览汇总 Jira 任务、本地项目与 Git、以及 AI 自动交付队列状态。 */
 import { computed, inject } from 'vue';
 import { agentWorkspaceContext } from '../../shared/agent-workspace-context';
-import { ArrowUpRight, GitMerge, CalendarDays, Terminal, FolderGit2, ChevronRight, TriangleAlert, Clock3 } from '@lucide/vue';
-import type { AutomationData, CatchupData, MergeData, IssueResponse, ProjectsData } from '../../../shared/hub';
+import { ArrowUpRight, CalendarDays, Terminal, FolderGit2, ChevronRight, Clock3, Settings2 } from '@lucide/vue';
+import type { AutomationData, IssueResponse, ProjectsData } from '../../../shared/hub';
 import { useSource } from '../../shared/api';
 import { isDone, dateTime } from '../../shared/format';
 import PageHeading from '../../shared/ui/PageHeading.vue';
@@ -11,40 +11,49 @@ import MetricStrip from '../../shared/ui/MetricStrip.vue';
 import StatusPill from '../../shared/ui/StatusPill.vue';
 const automation = useSource<AutomationData>('automation');
 const workspace = inject(agentWorkspaceContext, undefined);
-const catchup = useSource<CatchupData>('catchup');
-const merge = useSource<MergeData>('merge');
 const issues = useSource<IssueResponse>('issues', { allTime: 'true', includeSubtasks: 'true', includeDone: 'true', maxResults: '5000' });
 const projects = useSource<ProjectsData>('projects');
+const dirtyProjects = computed(() => (projects.data.value?.projects || []).filter(item => !item.clean));
 const metrics = computed(() => [
   { label: '我的 Jira 任务', value: issues.data.value?.issues.length, note: issues.data.value ? `未完成 ${issues.data.value.issues.filter((item) => !isDone(item)).length} 项 · ${issues.data.value.source} 来源` : '正在连接 Jira', tone: 'primary' },
-  { label: '重构追平需求', value: merge.data.value?.items.length, note: `独立需求与工作区 · ${catchup.data.value?.domains.length ?? '—'} 个业务域` },
-  { label: '等待人工审核', value: merge.data.value?.summary.AWAITING_REVIEW, note: '功能与截图待确认，不占执行并发', tone: 'warning' },
-  { label: 'Git 已合入', value: merge.data.value?.summary.merged, note: `自测已通过 ${merge.data.value?.summary.APPROVED ?? '—'} 项 · 两项状态独立`, tone: 'success' },
+  { label: '本地项目工作区', value: projects.data.value?.projects.length, note: projects.data.value ? `存在未提交改动 ${dirtyProjects.value.length} 个` : '扫描本地目录中' },
+  { label: '自动交付队列', value: automation.data.value?.jobs.length, note: automation.data.value?.settings.enabled ? '定时巡检已启用' : '定时巡检已暂停', tone: 'warning' },
+  { label: '已巡检执行记录', value: automation.data.value?.runs.length, note: `下次巡检：${dateTime(automation.data.value?.nextRun)}`, tone: 'success' },
 ]);
-const attention = computed(() => (merge.data.value?.items || []).filter((item) => ['AWAITING_REVIEW', 'BLOCKED'].includes(item.status)).sort((a, b) => Number(b.status === 'AWAITING_REVIEW') - Number(a.status === 'AWAITING_REVIEW')));
+const recentJobs = computed(() => (automation.data.value?.jobs || []).slice(0, 6));
 const recentIssues = computed(() => issues.data.value?.issues.slice(0, 5) || []);
-const queries = [automation, catchup, merge, issues, projects];
+const queries = [automation, issues, projects];
 const errors = computed(() => queries.filter((query) => query.error.value).map((query) => query.error.value?.message));
 const refresh = () => Promise.all(queries.map((query) => query.refetch()));
 const shortcuts = computed(() => [
-  { title: '任务日历', description: '日历、列表与统计', value: issues.data.value?.issues.length, path: '/tasks/calendar', icon: CalendarDays },
-  { title: '本地项目', description: '代码、分支与工作区', value: projects.data.value?.projects.length, path: '/projects', icon: FolderGit2 },
-  { title: 'Codex 队列', description: '会话、结果与执行证据', value: automation.data.value?.jobs.length, path: '/delivery/queue', icon: Terminal },
-  { title: '分支合入', description: '真实自测、审核与交付', value: merge.data.value?.items.length, path: '/catchup/merge', icon: GitMerge },
+  { title: '本地项目与 Git', description: '选文件夹、代码浏览、分支与提交推送', value: projects.data.value?.projects.length, path: '/projects', icon: FolderGit2 },
+  { title: '任务日历', description: 'Jira 日历、列表与统计', value: issues.data.value?.issues.length, path: '/tasks/calendar', icon: CalendarDays },
+  { title: '执行队列', description: 'Jira 需求/缺陷自动派发与执行记录', value: automation.data.value?.jobs.length, path: '/delivery/queue', icon: Terminal },
+  { title: '交付与连接设置', description: '配置 Jira、CLI 模型、思考强度与自动策略', value: automation.data.value?.settings.enabled ? 'ON' : 'OFF', path: '/settings', icon: Settings2 },
 ]);
 </script>
 <template>
-  <PageHeading title="工作总览" description="把任务、代码、AI 执行和交付进度放在一个工作空间里。" :loading="queries.some((query) => query.isFetching.value)" @refresh="refresh" />
-  <el-alert v-for="error in errors" :key="error" class="section-alert" :title="error" type="error" :closable="false" show-icon />
+  <PageHeading title="工作总览" description="把本地项目 Git 管理、Jira 任务、AI 编码和自动交付放在一个工作空间里。" :loading="queries.some((query) => query.isFetching.value)" @refresh="refresh" />
+  <el-alert
+    v-for="error in errors"
+    :key="error"
+    class="section-alert"
+    :title="error?.includes('未配置鉴权') ? 'Jira 尚未配置连接凭据，请前往「交付与连接设置」填写 Jira 地址与 API Token' : error"
+    :type="error?.includes('未配置鉴权') ? 'info' : 'error'"
+    :closable="false"
+    show-icon
+  />
   <MetricStrip :items="metrics" />
-  <div class="overview-grid">
-    <section class="surface attention-panel"><div class="surface-header"><div><h2>需要你关注 <span>{{ attention.length }}</span></h2><p>待审核与阻塞优先，点击查看完整结果和真实截图</p></div><RouterLink to="/catchup/merge" class="hub-link">查看全部 <ChevronRight :size="13" /></RouterLink></div><div v-if="merge.isPending.value" class="surface-body"><el-skeleton :rows="5" animated /></div><div v-else class="attention-list"><RouterLink v-for="item in attention.slice(0, 6)" :key="item.requirementId" :to="`/catchup/merge?requirement=${item.requirementId}`"><span class="attention-icon" :class="item.status === 'BLOCKED' ? 'danger' : ''"><TriangleAlert v-if="item.status === 'BLOCKED'" :size="17" /><Clock3 v-else :size="17" /></span><div><strong>{{ item.title }}</strong><small>{{ item.requirementId }} · {{ item.jiraKey }} · {{ item.pipeline.error || '已有证据待人工确认' }}</small></div><StatusPill :value="item.status" /><ChevronRight :size="14" /></RouterLink><el-empty v-if="!attention.length" description="当前没有待审核或阻塞需求" :image-size="60" /></div></section>
-    <section class="surface progress-panel"><div class="surface-header"><h2>追平交付进度</h2><span class="row-mono">{{ merge.data.value?.summary.sequenceTotal ?? '—' }} 项执行范围</span></div><div class="surface-body"><div class="delivery-progress"><strong>{{ merge.data.value?.summary.APPROVED ?? '—' }}<small> / {{ merge.data.value?.summary.sequenceTotal ?? '—' }}</small></strong><span>自测已通过</span></div><el-progress :percentage="merge.data.value?.summary.progressPercent ?? 0" :stroke-width="8" :show-text="false" color="var(--ui-accent)" /><div class="progress-legend"><div><i class="approved"></i>自测已通过<b>{{ merge.data.value?.summary.APPROVED ?? '—' }}</b></div><div><i class="waiting"></i>等待审核<b>{{ merge.data.value?.summary.AWAITING_REVIEW ?? '—' }}</b></div><div><i class="blocked"></i>阻塞待处理<b>{{ merge.data.value?.summary.BLOCKED ?? '—' }}</b></div><div><i></i>暂缓需求<b>{{ merge.data.value?.summary.HOLD ?? '—' }}</b></div></div><div class="target-note"><span>统一合入目标</span><code>{{ merge.data.value?.target.branch || '读取中' }}</code></div></div></section>
-  </div>
   <div v-if="!workspace" class="quick-entry-grid"><RouterLink v-for="item in shortcuts" :key="item.path" :to="item.path" class="surface"><span class="entry-icon"><component :is="item.icon" :size="20" /></span><div><strong>{{ item.title }}</strong><small>{{ item.description }}</small></div><span class="entry-count">{{ item.value ?? '—' }}</span><ArrowUpRight :size="15" /></RouterLink></div>
   <div class="overview-grid">
-    <section class="surface"><div class="surface-header"><div><h2>最近更新的 Jira 任务</h2><p>当前查询来源：{{ issues.data.value?.source || '读取中' }}，不使用巡检计划替代实时任务</p></div><RouterLink to="/tasks/list" class="hub-link">全部任务</RouterLink></div><el-table :data="recentIssues"><el-table-column label="任务" min-width="280"><template #default="{ row }"><RouterLink :to="`/tasks/list?q=${row.key}`" class="row-title">{{ row.summary }}</RouterLink><span class="row-secondary">{{ row.key }} · {{ row.projectName }}</span></template></el-table-column><el-table-column label="状态" width="110"><template #default="{ row }"><StatusPill :value="row.status" /></template></el-table-column><el-table-column label="更新时间" width="125"><template #default="{ row }"><span class="row-mono">{{ dateTime(row.updated) }}</span></template></el-table-column></el-table></section>
-    <section class="surface"><div class="surface-header"><h2>数据与运行状态</h2></div><div class="source-statuses"><div><span>原系统自动巡检</span><b>{{ automation.data.value?.settings.enabled ? '已启用' : automation.data.value ? '已暂停' : '读取中' }}</b></div><div><span>追平调度心跳</span><b>{{ dateTime(catchup.data.value?.dispatcher.lastHeartbeatAt) }}</b></div><div><span>本地工作区扫描</span><b>{{ projects.data.value ? `${projects.data.value.projects.length} 个工作区` : projects.error.value ? '读取失败' : '扫描中' }}</b></div><p v-if="automation.data.value?.lastRun?.source === 'mock'" class="overview-warning">执行计划最近一次巡检使用模拟来源；查看真实任务请进入任务日历。</p><RouterLink to="/settings" class="hub-link">查看全部设置 <ArrowUpRight :size="13" /></RouterLink></div></section>
+    <div class="overview-main">
+      <section class="surface attention-panel"><div class="surface-header"><div><h2>自动交付任务队列 <span>{{ recentJobs.length }}</span></h2><p>Jira 任务自动派发、分支创建与状态流转记录</p></div><RouterLink to="/delivery/queue" class="hub-link">查看队列 <ChevronRight :size="13" /></RouterLink></div><div v-if="automation.isPending.value" class="surface-body"><el-skeleton :rows="5" animated /></div><div v-else class="attention-list"><RouterLink v-for="item in recentJobs" :key="item.id" to="/delivery/queue"><span class="attention-icon"><Clock3 :size="17" /></span><div><strong>{{ item.title || item.issueKey }}</strong><small>{{ item.issueKey }} · {{ item.branch || '待分配分支' }} · {{ item.categoryLabel || item.status }}</small></div><StatusPill :value="item.status" /><ChevronRight :size="14" /></RouterLink><el-empty v-if="!recentJobs.length" description="当前队列暂无自动交付任务，可在交付设置或执行计划中开启" :image-size="60" /></div></section>
+      <section class="surface"><div class="surface-header"><div><h2>最近更新的 Jira 任务</h2><p>当前查询来源：{{ issues.data.value?.source || '读取中' }}</p></div><RouterLink to="/tasks/list" class="hub-link">全部任务</RouterLink></div><el-table :data="recentIssues"><el-table-column label="任务" min-width="280"><template #default="{ row }"><RouterLink :to="`/tasks/list?q=${row.key}`" class="row-title">{{ row.summary }}</RouterLink><span class="row-secondary">{{ row.key }} · {{ row.projectName }}</span></template></el-table-column><el-table-column label="状态" width="110"><template #default="{ row }"><StatusPill :value="row.status" /></template></el-table-column><el-table-column label="更新时间" width="125"><template #default="{ row }"><span class="row-mono">{{ dateTime(row.updated) }}</span></template></el-table-column></el-table></section>
+    </div>
+    <aside class="overview-aside" aria-label="工作区连接与项目">
+      <section class="surface"><div class="surface-header"><h2>运行与连接状态</h2></div><div class="source-statuses"><div><span>Jira 自动巡检</span><b>{{ automation.data.value?.settings.enabled ? '已启用' : automation.data.value ? '已暂停' : '读取中' }}</b></div><div><span>自动创建 AI 任务</span><b>{{ automation.data.value?.settings.autoCreateCodex ? '开启' : '关闭' }}</b></div><div><span>自动推进 Jira 状态</span><b>{{ automation.data.value?.settings.autoTransitionJira ? '开启' : '关闭' }}</b></div><div><span>自动创建合并请求</span><b>{{ automation.data.value?.settings.autoCreateMergeRequest ? '开启' : '关闭' }}</b></div><div><span>本地工作区扫描</span><b>{{ projects.data.value ? `${projects.data.value.projects.length} 个工作区` : projects.error.value ? '读取失败' : '扫描中' }}</b></div><RouterLink to="/settings" class="hub-link">配置连接与自动交付策略 <ArrowUpRight :size="13" /></RouterLink></div></section>
+      <section class="surface"><div class="surface-header"><div><h2>本地项目与改动</h2><p>点击进入项目查看代码、分支、Diff 与提交推送</p></div><RouterLink to="/projects" class="hub-link">管理项目</RouterLink></div><div class="attention-list"><RouterLink v-for="proj in (projects.data.value?.projects || []).slice(0, 5)" :key="proj.path" :to="`/projects?q=${encodeURIComponent(proj.displayName || proj.projectName)}`"><span class="attention-icon"><FolderGit2 :size="17" /></span><div><strong>{{ proj.displayName || proj.projectName }}</strong><small>{{ proj.branch }} · {{ proj.displayPath }}</small></div><StatusPill :value="proj.clean ? 'completed' : 'warning'" :label="proj.clean ? '干净' : `${proj.changed} 项改动`" /><ChevronRight :size="14" /></RouterLink><el-empty v-if="!(projects.data.value?.projects || []).length" description="暂未扫描到项目，请前往本地项目选择文件夹" :image-size="56" /></div></section>
+    </aside>
   </div>
 </template>
 <style scoped>

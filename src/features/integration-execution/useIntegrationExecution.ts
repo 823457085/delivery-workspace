@@ -7,6 +7,7 @@ import type { ApexBffReviewState } from '../../../shared/apex-bff-review';
 import { integrationDeferral, integrationScopeCategory } from '../../../shared/apex-integration-scope';
 import { agentWorkspaceContext } from '../../shared/agent-workspace-context';
 import { useAgentRuntimeSnapshot } from '../../shared/useAgentRuntimeSnapshot';
+import { agentModelDefaults } from '../../shared/agent-model-defaults';
 import { buildReviewCatalog } from '../api-integration/review-catalog';
 import { readIntegrationCatalog, useIntegrationCatalog } from '../api-integration/useIntegrationCatalog';
 import { activeExecution, buildExecutionTasks, createExecutionInput, currentExecutionProgress, executionIssueDeferral, executionRequest, progressUrl, taskInterfaces,
@@ -46,7 +47,7 @@ export function useIntegrationExecution() {
   const tasks = computed(() => buildExecutionTasks(catalog.value, reviews.data.value ?? {}, snapshot.data.value?.plan.automation.assignee).map(task => {
     const ledger = currentExecutionProgress(snapshot.data.value?.ledgers[task.id]);
     const items = taskInterfaces(task, ledger, reviews.data.value ?? {});
-    const executable = items.filter(item => item.category !== '暂不联调');
+    const executable = items.filter(item => item.category === '本轮联调');
     const run = activeExecution(runs.value, task.id) || runs.value.find(entry => executionRequest(entry)?.taskId === task.id);
     const event = run?.events.filter(entry => ['message', 'diagnostic', 'lifecycle'].includes(entry.type)).at(-1)?.message;
     const current = run && (ledger?.updatedAt || '') < run.createdAt ? event || '已入队，等待更新现场进度' : ledger?.current || '尚未开始';
@@ -57,7 +58,7 @@ export function useIntegrationExecution() {
     };
   }));
   const interfaces = computed(() => tasks.value.flatMap(task => taskInterfaces(task, task.progress, reviews.data.value ?? {})));
-  const executableInterfaces = computed(() => interfaces.value.filter(item => item.category !== '暂不联调'));
+  const executableInterfaces = computed(() => interfaces.value.filter(item => item.category === '本轮联调'));
   const aggregate = computed<ExecutionProgress | undefined>(() => {
     if (!snapshot.data.value) return;
     const ledgers = tasks.value.map(task => task.progress).filter((value): value is ExecutionProgress => !!value);
@@ -107,8 +108,8 @@ export function useIntegrationExecution() {
         const ledger = data.ledgers[taskId];
         if (!ledger) throw new Error(`${task.title}台账尚未初始化`);
         const reconciled = { ...ledger, interfaces: taskInterfaces(task, ledger, records) };
-        if (request.kind === 'integration' && !reconciled.interfaces.some(item => item.category !== '暂不联调' && item.status === '待执行' && item.request.startsWith('GET '))) continue;
-        const input = createExecutionInput(reconciled, task.items, records, codex, { ...request, taskId, requestId: crypto.randomUUID() });
+        if (request.kind === 'integration' && !reconciled.interfaces.some(item => item.category === '本轮联调' && item.status === '待执行' && item.request.startsWith('GET '))) continue;
+        const input = createExecutionInput(reconciled, task.items, records, codex, { ...request, taskId, requestId: crypto.randomUUID() }, agentModelDefaults.value);
         const run = await post('/api/agent-runtimes/runs', input);
         dashboard.runs.unshift(run);
         observe(run);

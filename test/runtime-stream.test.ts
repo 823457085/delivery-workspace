@@ -7,6 +7,7 @@ import path from 'node:path';
 import { createAgentRuntimeStream } from '../server/agent-runtime-stream.js';
 import { createAgentRuntimeService, type AgentRuntimeAdapter } from '../server/agent-runtime.js';
 import { createRuntimeRefresh, createRuntimeStreamState } from '../src/features/agent-workbench/runtime-stream-state.js';
+import { agentConversationContinuation, buildAgentConversations } from '../src/features/agent-workbench/conversation.js';
 import type { AgentRun, AgentRuntimeDashboard } from '../shared/agent-runtime.js';
 
 const run = (id: string, result = '', status: AgentRun['status'] = 'running'): AgentRun => ({ id, result, status, provider: 'codex',
@@ -84,6 +85,22 @@ test('首屏及慢快照不能覆盖更新正文，完成事件清除运行锁�
   assert.equal(state.snapshot(snapshot(1, [run('a', '慢响应')])).runs[0].result, '完成');
   assert.equal(state.receive(2, [run('a', '乱序')], complete)!.runs.find(item => item.id === 'a')?.result, '完成');
   assert.deepEqual(state.snapshot(snapshot(4, [])).runs, []);
+});
+
+test('同毫秒新增运行在 SSE 中保持队尾执行器，旧轮正文更新不改变发送顺序', () => {
+  const state = createRuntimeStreamState();
+  const active = { ...run('codex-active'), conversationId: 'conversation', createdAt: '2026-10-19T00:00:00.000Z' };
+  const queued = { ...active, id: 'cursor-queued', provider: 'cursor' as const, status: 'queued' as const };
+  const initial = snapshot(1, [active]);
+  const switched = state.receive(2, [queued], initial)!;
+  assert.deepEqual(switched.runs.map(item => item.id), [queued.id, active.id]);
+  assert.equal(agentConversationContinuation(buildAgentConversations(switched.runs)[0]).provider, 'cursor');
+  const updated = state.receive(3, [{ ...active, result: '继续输出' }], switched)!;
+  assert.deepEqual(updated.runs.map(item => item.id), [queued.id, active.id]);
+  assert.equal(agentConversationContinuation(buildAgentConversations(updated.runs)[0]).id, queued.id);
+  const slow = state.snapshot(initial);
+  assert.deepEqual(slow.runs.map(item => item.id), [queued.id, active.id]);
+  assert.equal(slow.runs[1].result, '继续输出');
 });
 
 test('连续刷新不打断在途请求，只在完成后补一次；卸载后不再刷新', async () => {

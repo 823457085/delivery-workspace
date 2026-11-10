@@ -23,6 +23,20 @@ test('运行记录按 parentRunId 聚合为连续会话并按最新更新时间�
   assert.equal(conversations[0].title, 'message-child-2');
 });
 
+test('需求开发和 Jira 修复会话只用任务摘要作默认标题，保留原始提示词和手动标题', () => {
+  const marker = 'JIRA_DEV_TASK_ID: f1c038de-065e-4b7c-9c0f-4c682f28b2d2';
+  for (const title of ['需求开发 · VMS-748 · 拆分商家账户', 'Jira 修复 · VMS-749 · 修复结算', '需求开发']) {
+    const objective = [title, marker, '完整执行指令'].join('\r\n\r\n');
+    const task = { ...run('task'), objective };
+    const [conversation] = buildAgentConversationList([task], [], {});
+    assert.equal(conversation.title, title);
+    assert.equal(conversation.runs[0].objective, objective);
+    assert.equal(buildAgentConversationList([task], [], {}, { task: '我的手动标题' })[0].title, '我的手动标题');
+    const quoted = '请检查这段内容：\n' + objective;
+    assert.equal(buildAgentConversations([{ ...task, objective: quoted }])[0].title, quoted);
+  }
+});
+
 test('乱序执行时以活跃或最后更新的运行作为会话最新轮次，消息仍按创建顺序显示', () => {
   const earlier = { ...run('356142ee', '', '2026-10-09T03:52:49.000Z'), conversationId: 'conversation-one',
     status: 'running' as const, updatedAt: '2026-10-09T04:08:24.923Z' };
@@ -123,8 +137,8 @@ test('超过 50 条后发送，根运行被淘汰仍能定位发送前选中的�
 });
 
 test('SSE 先到或发送期间切换会话，只迁移原会话，不抢占其他会话', () => {
-  const before = buildAgentConversations([run('root'), run('child', 'root'), run('other')]);
-  const after = buildAgentConversations([run('child', 'root'), run('next', 'child'), run('other')]);
+  const before = buildAgentConversations([run('other'), run('child', 'root'), run('root')]);
+  const after = buildAgentConversations([run('other'), run('next', 'child'), run('child', 'root')]);
   assert.equal(reconcileAgentConversation(after, 'root', before)?.id, 'child');
   assert.equal(reconcileAgentConversation(after, 'other', before)?.id, 'other');
   assert.equal(reconcileAgentConversation([before.find(item => item.id === 'other')!], 'root', before), undefined);
@@ -239,6 +253,22 @@ test('历史详情未读取时先显示会话摘要，不以空白骨架屏遮�
   assert.equal(agentConversationStatus(conversation).value, 'history');
   assert.equal(agentConversationStatus(conversation).label, '已同步');
   assert.equal(agentRunStatus(conversation.runs[0]).label, '历史记录');
+});
+
+test('同步会话标题隐藏 Delivery Workspace 内部包装，只显示用户任务', () => {
+  const session: CodexSessionSummary = { id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+    title: '你由 Delivery Workspace 以只读模式调用。请基于仓库事实回答问题。不得修改文件、运行会产生写入的命令、提交、推送或更改外部系统。用户任务如下：\n\n同步下最新的代码',
+    preview: '已完成', workspacePath: '/repo', branch: 'feature/test', headSha: 'abc', model: 'test-model', reasoningEffort: 'high', archived: false,
+    createdAt: '2026-09-16T00:00:00.000Z', updatedAt: '2026-09-16T00:01:00.000Z' };
+  assert.equal(buildAgentConversationList([], [session], {})[0].title, '同步下最新的代码');
+});
+
+test('新格式同步标题优先取任务段，不把执行上下文带进标题', () => {
+  const session: CodexSessionSummary = { id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+    title: '用户任务如下：\n\n检查当前页面\n\n工作台执行上下文：你由 Delivery Workspace 以只读模式调用。',
+    preview: '已完成', workspacePath: '/repo', branch: 'feature/test', headSha: 'abc', model: 'test-model', reasoningEffort: 'high', archived: false,
+    createdAt: '2026-09-16T00:00:00.000Z', updatedAt: '2026-09-16T00:01:00.000Z' };
+  assert.equal(buildAgentConversationList([], [session], {})[0].title, '检查当前页面');
 });
 
 test('已读取的 Codex 历史会话使用最后一次用户提问作为标题', () => {

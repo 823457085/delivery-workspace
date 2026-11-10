@@ -5,6 +5,7 @@
  */
 import { computed, shallowRef } from 'vue';
 import { CalendarClock, Play, RefreshCw, Settings2, Zap } from '@lucide/vue';
+import type { AgentRun } from '../../../shared/agent-runtime';
 import type { AutomationData, Job } from '../../../shared/hub';
 import { automationSubtaskKeys, isAutomationSubtaskJob } from '../../../shared/automation-policy.mjs';
 import { dateTime } from '../../shared/format';
@@ -14,10 +15,11 @@ import { deliveryJobQuickPrompt } from './agent-quick-actions';
 import AgentWeeklyReportCard from './AgentWeeklyReportCard.vue';
 import AgentDailyReportCard from './AgentDailyReportCard.vue';
 
-const props = defineProps<{ conversationId?: string; scopedJobs: Job[]; dailyReportAvailable: boolean; dailyReportPending: boolean }>();
-const emit = defineEmits<{ compose: [prompt: string]; generateDailyReport: [date: string] }>();
+const props = defineProps<{ conversationId?: string; scopedJobs: Job[]; dailyReportAvailable: boolean; dailyReportPending: boolean; dailyReportForDate: (date: string) => AgentRun | undefined }>();
+const emit = defineEmits<{ compose: [prompt: string, workspacePath: string]; generateDailyReport: [date: string] }>();
 const query = useSource<AutomationData>('automation');
 const actions = useSourceActions();
+const weeklyGenerating = shallowRef(false);
 const filter = shallowRef<'all' | 'running' | 'blocked'>('all');
 const scope = shallowRef<'conversation' | 'all'>('conversation');
 const allActiveJobs = computed(() => {
@@ -41,33 +43,39 @@ function runScan() {
   void actions.execute('scan', {}, '确认立即巡检', '巡检会按已保存的自动交付设置读取 Jira 和本地项目，并可能创建 Codex 任务、推进 Jira 或创建合并请求。');
 }
 
-function generateWeeklyReport() {
-  void actions.execute('weekly-report', {}, '确认生成周报', '将读取当前用户的 Jira 任务与本地 Agent 运行记录，生成本地周报草稿；不会发布到 Jira 或 Confluence。');
+async function generateWeeklyReport() {
+  if (actions.pending.value || query.data.value?.weeklyReport.running) return;
+  weeklyGenerating.value = true;
+  try {
+    await actions.execute('weekly-report', {}, '确认生成周报', '将读取当前用户的 Jira 任务与本地 Agent 运行记录，生成本地周报草稿；不会发布到 Jira 或 Confluence。');
+  } finally { weeklyGenerating.value = false; }
 }
 </script>
 
 <template>
   <section class="automation-panel" aria-label="Agent 自动化">
-    <AgentDailyReportCard :available="dailyReportAvailable" :pending="dailyReportPending" @generate="emit('generateDailyReport', $event)" />
-    <header v-if="query.data.value" class="automation-summary">
-      <div><span><Zap :size="13" /> Jira 自动维护</span><strong>{{ jiraMaintenanceEnabled ? '策略已启用' : '策略已暂停' }}</strong></div>
-      <StatusPill :value="jiraMaintenanceEnabled ? 'active' : 'paused'" :label="jiraMaintenanceEnabled ? '运行中' : '已暂停'" />
-    </header>
+    <AgentDailyReportCard :available="dailyReportAvailable" :pending="dailyReportPending" :report-for-date="dailyReportForDate" @generate="emit('generateDailyReport', $event)" />
     <el-skeleton v-if="query.isPending.value" :rows="7" animated />
     <div v-else-if="query.error.value" class="automation-empty">{{ query.error.value.message }}</div>
     <template v-else-if="query.data.value">
-      <dl class="automation-facts">
-        <div><dt><CalendarClock :size="12" /> 下次巡检</dt><dd>{{ dateTime(query.data.value.nextRun) }}</dd></div>
-        <div><dt>维护计划</dt><dd>工作日 {{ query.data.value.settings.dailyTimes.join('、') }}</dd></div>
-        <div><dt>执行中</dt><dd>{{ runningCount }} 个任务</dd></div>
-        <div><dt>自动动作</dt><dd>{{ query.data.value.settings.autoCreateCodex ? 'Codex' : '不派发' }} · {{ query.data.value.settings.autoTransitionJira ? 'Jira' : '不改状态' }} · {{ query.data.value.settings.autoCreateMergeRequest ? 'MR' : '不建 MR' }}</dd></div>
-      </dl>
-      <div class="automation-actions">
-        <button type="button" :disabled="actions.pending.value || query.data.value.running" @click="runScan"><Play :size="12" />{{ query.data.value.running ? '巡检中' : '立即巡检' }}</button>
-        <button type="button" :disabled="query.isFetching.value" @click="query.refetch()"><RefreshCw :size="12" />刷新</button>
-        <router-link to="/settings"><Settings2 :size="12" />策略设置</router-link>
-      </div>
-      <AgentWeeklyReportCard :report="query.data.value.weeklyReport" :pending="actions.pending.value" @generate="generateWeeklyReport" />
+      <AgentWeeklyReportCard :report="query.data.value.weeklyReport" :pending="actions.pending.value" :generating="weeklyGenerating" @generate="generateWeeklyReport" />
+      <section class="automation-card">
+        <header class="automation-summary">
+          <div><span><Zap :size="13" /> Jira 自动维护</span><strong>{{ jiraMaintenanceEnabled ? '策略已启用' : '策略已暂停' }}</strong></div>
+          <StatusPill :value="jiraMaintenanceEnabled ? 'active' : 'paused'" :label="jiraMaintenanceEnabled ? '运行中' : '已暂停'" />
+        </header>
+        <dl class="automation-facts">
+          <div><dt><CalendarClock :size="12" /> 下次巡检</dt><dd>{{ dateTime(query.data.value.nextRun) }}</dd></div>
+          <div><dt>维护计划</dt><dd>工作日 {{ query.data.value.settings.dailyTimes.join('、') }}</dd></div>
+          <div><dt>执行中</dt><dd>{{ runningCount }} 个任务</dd></div>
+          <div><dt>自动动作</dt><dd>{{ query.data.value.settings.autoCreateCodex ? 'Codex' : '不派发' }} · {{ query.data.value.settings.autoTransitionJira ? 'Jira' : '不改状态' }} · {{ query.data.value.settings.autoCreateMergeRequest ? 'MR' : '不建 MR' }}</dd></div>
+        </dl>
+        <footer class="automation-actions automation-card-footer">
+          <button type="button" :disabled="actions.pending.value || query.data.value.running" @click="runScan"><Play :size="12" />{{ query.data.value.running ? '巡检中' : '立即巡检' }}</button>
+          <button type="button" :disabled="query.isFetching.value" @click="query.refetch()"><RefreshCw :size="12" />刷新</button>
+          <router-link to="/settings"><Settings2 :size="12" />策略设置</router-link>
+        </footer>
+      </section>
       <div class="automation-heading"><span>待处理任务</span><small>{{ activeJobs.length }} 条</small></div>
       <nav v-if="conversationId" class="automation-scopes" aria-label="自动化任务范围">
         <button type="button" :class="{ active: scope === 'conversation' }" @click="scope = 'conversation'">当前会话 {{ scopedActiveJobs.length }}</button>
@@ -82,7 +90,7 @@ function generateWeeklyReport() {
         <header><span>{{ job.issueKey || job.id }}</span><StatusPill :value="job.status" /></header>
         <strong>{{ job.title }}</strong>
         <small>{{ job.branch || '未识别分支' }} · 尝试 {{ job.attempts }} 次</small>
-        <footer><button type="button" @click="emit('compose', deliveryJobQuickPrompt(job))">带入会话</button><router-link :to="{ path: '/delivery/runs', query: { job: job.id } }">查看运行</router-link></footer>
+        <footer><button type="button" @click="emit('compose', deliveryJobQuickPrompt(job), job.workspacePath)">带入会话</button><router-link :to="{ path: '/delivery/runs', query: { job: job.id } }">查看运行</router-link></footer>
       </article>
       <div v-if="!visibleJobs.length" class="automation-empty">当前筛选下没有自动化任务。</div>
     </template>

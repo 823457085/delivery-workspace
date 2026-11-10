@@ -75,6 +75,23 @@ test('Codex 原会话有 active writer 时显示可操作的中文提示', { tim
   assert.equal(sessionId, 'original-session');
 });
 
+test('新建、续接与分叉均注入任务浏览器，同时保留本轮推理强度和权限配置', { timeout: 5000 }, async () => {
+  const browserConfig = { 'mcp_servers.delivery_browser': { command: '/test/agent-browser', args: ['mcp'],
+    env: { AGENT_BROWSER_CONFIG: '/private/task-browser.json' }, env_vars: [] } };
+  for (const session of [{}, { resumeSessionId: 'original-session' }, { forkSessionId: 'original-session' }]) {
+    const result = await runCodexLiveTurn(fixture, { run: { ...sample, mode: 'agent', reasoningEffort: 'high' },
+      ...session, browserConfig, imagePaths: [], signal: new AbortController().signal,
+      onPid() {}, onSession() {}, onEvent() {},
+    }, 'browser-config-test');
+    assert.deepEqual(JSON.parse(result).config, { ...browserConfig, model_reasoning_effort: 'high',
+      'sandbox_workspace_write.network_access': true });
+  }
+  const result = await runCodexLiveTurn(fixture, { run: sample, imagePaths: [],
+    signal: new AbortController().signal, onPid() {}, onSession() {}, onEvent() {},
+  }, 'browser-config-test');
+  assert.deepEqual(JSON.parse(result).config, {});
+});
+
 test('归档的原 Codex 会话恢复后只续接一次并启动一轮', { timeout: 5000 }, async () => {
   const id = '11111111-1111-1111-1111-111111111111';
   let sessionId = '';

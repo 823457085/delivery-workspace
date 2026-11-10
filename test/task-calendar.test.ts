@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildMonthCalendar, groupTasksByDate, isWeekend, matchesPlannedFilter, monthTitle, taskQueryParams } from '../src/features/task-calendar/calendar-domain';
+import { buildCalendarWeeks, buildMonthCalendar, groupTasksByDate, isWeekend, matchesPlannedFilter, monthTitle, taskQueryParams } from '../src/features/task-calendar/calendar-domain';
 import type { JiraIssue } from '../shared/hub';
 import { plannedOn } from '../src/shared/task-schedule';
 
@@ -54,4 +54,66 @@ test('长期任务仅展开当前月历范围，切月后重新计算', () => {
   assert.equal(october.size, 35);
   assert.equal(october.has('2026-10-15'), true);
   assert.equal(september.has('2026-10-15'), false);
+});
+
+const layout = (tasks: JiraIssue[], anchor = new Date(2026, 10, 1)) =>
+  buildCalendarWeeks(buildMonthCalendar(anchor), groupTasksByDate(tasks, 'planned', anchor));
+
+test('同一周内的连续排期合并为一个跨列任务条，单日任务仍对应原日期', () => {
+  const [first, second] = layout([
+    issue({ key: 'LONG-1', startDate: '2026-11-02', endDate: '2026-11-06' }),
+    issue({ key: 'DAY-1', startDate: '2026-11-05' }),
+  ]);
+  assert.equal(first.segments.length, 0);
+  assert.deepEqual(second.segments.map(s => [s.issue.key, s.startColumn, s.endColumn, s.lane]), [
+    ['LONG-1', 0, 4, 0], ['DAY-1', 3, 3, 1],
+  ]);
+});
+
+test('跨周任务在周末与下周一衔接，包含首尾两天且不延长排期', () => {
+  const weeks = layout([issue({ startDate: '2026-10-30', endDate: '2026-11-03' })]);
+  const segments = weeks.flatMap(w => w.segments);
+  assert.deepEqual(segments.map(s => [s.startColumn, s.endColumn, s.continuesBefore, s.continuesAfter]), [
+    [4, 6, false, true], [0, 1, true, false],
+  ]);
+  assert.equal(segments.reduce((total, s) => total + s.endColumn - s.startColumn + 1, 0), 5);
+});
+
+test('六个重叠任务全部展开且不会覆盖，同一轨道可复用不相交的日期', () => {
+  const tasks = Array.from({ length: 6 }, (_, i) => issue({ key: `OVERLAP-${i}`, startDate: '2026-11-02', endDate: '2026-11-04' }));
+  tasks.push(issue({ key: 'LATER-1', startDate: '2026-11-05', endDate: '2026-11-06' }));
+  const week = layout(tasks)[1];
+  assert.equal(week.segments.length, 7);
+  assert.equal(week.laneCount, 6);
+  assert.equal(week.segments.find(s => s.issue.key === 'LATER-1')?.lane, 0);
+  for (const a of week.segments) for (const b of week.segments) {
+    if (a !== b && a.lane === b.lane) assert.ok(a.endColumn < b.startColumn || b.endColumn < a.startColumn);
+  }
+});
+
+test('间断日期不会被合并，重复输入不会产生重复条，布局不依赖接口顺序', () => {
+  const cells = buildMonthCalendar(new Date(2026, 10, 1));
+  const a = issue({ key: 'A-1' }), b = issue({ key: 'B-1' });
+  const map = new Map([['2026-11-02', [b, a, a]], ['2026-11-04', [a]]]);
+  const weeks = buildCalendarWeeks(cells, map);
+  assert.deepEqual(weeks[1].segments.map(s => [s.issue.key, s.startColumn, s.endColumn, s.lane]), [
+    ['A-1', 0, 0, 0], ['B-1', 0, 0, 1], ['A-1', 2, 2, 0],
+  ]);
+  map.set('2026-11-02', [a, b]);
+  assert.deepEqual(buildCalendarWeeks(cells, map), weeks);
+});
+
+test('长期跨月任务仅覆盖月历可见范围，时间字段日历仍为单日', () => {
+  const anchor = new Date(2026, 10, 1);
+  const task = issue({ startDate: '2020-01-01', endDate: '2030-12-31', updated: '2026-11-03T08:00:00Z' });
+  const weeks = layout([task], anchor);
+  assert.equal(weeks.length, 6);
+  for (const week of weeks) {
+    assert.equal(week.segments.length, 1);
+    assert.deepEqual([week.segments[0].startColumn, week.segments[0].endColumn, week.laneCount], [0, 6, 1]);
+  }
+  const updated = buildCalendarWeeks(buildMonthCalendar(anchor), groupTasksByDate([task], 'updated', anchor));
+  const segments = updated.flatMap(w => w.segments);
+  assert.equal(segments.length, 1);
+  assert.deepEqual([segments[0].startColumn, segments[0].endColumn], [1, 1]);
 });

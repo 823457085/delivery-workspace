@@ -1,0 +1,49 @@
+{
+  "sourceWorkspacePath": "/fixture/project",
+  "round": 0,
+  "plan": {
+    "templateId": "verification",
+    "acceptanceCriteria": [
+      {
+        "id": "AC-1",
+        "text": "示例项目能够构建",
+        "source": "合成验收范围",
+        "stage": "verify"
+      },
+      {
+        "id": "AC-2",
+        "text": "复查示例改动",
+        "source": "合成验收范围",
+        "stage": "review"
+      }
+    ]
+  },
+  "nodes": [
+    {
+      "id": "fixture-verify",
+      "stage": "verify",
+      "profileId": "verifier",
+      "status": "completed",
+      "dependencies": [],
+      "attempt": 1,
+      "round": 0,
+      "result": "```delivery-report\n{\n  \"version\": 1,\n  \"workspacePath\": \"/fixture/project\",\n  \"validationEvidence\": {\n    \"build\": {\n      \"status\": \"passed\",\n      \"evidence\": \"示例构建命令退出码为 0\",\n      \"sha\": \"\"\n    },\n    \"tests\": {\n      \"status\": \"pending\",\n      \"evidence\": \"本节点未重新运行单元测试\",\n      \"sha\": \"\"\n    },\n    \"browser\": {\n      \"status\": \"pending\",\n      \"evidence\": \"尚待验证\",\n      \"sha\": \"\"\n    },\n    \"remote\": {\n      \"status\": \"pending\",\n      \"evidence\": \"尚待验证\",\n      \"sha\": \"\"\n    },\n    \"deployment\": {\n      \"status\": \"pending\",\n      \"evidence\": \"尚待验证\",\n      \"sha\": \"\"\n    }\n  },\n  \"taskResult\": {\n    \"role\": \"verifier\",\n    \"status\": \"succeeded\",\n    \"summary\": \"示例项目完成类型修复，本轮原目录构建通过。\",\n    \"acceptance\": [\n      {\n        \"id\": \"AC-1\",\n        \"status\": \"passed\",\n        \"evidence\": \"示例构建完成\"\n      },\n      {\n        \"id\": \"AC-2\",\n        \"status\": \"not_run\",\n        \"evidence\": \"等待独立审查\"\n      }\n    ]\n  }\n}\n```",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": "fixture-review",
+      "stage": "review",
+      "profileId": "reviewer",
+      "status": "completed",
+      "dependencies": [
+        "fixture-verify"
+      ],
+      "attempt": 1,
+      "round": 0,
+      "result": "```delivery-report\n{\n  \"version\": 1,\n  \"taskResult\": {\n    \"role\": \"reviewer\",\n    \"status\": \"succeeded\",\n    \"verdict\": \"approved\",\n    \"summary\": \"已复查合成改动。\",\n    \"acceptance\": [\n      {\n        \"id\": \"AC-2\",\n        \"status\": \"passed\",\n        \"evidence\": \"示例改动符合验收范围\"\n      }\n    ]\n  }\n}\n```",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z"
+    }
+  ]
+}

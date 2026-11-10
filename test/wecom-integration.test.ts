@@ -4,10 +4,11 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createWecomIntegration, redactFeedback } from '../server/wecom-integration.js';
+import { integrationCatalogFixture } from './fixtures/integration-catalog';
 import { buildReviewCatalog } from '../src/features/api-integration/review-catalog.js';
 import type { BackendFeedbackInput } from '../shared/wecom-integration.js';
 
-const item = buildReviewCatalog().find(item => item.path === '/api/v1/examples/detail')!;
+const item = buildReviewCatalog(integrationCatalogFixture).find(item => item.path === '/admin/v1/merchants/detail')!;
 const input: BackendFeedbackInput = {
   interfaceId: item.id, summary: '商家详情缺少契约字段', environment: 'DEV · mock',
   parameters: '{"merchantNo":"test","Authorization":"Bearer only-a-fixture","password":"not-a-real-password"}',
@@ -25,7 +26,7 @@ test('无需配置人员即可发群反馈，消息不含提醒字段；敏感�
     requests.push({ url: String(url), init });
     return new Response(JSON.stringify({ errcode: 0, errmsg: 'ok' }), { status: 200 });
   };
-  const service = await createWecomIntegration(directory, { configFile, fetch: fetchMock });
+  const service = await createWecomIntegration(directory, { catalog: integrationCatalogFixture, configFile, fetch: fetchMock });
   assert.equal(service.config().hasWebhook, false);
   assert.equal(service.preview(input).canSend, false);
   await service.configure(config);
@@ -47,7 +48,7 @@ test('无需配置人员即可发群反馈，消息不含提醒字段；敏感�
   const stored = await fs.readFile(path.join(directory, 'wecom-integration-reports.json'), 'utf8');
   assert.equal(stored.includes('not-a-real-password'), false);
   assert.equal(stored.includes(config.webhook), false);
-  const restored = await createWecomIntegration(directory, { configFile, fetch: fetchMock });
+  const restored = await createWecomIntegration(directory, { catalog: integrationCatalogFixture, configFile, fetch: fetchMock });
   await restored.send({ input: preview.input, hash: preview.hash });
   assert.equal(requests.length, 1);
   await restored.configure({ groupName: config.groupName });
@@ -59,7 +60,7 @@ test('无效输入、已移除的人员字段、Webhook 主机、过期预览、
   t.after(() => fs.rm(directory, { recursive: true }));
   let requests = 0;
   const fetchMock: typeof fetch = async () => { requests++; return new Response('{}'); };
-  const service = await createWecomIntegration(directory, { configFile: path.join(directory, 'wecom.json'), fetch: fetchMock });
+  const service = await createWecomIntegration(directory, { catalog: integrationCatalogFixture, configFile: path.join(directory, 'wecom.json'), fetch: fetchMock });
   for (const webhook of ['http://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test', 'https://example.com/?key=test', 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=a&key=b']) {
     await assert.rejects(service.configure({ ...config, webhook }));
   }
@@ -68,8 +69,8 @@ test('无效输入、已移除的人员字段、Webhook 主机、过期预览、
   assert.throws(() => service.preview({ ...input, expected: '' }));
   assert.throws(() => service.preview({ ...input, userids: ['unknown'] }));
   assert.throws(() => service.preview({ ...input, interfaceId: 'fake-interface' }));
-  const missingMethod = buildReviewCatalog().find(item => !item.method);
-  if (missingMethod) assert.throws(() => service.preview({ ...input, interfaceId: missingMethod.id }));
+  const missingMethod = integrationCatalogFixture.inventory.items.find(item => !item.contract)!;
+  assert.throws(() => service.preview({ ...input, interfaceId: missingMethod.id }));
   const preview = service.preview(input);
   await service.configure({ ...config, groupName: '另一测试群' });
   await assert.rejects(service.send({ input: preview.input, hash: preview.hash }), /重新预览/);
@@ -81,7 +82,7 @@ test('已有人员配置可正常加载，重新保存移除映射并保留原 W
   t.after(() => fs.rm(directory, { recursive: true }));
   const configFile = path.join(directory, 'wecom.json');
   await fs.writeFile(configFile, JSON.stringify({ ...config, owners: [{ userid: 'fixture_merchant', displayName: '旧配置人员', pathPrefixes: ['/admin/v1/merchants/'] }] }), { mode: 0o600 });
-  const service = await createWecomIntegration(directory, { configFile });
+  const service = await createWecomIntegration(directory, { catalog: integrationCatalogFixture, configFile });
   assert.deepEqual(service.config(), { hasWebhook: true, groupName: config.groupName });
   assert.equal(service.preview(input).canSend, true);
   await service.configure({ groupName: config.groupName });
@@ -98,7 +99,7 @@ test('长中文返回保留完整反馈，UTF-8 群摘要受限；明确失败�
     if (requests === 1) return new Response(JSON.stringify({ errcode: 45009, errmsg: 'rate limited' }));
     throw new Error('simulated timeout including secret URL');
   };
-  const service = await createWecomIntegration(directory, { configFile: path.join(directory, 'wecom.json'), fetch: fetchMock });
+  const service = await createWecomIntegration(directory, { catalog: integrationCatalogFixture, configFile: path.join(directory, 'wecom.json'), fetch: fetchMock });
   await service.configure(config);
   const preview = service.preview({ ...input, actual: '错误字段😀'.repeat(1000) });
   assert.ok(preview.bytes < 2048);
@@ -136,7 +137,7 @@ test('HTTP 错误和缺失业务回执不算成功，未知送达结果阻止重
   t.after(() => fs.rm(directory, { recursive: true }));
   let calls = 0;
   const fetchMock: typeof fetch = async () => { calls++; return calls === 1 ? new Response('gateway failure', { status: 502 }) : new Response('{"message":"not a WeCom receipt"}'); };
-  const service = await createWecomIntegration(directory, { configFile: path.join(directory, 'wecom.json'), fetch: fetchMock });
+  const service = await createWecomIntegration(directory, { catalog: integrationCatalogFixture, configFile: path.join(directory, 'wecom.json'), fetch: fetchMock });
   await service.configure(config);
   for (const summary of ['HTTP error fixture', 'missing receipt fixture']) {
     const preview = service.preview({ ...input, summary });
@@ -153,7 +154,7 @@ test('每分钟限额含失败请求，避免刷群；重启不重发未完成�
   const configFile = path.join(directory, 'wecom.json');
   let calls = 0;
   const fetchMock: typeof fetch = async () => { calls++; return new Response(JSON.stringify({ errcode: 0 })); };
-  const service = await createWecomIntegration(directory, { configFile, fetch: fetchMock });
+  const service = await createWecomIntegration(directory, { catalog: integrationCatalogFixture, configFile, fetch: fetchMock });
   await service.configure(config);
   for (let i = 0; i < 10; i++) {
     const preview = service.preview({ ...input, summary: `fixture ${i}` });
@@ -165,6 +166,6 @@ test('每分钟限额含失败请求，避免刷群；重启不重发未完成�
   const records = service.history('');
   records[0].status = 'sending';
   await fs.writeFile(path.join(directory, 'wecom-integration-reports.json'), JSON.stringify(records));
-  const restored = await createWecomIntegration(directory, { configFile, fetch: fetchMock });
+  const restored = await createWecomIntegration(directory, { catalog: integrationCatalogFixture, configFile, fetch: fetchMock });
   assert.equal(restored.history('').find(record => record.id === records[0].id)?.status, 'unknown');
 });

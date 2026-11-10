@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { prepareRequirementWorkspace, createRequirementDevelopmentService } from '../server/requirement-development.js';
-import { requirementDevelopmentInputSchema, requirementDevelopmentPrompt, type RequirementDevelopmentInput } from '../shared/requirement-development.js';
+import { requirementConversationTarget, requirementDevelopmentInputSchema, requirementDevelopmentPrompt, type RequirementDevelopmentInput } from '../shared/requirement-development.js';
 import { createAgentRuntimeService, type AgentRuntimeAdapter } from '../server/agent-runtime.js';
 import type { AgentRun } from '../shared/agent-runtime.js';
 
@@ -15,6 +15,37 @@ const exec = promisify(execFile);
 const input: RequirementDevelopmentInput = { title: '需求开发测试', issueKey: 'APEX-123', prdUrl: '', requirement: '', project: '', fixVersion: '', assignee: '',
   startDate: '2026-09-23', endDate: '2026-09-25', repository: 'git@example.test:team/repo.git', parentDirectory: '/tmp', branch: 'feature/APEX-123', confluenceParentUrl: '' };
 const request = (value = input, requestId = randomUUID()) => ({ requestId, input: value, authorization: 'create-jira-design-transition-and-develop' });
+
+test('删除会话后记录保留且跳转失效，手动删除记录持久化并阻止再次登记', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'requirement-record-delete-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const runId = randomUUID();
+  let run = { id: runId, status: 'running' } as AgentRun | undefined;
+  const runtime = {
+    startRequirementDevelopment: async () => { throw new Error('不应启动会话'); },
+    findRequirementDevelopment: () => undefined,
+    getRun: (id: string) => run?.id === id ? run : undefined,
+  };
+  const record = { id: randomUUID(), input, status: 'started' as const, workspacePath: '', headSha: '', runId, error: '', createdAt: new Date().toISOString() };
+  const service = await createRequirementDevelopmentService(directory, runtime);
+  await service.adopt(record);
+  assert.equal(requirementConversationTarget(service.list()[0]), runId);
+  await assert.rejects(service.remove(record.id), /仍在执行或排队/);
+  run = undefined;
+  assert.equal(service.list()[0].conversationMissing, true);
+  assert.equal(requirementConversationTarget(service.list()[0]), '');
+  assert.equal(service.list()[0].runId, runId);
+  assert.deepEqual(await service.remove(record.id), { deleted: true });
+  await service.adopt(record);
+  assert.deepEqual(service.list(), []);
+  await service.close();
+  const restarted = await createRequirementDevelopmentService(directory, runtime);
+  await restarted.adopt(record);
+  assert.deepEqual(restarted.list(), []);
+  assert.throws(() => restarted.start(request(input, record.id)), /启动记录已删除/);
+  await restarted.close();
+});
+
 async function repository(directory: string, branch = 'master') {
   const repo = path.join(directory, 'source');
   await exec('git', ['init', '-b', branch, repo]);

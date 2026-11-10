@@ -100,7 +100,7 @@ export async function connectCodexDesktopThread(threadId: string, options: { soc
       snapshot: () => new Promise<DesktopObject>((resolve, reject) => {
         if (closedError) { reject(closedError); return; }
         if (snapshotWaiter) { reject(new Error('已有会话状态读取未完成')); return; }
-        const timer = setTimeout(() => { snapshotWaiter = undefined; reject(new Error('未能确认 Codex 原会话是否空闲')); }, timeoutMs);
+        const timer = setTimeout(() => { snapshotWaiter = undefined; reject(new Error('Codex 桌面会话状态读取超时')); }, timeoutMs);
         snapshotWaiter = { resolve, reject, timer };
         try { write({ type: 'broadcast', sourceClientId: clientId, method: 'thread-stream-following-changed', version: 1,
           targetClientIds: [ownerId], params: { hostId: 'local', conversationId: threadId, following: true } }); }

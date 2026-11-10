@@ -4,7 +4,7 @@ import path from 'node:path';
 
 export async function assertIssueNotCleared(root: string, id: unknown, report?: unknown) {
   let policy: { issueIds: string[]; recheck?: { startedAt: string; requestIds: string[] } };
-  try { policy = JSON.parse(await fs.readFile(path.join(path.resolve(root, process.env.DELIVERY_DATA_DIR || '.data'), 'integration-cleared-issues.json'), 'utf8')); }
+  try { policy = JSON.parse(await fs.readFile(path.join(root, '.data/integration-cleared-issues.json'), 'utf8')); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
   if (typeof id !== 'string' || !policy.issueIds.includes(id)) return;
   const recheck = policy.recheck;

@@ -112,6 +112,16 @@ test('未创建运行的准备/失败/不确定记录可处理，失效来源不
   }
 });
 
+test('旧 Jira 修复启动失败只保留历史，不再进入当前待处理和阻塞统计', () => {
+  const fix = { id: 'old-fix', input: { issueKey: 'https://jira.example/browse/TEST-3941', branch: 'feature/TEST-3941' },
+    status: 'failed', workspacePath: '', runId: '', error: '启动失败', createdAt: '2026-09-30T11:03:23.028Z' } as JiraFixRecord;
+  const [row] = reconcileDeliveryRecords(launchDeliveryRecords([], [fix]), [], []);
+  assert.equal(recordMatchesFilter(row, 'actionable'), false);
+  assert.equal(recordMatchesFilter(row, 'blocked'), false);
+  assert.equal(recordMatchesFilter(row, 'results'), true);
+  assert.equal(recordMatchesFilter(row, 'all'), true);
+});
+
 test('Jira 修复按输入链接关联，runId 缺失时仍可按 sourceId 去重，同一来源 ID 不重复', () => {
   const fix = { id: 'fix-1', input: { issueKey: 'https://jira.example/browse/TEST-4008', branch: 'feature/TEST-4008' },
     status: 'started', workspacePath: '/fix', runId: '', error: '', createdAt: '2026-10-15T01:00:00Z' } as JiraFixRecord;

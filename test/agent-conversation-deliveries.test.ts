@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { agentRunStatus, type AgentConversation, type AgentConversationRun } from '../src/features/agent-workbench/conversation.js';
-import { conversationDeliveries } from '../src/features/agent-workbench/conversation-deliveries.js';
+import { conversationDeliveries, conversationFileDeliveries, conversationResultDownloads } from '../src/features/agent-workbench/conversation-deliveries.js';
+import type { AdvancedTeamTask } from '../src/features/agent-workbench/team-api.js';
 
 function run(id: string, input: Partial<AgentConversationRun> = {}): AgentConversationRun {
   return { id, provider: 'codex', mode: 'ask', accessMode: 'workspace', model: '', reasoningEffort: '',
@@ -65,4 +66,42 @@ test('未选会话、空会话与切换会话不会沿用上一会话的成果�
   assert.deepEqual(conversationDeliveries(), []);
   assert.deepEqual(conversationDeliveries(conversation([])), []);
   assert.deepEqual(conversationDeliveries(second).map(item => [item.run.id, item.run.changedFiles]), [['second', undefined]]);
+});
+
+test('团队交付取产出岗位的当前运行，保留历史文件身份，不混入验证副本或旧重试', () => {
+  const file = { path: 'outputs/复测.xlsx', status: 'generated' as const };
+  const member = (id: string, nodeId: string) => run(id, { changedFiles: [file], team: {
+    taskId: 'team', nodeId, stageKey: id, profileId: 'engineer', profileRevision: 1,
+  } });
+  const history = member('old', 'node-old'), current = member('new', 'node-new');
+  const verifier = member('copy', 'node-copy'), priorAttempt = member('retry-old', 'node-new');
+  const task = { id: 'team', parentConversationId: 'conversation', round: 3, nodes: [
+    { id: 'node-old', stage: 'implement', round: 2, runId: history.id },
+    { id: 'node-new', stage: 'implement', round: 3, runId: current.id },
+    { id: 'node-copy', stage: 'verify', round: 3, runId: verifier.id },
+  ] } as AdvancedTeamTask;
+  const selected = conversation([run('leader')]);
+  const items = conversationFileDeliveries(selected, task, [history, current, verifier, priorAttempt]);
+  assert.deepEqual(items.map(item => [item.run.id, item.round, item.current]), [['new', 3, true], ['old', 2, false]]);
+  assert.strictEqual(items[0].run, current);
+  assert.strictEqual(items[0].run.changedFiles, current.changedFiles);
+  current.result = '```delivery-report\n' + JSON.stringify({ taskResult: { output: { path: '/workspaces/new/outputs/复测.xlsx' } } }) + '\n```';
+  current.changedFiles = [file, { path: 'internal.log', status: 'generated' }, { path: 'src/code.ts', status: 'modified' }];
+  assert.deepEqual(conversationResultDownloads(selected, task, [history, current, verifier, priorAttempt]), [{
+    key: '/workspaces/new/outputs/复测.xlsx', name: '复测.xlsx',
+    url: '/api/agent-runtimes/runs/new/download-file?path=outputs%2F%E5%A4%8D%E6%B5%8B.xlsx',
+  }]);
+  current.changedFiles = [];
+  assert.deepEqual(conversationResultDownloads(selected, task, [history, current, verifier]), [], '未登记的文件不能伪造下载入口或借用历史轮次');
+  assert.deepEqual(conversationFileDeliveries(conversation([run('another')], 'another'), task, [current]), []);
+});
+
+test('普通会话本轮和历史文件分开，空轮不冒充有交付，切换会话不带入旧团队', () => {
+  const first = run('first', { changedFiles: [{ path: 'first.xlsx', status: 'added' }] });
+  const last = run('last', { changedFiles: [{ path: 'last.xlsx', status: 'modified' }] });
+  assert.deepEqual(conversationFileDeliveries(conversation([first, last])).map(item => [item.run.id, item.current]), [['last', true], ['first', false]]);
+  assert.deepEqual(conversationFileDeliveries(conversation([first, run('empty')])).map(item => [item.run.id, item.current]), [['first', false]]);
+  const staleTask = { parentConversationId: 'previous' } as AdvancedTeamTask;
+  assert.equal(conversationFileDeliveries(conversation([last]), staleTask)[0].current, true);
+  assert.deepEqual(conversationFileDeliveries(), []);
 });

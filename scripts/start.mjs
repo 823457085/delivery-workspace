@@ -13,10 +13,12 @@ if (!development && !fs.existsSync(path.join(root, 'dist', 'index.html'))) {
 }
 // 必须由 Node 在加载任何配置模块前解析 .env；不在应用启动之后手工补变量。
 const child = spawn(process.execPath, ['--env-file-if-exists=.env', '--import', 'tsx', 'server/index.ts',
-  ...(development ? ['--dev'] : [])], { cwd: root, stdio: 'inherit', env: process.env });
+  ...(development ? ['--dev'] : [])], { cwd: root, stdio: 'inherit', env: { ...process.env,
+    DELIVERY_CREDENTIALS_FILE: process.env.DELIVERY_CREDENTIALS_FILE || path.join(root, '.env'),
+  } });
 for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => child.kill(signal));
 child.once('error', () => {
   console.error('启动失败，请执行 pnpm run setup 安装依赖。');
   process.exitCode = 1;
 });
-child.once('exit', (code, signal) => { process.exitCode = code ?? (signal ? 1 : 0); });
+child.once('close', (code, signal) => process.exit(code ?? (signal ? 1 : 0)));

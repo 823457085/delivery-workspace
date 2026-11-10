@@ -3,6 +3,7 @@ import { sourceDataRoot, gitBinary } from "./config.mjs";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
+import { CursorDesktopError, openCursorEditor } from "../cursor-desktop.mjs";
 
 /**
  * 设计说明：追平会话登记与需求事实、执行生命周期分开读取，避免打开编辑器时改写
@@ -12,8 +13,6 @@ import { promisify } from "node:util";
 
 export const CATCHUP_REQUIREMENTS_ROOT = process.env.APEX_CATCHUP_REQUIREMENTS_ROOT
   || path.join(sourceDataRoot, "workspaces", "requirements");
-export const CATCHUP_CURSOR_BINARY = process.env.DELIVERY_CURSOR_EDITOR_BIN || "cursor";
-
 const execFileAsync = promisify(execFileCallback);
 const requirementIdPattern = /^REQ-(?:CU-)?\d{3}$/;
 
@@ -236,13 +235,9 @@ export async function openCatchupSessionInCursor(
     runGit
   });
   try {
-    await executeFile(
-      CATCHUP_CURSOR_BINARY,
-      ["--new-window", workspace.workspacePath],
-      { encoding: "utf8", maxBuffer: 64 * 1024, timeout: 5000 }
-    );
-  } catch {
-    fail("CURSOR_OPEN_FAILED", "无法在 Cursor 中打开追平需求工作区");
+    await openCursorEditor(["--new-window", workspace.workspacePath], { executeFile });
+  } catch (error) {
+    fail("CURSOR_OPEN_FAILED", error instanceof CursorDesktopError ? error.message : "无法在 Cursor 中打开追平需求工作区");
   }
   return {
     opened: true,

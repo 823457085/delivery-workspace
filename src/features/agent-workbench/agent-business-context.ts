@@ -5,7 +5,7 @@
 import type { ApexBffReviewState } from '../../../shared/apex-bff-review';
 import type { AutomationData, CatchupData, CatchupRequirement, JiraIssue, Job, LocalProject, MergeData, MergeItem,
   ProjectsData } from '../../../shared/hub';
-import type { AgentConversation } from './conversation';
+import { agentRunContextPath, type AgentConversation } from './conversation';
 import type { MenuPagePlan } from '../api-integration/page-plan';
 import { buildReviewCatalog, type ReviewCatalogItem } from '../api-integration/review-catalog';
 import { isDone } from '../../shared/format';
@@ -14,9 +14,9 @@ import { normalizeWorkspacePath, projectWorkspaceReference, workspacePathFromRef
 const reviewIdsByPath = new Map(buildReviewCatalog().map(item => [item.path, item.id]));
 
 function reviewProgress(page: MenuPagePlan, review: ApexBffReviewState, catalog?: Pick<ReviewCatalogItem, 'id' | 'path'>[]) {
-  const idsByPath = catalog ? new Map(catalog.map(item => [item.path, item.id])) : reviewIdsByPath;
+  const ids = catalog ? new Map(catalog.map(item => [item.path, item.id])) : reviewIdsByPath;
   const paths = new Set(page.operations.map(item => item.path));
-  const records = [...paths].map(path => review[idsByPath.get(path) || '']);
+  const records = [...paths].map(path => review[ids.get(path) || '']);
   return { total: paths.size, confirmed: records.filter(record => !!record?.confirmedAt).length,
     blocked: records.filter(record => !!record?.blocker && !record.confirmedAt).length };
 }
@@ -94,7 +94,8 @@ function conversationProject(conversation: AgentConversation, projects: LocalPro
       && (!projectId || project.projectId === projectId)) : undefined;
   }
   const candidates = projectId ? projects.filter(project => project.projectId === projectId) : projects;
-  const current = candidates.find(project => normalizeWorkspacePath(project.path) === normalizeWorkspacePath(conversation.latest.workspacePath));
+  const workspacePath = normalizeWorkspacePath(agentRunContextPath(conversation.latest));
+  const current = candidates.find(project => normalizeWorkspacePath(project.path) === workspacePath);
   return current || (projectId && candidates.length === 1 ? candidates[0] : undefined);
 }
 
@@ -102,7 +103,7 @@ export function buildAgentBusinessContext(conversation: AgentConversation | unde
   if (!conversation) return { jiraIssues: [], jobs: [], catchup: [], merges: [] };
   const text = conversationText(conversation);
   const references = referenceTokens(text);
-  const explicitInterface = explicitValue(text, '接口');
+  const explicitInterface = explicitValue(text, '接口') || text.match(/^接口页编号：([^\s]+)$/m)?.[1];
   const explicitMerge = explicitValue(text, '合入').toUpperCase();
   const project = conversationProject(conversation, snapshot.projects?.projects);
   const page = snapshot.pages?.find(item => item.id === explicitInterface);

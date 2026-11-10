@@ -7,6 +7,7 @@
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -93,7 +94,7 @@ export async function sendIntegrationEvidence(markdownFile: string, screenshotFi
   const imageMd5 = images[0].md5;
   if (!options.send) return { content, screenshot: screenshotFile, imageBytes: images[0].image.length, imageMd5,
     screenshots: images.map(item => ({ screenshot: item.file, imageBytes: item.image.length, imageMd5: item.md5 })), sent: false };
-  const configFile = options.configFile || process.env.DELIVERY_WECOM_CONFIG_FILE || path.join(process.env.DELIVERY_DATA_DIR || path.join(process.cwd(), '.data'), 'credentials', 'wecom-integration.json');
+  const configFile = options.configFile || process.env.DELIVERY_WECOM_CONFIG_FILE || path.join(os.homedir(), 'Library', 'Application Support', 'DeliveryWorkspace', 'credentials', 'wecom-integration.json');
   const configuration = JSON.parse(await fs.readFile(configFile, 'utf8'));
   const url = webhookUrl(configuration.webhook);
   const fingerprint = createHash('sha256').update(JSON.stringify({ content: fingerprintContent, imageMd5, url, ...(options.inlineImageUrl ? { inlineImage: true } : {}),

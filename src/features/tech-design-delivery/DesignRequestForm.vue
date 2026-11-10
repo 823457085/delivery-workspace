@@ -47,7 +47,7 @@ function submit(start = false) {
         <el-form-item label="原型 / 截图来源链接"><el-input v-model="form.prototypeUrl" placeholder="可选；截图路径可记在资料说明中" maxlength="2000" /></el-form-item>
         <el-form-item label="本地工作区"><el-input :model-value="form.workspacePath" readonly placeholder="请选择电脑上的仓库文件夹"><template #append><el-button :loading="selecting" @click="selectWorkspace">{{ form.workspacePath ? '重新选择' : '选择文件夹' }}</el-button></template></el-input><p class="directory-hint">{{ selecting ? '请在目录选择窗口选择或取消，选择完成后会自动回填。' : '仅记录本机路径，不上传文件；选择后自动读取当前分支。' }}</p></el-form-item>
         <el-form-item label="目标分支"><el-input v-model="form.branch" placeholder="填写已确认的实际分支" maxlength="300" /></el-form-item>
-        <el-form-item label="Confluence 目标目录" class="form-wide"><el-input v-model="form.confluenceParentUrl" placeholder="准确的父页面链接，不能凭示例标题猜目录" maxlength="2000" /><p class="directory-hint">填写你有权限发布的准确父页面链接；执行前会核验目标目录。</p></el-form-item>
+        <el-form-item label="Confluence 目标目录" class="form-wide"><el-input v-model="form.confluenceParentUrl" placeholder="准确的父页面链接，不能凭示例标题猜目录" maxlength="2000" /><p class="directory-hint">填写本次要归档的父页面链接，执行前会核验目标目录。</p></el-form-item>
         <el-form-item label="资料说明 / 范围 / 待决问题" class="form-wide"><el-input v-model="form.notes" type="textarea" :rows="3" placeholder="补充方案范围、附件路径和需要澄清的问题。这里不执行产品开发，请勿填写密钥或密码。" maxlength="12000" show-word-limit /></el-form-item>
       </div>
     </el-form>

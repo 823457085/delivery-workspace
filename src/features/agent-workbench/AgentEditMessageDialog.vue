@@ -2,7 +2,7 @@
 /** 只编辑暂停消息的文字，附件和运行设置原样保留；暂停及续跑交给容器，不覆盖历史执行记录。 */
 import { computed } from 'vue';
 import type { AgentRun } from '../../../shared/agent-runtime';
-const props = defineProps<{ open: boolean; source?: AgentRun; submitting: boolean }>();
+const props = defineProps<{ open: boolean; source?: Pick<AgentRun, 'attachments'>; submitting: boolean }>();
 const objective = defineModel<string>({ required: true });
 const emit = defineEmits<{ submit: []; close: [] }>();
 const canSubmit = computed(() => !!objective.value.trim() || !!props.source?.attachments?.length);

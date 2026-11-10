@@ -1,0 +1,4 @@
+interface:
+  display_name: "Jira 缺陷修复"
+  short_description: "读取缺陷、在独立工作区修复并验证，生成有证据的 Jira 评论草稿"
+  default_prompt: "请使用 $jira-dev-fix 修复所选 Jira 缺陷并完成验证和交接草稿。"

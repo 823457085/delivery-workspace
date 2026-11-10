@@ -156,8 +156,9 @@ export function useWecomMessages() {
   }
 
   async function retry(record: WecomMessageRecord) {
-    if (record.status !== 'failed') return;
-    if (await replace(record.preview.input)) await prepare();
+    if (record.status !== 'failed' || !await replace(record.preview.input)) return false;
+    await prepare();
+    return true;
   }
   function refresh() { void configuration.refetch(); void library.refetch(); void history.refetch(); }
 

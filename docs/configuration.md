@@ -25,6 +25,8 @@
 
 Confluence 对应 `CONFLUENCE_BASE_URL` 及用户名/token 或授权头。分阶段技术方案执行器要求本机 Codex 配置中有可用的 `atlassian` MCP，并在任务表单指定实际目标父页面。使用当前账号自己的连接与权限。
 
+系统导航可以手动录入或导入 Excel。若需同步自己的 Confluence 资料，在 `.env` 中设置 `DELIVERY_SYSTEM_CATALOG_PAGE_ID`，账号资料页 `DELIVERY_SYSTEM_ACCOUNTS_PAGE_ID` 可选。可用 `DELIVERY_SYSTEM_CATALOG_REPOSITORY` 补充一个本地仓库 README 中的环境列表。需求开发默认归档目录由 `DELIVERY_DESIGN_SPACE_KEY`、`DELIVERY_DESIGN_PARENT_ID` 和 `DELIVERY_DESIGN_PARENT_TITLE` 配置，也可在项目默认设置中指定或使用本地方案。
+
 Jira 实现当前使用 REST `/rest/api/2` 和项目已有日期字段 `customfield_10109` / `customfield_10110`；不同 Jira 实例需要按自己的字段和工作流核对适配。自动状态转换、分片、周报和派发在 `/settings` 设置页配置；首次默认暂停。
 
 `JIRA_AUTOMATION_PROJECT_KEYS` 是自动功能切片的项目允许列表，填写自己的 Jira 项目 key，以逗号分隔，例如 `DEMO,TEAM`。配置会去除两端空白、转换为大写并忽略空项；缺省为空，不自动创建或更新功能切片。配置允许列表后，仍需在设置页启用对应的自动化。

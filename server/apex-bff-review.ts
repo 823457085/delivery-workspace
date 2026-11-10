@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { loadIntegrationCatalog } from './integration-catalog.js';
+import type { IntegrationCatalog } from '../shared/integration-catalog.js';
 import { reviewStatuses, type ApexBffReviewState } from '../shared/apex-bff-review.js';
 
 const assigneeSchema = z.object({ name: z.string().trim().min(1).max(200), displayName: z.string().min(1).max(200).refine(value => !!value.trim()) }).strict();
@@ -16,9 +17,8 @@ const updateSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('assign'), ids: z.array(z.string()).min(1).max(400), assignee: assigneeSchema.nullable() }).strict(),
 ]);
 
-export async function createApexBffReviewStore(directory: string) {
-  const catalog = await loadIntegrationCatalog();
-  const { inventory, plan } = catalog;
+export async function createApexBffReviewStore(directory: string, catalog?: IntegrationCatalog) {
+  const { inventory, plan } = catalog ?? await loadIntegrationCatalog();
   await fs.mkdir(directory, { recursive: true });
   const file = path.join(directory, 'apex-bff-review.json');
   const workbookPaths = new Set(inventory.items.map(item => item.path));
@@ -68,5 +68,5 @@ export async function createApexBffReviewStore(directory: string) {
     writes = task.then(() => {}, () => {});
     return task;
   }
-  return { catalog, snapshot: () => structuredClone(state), update, close: () => writes };
+  return { snapshot: () => structuredClone(state), update, close: () => writes };
 }

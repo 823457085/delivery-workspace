@@ -172,6 +172,7 @@ export async function createJiraFixHandoffService(directory: string,
   async function context(id: string): Promise<JiraFixHandoffContext> {
     const { key, run } = ready(id);
     const runId = run.id;
+    synchronizeDraft(id, runId);
     const [issue, transitions, catalog] = await Promise.all([source.readIssue(key), source.transitions(key),
       source.statuses(key).then(statuses => ({ statuses, statusWarning: '' })).catch(() => ({
         statuses: undefined, statusWarning: '完整状态读取失败，当前仅展示可直接流转的状态；请重新打开后重试。',
@@ -293,6 +294,7 @@ export async function createJiraFixHandoffService(directory: string,
       const task = execute(id, raw).finally(() => pending.delete(id));
       pending.set(id, task); return task;
     },
+    isIdle: () => !pending.size && !statusPending.size && !generating.size && !synchronizing.size,
     close: () => {
       closing = true; unsubscribe?.();
       for (const item of generating.values()) item.controller.abort();

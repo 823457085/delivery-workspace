@@ -81,10 +81,10 @@ export function useAgentAttachments(attachments: Ref<AgentAttachment[]>, disable
     if (!files.length || disabled() || !target.active || target.pending) return;
     const available = maxAttachmentCount - target.read().length;
     if (available <= 0) { ElMessage.warning(`每条消息最多添加 ${maxAttachmentCount} 个附件`); return; }
-    const accepted = files.filter(supportedFile);
-    if (accepted.length !== files.length) ElMessage.warning('请选择有效文件');
-    const selected = accepted.slice(0, available);
-    if (accepted.length > available) ElMessage.warning(`每条消息最多添加 ${maxAttachmentCount} 个附件`);
+    const valid = files.filter(supportedFile);
+    if (valid.length !== files.length) ElMessage.warning('请选择有效文件');
+    const selected = valid.slice(0, available);
+    if (valid.length > available) ElMessage.warning(`每条消息最多添加 ${maxAttachmentCount} 个附件`);
     if (!selected.length) return;
     const finish = target.begin('upload');
     try {

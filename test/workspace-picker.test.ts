@@ -144,5 +144,5 @@ test('remote picker never opens a native window; select, cancel and disposal all
 
 test('only loopback clients use the native folder picker', () => {
   for (const host of ['localhost', '127.0.0.1', '[::1]', '::1']) assert.equal(usesRemoteWorkspaceBrowser(host), false);
-  for (const host of ['172.20.100.50', '192.168.1.2', 'computer.private.test']) assert.equal(usesRemoteWorkspaceBrowser(host), true);
+  for (const host of ['172.16.88.50', '192.168.1.2', 'computer.private.test']) assert.equal(usesRemoteWorkspaceBrowser(host), true);
 });

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Jira 需求开发"
+  short_description: "根据已确认需求在独立工作区开发并验证，形成可审阅的 Jira 评论草稿"
+  default_prompt: "请使用 $jira-dev-requirement 完成所选 Jira 需求、本地验证和交接草稿。"

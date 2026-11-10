@@ -25,7 +25,8 @@ const emptySource: CodexSessionSource = { listSessions: async () => [], session:
 const health: AgentRuntimeHealth = { provider: 'codex', label: 'mock', binary: '/mock-only', version: 'test', authenticated: true,
   ready: true, message: '', modes: ['ask'], models: [{ id: '', label: 'default' }], defaultModel: '', writable: false, checkedAt: date };
 
-async function fixture(t: TestContext, records: AgentRun[], source = emptySource) {
+async function fixture(t: TestContext, records: AgentRun[], source = emptySource,
+  readCodexDesktopSnapshot?: NonNullable<Parameters<typeof createAgentRuntimeService>[1]>['readCodexDesktopSnapshot']) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'delivery-recovery-'));
   await fs.writeFile(path.join(directory, 'agent-runs.json'), JSON.stringify(records));
   const executions: { id: string; sessionId: string }[] = [];
@@ -34,12 +35,51 @@ async function fixture(t: TestContext, records: AgentRun[], source = emptySource
     await context.onSession(context.resumeSessionId || sessionId);
     return '恢复运行完成';
   } };
-  const create = () => createAgentRuntimeService(directory, { adapters: [adapter], codexSessionSource: source,
+  const create = () => createAgentRuntimeService(directory, { adapters: [adapter], codexSessionSource: source, readCodexDesktopSnapshot,
     resolveWorkspace: async workspacePath => ({ workspacePath, branch: '', headSha: '' }) });
   const service = await create();
   t.after(async () => { await service.close(); await fs.rm(directory, { recursive: true, force: true }); });
   return { service, create, executions, directory };
 }
+
+test('历史桌面超时误报自动迁移，活动或未知状态均阻止重复派发，精确结束后发出持久化结果', async t => {
+  let state: 'inProgress' | 'unavailable' | 'completed' = 'inProgress';
+  const { service, executions } = await fixture(t, [record('first', { status: 'failed',
+    error: '未确认桌面端本轮结束，请检查原会话；未自动重复发送。未能确认 Codex 原会话是否空闲' })], emptySource, async () => {
+    if (state === 'unavailable') throw new Error('timeout');
+    return { id: sessionId, hostId: 'local', resumeState: 'resumed', turns: [{ id: turnId, status: state,
+      items: [{ type: 'agentMessage', text: state === 'completed' ? '原轮次最终结果' : '尚未结束' }] }] };
+  });
+  const finalized: string[] = [];
+  service.subscribe((_revision, run, ready) => { if (ready && run?.resultReady) finalized.push(run.result); });
+  await service.reconcileRecovery();
+  assert.equal(service.getRun('first')?.recovery?.state, 'active');
+  assert.equal(service.getRun('first')?.result, '尚未结束');
+  assert.equal(service.getRun('first')?.error, '');
+  assert.equal(service.isIdle(), false);
+  await assert.rejects(service.retry('first'), /原轮次仍在执行/);
+  state = 'unavailable';
+  await assert.rejects(service.resume('first', '继续'), /自动核对/);
+  await assert.rejects(service.start({ provider: 'codex', model: '', mode: 'ask', objective: '其他操作', workspacePath: '/test/recovery' }), /自动核对/);
+  assert.equal(service.getRun('first')?.status, 'interrupted');
+  assert.deepEqual(finalized, []);
+  state = 'completed';
+  await service.reconcileRecovery();
+  assert.equal(service.getRun('first')?.status, 'completed');
+  assert.deepEqual(finalized, ['原轮次最终结果']);
+  assert.equal(service.isIdle(), true);
+  assert.equal(executions.length, 0);
+});
+
+test('桌面原轮次明确失败不被持久化的部分文本误认成成功', async () => {
+  const run = record('first', { status: 'interrupted', recovery: { previousStatus: 'running', previousPid: null,
+    state: 'pending', checkedAt: '', message: '', nativeObservation: 'codex-desktop' } });
+  const result = await checkAgentRecovery(run, { ...emptySource, session: async () => nativeSession({ turns: [
+    { id: turnId, userMessage: '', agentMessage: '此前的部分回复', createdAt: date, updatedAt: date, completedAt: date },
+  ] }) }, () => false, async () => ({ id: sessionId, hostId: 'local', resumeState: 'resumed',
+    turns: [{ id: turnId, status: 'failed', error: { message: '实际执行错误' } }] }));
+  assert.equal(result.status, 'failed'); assert.equal(result.error, '实际执行错误');
+});
 async function eventually(predicate: () => boolean) {
   for (let attempt = 0; attempt < 100; attempt++) {
     if (predicate()) return;

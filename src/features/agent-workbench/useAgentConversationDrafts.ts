@@ -22,14 +22,19 @@ export function useAgentConversationDrafts(conversationId: Readonly<Ref<string>>
     drafts.value = { ...drafts.value, [id]: { ...current, ...patch } };
   }
 
-  const draft = computed({
-    get: () => drafts.value[conversationId.value]?.text || '',
-    set: (text: string) => update(conversationId.value, { text }),
-  });
-  const attachments = computed({
-    get: () => drafts.value[conversationId.value]?.attachments || [],
-    set: (value: AgentAttachment[]) => update(conversationId.value, { attachments: value }),
-  });
+  function bind(id: Readonly<Ref<string>>) {
+    return {
+      draft: computed({
+        get: () => drafts.value[id.value]?.text || '',
+        set: (text: string) => update(id.value, { text }),
+      }),
+      attachments: computed({
+        get: () => drafts.value[id.value]?.attachments || [],
+        set: (value: AgentAttachment[]) => update(id.value, { attachments: value }),
+      }),
+      attachmentDraft: computed(() => attachmentDraftFor(id.value)),
+    };
+  }
 
   function attachmentDraftFor(id: string) {
     if (!id || disposed) return undefined;
@@ -42,7 +47,6 @@ export function useAgentConversationDrafts(conversationId: Readonly<Ref<string>>
     }
     return attachmentDrafts.value[id];
   }
-  const attachmentDraft = computed(() => attachmentDraftFor(conversationId.value));
   function attachmentsPending(id: string) { return !!attachmentDrafts.value[id]?.pending; }
 
   function clear(id: string) {
@@ -98,5 +102,5 @@ export function useAgentConversationDrafts(conversationId: Readonly<Ref<string>>
     attachmentDrafts.value = {};
   }
 
-  return { draft, attachments, attachmentDraft, attachmentDraftFor, attachmentsPending, clear, restoreText, restore, move, pendingAttachments, dispose };
+  return { ...bind(conversationId), bind, attachmentDraftFor, attachmentsPending, clear, restoreText, restore, move, pendingAttachments, dispose };
 }

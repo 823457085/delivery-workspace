@@ -1,0 +1,4 @@
+interface:
+  display_name: "我的 Jira 日历"
+  short_description: "读取当前账号的真实 Jira 排期，按周一开始展示并单列未排期事项"
+  default_prompt: "请使用 $jira-dev-calendar 查看当前 Jira 账号本月被指派事项的排期。"
