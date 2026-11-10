@@ -12,12 +12,12 @@ import type { AgentProvider, AgentRun, AgentRuntimeHealth, StartAgentRunInput } 
 type Context = Parameters<AgentRuntimeAdapter['execute']>[0];
 const model = 'fixture-model';
 
-async function until(condition: () => boolean, label: string) {
+async function until(condition: () => boolean | Promise<boolean>, label: string) {
   for (let attempt = 0; attempt < 300; attempt++) {
-    if (condition()) return;
+    if (await condition()) return;
     await delay(10);
   }
-  assert.ok(condition(), label);
+  assert.ok(await condition(), label);
 }
 
 async function completed(run: AgentRun) {
@@ -263,8 +263,10 @@ test('重新执行旧只读失败轮采用当前完全访问并新建原生会�
     const failed = await f.service.start(f.input('失败一次', { mode }));
     await until(() => failed.status === 'failed' && f.service.isIdle(), '预期失败未结束');
     const original = structuredClone(failed);
-    const originalSaved = (JSON.parse(await fs.readFile(path.join(f.directory, 'agent-runs.json'), 'utf8')) as AgentRun[])
+    const readOriginal = async () => (JSON.parse(await fs.readFile(path.join(f.directory, 'agent-runs.json'), 'utf8')) as AgentRun[])
       .find(run => run.id === failed.id);
+    await until(async () => (await readOriginal())?.status === 'failed', '原轮失败状态未保存');
+    const originalSaved = await readOriginal();
     const retried = await f.service.retry(failed.id, undefined, { mode: 'agent', accessMode: 'full' });
     await completed(retried);
     assert.deepEqual([retried.mode, retried.accessMode], ['agent', 'full']);

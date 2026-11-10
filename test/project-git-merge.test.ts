@@ -94,6 +94,8 @@ test('按请求获取两个分支并合入指定本地目标，远端分支保�
   await git(f.repo, 'switch', '-qc', 'feature/source', f.base);
   await f.write('source.txt', 'source\n'); const sourceSha = await f.commit('来源改动');
   await git(f.repo, 'push', '-q', remote, 'remote-target:target', 'feature/source', 'main:unrelated');
+  // 部分 Git 版本也会从路径推送更新同 URL 的跟踪分支。测试先统一抓取前状态。
+  await git(f.repo, 'update-ref', '-d', 'refs/remotes/origin/unrelated');
 
   const fetch = await f.act('fetch', { remote: 'origin', branches: ['feature/source', 'target'] });
   assert.ok(fetch.snapshot?.branches.some(b => b.ref === 'refs/remotes/origin/target' && b.sha === targetSha));

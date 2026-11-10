@@ -1617,7 +1617,10 @@ export async function createAgentTeamService(directory: string, runtime: Runtime
       }
     }
     if (task.chat!.paused && control === 'resume') {
-      if (chatBusy(task)) {
+      // Runtime can stop before the team consumes its final receipt. Keep the
+      // pause marker so advance() records the stop as intentional.
+      const pendingStopReceipt = task.nodes.some(node => node.pauseRequested && node.runId !== node.receiptRunId && runFor(node));
+      if (chatBusy(task) || pendingStopReceipt) {
         task.chat!.resumeRequested = true;
         task.reason = '原运行尚未确认停止，继续请求已记录；确认停止前不会重复派发。';
         controlReceipt(task, entry, task.reason);

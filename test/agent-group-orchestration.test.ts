@@ -22,7 +22,8 @@ async function waitFor<T>(read: () => T, predicate: (value: T) => boolean) {
   for (let i = 0; i < 1500; i++) { const value = read(); if (predicate(value)) return value; await new Promise(resolve => setTimeout(resolve, 10)); }
   assert.fail('自动团队状态超时：' + JSON.stringify(read()));
 }
-async function fixture(handler?: (context: Context) => Promise<string | undefined>, efforts: AgentReasoningEffort[] = ['high']) {
+async function fixture(handler?: (context: Context) => Promise<string | undefined>, efforts: AgentReasoningEffort[] = ['high'],
+  onFinalized?: (run: AgentRun) => Promise<void>) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'delivery-group-auto-')), data = path.join(root, 'data'), source = path.join(root, 'source');
   await fs.mkdir(source); await fs.writeFile(path.join(source, 'value.txt'), 'base');
   const calls: AgentRun[] = [];
@@ -47,7 +48,7 @@ async function fixture(handler?: (context: Context) => Promise<string | undefine
       if (context.run.team?.profileId === 'reviewer') return report({ taskResult: { role: 'reviewer', status: 'succeeded', verdict: 'approved', summary: '独立只读核对通过', findings: [] } });
       throw new Error('unexpected role ' + context.run.team?.profileId);
     } };
-  const runtime = await createAgentRuntimeService(data, { adapters: [adapter], resolveAttachments: async ids => ids.map(id => ({
+  const runtime = await createAgentRuntimeService(data, { adapters: [adapter], onFinalized, resolveAttachments: async ids => ids.map(id => ({
     attachment: { id, name: `${id}.txt`, mimeType: 'text/plain', size: 4, url: `/fixture/${id}`, createdAt: new Date().toISOString() }, filePath: path.join(source, 'value.txt'),
   })) });
   const team = await createAgentTeamService(data, runtime);
@@ -138,10 +139,22 @@ test('自动群聊尚未创建任务的暂停排队消息仍能第一次继续',
   } finally { await f.cleanup(); }
 });
 
+function revisionObjectives(f: Awaited<ReturnType<typeof fixture>>, from: number, originalTaskId: string) {
+  const original = f.team.getTask(originalTaskId);
+  assert.equal(original.state, 'cancelled');
+  return f.calls.slice(from).filter(run => {
+    if (run.team?.taskId !== originalTaskId) return true;
+    // A coordinator may already be dispatching when the revision starts.
+    assert.equal(original.nodes.find(node => node.id === run.team?.nodeId)?.purpose, 'coordinate', '原计划不能重派');
+    assert.equal(f.runtime.getRun(run.id)?.status, 'cancelled', '旧协调不能消费新轮待办');
+    return false;
+  }).map(run => run.objective);
+}
+
 test('修订自动群聊保留同文的独立待办，并在后续指定成员消息前依次执行', async () => {
-  let completing = false;
+  let originalTaskId = '';
   const f = await fixture(async context => {
-    if (!completing) await new Promise<void>((_resolve, reject) => {
+    if (!originalTaskId || context.run.team?.taskId === originalTaskId) await new Promise<void>((_resolve, reject) => {
       const stop = () => reject(new Error('stopped'));
       if (context.signal.aborted) stop(); else context.signal.addEventListener('abort', stop, { once: true });
     });
@@ -150,7 +163,8 @@ test('修订自动群聊保留同文的独立待办，并在后续指定成员�
   });
   try {
     const sent = await f.send({ text: '原始要求' });
-    await waitFor(() => f.group.detail(sent.room.id), value => !!value.collaboration?.task.id);
+    const started = await waitFor(() => f.group.detail(sent.room.id), value => !!value.collaboration?.task.id);
+    originalTaskId = started.collaboration!.task.id;
     await waitFor(() => f.calls, calls => calls.some(run => run.objective === '原始要求'));
     for (const requestId of ['pending-one', 'pending-two']) {
       await f.send({ roomId: sent.room.id, requestId, text: '再检查一次' });
@@ -158,21 +172,21 @@ test('修订自动群聊保留同文的独立待办，并在后续指定成员�
     await waitFor(() => f.group.detail(sent.room.id), value => value.collaboration?.task.chat?.pendingInputs.length === 2);
     await f.send({ roomId: sent.room.id, requestId: 'direct-after-pending', text: '最后向指定成员提问', memberIds: ['captain'] });
     await f.group.pauseMessage(sent.room.id, sent.room.rounds[0].id);
-    completing = true;
     const before = f.calls.length;
     await f.group.reviseMessage(sent.room.id, sent.room.rounds[0].id, { requestId: 'edit-with-queue', text: '修订后的要求' });
     const done = await waitFor(() => f.group.detail(sent.room.id), value => value.room.rounds.length === 5
       && value.room.rounds.slice(1).every(round => round.state === 'completed'));
     assert.deepEqual(done.room.rounds.map(round => round.text), ['原始要求', '修订后的要求', '再检查一次', '再检查一次', '最后向指定成员提问']);
-    assert.deepEqual(f.calls.slice(before).map(run => run.objective), ['修订后的要求', '再检查一次', '再检查一次', '最后向指定成员提问']);
+    assert.deepEqual(revisionObjectives(f, before, originalTaskId),
+      ['修订后的要求', '再检查一次', '再检查一次', '最后向指定成员提问']);
     assert.notEqual(done.room.rounds[2].requestId, done.room.rounds[3].requestId);
-  } finally { completing = true; await f.cleanup(); }
+  } finally { await f.cleanup(); }
 });
 
 test('自动团队已收消息但群聊丢失回执时，修订按请求标识保留一次并维持队列顺序', async () => {
-  let completing = false;
+  let originalTaskId = '';
   const f = await fixture(async context => {
-    if (!completing) await new Promise<void>((_resolve, reject) => {
+    if (!originalTaskId || context.run.team?.taskId === originalTaskId) await new Promise<void>((_resolve, reject) => {
       const stop = () => reject(new Error('stopped'));
       if (context.signal.aborted) stop(); else context.signal.addEventListener('abort', stop, { once: true });
     });
@@ -181,28 +195,27 @@ test('自动团队已收消息但群聊丢失回执时，修订按请求标识�
   const chat = f.team.chat;
   f.team.chat = async input => {
     const response = await chat(input);
-    if (!completing && input.requestId.endsWith(':lost-receipt')) throw new Error('fixture lost receipt');
+    if (input.requestId.endsWith(':lost-receipt')) throw new Error('fixture lost receipt');
     return response;
   };
   try {
     const sent = await f.send({ text: '原始要求' });
-    await waitFor(() => f.group.detail(sent.room.id), value => !!value.collaboration?.task.id);
+    const started = await waitFor(() => f.group.detail(sent.room.id), value => !!value.collaboration?.task.id);
+    originalTaskId = started.collaboration!.task.id;
     await waitFor(() => f.calls, calls => calls.some(run => run.objective === '原始要求'));
     await f.send({ roomId: sent.room.id, requestId: 'lost-receipt', text: '已转交但丢回执的待办' });
     await waitFor(() => f.group.detail(sent.room.id), value => value.collaboration?.task.chat?.pendingInputs.length === 1
       && value.room.rounds[0].automatic?.inputs.some(input => input.requestId === 'lost-receipt' && !input.processed) === true);
     await f.send({ roomId: sent.room.id, requestId: 'not-forwarded', text: '尚未转交的后续待办' });
     await f.group.pauseMessage(sent.room.id, sent.room.rounds[0].id);
-    completing = true;
     const before = f.calls.length;
     await f.group.reviseMessage(sent.room.id, sent.room.rounds[0].id, { requestId: 'edit-lost-receipt', text: '修订后的要求' });
     const done = await waitFor(() => f.group.detail(sent.room.id), value => value.room.rounds.length === 4
       && value.room.rounds.slice(1).every(round => round.state === 'completed'));
     assert.deepEqual(done.room.rounds.map(round => round.text), ['原始要求', '修订后的要求', '已转交但丢回执的待办', '尚未转交的后续待办']);
-    // 协调会话保留原目标身份，不能把安全停止期间的协调误算为重派原计划。
-    assert.deepEqual(f.calls.slice(before).filter(run => !run.teamContext?.includes('本次诊断目标节点：')).map(run => run.objective),
+    assert.deepEqual(revisionObjectives(f, before, originalTaskId),
       ['修订后的要求', '已转交但丢回执的待办', '尚未转交的后续待办']);
-  } finally { completing = true; f.team.chat = chat; await f.cleanup(); }
+  } finally { f.team.chat = chat; await f.cleanup(); }
 });
 
 test('新建全体群聊复用自动计划、验证失败返工与独立审查；成员、权限和职责来自群聊快照', async () => {
@@ -1056,6 +1069,7 @@ for (const accessMode of ['workspace', 'full'] as const) test(`群聊重跑使�
   const f = await fixture(async context => context.run.team?.profileId === 'leader' ? report({ conversationReply: { text: '已解释', resumeWorkflow: false } }) : undefined);
   try {
     const sent = await f.send({ text: '请解释value', accessMode: originalAccess }); await f.done(sent.room.id);
+    await waitFor(() => f.team.isIdle(), Boolean);
     const input = { requestId: `rerun-access-${accessMode}`, roundId: sent.room.rounds[0].id, accessMode };
     await f.group.action(sent.room.id, 'rerun', input);
     const done = await waitFor(() => f.group.detail(sent.room.id), value => value.room.rounds.length === 2 && value.room.rounds[1].state === 'completed');
@@ -1069,25 +1083,42 @@ for (const accessMode of ['workspace', 'full'] as const) test(`群聊重跑使�
 
 test('群聊暂停后继续传递显式完全访问，原运行保持工作区权限', async () => {
   let attempts = 0;
+  let finishStop!: () => void, publishReceipt!: () => void;
+  const stopping = new Promise<void>(resolve => { finishStop = resolve; });
+  const finalizing = new Promise<void>(resolve => { publishReceipt = resolve; });
   const f = await fixture(async context => {
     if (context.run.team?.profileId === 'engineer' && ++attempts === 1) {
-      await new Promise<void>((_resolve, reject) => context.signal.aborted ? reject(new Error('stopped')) : context.signal.addEventListener('abort', () => reject(new Error('stopped')), { once: true }));
+      await stopping;
+      assert.equal(context.signal.aborted, true);
+      throw new Error('stopped');
     }
+  }, undefined, async run => {
+    if (run.team?.profileId === 'engineer' && run.status === 'cancelled') await finalizing;
   });
   try {
     const sent = await f.send(); await waitFor(() => attempts, value => value === 1);
+    const original = f.calls.find(run => run.team?.profileId === 'engineer')!;
     await f.group.action(sent.room.id, 'pause');
-    await f.group.action(sent.room.id, 'continue', { accessMode: 'full' });
+    finishStop();
+    await waitFor(() => f.runtime.getRun(original.id), run => run?.status === 'cancelled' && !f.runtime.isRunActive(original.id));
+    const queued = await f.group.action(sent.room.id, 'continue', { accessMode: 'full' });
+    assert.equal(queued.collaboration?.task.chat?.resumeRequested, true);
+    assert.equal(attempts, 1);
+    publishReceipt();
     const done = await f.done(sent.room.id);
     assert.equal(done.collaboration!.task.state, 'completed', done.collaboration!.task.reason);
     assert.deepEqual(f.calls.filter(run => run.team?.profileId === 'engineer').map(run => run.accessMode), ['workspace', 'full']);
     assert.equal(done.room.rounds[0].accessMode, 'full');
-  } finally { await f.cleanup(); }
+  } finally { finishStop(); publishReceipt(); await f.cleanup(); }
 });
 
 test('群聊修订与插队按显式完全访问派发，原消息去重包含权限', async () => {
   let leaders = 0;
   const f = await fixture(async context => {
+    if (context.run.teamContext?.includes('本次诊断目标节点：')) {
+      await new Promise<void>(resolve => context.signal.aborted ? resolve() : context.signal.addEventListener('abort', () => resolve(), { once: true }));
+      throw new Error('stopped');
+    }
     if (context.run.team?.profileId === 'leader' && ++leaders > 1) return report({ conversationReply: { text: '已按新范围解释', resumeWorkflow: false } });
     if (context.run.team?.profileId === 'engineer') {
       await new Promise<void>(resolve => context.signal.aborted ? resolve() : context.signal.addEventListener('abort', () => resolve(), { once: true }));
