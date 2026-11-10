@@ -151,6 +151,7 @@ test('修订自动群聊保留同文的独立待办，并在后续指定成员�
   try {
     const sent = await f.send({ text: '原始要求' });
     await waitFor(() => f.group.detail(sent.room.id), value => !!value.collaboration?.task.id);
+    await waitFor(() => f.calls, calls => calls.some(run => run.objective === '原始要求'));
     for (const requestId of ['pending-one', 'pending-two']) {
       await f.send({ roomId: sent.room.id, requestId, text: '再检查一次' });
     }

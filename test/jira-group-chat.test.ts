@@ -141,7 +141,8 @@ test('Jira 需求使用自定义团队与全部独立工作区；整组完成后
     assert.equal(f.calls[2]!.workspacePath, f.calls[3]!.workspacePath, '只继续原验证副本');
     assert.equal(f.calls[2]!.accessMode, 'full'); assert.equal(f.calls[3]!.accessMode, 'workspace');
     assert.ok(f.calls.slice(3).every(run => run.accessMode === 'workspace'));
-    assert.match(f.calls[3]!.objective, /持续授权.*不逐次要求确认/);
+    assert.match(f.calls[3]!.teamContext || '', /持续授权.*不逐次要求确认/);
+    assert.match(f.calls[3]!.teamContext || '', /已登录，继续验证/);
     assert.ok(f.runtime.getRun(login.runId)?.result.includes('session_expired'), '保留原有验证记录');
     const inProgress = f.requirements.list()[0]!;
     assert.equal(inProgress.runStatus, 'running'); assert.equal(inProgress.runId, ''); assert.equal(inProgress.groupProgress?.completed, 4);

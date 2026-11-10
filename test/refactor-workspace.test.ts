@@ -34,7 +34,7 @@ async function fixture(t: TestContext, options: { missingLegacy?: boolean; histo
   await fs.writeFile(path.join(projectPath, 'package.json'), JSON.stringify({ scripts: { dev: 'node fixture.mjs' } }));
   if (options.missingLegacy) {
     await fs.mkdir(path.join(directory, 'public/integration-runs'), { recursive: true });
-    await fs.writeFile(path.join(directory, 'public/integration-runs/demo-user-plan.json'), JSON.stringify({ automation: {
+    await fs.writeFile(path.join(directory, 'public/integration-runs/execution-plan.json'), JSON.stringify({ automation: {
       workspacePath: path.join(directory, 'deleted-old-workspace'), baseUrl: 'http://127.0.0.1:6791', environment: 'DEV', assignee: 'demo-user',
     } }));
   }

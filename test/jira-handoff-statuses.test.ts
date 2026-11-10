@@ -3,6 +3,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 test('Jira 完整状态聚合只读取事项所在项目和类型，不混入其他类型的状态', async t => {
+  const oldSite = process.env.JIRA_BASE_URL;
+  process.env.JIRA_BASE_URL = 'https://jira.example.test';
+  t.after(() => { if (oldSite === undefined) delete process.env.JIRA_BASE_URL; else process.env.JIRA_BASE_URL = oldSite; });
   const old = process.env.JIRA_AUTH_HEADER;
   process.env.JIRA_AUTH_HEADER = 'Bearer test-only';
   t.after(() => { if (old === undefined) delete process.env.JIRA_AUTH_HEADER; else process.env.JIRA_AUTH_HEADER = old; });
@@ -29,6 +32,9 @@ test('Jira 完整状态聚合只读取事项所在项目和类型，不混入其
 });
 
 test('Jira 流转错误保留字段校验原文，非 JSON 响应回退到 HTTP 错误', async t => {
+  const oldSite = process.env.JIRA_BASE_URL;
+  process.env.JIRA_BASE_URL = 'https://jira.example.test';
+  t.after(() => { if (oldSite === undefined) delete process.env.JIRA_BASE_URL; else process.env.JIRA_BASE_URL = oldSite; });
   const old = process.env.JIRA_AUTH_HEADER;
   process.env.JIRA_AUTH_HEADER = 'Bearer test-only';
   t.after(() => { if (old === undefined) delete process.env.JIRA_AUTH_HEADER; else process.env.JIRA_AUTH_HEADER = old; });

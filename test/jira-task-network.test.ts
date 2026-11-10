@@ -3,6 +3,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 async function readIssues(t: { after(callback: () => void): void }) {
+  const previousSite = process.env.JIRA_BASE_URL;
+  process.env.JIRA_BASE_URL = 'https://jira.example.test';
+  t.after(() => { if (previousSite === undefined) delete process.env.JIRA_BASE_URL; else process.env.JIRA_BASE_URL = previousSite; });
   const previous = process.env.JIRA_AUTH_HEADER;
   process.env.JIRA_AUTH_HEADER = 'Bearer local-test-only';
   t.after(() => { if (previous === undefined) delete process.env.JIRA_AUTH_HEADER; else process.env.JIRA_AUTH_HEADER = previous; });
