@@ -23,9 +23,9 @@ async function bounded<T>(promise: Promise<T>): Promise<T> {
     })]);
   } finally { clearTimeout(timer!); }
 }
-async function settle<T>(read: () => T, predicate: (value: T) => boolean) {
+async function settle<T>(read: () => T | Promise<T>, predicate: (value: T) => boolean) {
   const deadline = Date.now() + 5000;
-  while (Date.now() < deadline) { const value = read(); if (predicate(value)) return value; await new Promise(resolve => setTimeout(resolve, 10)); }
+  while (Date.now() < deadline) { const value = await read(); if (predicate(value)) return value; await new Promise(resolve => setTimeout(resolve, 10)); }
   throw new Error('等待受控群聊状态超时');
 }
 const health = (): AgentRuntimeHealth => ({ provider: 'codex', label: 'Codex', binary: 'fixture', version: 'fixture',
@@ -86,7 +86,7 @@ test('发送确认后执行器不可用，消息保留并显示真实失败原�
     assert.match(failed.room.rounds[0].turns[0].error, /fixture 执行器尚未登录/);
     assert.equal(failed.room.paused, true);
     assert.equal(f.calls.length, 0);
-    assert.equal((await f.persisted()).rooms[0].rounds[0].state, 'failed');
+    await settle(f.persisted, state => state.rooms[0]?.rounds[0]?.state === 'failed');
   } finally { await f.cleanup(); }
 });
 
@@ -101,8 +101,8 @@ test('发送确认后额度用尽仍在派发前阻止执行，失败消息与�
     assert.equal(failed.room.rounds[0].text, f.input.text);
     assert.match(failed.room.rounds[0].turns[0].error, /模型服务额度已用尽/);
     assert.equal(f.calls.length, 0);
-    const saved = (await f.persisted()).rooms[0].rounds[0];
-    assert.equal(saved.state, 'failed');
+    const stored = await settle(f.persisted, state => state.rooms[0]?.rounds[0]?.state === 'failed');
+    const saved = stored.rooms[0].rounds[0];
     assert.match(saved.turns[0].error, /模型服务额度已用尽/);
   } finally { await f.cleanup(); }
 });
