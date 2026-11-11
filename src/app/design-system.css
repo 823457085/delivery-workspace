@@ -31,7 +31,7 @@
     z-index: 62;
     inset: 0 0 auto;
     display: grid;
-    grid-template-columns: minmax(132px, 1fr) auto minmax(150px, 1fr);
+    grid-template-columns: minmax(132px, 1fr) minmax(0, max-content) minmax(150px, 1fr);
     align-items: center;
     gap: 16px;
     height: var(--workspace-topbar-height);
@@ -69,16 +69,20 @@
     display: flex;
     align-items: center;
     gap: 2px;
+    min-width: 0;
     padding: 4px;
     border: 1px solid var(--ui-divider);
     border-radius: 12px;
     background: var(--ui-raised);
+    overflow-x: auto;
+    scrollbar-width: thin;
   }
   .workspace-primary-nav button {
     display: inline-flex;
     align-items: center;
     justify-content: center;
     gap: 6px;
+    flex-shrink: 0;
     min-height: 34px;
     padding: 0 10px;
     border: 0;
@@ -90,6 +94,7 @@
     cursor: pointer;
     transition: background var(--ds-fast), color var(--ds-fast);
   }
+  .workspace-primary-nav button > span { max-width: 10em; overflow: hidden; text-overflow: ellipsis; }
   .workspace-primary-nav button:hover { background: var(--ui-hover); color: var(--ui-text); }
   .workspace-primary-nav button[aria-current='page'] {
     background: var(--ui-accent-soft);

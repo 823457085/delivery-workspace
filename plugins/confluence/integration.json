@@ -1,0 +1,36 @@
+{
+  "id": "confluence",
+  "name": "Confluence",
+  "description": "知识检索、页面读取和方案发布",
+  "capabilities": [
+    "pages.read",
+    "pages.write"
+  ],
+  "prefix": "CONFLUENCE",
+  "probe": "/rest/api/user/current",
+  "views": [],
+  "knowledge": [
+    {
+      "id": "confluence",
+      "label": "Confluence",
+      "component": "knowledge"
+    }
+  ],
+  "mention": {
+    "kind": "confluence",
+    "label": "Confluence 文档",
+    "prefixes": [
+      "confluence",
+      "文档"
+    ]
+  },
+  "sourceKeys": [
+    "meeting-sync"
+  ],
+  "apiPrefixes": [
+    "/api/agent-runtimes/confluence/"
+  ],
+  "apiPaths": [
+    "/api/meeting/confluence-sync"
+  ]
+}

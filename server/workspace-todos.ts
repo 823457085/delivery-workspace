@@ -34,21 +34,24 @@ export async function createWorkspaceTodos(directory: string) {
   }
   return {
     list: () => structuredClone(items),
-    async save(raw: unknown): Promise<TodoItem> {
+    async save(raw: unknown, expected?: TodoItem): Promise<TodoItem> {
       const input = workspaceTodoInputSchema.parse(raw);
       return exclusive(async () => {
         const existing = input.id ? items.find(item => item.id === input.id) : undefined;
         if (input.id && !existing) throw new Error('待办事项不存在，请刷新后重试');
+        if (expected && (!existing || Object.entries(expected).some(([key, value]) => existing[key as keyof TodoItem] !== value))) throw new Error('待办事项已更新，请刷新后编辑');
         const now = new Date().toISOString();
         const item: TodoItem = { ...input, id: existing?.id || randomUUID(), createdAt: existing?.createdAt || now, updatedAt: now };
         await persist(existing ? items.map(value => value.id === item.id ? item : value) : [...items, item]);
         return structuredClone(item);
       });
     },
-    async remove(raw: unknown): Promise<{ id: string }> {
+    async remove(raw: unknown, expected?: TodoItem): Promise<{ id: string }> {
       const { id } = workspaceTodoRemoveSchema.parse(raw);
       return exclusive(async () => {
-        if (!items.some(item => item.id === id)) throw new Error('待办事项不存在，请刷新后重试');
+        const existing = items.find(item => item.id === id);
+        if (!existing) throw new Error('待办事项不存在，请刷新后重试');
+        if (expected && Object.entries(expected).some(([key, value]) => existing[key as keyof TodoItem] !== value)) throw new Error('待办事项已更新，请刷新后删除');
         await persist(items.filter(item => item.id !== id));
         return { id };
       });

@@ -4,8 +4,9 @@ import { computed, shallowRef, watch } from 'vue';
 import AgentMarkdownInline from './AgentMarkdownInline.vue';
 import { parseMarkdownInline } from './markdown';
 import { splitUserMessage } from './message-text';
+import PluginReferenceHistory from '../custom-plugins/PluginReferenceHistory.vue';
 
-const props = defineProps<{ source: string; searchQuery?: string }>();
+const props = defineProps<{ source: string; searchQuery?: string; knowledgeContext?: string }>();
 const parts = computed(() => splitUserMessage(props.source));
 const nodes = computed(() => ({ message: parseMarkdownInline(parts.value.handoff ? parts.value.before : props.source),
   after: parseMarkdownInline(parts.value.after) }));
@@ -26,6 +27,7 @@ function rememberExpanded(event: Event) { expanded.value = (event.target as HTML
     <p v-else class="message-text message-overflow-content"><AgentMarkdownInline :nodes="nodes.message" /></p>
   </details>
   <p v-if="parts.after" class="message-text"><AgentMarkdownInline :nodes="nodes.after" /></p>
+  <PluginReferenceHistory :source="source" :snapshot="knowledgeContext" />
 </template>
 
 <style scoped>

@@ -1038,6 +1038,9 @@ export async function updateShareConfig(
   sourceBackend: SourceBackend,
 ) {
   const action = String(input.action || 'save');
+  if (!['add-root', 'remove-root'].includes(action) && process.env.DELIVERY_PLUGIN_JIRA_MANAGED === 'true') {
+    throw fail('Jira 已由接入插件管理，请在设置中的插件卡片修改连接。');
+  }
 
   if (action === 'add-root') {
     const directory = await resolveDirectory(input.path);

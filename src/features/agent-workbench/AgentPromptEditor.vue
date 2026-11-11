@@ -12,6 +12,7 @@ import { useAgentMentions, type AgentMentionKind } from './useAgentMentions';
 import { useAgentAttachments, type AgentAttachmentDraft } from './useAgentAttachments';
 import type { AgentBusinessMention } from './agent-business-context';
 import AgentNotePreview from './AgentNotePreview.vue';
+import PluginContextPicker from '../custom-plugins/PluginContextPicker.vue';
 
 const props = withDefaults(defineProps<{ workspacePath: string; provider?: AgentProvider; modes?: AgentRunMode[]; selectedMode?: AgentRunMode;
   modeLocked?: boolean; businessOptions?: AgentBusinessMention[]; attachmentDraft?: AgentAttachmentDraft; disabled?: boolean; inputLabel?: string; placeholder?: string; minRows?: number; maxRows?: number; submitOnEnter?: boolean }>(), {
@@ -31,16 +32,16 @@ const mentions = useAgentMentions(draft, () => ({ workspacePath: props.workspace
 () => props.disabled || preview.value, (mode) => emit('selectMode', mode));
 watch(mentions.documentError, error => { if (error) ElMessage.error(error); });
 const mentionGroups = computed(() => {
-  const labels: Record<AgentMentionKind, string> = { business: '业务上下文', mode: '模式', skill: 'Skills', file: '文件', note: 'Obsidian 笔记', confluence: 'Confluence 文档' };
+  const labels: Record<AgentMentionKind, string> = { business: '业务上下文', mode: '模式', skill: 'Skills', file: '文件', note: 'Obsidian 笔记', ...mentions.labels.value };
   const order: AgentMentionKind[] = mentions.prioritizeSkills.value
-    ? ['confluence', 'skill', 'note', 'business', 'mode', 'file']
-    : ['confluence', 'business', 'mode', 'skill', 'note', 'file'];
+    ? [...Object.keys(mentions.labels.value), 'skill', 'note', 'business', 'mode', 'file']
+    : [...Object.keys(mentions.labels.value), 'business', 'mode', 'skill', 'note', 'file'];
   return order.map(kind => ({ kind, label: labels[kind], options: mentions.options.value.filter(option => option.kind === kind) }))
     .filter(group => group.options.length);
 });
 
 function mentionIcon(kind: AgentMentionKind) {
-  return kind === 'note' || kind === 'confluence' ? BookOpen : kind === 'business' ? BriefcaseBusiness : kind === 'mode' ? Bot : kind === 'skill' ? Sparkles : File;
+  return kind === 'note' || !!mentions.labels.value[kind] ? BookOpen : kind === 'business' ? BriefcaseBusiness : kind === 'mode' ? Bot : kind === 'skill' ? Sparkles : File;
 }
 
 function citeNote(reference: string) {
@@ -106,6 +107,7 @@ function onDrop(event: DragEvent) { attachedFiles.fromTransfer(event.dataTransfe
       <el-button text size="small" :class="{ active: !preview }" @click="preview = false"><Pencil :size="13" /> 编辑</el-button>
       <el-button text size="small" :class="{ active: preview }" :disabled="!draft.trim()" @click="preview = true"><Eye :size="13" /> 预览</el-button>
     </div>
+    <PluginContextPicker v-model="draft" :disabled="disabled" />
     <div class="editor-body" @paste="onPaste" @dragover.prevent @drop="onDrop">
       <div v-if="attachments.length" class="image-list" aria-label="已添加附件">
         <figure v-for="attachment in attachments" :key="attachment.id">

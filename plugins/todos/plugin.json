@@ -1,0 +1,18 @@
+{
+  "apiVersion": 1, "hostApi": 1, "id": "personal-todos", "name": "待办事项", "version": "1.0.0",
+  "description": "复用工作台个人待办，可关联或创建 Jira 任务，并引用到会话。",
+  "permissions": ["workspace.todos.read", "workspace.todos.write", "jira.read", "jira.create", "conversation.context"],
+  "page": { "title": "待办事项", "kind": "records" },
+  "records": { "storage": "workspace.todos", "resourceType": "todo", "fields": [
+    { "key": "title", "label": "标题", "type": "text", "required": true, "maxLength": 200 },
+    { "key": "details", "label": "说明", "type": "textarea", "maxLength": 2000 },
+    { "key": "dueDate", "label": "截止日期", "type": "date" },
+    { "key": "priority", "label": "优先级", "type": "select", "default": "normal", "options": [{ "value": "normal", "label": "普通" }, { "value": "high", "label": "高" }] },
+    { "key": "status", "label": "状态", "type": "select", "default": "todo", "options": [{ "value": "todo", "label": "待办" }, { "value": "doing", "label": "进行中" }, { "value": "done", "label": "已完成" }] }
+  ] },
+  "commands": [
+    { "id": "create-jira", "label": "创建 Jira 任务", "action": "jira.create" },
+    { "id": "link-jira", "label": "关联已有 Jira", "action": "jira.link" },
+    { "id": "cite", "label": "引用到会话", "action": "conversation.context" }
+  ]
+}

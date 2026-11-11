@@ -1,3 +1,4 @@
+import { assertIntegrationCapability } from './plugins/definitions.mjs';
 import fs from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
@@ -91,6 +92,7 @@ export async function createJiraDevAutomation(options: Options) {
     entries.set(entry.taskId, entry);
   }
   async function prepare(task: JiraDevTaskRecord, launch: JiraDevLaunch): Promise<JiraDevAutomationPrompt | undefined> {
+    try { assertIntegrationCapability('issues.write'); } catch { return; }
     const issue = jiraDevBoundIssue(task);
     if (!issue?.key || !issue.url || closed) return;
     let settings: AutomationSettings;
@@ -117,6 +119,7 @@ export async function createJiraDevAutomation(options: Options) {
     return prompt;
   }
   async function assertPolicy(entry: Entry) {
+    assertIntegrationCapability('issues.write');
     const settings = await options.readSettings();
     if (closed || policy(settings) !== entry.policy) throw new Error('自动交付设置已变化，请核对本次任务的交付方式。');
     return settings;

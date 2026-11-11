@@ -259,7 +259,10 @@ async function runAction(payload: Record<string, unknown>, successMsg?: string) 
       if (payload.action === 'push' && typeof payload.remote === 'string') {
         lastOutput.value = { title: pushResultTitle(payload.remote, output), type: 'success', details: output };
       } else if (output) {
-        lastOutput.value = { title: output, type: 'info' };
+        const fetchOutput = payload.action === 'fetch';
+        lastOutput.value = fetchOutput || output.includes('\n')
+          ? { title: successMsg || (fetchOutput ? '已获取远端分支' : 'Git 操作已完成'), type: 'info', details: output }
+          : { title: output, type: 'info' };
       }
       if (['stage', 'stage-all', 'unstage', 'unstage-all', 'commit', 'create-branch', 'switch', 'merge', 'abort-merge', 'pull'].includes(String(payload.action))) {
         ++diffRequest;
@@ -480,7 +483,6 @@ watch(
         v-if="lastOutput"
         :title="lastOutput.title"
         :type="lastOutput.type"
-        :description="showGitOutput ? lastOutput.details : undefined"
         show-icon
         closable
         class="git-output-alert"
@@ -492,6 +494,10 @@ watch(
             :aria-expanded="showGitOutput" @click="showGitOutput = !showGitOutput">
             {{ showGitOutput ? '收起 Git 原始输出' : '查看 Git 原始输出' }}
           </el-button>
+        </template>
+        <template #default>
+          <span v-if="showGitOutput && lastOutput.details" class="git-output-details" role="region"
+            aria-label="Git 原始输出" tabindex="0">{{ lastOutput.details }}</span>
         </template>
       </el-alert>
 
@@ -938,8 +944,10 @@ watch(
 .git-badges :deep(.el-tag__content) { overflow: hidden; text-overflow: ellipsis; }
 .git-header-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .git-header-actions :deep(.el-button), .git-commit-actions :deep(.el-button) { margin: 0; }
-.git-output-alert { flex: none; max-height: 110px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.git-output-alert { flex: none; align-items: flex-start; overflow-wrap: anywhere; }
+.git-output-alert :deep(.el-alert__content) { flex: 1; min-width: 0; padding-inline-end: 16px; }
 .git-output-toggle { margin-inline-start: 8px; }
+.git-output-details { display: block; max-height: min(20dvh, 150px); overflow: auto; white-space: pre-wrap; font-family: var(--mono, monospace); }
 .git-tabs { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; }
 .git-tabs :deep(.el-tabs__header) { margin: 0 0 12px; flex: none; }
 .git-tabs :deep(.el-tabs__item) { height: 40px; font-size: 13px; }

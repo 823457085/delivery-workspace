@@ -2,8 +2,8 @@ import { defineConfig, type ViteDevServer } from 'vite';
 import vue from '@vitejs/plugin-vue';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs/promises';
-import { createWorkspaceBuild } from './server/workspace-version';
-import { parseDeploymentLinks } from './src/features/deployments/native-deployments';
+import { createWorkspaceBuild } from './server/workspace-version.ts';
+import { parseDeploymentLinks } from './src/features/deployments/native-deployments.ts';
 
 // 本地服务直接读取 dist；保留带 hash 的旧资源，让已打开的页面在更新后仍能加载异步模块。
 export default defineConfig(async ({ command }) => {

@@ -49,7 +49,6 @@ export async function createYunxiaoDeployments(directory: string, options: { fet
   let pending = 0, closing = false, mutations = Promise.resolve();
   const tasks = new Set<Promise<unknown>>();
   const refreshing = new Map<string, Promise<DeploymentRun>>();
-  const metadataChecked = new Set<string>();
   function task<T>(work: () => Promise<T>) {
     if (closing) return Promise.reject(new Error('部署服务正在退出'));
     pending++;
@@ -97,9 +96,7 @@ export async function createYunxiaoDeployments(directory: string, options: { fet
   async function refresh(id: string) {
     const run = structuredClone(findRun(id));
     if (!run.pipelineRunId) return run;
-    if (!['queued', 'running', 'unknown'].includes(run.status)) {
-      if (run.steps?.some(step => step.jobId) || metadataChecked.has(id)) return run;
-    }
+    // 云效可在同一次运行中重试任务并更换 jobId，终态也必须重新查询，不能永久复用旧任务编号。
     let update: Partial<DeploymentRun>;
     try {
       const value = await api(run.organizationId!, run.pipelineId!, `/runs/${run.pipelineRunId}`) as {
@@ -117,7 +114,6 @@ export async function createYunxiaoDeployments(directory: string, options: { fet
           return { name: job.name, status: job.status, ...(/^[1-9]\d*$/.test(jobId) ? { jobId } : {}) };
         }),
       ]) };
-      metadataChecked.add(id);
     } catch (error) { update = { error: redact(error instanceof Error ? error.message : '云效状态查询失败') }; }
     return exclusive(async () => {
       const current = findRun(id), next = { ...current, ...update, updatedAt: new Date().toISOString() };

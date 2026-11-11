@@ -10,7 +10,8 @@ import zipfile
 root = Path(__file__).resolve().parents[1]
 output = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else root.parent / 'Delivery-Workspace-share.zip'
 directories = ['server', 'shared', 'src', 'test', 'tools', 'support', 'docs', 'examples',
-               'scripts/cursor-accounts', 'scripts/ai-accounts']
+               'scripts/cursor-accounts', 'scripts/ai-accounts',
+               'plugins/jira', 'plugins/confluence', 'plugins/wecom', 'plugins/todos', 'plugins/example-notes']
 root_files = ['README.md', 'AGENTS.md', '.env.example', '.gitignore', '.npmrc', 'package.json', 'pnpm-lock.yaml',
               'pnpm-workspace.yaml', 'index.html', 'tsconfig.json', 'tsconfig.server.json', 'vite.config.ts',
               'public/catchup/apex-930.json', 'public/system-project-import.xlsx',

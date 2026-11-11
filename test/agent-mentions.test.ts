@@ -1,3 +1,5 @@
+import confluence from '../plugins/confluence/frontend.js';
+import { integrationCatalog } from '../shared/integration-plugins.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { effectScope, nextTick, shallowRef } from 'vue';
@@ -30,7 +32,7 @@ test('明确文档查询使用当前工作区范围，选择后写入可由后�
   };
   const scope = effectScope();
   const draft = shallowRef('');
-  const mentions = scope.run(() => useAgentMentions(draft, () => ({ workspacePath: '/selected-project', provider: 'codex', modes: [] }), () => false, () => {}))!;
+  const mentions = scope.run(() => useAgentMentions(draft, () => ({ workspacePath: '/selected-project', provider: 'codex', modes: [] }), () => false, () => {}, shallowRef([{...integrationCatalog.find(item => item.id === 'confluence')!.mention!, search: confluence.mentions}])) )!;
   try {
     draft.value = '@文档:接口';
     await nextTick();
@@ -50,7 +52,7 @@ test('输入法确认键不选中 @ 候选，合成结束后的 Enter 仍正常�
   const draft = shallowRef('');
   const selected: string[] = [];
   const mentions = scope.run(() => useAgentMentions(draft, () => ({ workspacePath: '', provider: 'codex',
-    modes: ['agent', 'ask'], selectedMode: 'agent' }), () => false, mode => selected.push(mode)))!;
+    modes: ['agent', 'ask'], selectedMode: 'agent' }), () => false, mode => selected.push(mode), shallowRef([])))!;
   try {
     draft.value = '@';
     await nextTick();

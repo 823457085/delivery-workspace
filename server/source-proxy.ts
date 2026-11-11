@@ -1,3 +1,4 @@
+import { assertIntegrationRequest } from './plugins/definitions.mjs';
 /** 固定映射内嵌业务接口，保留业务状态唯一来源；拒绝任意 URL 和未确认的写操作。 */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { SourceBackend } from './source-backend.js';
@@ -45,5 +46,6 @@ export async function proxySource(request: IncomingMessage, response: ServerResp
   }
   const key = url.pathname.slice('/api/source/'.length);
   const pathname = resolveSourceRoute(key, request.method ?? 'GET', request.headers['x-delivery-confirmed'] === 'yes');
+  assertIntegrationRequest(pathname, process.env, request.method);
   await backend.dispatch(request, response, `${pathname}${url.search}`);
 }

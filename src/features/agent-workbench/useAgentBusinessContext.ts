@@ -6,6 +6,8 @@ import { computed, type MaybeRefOrGetter, toValue } from 'vue';
 import { useQuery } from '@tanstack/vue-query';
 import type { ApexBffReviewState } from '../../../shared/apex-bff-review';
 import type { AutomationData, IssueResponse, ProjectsData } from '../../../shared/hub';
+import { useIntegrationPlugins } from '../../plugins/runtime';
+import { integrationCatalog } from '../../../shared/integration-plugins';
 import { useSource } from '../../shared/api';
 import { buildMenuPagePlans } from '../api-integration/page-plan';
 import { useIntegrationCatalog } from '../api-integration/useIntegrationCatalog';
@@ -13,6 +15,7 @@ import type { AgentConversation } from './conversation';
 import { buildAgentBusinessContext, buildAgentBusinessMentions } from './agent-business-context';
 
 export function useAgentBusinessContext(conversation: MaybeRefOrGetter<AgentConversation | undefined>) {
+  const integrations = useIntegrationPlugins();
   const issues = useSource<IssueResponse>('issues', { allTime: 'true', includeSubtasks: 'true', includeDone: 'true', maxResults: '500' });
   const projects = useSource<ProjectsData>('projects');
   const automation = useSource<AutomationData>('automation');
@@ -36,7 +39,10 @@ export function useAgentBusinessContext(conversation: MaybeRefOrGetter<AgentConv
     refactorRepository: catalogQuery.data.value?.refactorRepository,
   }));
   const context = computed(() => buildAgentBusinessContext(toValue(conversation), snapshot.value));
-  const mentions = computed(() => buildAgentBusinessMentions(snapshot.value));
+  const mentions = computed(() => buildAgentBusinessMentions(snapshot.value).filter(option => {
+    const owner = integrationCatalog.find(plugin => plugin.businessTypes?.includes(option.type));
+    return !owner || integrations.available(owner.id);
+  }));
   const loading = computed(() => [issues, projects, automation, catalogQuery].some(query => query.isPending.value) || review.isLoading.value);
   return { context, mentions, loading, projectsData: projects.data };
 }

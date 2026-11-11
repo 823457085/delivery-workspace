@@ -34,6 +34,7 @@ function fixture() {
   const local = { displayName: '新本机项目', projectName: 'next', folderName: 'next', path: '/fixture/next', remoteUrl: 'git@example.test:next.git' } as LocalProject;
   const writes: { key: string; payload: Record<string, unknown>; confirmation: string[] }[] = [];
   const bindings = { computed, ref, shallowRef, watch, crypto: { randomUUID },
+    useIntegrationPlugins: () => ({ capability: () => true }),
     onMounted() {}, onBeforeUnmount() {}, useRoute: () => ({ query: {} }), useRouter: () => ({ replace() {} }),
     useSource: (key: string) => ({ data: key === 'automation' ? data : ref(key === 'projects' ? { projects: [local] } : {}),
       error: ref(null), isPending: ref(false), isFetching: ref(false) }),

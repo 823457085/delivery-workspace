@@ -7,10 +7,10 @@ import type { AgentProvider, AgentRunMode, AgentSkillOption } from '../../../sha
 import type { AgentBusinessMention } from './agent-business-context';
 import type { AgentNote } from '../../../shared/agent-notes';
 import { noteRequest } from './useAgentNotes';
-import { confluenceRequest } from './useConfluenceKnowledge';
-import type { ConfluencePage } from '../../../shared/confluence-knowledge';
+import { integrationCatalog } from '../../../shared/integration-plugins';
+import { useIntegrationPlugins } from '../../plugins/runtime';
 
-export type AgentMentionKind = 'business' | 'mode' | 'skill' | 'file' | 'note' | 'confluence';
+export type AgentMentionKind = string;
 
 export interface AgentMentionOption {
   id: string;
@@ -43,11 +43,12 @@ export function shouldPrioritizeSkillMentions(query: string | undefined) {
 }
 
 export function useAgentMentions(draft: Ref<string>, context: () => AgentMentionContext, disabled: () => boolean,
-  onSelectMode: (mode: AgentRunMode) => void) {
+  onSelectMode: (mode: AgentRunMode) => void, providers = useIntegrationPlugins().mentions) {
   const files = shallowRef<string[]>([]);
   const skills = shallowRef<AgentSkillOption[]>([]);
   const notes = shallowRef<AgentNote[]>([]);
-  const documents = shallowRef<ConfluencePage[]>([]);
+  const documents = shallowRef<AgentMentionOption[]>([]);
+  const documentProvider = (term: string) => providers.value.find(provider => provider.prefixes.some(prefix => term.toLowerCase().startsWith(prefix.toLowerCase() + ':') || term.toLowerCase().startsWith(prefix.toLowerCase() + '：')));
   const documentError = shallowRef('');
   const loading = shallowRef(false);
   const open = shallowRef(false);
@@ -57,8 +58,7 @@ export function useAgentMentions(draft: Ref<string>, context: () => AgentMention
   const options = computed<AgentMentionOption[]>(() => {
     const state = context();
     const term = (mentionQuery.value || '').toLowerCase();
-    if (/^(?:confluence|文档)[:：]/i.test(term)) return documents.value.map(page => ({ id: page.reference, kind: 'confluence' as const,
-      label: page.title, detail: `${page.spaceKey} · v${page.version}`, value: page.reference }));
+    if (documentProvider(term)) return documents.value;
     const availableModes = state.modeLocked && state.selectedMode ? [state.selectedMode] : state.modes;
     const modes = availableModes.filter((mode) => {
       const item = modeDetails[mode];
@@ -81,7 +81,7 @@ export function useAgentMentions(draft: Ref<string>, context: () => AgentMention
   });
   const activeOption = computed(() => options.value[activeIndex.value]);
 
-  watch([mentionQuery, () => context().workspacePath, () => context().provider, disabled], ([query, workspace, provider, isDisabled], _previous, onCleanup) => {
+  watch([mentionQuery, () => context().workspacePath, () => context().provider, disabled, providers], ([query, workspace, provider, isDisabled], _previous, onCleanup) => {
     documentError.value = '';
     documents.value = [];
     if (query === undefined || isDisabled) { open.value = false; files.value = []; skills.value = []; notes.value = []; loading.value = false; return; }
@@ -92,11 +92,12 @@ export function useAgentMentions(draft: Ref<string>, context: () => AgentMention
     const timer = setTimeout(async () => {
       loading.value = true;
       try {
-        const documentQuery = query.match(/^(?:confluence|文档)[:：](.*)$/i);
-        if (documentQuery) {
+        const source = documentProvider(query);
+        if (!source && integrationCatalog.some(plugin => plugin.mention?.prefixes.some(prefix => query.startsWith(prefix + ':') || query.startsWith(prefix + '：')))) { documentError.value = '文档提供者未接入或尚未配置，请在插件管理中检查'; return; }
+        if (source) {
           try {
-            const data = await confluenceRequest<{ pages: ConfluencePage[] }>(`search?${new URLSearchParams({ workspacePath: workspace, q: documentQuery[1] })}`, undefined, controller.signal);
-            if (!controller.signal.aborted) documents.value = data.pages;
+            const data = await source.search(workspace, query.replace(/^[^:：]*[:：]/, ''), controller.signal);
+            if (!controller.signal.aborted) documents.value = data;
           } catch (error) { if (!controller.signal.aborted) documentError.value = error instanceof Error ? error.message : String(error); }
           return;
         }
@@ -158,5 +159,5 @@ export function useAgentMentions(draft: Ref<string>, context: () => AgentMention
     return true;
   }
 
-  return { loading, open, options, activeOption, prioritizeSkills, documentError, select, insertTrigger, handleKeydown };
+  return { labels: computed(() => Object.fromEntries(providers.value.map(item => [item.kind, item.label]))), loading, open, options, activeOption, prioritizeSkills, documentError, select, insertTrigger, handleKeydown };
 }

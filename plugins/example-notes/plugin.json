@@ -1,0 +1,11 @@
+{
+  "apiVersion": 1, "hostApi": 1, "id": "example-notes", "name": "项目备忘", "version": "1.0.0",
+  "description": "最小自定义插件示例，使用独立存储并向会话贡献备忘资源。",
+  "permissions": ["storage.read", "storage.write", "conversation.context"],
+  "page": { "title": "项目备忘", "kind": "records" },
+  "records": { "storage": "private", "resourceType": "note", "fields": [
+    { "key": "title", "label": "标题", "type": "text", "required": true, "maxLength": 200 },
+    { "key": "details", "label": "正文", "type": "textarea", "maxLength": 8000 }
+  ] },
+  "commands": [{ "id": "cite", "label": "引用到会话", "action": "conversation.context" }]
+}

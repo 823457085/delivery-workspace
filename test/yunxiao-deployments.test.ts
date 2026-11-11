@@ -6,7 +6,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createYunxiaoDeployments } from '../server/yunxiao-deployments.js';
 
-const repository = 'aaaaaaaaaaaaaaaaaaaaaaaa/demo-project/demo';
+const repository = 'aaaaaaaaaaaaaaaaaaaaaaaa/Raytheon_project/demo';
 const projectId = `codeup.aliyun.com:${repository}`;
 const repo = `https://codeup.aliyun.com/${repository}.git`;
 const target = { projectId, environment: 'pre' };
@@ -15,7 +15,7 @@ async function fixture(t: { after(callback: () => Promise<void>): void }, dispat
   await fs.writeFile(path.join(directory, 'yunxiao-deployments.json'), JSON.stringify([{ id: projectId, name: '测试项目', repository,
     projectUrl: `https://codeup.aliyun.com/${repository}/pipeline`, environments: [{ environment: 'pre', name: '接口流水线名称', url: 'https://flow.aliyun.com/pipelines/123/current' }] }]));
   const calls: { url: string; method: string; body?: unknown }[] = [];
-  let status = 'RUNNING', wrongId = false, logContent = '构建中 L_RAW fixture-pat\n';
+  let status = 'RUNNING', wrongId = false, jobId = 7, logContent = '构建中 L_RAW fixture-pat\n';
   const fetcher = (async (input, init) => {
     const url = String(input), method = init?.method || 'GET';
     assert.equal(new Headers(init?.headers).get('x-yunxiao-token'), 'fixture-pat');
@@ -26,15 +26,17 @@ async function fixture(t: { after(callback: () => Promise<void>): void }, dispat
       if (dispatchFails) throw new Error('fixture-pat socket interrupted');
       return Response.json(42);
     }
-    if (url.endsWith('/runs/42/job/7/log')) return Response.json({ content: logContent, last: 17, more: false });
+    if (url.endsWith(`/runs/42/job/${jobId}/log`)) return Response.json({ content: logContent, last: 17, more: false });
+    if (/\/job\/\d+\/log$/.test(url)) return Response.json({ message: 'InvalidPipelineRun.JobIdNotFound' }, { status: 404 });
     if (url.endsWith('/runs/42')) return Response.json({ pipelineId: wrongId ? 999 : 123, pipelineRunId: 42, status,
-      stages: [{ name: '接口阶段名称', stageInfo: { status, jobs: [{ id: 7, name: '构建任务', status }] } }] });
+      stages: [{ name: '接口阶段名称', stageInfo: { status, jobs: [{ id: jobId, name: '构建任务', status }] } }] });
     return Response.json({ name: '接口流水线名称', pipelineConfig: { sources: [{ data: { repo, branch: 'pre' } }] } });
   }) as typeof fetch;
   let service = await createYunxiaoDeployments(directory, { fetcher, pollIntervalMs: 0 });
   t.after(async () => { await service.close(); await fs.rm(directory, { recursive: true, force: true }); });
   return { directory, calls, get service() { return service; }, setStatus(value: string) { status = value; }, mismatch() { wrongId = true; },
     setLogContent(value: string) { logContent = value; },
+    setJobId(value: number) { jobId = value; },
     async restart() { await service.close(); service = await createYunxiaoDeployments(directory, { fetcher, pollIntervalMs: 0 }); return service; } };
 }
 
@@ -124,7 +126,7 @@ test('云效首次映射仅接收真实 Codeup 项目身份，不允许请求伪
   assert.equal(f.calls.length, 0);
 });
 
-test('终态旧记录补取一次任务编号，日志只读取该次运行的已知任务并脱敏', async t => {
+test('终态旧记录刷新任务编号，日志只读取该次运行的已知任务并脱敏', async t => {
   const f = await fixture(t); await f.service.saveConfig({ token: 'fixture-pat' });
   const run = await f.service.startRun({ ...target, requestId: randomUUID(), branches: {} });
   f.setStatus('SUCCESS'); await f.service.getRun(run.id);
@@ -136,13 +138,32 @@ test('终态旧记录补取一次任务编号，日志只读取该次运行的�
   const terminal = await f.service.getRun(run.id);
   assert.equal(terminal.status, 'success'); assert.equal(terminal.steps?.find(step => step.jobId)?.jobId, '7');
   assert.equal(f.calls.length, before + 1);
-  await f.service.getRun(run.id); assert.equal(f.calls.length, before + 1);
+  await f.service.getRun(run.id); assert.equal(f.calls.length, before + 2);
   const log = await f.service.log(run.id, '7', 0);
   assert.equal(log.text, '构建中 L_RAW [凭据已隐藏]\n'); assert.equal(log.moreData, false);
   assert.equal(log.nextOffset, Buffer.byteLength(log.text));
   const requests = f.calls.length;
   await assert.rejects(f.service.log(run.id, '8', 0), /任务/);
-  assert.equal(f.calls.length, requests);
+  assert.equal(f.calls.length, requests + 1);
+  assert.equal(f.calls.at(-1)?.url.endsWith('/runs/42'), true);
+  assert.equal(f.calls.filter(call => call.method === 'POST').length, 1);
+});
+
+test('同次运行重试更换任务编号后，已缓存的终态和重启恢复记录均使用最新任务读取日志', async t => {
+  const f = await fixture(t); await f.service.saveConfig({ token: 'fixture-pat' });
+  const run = await f.service.startRun({ ...target, requestId: randomUUID(), branches: {} });
+  f.setStatus('FAIL');
+  assert.equal((await f.service.getRun(run.id)).steps?.at(-1)?.jobId, '7');
+  for (const jobId of [8, 9]) {
+    if (jobId === 9) await f.restart();
+    f.setJobId(jobId);
+    const current = await f.service.getRun(run.id);
+    assert.equal(current.status, 'failed');
+    assert.equal(current.steps?.at(-1)?.jobId, String(jobId));
+    assert.equal((await f.service.log(run.id, String(jobId), 0)).text, '构建中 L_RAW [凭据已隐藏]\n');
+    await assert.rejects(f.service.log(run.id, String(jobId - 1), 0), /不属于本次/);
+  }
+  assert.deepEqual(f.calls.filter(call => /\/job\/\d+\/log$/.test(call.url)).map(call => call.url.split('/').at(-2)), ['8', '9']);
   assert.equal(f.calls.filter(call => call.method === 'POST').length, 1);
 });
 

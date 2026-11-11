@@ -2,6 +2,8 @@
 import { computed, shallowRef, toValue, type MaybeRefOrGetter } from 'vue';
 import { useQuery, useQueryClient } from '@tanstack/vue-query';
 import { ElMessage, ElMessageBox } from 'element-plus';
+import { useIntegrationPlugins } from '../plugins/runtime';
+import { sourceOwner } from '../../shared/integration-plugins';
 import { createSourceActionExecutor } from './source-action';
 
 export function sourceUrl(key: string, params: Record<string, string> = {}) {
@@ -16,13 +18,16 @@ export async function readSource<T>(key: string, params: Record<string, string> 
   return data;
 }
 export function useSource<T>(key: string, params: MaybeRefOrGetter<Record<string, string>> = {}, requireOnline = false) {
-  return useQuery({ queryKey: computed(() => ['source', key, toValue(params), ...(requireOnline ? ['online'] : [])]),
+  const plugins = useIntegrationPlugins(), owner = sourceOwner(key);
+  const enabled = computed(() => !owner || plugins.available(owner.id));
+  const query = useQuery({ enabled, queryKey: computed(() => ['source', key, toValue(params), ...(requireOnline ? ['online'] : [])]),
     queryFn: ({ signal }) => readSource<T>(key, toValue(params), signal, requireOnline),
     staleTime: key === 'projects' ? 180_000 : 20_000, retry: false,
     refetchOnWindowFocus: key === 'issues',
     refetchInterval: key === 'issues' ? 30_000 : ['catchup', 'merge', 'automation'].includes(key) ? 15_000 : false,
     refetchIntervalInBackground: false,
   });
+  return { ...query, data: computed(() => enabled.value ? query.data.value : undefined), isPending: computed(() => enabled.value && query.isPending.value), refetch: (options?: Parameters<typeof query.refetch>[0]) => enabled.value ? query.refetch(options) : Promise.resolve(undefined) };
 }
 export function useSourceActions() {
   const client = useQueryClient();

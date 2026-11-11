@@ -2,6 +2,7 @@ import { computed } from 'vue';
 import { useQuery } from '@tanstack/vue-query';
 import type { AutomationData, IssueResponse } from '../../../shared/hub';
 import { useAgentRuntimeSnapshot } from '../../shared/useAgentRuntimeSnapshot';
+import { useIntegrationPlugins } from '../../plugins/runtime';
 import { useSource } from '../../shared/api';
 import { useDesignExecutor } from '../tech-design-delivery/useDesignExecutor';
 import { deliveryRecords, deliveryRecordState, launchDeliveryRecords, reconcileDeliveryRecords, workbenchDismissalKey } from './domain';
@@ -9,6 +10,7 @@ import { readLaunchRecords } from './launch-records';
 import { deliveryAcceptanceQueryKey, readDeliveryAcceptances } from './acceptance-api';
 
 export function useWorkbench(options: { applyDismissals?: boolean } = {}) {
+  const integrations = useIntegrationPlugins();
   const automation = useSource<AutomationData>('automation', {}, true);
   const design = useDesignExecutor().query;
   const issues = useSource<IssueResponse>('issues', { allTime: 'true', includeSubtasks: 'true', includeDone: 'true', maxResults: '5000' }, true);
@@ -50,7 +52,7 @@ export function useWorkbench(options: { applyDismissals?: boolean } = {}) {
     errors: computed(() => observedSources.filter(source => source.query.error.value).map(source => `${source.name}：${source.query.error.value?.message}`)),
     loading: computed(() => observedSources.some(source => source.query.isPending.value)),
     fetching: computed(() => observedSources.some(source => source.query.isFetching.value)),
-    incomplete: computed(() => !issues.data.value || !!issues.error.value || issues.data.value.source === 'mock' || observedSources.some(source => !source.query.data.value || source.query.error.value)),
+    incomplete: computed(() => integrations.capability('issues.read') && (!issues.data.value || !!issues.error.value || issues.data.value.source === 'mock') || observedSources.some(source => !source.query.data.value || source.query.error.value)),
     refresh: () => Promise.all([...observedSources.map(source => source.query.refetch()), issues.refetch()]),
   };
 }

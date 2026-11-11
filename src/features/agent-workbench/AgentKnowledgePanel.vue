@@ -7,11 +7,14 @@ import type { AgentProvider } from '../../../shared/agent-runtime';
 import { useAgentKnowledgeSearch } from './useAgentKnowledgeSearch';
 import { useKnowledgeCatalog } from './useKnowledgeCatalog';
 import AgentKnowledgeResults from './AgentKnowledgeResults.vue';
-import AgentConfluencePanel from './AgentConfluencePanel.vue';
+import { useIntegrationPlugins } from '../../plugins/runtime';
+const integrations = useIntegrationPlugins();
 const props = defineProps<{ workspacePath: string; provider: AgentProvider; relatedText?: string }>();
 const emit = defineEmits<{ compose: [prompt: string] }>();
 const knowledge = useAgentKnowledgeSearch(() => props.workspacePath, () => props.provider);
 const { tab, source, directory, directories, page, pages, entries, visible } = useKnowledgeCatalog(knowledge, () => props.workspacePath);
+const extension = computed(() => integrations.knowledge.value.find(item => item.id === tab.value));
+watch(integrations.knowledge, items => { if (!['skills', 'files', 'matches'].includes(tab.value) && !items.some(item => item.id === tab.value)) tab.value = 'skills'; });
 const workspaceName = computed(() => props.workspacePath.split('/').filter(Boolean).at(-1) || '尚未选择工作区');
 const placeholder = computed(() => tab.value === 'skills' ? '搜索 Skill 名称或描述' : tab.value === 'files' ? '搜索文件名或路径' : '搜索文件正文（至少 2 个字）');
 watch(knowledge.error, error => { if (error) ElMessage.error(error); });
@@ -19,7 +22,7 @@ watch(knowledge.error, error => { if (error) ElMessage.error(error); });
 <template>
   <section class="knowledge-panel" aria-label="Agent 知识检索">
     <header class="knowledge-toolbar">
-      <details v-if="tab !== 'confluence'" class="knowledge-scope">
+      <details v-if="!extension" class="knowledge-scope">
         <summary><Folder :size="13" /><span :title="workspacePath">{{ workspaceName }}</span><small>{{ knowledge.scope.value.branch }}</small></summary>
         <p>{{ workspacePath }}<br v-if="knowledge.scope.value.headSha" />{{ knowledge.scope.value.headSha }}</p>
       </details>
@@ -27,16 +30,16 @@ watch(knowledge.error, error => { if (error) ElMessage.error(error); });
         <button type="button" :aria-pressed="tab === 'skills'" @click="tab = 'skills'">Skills <small>{{ knowledge.skills.value.length }}</small></button>
         <button type="button" :aria-pressed="tab === 'files'" @click="tab = 'files'">文件 <small>{{ knowledge.files.value.length }}</small></button>
         <button type="button" :aria-pressed="tab === 'matches'" @click="tab = 'matches'">正文检索</button>
-        <button type="button" :aria-pressed="tab === 'confluence'" @click="tab = 'confluence'">Confluence</button>
+        <button v-for="item in integrations.knowledge.value" :key="item.id" type="button" :aria-pressed="tab === item.id" @click="tab = item.id">{{ item.label }}</button>
       </div>
-      <label v-if="tab !== 'confluence'" class="knowledge-search"><Search :size="14" /><input v-model="knowledge.search.value" type="search" :placeholder="placeholder" :aria-label="placeholder" maxlength="200" /><button v-if="knowledge.search.value" type="button" aria-label="清空搜索" @click="knowledge.search.value = ''"><X :size="13" /></button></label>
-      <div v-if="tab !== 'confluence'" class="knowledge-filter">
+      <label v-if="!extension" class="knowledge-search"><Search :size="14" /><input v-model="knowledge.search.value" type="search" :placeholder="placeholder" :aria-label="placeholder" maxlength="200" /><button v-if="knowledge.search.value" type="button" aria-label="清空搜索" @click="knowledge.search.value = ''"><X :size="13" /></button></label>
+      <div v-if="!extension" class="knowledge-filter">
         <select v-if="tab === 'skills'" v-model="source" aria-label="Skill 来源"><option value="">全部来源</option><option value="project">当前项目</option><option value="personal">个人</option><option value="system">系统</option><option value="plugin">插件</option></select>
         <select v-else-if="tab === 'files'" v-model="directory" aria-label="文件目录"><option value="">全部目录</option><option v-for="item in directories" :key="item" :value="item">{{ item === '.' ? '根目录' : item }}</option></select>
         <span>{{ entries.length }} 项结果</span>
       </div>
     </header>
-    <AgentConfluencePanel v-if="tab === 'confluence'" :workspace-path="workspacePath" :related-text="relatedText || ''" @compose="emit('compose', $event)" />
+    <component :is="extension.component" v-if="extension" :workspace-path="workspacePath" :related-text="relatedText || ''" @compose="emit('compose', $event)" />
     <div v-else :key="`${tab}:${page}:${source}:${directory}:${knowledge.search.value}:${workspacePath}`" class="knowledge-body">
       <el-skeleton v-if="knowledge.loading.value" :rows="6" animated />
       <el-empty v-else-if="!workspacePath" description="先选择工作区" :image-size="48" />
@@ -47,7 +50,7 @@ watch(knowledge.error, error => { if (error) ElMessage.error(error); });
       <p v-if="tab === 'matches' && knowledge.truncated.value" class="knowledge-limit">结果已截断，请增加关键词缩小范围。</p>
       <p v-if="tab === 'files' && knowledge.files.value.length === 60" class="knowledge-limit">当前返回前 60 项，可搜索文件名或路径继续查找。</p>
     </div>
-    <footer v-if="tab !== 'confluence' && pages > 1" class="knowledge-pagination"><button type="button" :disabled="page === 1" @click="page--">上一页</button><span>{{ page }} / {{ pages }}</span><button type="button" :disabled="page === pages" @click="page++">下一页</button></footer>
+    <footer v-if="!extension && pages > 1" class="knowledge-pagination"><button type="button" :disabled="page === 1" @click="page--">上一页</button><span>{{ page }} / {{ pages }}</span><button type="button" :disabled="page === pages" @click="page++">下一页</button></footer>
   </section>
 </template>
 <style scoped>

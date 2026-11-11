@@ -5,14 +5,14 @@ import { knowledgeFileQuickPrompt, knowledgeMatchQuickPrompt, knowledgeSkillQuic
 export interface KnowledgeEntry { id: string; title: string; subtitle: string; detail: string; prompt: string }
 export function useKnowledgeCatalog(data: { skills: Ref<AgentSkillOption[]>; files: Ref<string[]>; matches: Ref<AgentKnowledgeMatch[]>;
   search: Ref<string>; scope: Ref<AgentKnowledgeScope> }, workspace: () => string) {
-  const tab = shallowRef<'skills' | 'files' | 'matches' | 'confluence'>('skills');
+  const tab = shallowRef<string>('skills');
   const source = shallowRef('');
   const directory = shallowRef('');
   const page = shallowRef(1);
   const parent = (file: string) => file.includes('/') ? file.slice(0, file.lastIndexOf('/')) : '.';
   const directories = computed(() => [...new Set(data.files.value.map(parent))].sort());
   const entries = computed<KnowledgeEntry[]>(() => {
-    if (tab.value === 'confluence') return [];
+    if (!['skills', 'files', 'matches'].includes(tab.value)) return [];
     if (tab.value === 'skills') return data.skills.value.filter(skill => !source.value || skill.source === source.value)
       .map(skill => ({ id: skill.invocation, title: skill.name, subtitle: skill.sourceLabel, detail: `$${skill.invocation}\n${skill.description || ''}`, prompt: knowledgeSkillQuickPrompt(skill) }));
     if (tab.value === 'files') return data.files.value.filter(file => !directory.value || parent(file) === directory.value)

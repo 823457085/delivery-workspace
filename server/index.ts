@@ -1,6 +1,5 @@
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
-import { createJiraIssueService, createJiraIssueRoute } from './jira-issue.js';
 import fs from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import path from 'node:path';
@@ -50,9 +49,16 @@ import { createCodexPlanUsageReader, createCodexUsageReader } from './codex-usag
 import { createCursorUsageReader } from './cursor-usage.js';
 import { createAntigravityUsageReader } from './antigravity-usage.js';
 import { createAgentNoteStore } from './agent-notes.js';
-import { createConfluenceKnowledge } from './confluence-knowledge.js';
+import { createIntegrationRuntime } from './plugins/integration-runtime.js';
+import { assertIntegrationRequest } from './plugins/definitions.mjs';
+import { createPluginStore } from './plugins/store.mjs';
+import { createCustomPluginRuntime } from './plugins/custom-runtime.js';
+import { createCustomPluginRoutes } from './plugins/custom-routes.js';
+import { createPluginJira } from './plugins/host-jira.js';
 import { createSystemCatalog, createSystemCatalogRoutes } from './system-catalog.js';
 import { createInterfaceCenter, createInterfaceCenterRoutes } from './interface-center.js';
+import { createGoLearningService } from './go-learning.js';
+import { createGoLearningRoutes } from './go-learning-routes.js';
 import { createRefactorControl } from './refactor-control.js';
 import { createRequirementDevelopmentService } from './requirement-development.js';
 import { createJiraFixService } from './jira-fix.js';
@@ -118,7 +124,6 @@ const initialBackup = await stateBackup.snapshot();
 for (const entry of initialBackup.entries.filter(entry => entry.status === 'failed')) console.error(`关键状态备份失败：${entry.path}：${entry.error}`);
 const stopStateBackup = startPeriodicStateBackup(stateBackup);
 const sourceBackend = await createSourceBackend(port);
-const jiraIssueRoute = createJiraIssueRoute(createJiraIssueService(sourceBackend.jiraIssueRequest));
 const service = await createService(dataDirectory, {
   model: process.env.DELIVERY_MODEL || undefined,
   readSource: () => sourceBackend.readMergePlan(false),
@@ -127,15 +132,21 @@ const designExecutor = await createDesignExecutor(path.join(dataDirectory, 'desi
 const cliQueue = await createCliQueue(dataDirectory);
 const agentAttachments = await createAgentAttachmentStore(path.join(dataDirectory, 'agent-runtimes', 'attachments'));
 const agentNotes = await createAgentNoteStore(path.join(dataDirectory, 'agent-notes'));
-const confluenceKnowledge = await createConfluenceKnowledge(path.join(dataDirectory, 'confluence-knowledge'), sourceBackend.confluenceReadRequest);
+const integrationRuntime = createIntegrationRuntime({ directory: dataDirectory, source: sourceBackend, port, json, body });
 const systemCatalog = await createSystemCatalog(path.join(dataDirectory, 'system-catalog'), sourceBackend.confluenceReadRequest, undefined, sourceBackend.readLocalProjects);
 const systemCatalogRoutes = createSystemCatalogRoutes(systemCatalog, { json, body, port });
 const interfaceCenter = await createInterfaceCenter(path.join(dataDirectory, 'interface-center'));
 const interfaceCenterRoutes = createInterfaceCenterRoutes(interfaceCenter, { json, body, port });
+const goLearning = await createGoLearningService(path.join(dataDirectory, 'go-learning'), { rootDir: root });
+const goLearningRoutes = createGoLearningRoutes(goLearning, { json, body, port });
 const agentTranslate = createAgentTranslateService();
 // 团队流程派发前读取 Claude 额度，用尽时改用 Codex；需在运行时服务创建（及其启动恢复）之前就绪。
 const readClaudeUsage = createClaudeUsageReader();
 const agentUsage = await createAgentUsageStore(path.join(dataDirectory, 'agent-runtimes'), { writeJson: stateBackup.writeJson });
+const workspaceTodos = await createWorkspaceTodos(path.join(dataDirectory, 'workspace-todos'));
+const customPluginsDirectory = path.join(dataDirectory, 'custom-plugins');
+const customPlugins = await createCustomPluginRuntime(customPluginsDirectory, workspaceTodos);
+const pluginJira = await createPluginJira(customPluginsDirectory, customPlugins, sourceBackend.jiraIssueRequest);
 const agentRuntimes = await createAgentRuntimeService(path.join(dataDirectory, 'agent-runtimes'), {
   browserRootDirectory: root,
   workspaceSnapshotExclusions: [dataDirectory, path.join(root, '.local', 'logs'),
@@ -145,10 +156,18 @@ const agentRuntimes = await createAgentRuntimeService(path.join(dataDirectory, '
     provider: run.provider, model: run.model, createdAt: run.createdAt, completedAt: run.updatedAt, round: run.task?.workflow?.round, usage: run.usage! }).then(() => {}),
   stateBackup,
   resolveKnowledge: async objective => (await Promise.all([
-    agentNotes.resolveReferences(objective), confluenceKnowledge.resolveReferences(objective),
+    agentNotes.resolveReferences(objective), integrationRuntime.resolveKnowledge(objective), customPlugins.resolveReferences(objective),
   ])).filter(Boolean).join('\n\n'),
   resolveAttachments: agentAttachments.resolve,
   removeAttachments: agentAttachments.remove,
+});
+const customPluginRoutes = createCustomPluginRoutes(customPlugins, pluginJira, {
+  json, body, port,
+  examples: [
+    { name: '待办事项', directory: path.join(root, 'plugins/todos') },
+    { name: '项目备忘示例', directory: path.join(root, 'plugins/example-notes') },
+  ],
+  citations: reference => agentRuntimes.knowledgeCitations(reference),
 });
 const desktopAccounts = createDesktopAccountsService();
 const accountServices = Object.fromEntries(accountProviders.map(provider =>
@@ -241,7 +260,12 @@ const integrationCatalog = await loadIntegrationCatalog();
 const integration = await createIntegrationStore(dataDirectory, integrationCatalog);
 const apexBffReview = await createApexBffReviewStore(dataDirectory, integrationCatalog);
 const wecomIntegration = await createWecomIntegration(dataDirectory, { catalog: integrationCatalog });
-const workspaceTodos = await createWorkspaceTodos(path.join(dataDirectory, 'workspace-todos'));
+const integrationPlugins = await createPluginStore({
+  wecomConfig: () => wecomIntegration.config(),
+  legacyProbe: id => id === 'jira'
+    ? sourceBackend.jiraIssueRequest('myself')
+    : sourceBackend.confluenceReadRequest('user/current'),
+});
 const overseasRequirements = await createOverseasRequirements(path.join(dataDirectory, 'overseas-requirements'),
   id => requirementDevelopment.list().some(record => record.id === id));
 const reportBot = await createWecomIntegration(path.join(dataDirectory, 'workspace-reports'), {
@@ -496,14 +520,34 @@ const server = http.createServer(async (request, response) => {
   if (mutation) pendingMutations++;
   try {
     if (url.pathname.startsWith('/api/')) {
+      try {
+        assertIntegrationRequest(url.pathname, process.env, request.method);
+      } catch (error) {
+        json(response, 409, { message: (error as Error).message, code: 'PLUGIN_UNAVAILABLE' }); return;
+      }
+      if (await customPluginRoutes(request, response, url)) return;
       if (await systemCatalogRoutes(request, response, url)) return;
       if (await interfaceCenterRoutes(request, response, url)) return;
-      if (url.pathname.startsWith('/api/jira/issues/')) { await jiraIssueRoute(request, response, port); return; }
+      if (await goLearningRoutes(request, response, url)) return;
+      if (await integrationRuntime.route(request, response, url)) return;
       if (url.pathname === '/api/workspace/select') { await workspacePicker(request, response, port); return; }
       if (url.pathname === '/api/workspace/terminal') { await workspaceTerminal(request, response, port); return; }
       if (url.pathname === '/api/workspace/cursor') { await workspaceCursor(request, response, port); return; }
       if (await projectWorkspaceRoutes(request, response, url)) return;
       if (await projectLaunchRoutes(request, response, url)) return;
+      if (url.pathname === '/api/plugins' || /^\/api\/plugins\/[^/]+\/(?:configure|test|state)$/.test(url.pathname)) {
+        if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(request.socket.remoteAddress || '') || ![`localhost:${port}`, `127.0.0.1:${port}`].includes(request.headers.host || '')) { json(response, 403, { message: '仅接受本机看板请求' }); return; }
+        if (request.method === 'GET' && url.pathname === '/api/plugins') { json(response, 200, { plugins: await integrationPlugins.list() }); return; }
+        if (request.method !== 'POST' || url.pathname === '/api/plugins') { json(response, 405, { message: '请求方法不支持' }); return; }
+        if (![`http://localhost:${port}`, `http://127.0.0.1:${port}`].includes(request.headers.origin || '')) { json(response, 403, { message: '请求来源不匹配' }); return; }
+        const [, , , id, action] = url.pathname.split('/');
+        if (action === 'state' && (request.headers['x-delivery-confirmed'] !== 'yes' || request.headers['content-type']?.split(';')[0] !== 'application/json')) {json(response, 403, {message: '请在插件管理中确认状态变更'}); return;}
+        try {
+          const input = await body(request, 30_000);
+          json(response, 200, action === 'test' ? await integrationPlugins.test(id, input) : action === 'state' ? await integrationPlugins.state(id, input) : await integrationPlugins.save(id, input));
+        } catch (error) { json(response, 400, { message: error instanceof Error ? error.message : '插件配置操作失败' }); }
+        return;
+      }
       if (url.pathname === '/api/share/config') {
         if (![`localhost:${port}`, `127.0.0.1:${port}`].includes(request.headers.host || '')) { json(response, 403, { message: '仅接受本机看板请求' }); return; }
         if (request.method === 'GET') { json(response, 200, readShareConfig()); return; }
@@ -706,30 +750,6 @@ const server = http.createServer(async (request, response) => {
               'Content-Disposition': `attachment; filename="refactor-report.${input.format}"` }); response.end(output); return;
           }
           json(response, 404, { message: '重构管理接口不存在' }); return;
-        }
-        if (url.pathname.startsWith('/api/agent-runtimes/confluence/')) {
-          const action = url.pathname.slice('/api/agent-runtimes/confluence/'.length);
-          if (action === 'config' && request.method === 'GET') {
-            json(response, 200, await confluenceKnowledge.config(url.searchParams.get('workspacePath') || '')); return;
-          }
-          if (action === 'config' && request.method === 'POST') {
-            const input = z.object({ workspacePath: z.string().min(1).max(1000), scope: z.unknown() }).strict().parse(await body(request));
-            json(response, 200, await confluenceKnowledge.configure(input.workspacePath, input.scope)); return;
-          }
-          if (action === 'search' && request.method === 'GET') {
-            const input = z.object({ workspacePath: z.string().max(1000).default(''), q: z.string().trim().max(200).default(''),
-              start: z.coerce.number().int().min(0).max(10000).default(0), field: z.enum(['title', 'text']).default('title') }).parse(Object.fromEntries(url.searchParams));
-            json(response, 200, await confluenceKnowledge.search(input.workspacePath, input.q, input.start, input.field)); return;
-          }
-          if (action === 'page' && request.method === 'GET') {
-            const reference = z.string().min(1).max(2000).parse(url.searchParams.get('reference'));
-            json(response, 200, await confluenceKnowledge.read(reference)); return;
-          }
-          if (action === 'related' && request.method === 'POST') {
-            const input = z.object({ text: z.string().max(100000) }).strict().parse(await body(request, 150000));
-            json(response, 200, await confluenceKnowledge.related(input.text)); return;
-          }
-          json(response, 404, { message: 'Confluence 文档接口不存在' }); return;
         }
         if (url.pathname === '/api/agent-runtimes/desktop-accounts' || url.pathname.startsWith('/api/agent-runtimes/desktop-accounts/')) {
           await desktopAccountRoute(request, response, port); return;
@@ -1148,7 +1168,10 @@ function shutdown() {
   await remoteDelivery.close();
   await systemCatalog.close();
   await interfaceCenter.close();
-  server.close(); await workspaceReports.close(); await groupChat?.close(); await refactorControl.close(workspaceRestart.isRestarting()); await refactorWorkspace.close(); await agentTeams?.close(); await teamGovernance.close(); sourceBackend.close(); await Promise.all(Object.values(accountServices).map(accounts => accounts.close())); await stopStateBackup(); await Promise.all([requirementDevelopment.close(), deliveryAcceptance.close(), jiraFix.close(), jiraFixHandoff.close(), jiraDev.close()]); await Promise.all([cliQueue.close(), agentRuntimes.close(), designExecutor.close(), integration.close(), confluenceKnowledge.close(), apexBffReview.close(), wecomIntegration.close(), reportBot.close(), deployments.close(), yunxiaoDeployments.close()]); await vite?.close(); await agentUsage.close(); await service.close(); await stateBackup.close(); await releaseStateLease(); process.exit(0);
+  server.close();
+  await pluginJira.close();
+  await customPlugins.close();
+  await workspaceReports.close(); await groupChat?.close(); await refactorControl.close(workspaceRestart.isRestarting()); await refactorWorkspace.close(); await agentTeams?.close(); await teamGovernance.close(); sourceBackend.close(); await Promise.all(Object.values(accountServices).map(accounts => accounts.close())); await stopStateBackup(); await Promise.all([requirementDevelopment.close(), deliveryAcceptance.close(), jiraFix.close(), jiraFixHandoff.close(), jiraDev.close()]); await Promise.all([cliQueue.close(), agentRuntimes.close(), designExecutor.close(), integration.close(), integrationRuntime.close(), apexBffReview.close(), wecomIntegration.close(), reportBot.close(), deployments.close(), yunxiaoDeployments.close()]); await vite?.close(); await agentUsage.close(); await service.close(); await stateBackup.close(); await releaseStateLease(); process.exit(0);
   })();
 }
 for (const signal of ['SIGTERM', 'SIGINT'] as const) process.once(signal, () => { void shutdown(); });

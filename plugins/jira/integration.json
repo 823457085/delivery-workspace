@@ -1,0 +1,100 @@
+{
+  "id": "jira",
+  "name": "Jira",
+  "description": "任务、日历、需求开发和状态回写",
+  "capabilities": [
+    "issues.read",
+    "issues.write"
+  ],
+  "prefix": "JIRA",
+  "probe": "/rest/api/2/myself",
+  "section": {
+    "id": "tasks",
+    "label": "Jira 任务",
+    "shortLabel": "Jira",
+    "icon": "tasks"
+  },
+  "views": [
+    {
+      "id": "tasks",
+      "label": "任务列表",
+      "path": "/tasks/list",
+      "mode": "list",
+      "section": "tasks",
+      "component": "tasks"
+    },
+    {
+      "id": "calendar",
+      "label": "任务日历",
+      "path": "/tasks/calendar",
+      "mode": "calendar",
+      "section": "tasks",
+      "component": "tasks"
+    },
+    {
+      "id": "stats",
+      "label": "任务统计",
+      "path": "/tasks/stats",
+      "mode": "stats",
+      "section": "tasks",
+      "component": "tasks"
+    },
+    {
+      "id": "jira-fix",
+      "label": "Jira 修复",
+      "path": "/agent?view=jira-fix",
+      "section": "execution",
+      "component": "fix"
+    }
+  ],
+  "sourceKeys": [
+    "issues",
+    "config",
+    "users",
+    "scan",
+    "merge-jira"
+  ],
+  "apiPrefixes": [
+    "/api/jira/issues/",
+    "/api/agent-runtimes/jira-fix",
+    "/api/agent-runtimes/jira-dev/"
+  ],
+  "apiPaths": [
+    "/api/issues",
+    "/api/refresh",
+    "/api/scan",
+    "/api/automation/scan",
+    "/api/automation/dispatch",
+    "/api/automation/catchup/merge/jira-completion"
+  ],
+  "businessTypes": [
+    "jira"
+  ],
+  "historyPaths": [
+    "/api/agent-runtimes/jira-fix",
+    "/api/agent-runtimes/jira-dev/tasks"
+  ],
+  "widgets": [
+    {
+      "id": "jira-workbench",
+      "component": "workbench"
+    }
+  ],
+  "slots": [
+    {
+      "id": "requirement-form",
+      "component": "development",
+      "label": "开发任务"
+    },
+    {
+      "id": "requirement-toolbar",
+      "component": "sync",
+      "label": "同步研发助手"
+    },
+    {
+      "id": "requirement-import",
+      "component": "import",
+      "label": "从 Jira 导入"
+    }
+  ]
+}

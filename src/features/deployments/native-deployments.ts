@@ -1,4 +1,4 @@
-import type { DeploymentProject } from '../../../shared/deployments';
+import type { DeploymentProject } from '../../../shared/deployments.ts';
 
 /** 仅保存原生平台入口；登录、运行权限及审批仍由云效实时校验。 */
 export interface NativeDeploymentProject {

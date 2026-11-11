@@ -135,7 +135,7 @@ test('切换有效目标定位新目录，清空参数后再次请求同路径�
     assert.equal(f.selectedProjectId.value, next.projectId);
     f.route.query = {};
     await nextTick();
-    f.gitDrawer.value = false;
+    assert.equal(f.gitDrawer.value, false);
     f.route.query = { workspace: next.path, git: '1' };
     await nextTick();
     assert.equal(f.gitProject.value, next);

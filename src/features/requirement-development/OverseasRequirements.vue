@@ -17,7 +17,8 @@ import JiraDevTask from '../jira-dev/JiraDevTask.vue';
 import RequirementExecutionRecords from './RequirementExecutionRecords.vue';
 import RequirementProgressEditor from './RequirementProgressEditor.vue';
 import OverseasRequirementEditor from './OverseasRequirementEditor.vue';
-import JiraRequirementImport from './JiraRequirementImport.vue';
+import { useIntegrationPlugins } from '../../plugins/runtime';
+const integrations = useIntegrationPlugins();
 import { jiraDevRequest } from '../jira-dev/useJiraDevTask';
 import { deskRows, deskToday, matchesDeskFocus, type DeskFocus, type RequirementDeskRow } from './requirement-desk';
 import { useWorkspacePanelState } from '../../shared/useWorkspacePanelState';
@@ -78,7 +79,7 @@ const jiraTargets = computed(() => {
   return [...new Map([...visible, ...(selected.value ? [selected.value] : [])].filter(item => item.issueUrl || item.issueKey)
     .map(item => [item.id, { id: item.id, source: item.issueUrl || item.issueKey }])).values()];
 });
-const jira = useQuery({ queryKey: computed(() => ['requirement-desk-jira', jiraTargets.value]), enabled: computed(() => !!jiraTargets.value.length),
+const jira = useQuery({ queryKey: computed(() => ['requirement-desk-jira', jiraTargets.value]), enabled: computed(() => integrations.capability('issues.read') && !!jiraTargets.value.length),
   staleTime: 300000, retry: false, refetchOnWindowFocus: false,
   queryFn: async ({ signal }) => {
     const targets = jiraTargets.value;
@@ -267,7 +268,7 @@ function executionStatus(record: RequirementDevelopmentRecord) {
           <button type="button" :class="{ active: tab === 'records' }" :aria-current="tab === 'records' ? 'page' : undefined" @click="tab = 'records'; closeDetail()">开发记录</button>
         </nav>
         <div class="desk-toolbar-actions">
-          <el-button :disabled="!!requirements.error.value || requirements.isPending.value" @click="importing = true">从 Jira 导入</el-button>
+          <el-button v-for="item in integrations.slots('requirement-import')" :key="item.pluginId" :disabled="!!requirements.error.value || requirements.isPending.value" @click="importing = true">{{ item.label }}</el-button>
           <el-button :loading="requirements.isFetching.value || runs.isFetching.value" @click="refresh"><RefreshCw :size="14" />刷新</el-button>
           <el-button type="primary" :disabled="!!requirements.error.value || requirements.isPending.value" @click="edit()"><Plus :size="15" />新建需求</el-button>
         </div>
@@ -291,7 +292,7 @@ function executionStatus(record: RequirementDevelopmentRecord) {
             <details v-if="row.blocker" class="desk-evidence"><summary>查看阻塞原始证据</summary><p>{{ row.blocker }}</p></details>
             <footer><span>{{ row.stages.length ? '依据本轮阶段记录' : row.item.revision ? '依据需求登记' : '依据开发启动记录' }}<template v-if="row.evidenceAt"> · {{ dateTime(row.evidenceAt) }}</template></span><div><el-button link type="danger" :loading="deletingId === row.item.id" :disabled="!!deletingId || !!requirements.error.value" @click="removeRequirement(row.item)">删除</el-button><el-button link @click="showDetail(row.item)">需求详情</el-button><el-button type="primary" :loading="opening && row.action === 'develop'" @click="follow(row)">{{ row.action === 'team' && !deskHasConversation(row) ? '查看记录' : row.actionLabel }}<ArrowUpRight :size="13" /></el-button></div></footer>
           </article>
-          <el-empty v-if="!visibleQueue.length && !busy" :description="requirements.error.value || runs.error.value ? '需求暂时无法读取，请刷新重试' : focus === 'attention' ? '当前筛选下没有待处理事项' : '当前筛选下没有相关需求'" :image-size="60"><el-button v-if="focus !== 'all'" @click="focus = 'all'">查看全部在管需求</el-button><el-button v-else @click="importing = true">从 Jira 导入</el-button></el-empty>
+          <el-empty v-if="!visibleQueue.length && !busy" :description="requirements.error.value || runs.error.value ? '需求暂时无法读取，请刷新重试' : focus === 'attention' ? '当前筛选下没有待处理事项' : '当前筛选下没有相关需求'" :image-size="60"><el-button v-if="focus !== 'all'" @click="focus = 'all'">查看全部在管需求</el-button><el-button v-else-if="integrations.slots('requirement-import').length" @click="importing = true">导入需求</el-button></el-empty>
         </div>
         <div v-if="queue.length > 12" class="desk-pagination"><span>{{ queue.length }} 项推进事项</span><el-pagination v-model:current-page="page" :total="queue.length" :page-size="12" layout="prev, pager, next" /></div>
       </main>
@@ -341,7 +342,7 @@ function executionStatus(record: RequirementDevelopmentRecord) {
       <template #footer><template v-if="selected"><el-button link type="danger" :loading="deletingId === selected.id" :disabled="!!deletingId || !!requirements.error.value" @click="removeRequirement(selected)">删除需求</el-button><el-button @click="edit(selected)">编辑需求</el-button><el-button v-if="selected.groupRoomIds?.some(hasGroup)" type="primary" @click="openLinkedConversation(undefined, selected.groupRoomIds.find(hasGroup))">进入原群聊跟进</el-button><el-button v-else type="primary" :loading="opening" :disabled="!!requirements.error.value" @click="openDevelopment(selected)">准备 / 继续开发</el-button></template></template>
     </el-drawer>
     <OverseasRequirementEditor v-if="editing" :item="editing" :records="records" :groups="groups.data.value?.rooms || []" :system-options="systems" @close="editing = undefined" @saved="remember" />
-    <JiraRequirementImport v-if="importing" :existing="items" :systems="systems" @close="importing = false" @imported="imported" />
+    <component v-for="item in importing ? integrations.slots('requirement-import') : []" :key="item.pluginId" :is="item.component" :existing="items" :systems="systems" @close="importing = false" @imported="imported" />
   </section>
 </template>
 

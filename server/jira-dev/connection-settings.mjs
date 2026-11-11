@@ -7,7 +7,7 @@ import { createJiraClient, loadJiraConfiguration, normalizeJiraSite, sourceIdent
 import { writePrivateJson } from './ui-state.mjs';
 
 const keysByMode = { existing: ['mode'], file: ['mode', 'envFile'], keychain: ['mode', 'site', 'keychainService', 'keychainAccount'] };
-const environmentKeys = ['DELIVERY_CREDENTIALS_FILE', 'JIRA_BASE_URL', 'JIRA_AUTH_HEADER', 'JIRA_COOKIE', 'JIRA_KEYCHAIN_SERVICE', 'JIRA_KEYCHAIN_ACCOUNT', 'JIRA_USERNAME', 'JIRA_API_TOKEN', 'JIRA_START_DATE_FIELD', 'JIRA_START_DATE_FIELD_ID', 'JIRA_END_DATE_FIELD', 'JIRA_END_DATE_FIELD_ID', 'USER'];
+const environmentKeys = ['DELIVERY_CREDENTIALS_FILE', 'DELIVERY_PLUGIN_JIRA_MANAGED', 'JIRA_BASE_URL', 'JIRA_AUTH_HEADER', 'JIRA_COOKIE', 'JIRA_KEYCHAIN_SERVICE', 'JIRA_KEYCHAIN_ACCOUNT', 'JIRA_USERNAME', 'JIRA_API_TOKEN', 'JIRA_START_DATE_FIELD', 'JIRA_START_DATE_FIELD_ID', 'JIRA_END_DATE_FIELD', 'JIRA_END_DATE_FIELD_ID', 'USER'];
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const failure = (message, code = 'JIRA_CONNECTION_CONFIG') => Object.assign(new Error(message), { code });
 

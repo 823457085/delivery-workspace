@@ -9,6 +9,8 @@ import { dateTime, safeUrl, shortPath } from '../../shared/format';
 import { createRequestId } from '../requirement-development/request-id';
 import { readRemoteDelivery, submitRemoteDelivery } from './group-chat-api';
 import AgentCodeArtifact from './AgentCodeArtifact.vue';
+import { useIntegrationPlugins } from '../../plugins/runtime';
+const integrations = useIntegrationPlugins();
 
 const props = defineProps<{ room?: Pick<GroupRoom, 'id'>; targetId?: string; active?: boolean }>();
 const deliveryId = computed(() => props.targetId || props.room?.id || '');
@@ -26,6 +28,7 @@ const statusLabels = { submitting: '执行中', completed: '已完成并回读',
 const project = computed(() => preview.value?.projects.find(item => item.id === selected.value?.projectId));
 const target = computed(() => selected.value?.kind === 'design' ? preview.value?.design : project.value);
 const canSubmit = computed(() => !!preview.value && !!selected.value && target.value?.available && !loading.value && !submitting.value
+  && (selected.value.kind !== 'design' || integrations.capability('pages.write'))
   && (selected.value.kind !== 'git' || !!message.value.trim()));
 const requestIds = new Map<string, string>();
 function beforeClose(done: () => void) { if (!submitting.value) done(); }
@@ -99,7 +102,7 @@ async function submit() {
       <div class="delivery-artifacts">
         <article class="delivery-artifact" aria-label="Jira 任务产物"><header><strong>Jira 任务</strong><el-button size="small" :disabled="loading || submitting" @click="tasksOpen = true">查看任务 · {{ jiraTasks.length }}</el-button></header><p>{{ jiraTasks.map(item => item.key).join(' · ') }}</p></article>
         <article class="delivery-artifact" aria-label="技术方案产物">
-          <header><strong>技术方案</strong><el-button v-if="preview.design.path || !preview.design.url" size="small" :disabled="loading || submitting" @click="open('design')">{{ preview.design.url ? '更新原方案' : '发布技术方案' }}</el-button></header>
+          <p v-if="!integrations.capability('pages.write')">文档发布提供者未接入或不可用，请在插件管理中恢复。已有方案链接仍可查看。</p><header><strong>技术方案</strong><el-button v-if="preview.design.path || !preview.design.url" size="small" :disabled="loading || submitting || !integrations.capability('pages.write')" @click="open('design')">{{ preview.design.url ? '更新原方案' : '发布技术方案' }}</el-button></header>
           <a v-if="safeUrl(preview.design.url)" :href="safeUrl(preview.design.url)" target="_blank" rel="noopener noreferrer">查看已有方案 <template v-if="preview.design.version">· v{{ preview.design.version }}</template> <ExternalLink :size="12" /></a>
           <p v-if="preview.design.path" :title="preview.design.path">{{ shortPath(preview.design.path) }}</p>
           <p v-else-if="!preview.design.url">暂无本地方案</p>

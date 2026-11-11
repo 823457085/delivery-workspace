@@ -1,3 +1,4 @@
+import { assertIntegrationRequest, assertPluginEnabled, pluginBaseUrl, pluginEnabled } from "../plugins/definitions.mjs";
 import http from "node:http";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -85,7 +86,7 @@ const publicDir = path.join(__dirname, "public");
 const execFileAsync = promisify(execFile);
 
 const port = Number(process.env.DELIVERY_PORT || process.env.PORT || 5199);
-let jiraBaseUrl = configuredJiraBaseUrl();
+let jiraBaseUrl = pluginBaseUrl("jira");
 const runtimeRoot = sourceDataRoot;
 const localProjectLabelsFile = process.env.LOCAL_PROJECT_LABELS_FILE
   || path.join(runtimeRoot, "local-project-labels.json");
@@ -197,16 +198,6 @@ const automationSpreadsheetExtensions = new Set([".xlsx"]);
 const automationScreenshotExtensions = new Set([".png", ".jpg", ".jpeg", ".webp"]);
 const automationReportExtensions = new Set([".md"]);
 
-function configuredJiraBaseUrl() {
-  const value = (process.env.JIRA_BASE_URL || "").trim().replace(/\/+$/, "");
-  try {
-    const url = new URL(value);
-    return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash ? value : "";
-  } catch {
-    return "";
-  }
-}
-
 // 配置存在不等于凭据可读；只说明恢复入口，不回显钥匙串内容或底层命令输出。
 export function jiraAuthUnavailableMessage(keychainService = process.env.JIRA_KEYCHAIN_SERVICE) {
   if (!jiraBaseUrl) return "Jira 未配置有效的 JIRA_BASE_URL";
@@ -216,7 +207,8 @@ export function jiraAuthUnavailableMessage(keychainService = process.env.JIRA_KE
 }
 
 function getAuthHeaders() {
-  jiraBaseUrl = configuredJiraBaseUrl();
+  assertPluginEnabled("jira");
+  jiraBaseUrl = pluginBaseUrl("jira");
   if (!jiraBaseUrl) return null;
   if (process.env.JIRA_AUTH_HEADER) {
     return { Authorization: process.env.JIRA_AUTH_HEADER };
@@ -239,7 +231,9 @@ function getAuthHeaders() {
   return null;
 }
 
-function getConfluenceAuthHeaders() {
+function getConfluenceAuthHeaders(baseUrl) {
+  assertPluginEnabled("confluence");
+  if (!baseUrl) return null;
   if (process.env.CONFLUENCE_AUTH_HEADER) {
     return { Authorization: process.env.CONFLUENCE_AUTH_HEADER };
   }
@@ -255,14 +249,13 @@ function getConfluenceAuthHeaders() {
 
 // 文档知识检索只读固定 Content API，认证沿用当前工作台配置，不接受浏览器传入站点或方法。
 export async function confluenceReadRequest(resource) {
-  if (typeof resource !== 'string' || !/^content\/(?:search\?|[1-9]\d*\?)/.test(resource)
+  if (typeof resource !== 'string' || resource !== 'user/current' && !/^content\/(?:search\?|[1-9]\d*\?)/.test(resource)
     || /[\r\n#]/.test(resource)) throw new Error('不支持的 Confluence 文档资源');
-  const auth = getConfluenceAuthHeaders();
+  const baseUrl = pluginBaseUrl('confluence');
+  const auth = getConfluenceAuthHeaders(baseUrl);
+  if (!baseUrl) throw new Error('Confluence 未配置有效的 CONFLUENCE_BASE_URL');
   if (!auth) throw new Error('Confluence 未配置可用鉴权，请在本工作台配置本人账号后重试。');
-  if (!process.env.CONFLUENCE_BASE_URL) throw new Error('Confluence 未配置 CONFLUENCE_BASE_URL');
-  const base = new URL(process.env.CONFLUENCE_BASE_URL);
-  if (!['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash) throw new Error('Confluence 站点配置无效');
-  const target = new URL(`${base.href.replace(/\/+$/, '')}/rest/api/${resource}`);
+  const target = new URL(`${baseUrl}/rest/api/${resource}`);
   const response = await fetch(target, { headers: { ...auth, Accept: 'application/json' }, redirect: 'manual', signal: AbortSignal.timeout(15000) });
   if (!response.ok || !response.headers.get('content-type')?.includes('application/json')) {
     throw new Error([401, 403].includes(response.status) || response.status >= 300 && response.status < 400
@@ -280,14 +273,11 @@ export async function confluencePublishRequest(resource, method, body) {
     || typeof body.body.storage.value !== 'string' || body.body.storage.value.length > 1_000_000
     || !Array.isArray(body.ancestors) || body.ancestors.length !== 1 || !/^[1-9]\d{0,31}$/.test(body.ancestors[0]?.id)
     || method === 'PUT' && (body.id !== resource.slice(8) || !Number.isInteger(body.version?.number) || body.version.number < 2)) throw invalid('不支持的 Confluence 方案发布请求');
-  const auth = getConfluenceAuthHeaders();
+  const baseUrl = pluginBaseUrl('confluence');
+  const auth = getConfluenceAuthHeaders(baseUrl);
+  if (!baseUrl) throw invalid('Confluence 未配置有效的 CONFLUENCE_BASE_URL');
   if (!auth) throw invalid('Confluence 未配置可用鉴权，请在本工作台配置本人账号后重试。');
-  if (!process.env.CONFLUENCE_BASE_URL) throw invalid('Confluence 未配置 CONFLUENCE_BASE_URL');
-  let base;
-  try { base = new URL(process.env.CONFLUENCE_BASE_URL); }
-  catch { throw invalid('Confluence 站点配置无效'); }
-  if (!['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash) throw invalid('Confluence 站点配置无效');
-  return fetch(`${base.href.replace(/\/+$/, '')}/rest/api/${resource}`, { method,
+  return fetch(`${baseUrl}/rest/api/${resource}`, { method,
     headers: { ...auth, Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     redirect: 'manual', signal: AbortSignal.timeout(30000) });
 }
@@ -315,7 +305,8 @@ function getConfluenceKeychainAuthorization() {
 }
 
 async function getCatchupJiraAuthHeaders() {
-  jiraBaseUrl = configuredJiraBaseUrl();
+  assertPluginEnabled("jira");
+  jiraBaseUrl = pluginBaseUrl("jira");
   if (!jiraBaseUrl) return null;
   if (process.env.JIRA_AUTH_HEADER) {
     return { Authorization: process.env.JIRA_AUTH_HEADER };
@@ -424,10 +415,10 @@ async function syncMeetingTaskToConfluence({ pageId, taskId, text }) {
   if (!/^[A-Za-z0-9-]{1,100}$/.test(String(taskId || ""))) throw new Error("例会任务 ID 无效");
   if (!String(text || "").trim()) throw new Error("例会任务内容不能为空");
 
-  const authHeaders = getConfluenceAuthHeaders();
+  const baseUrl = pluginBaseUrl("confluence");
+  const authHeaders = getConfluenceAuthHeaders(baseUrl);
+  if (!baseUrl) throw new Error("Confluence 未配置有效的 CONFLUENCE_BASE_URL");
   if (!authHeaders) throw new Error("未配置可用于 Confluence 的鉴权");
-  const baseUrl = (process.env.CONFLUENCE_BASE_URL || "").replace(/\/+$/, "");
-  if (!baseUrl) throw new Error("Confluence 未配置 CONFLUENCE_BASE_URL");
   const pageResponse = await fetch(
     `${baseUrl}/rest/api/content/${encodeURIComponent(pageId)}?expand=body.storage,version`,
     { headers: { ...authHeaders, Accept: "application/json" } }
@@ -901,6 +892,7 @@ async function requireJiraReadResponse(response, resource) {
 async function fetchJiraHandoff(url, options, readOnly = (options.method || 'GET') === 'GET') {
   const signal = AbortSignal.timeout(30_000);
   for (let attempt = 0; ; attempt++) {
+    assertPluginEnabled("jira");
     try {
       return await fetch(url, { ...options, signal });
     } catch (cause) {
@@ -923,23 +915,27 @@ async function fetchJiraHandoff(url, options, readOnly = (options.method || 'GET
 
 // 事项详情使用同一份本机认证，资源由服务端操作映射生成，浏览器不能传入 URL。
 export async function jiraIssueRequest(resource, method = 'GET', body) {
+  if ((resource === 'project' || resource === 'myself') && method !== 'GET') throw new Error('项目信息和当前用户接口仅支持只读');
   if (typeof resource !== 'string' || resource.includes('..') || resource.startsWith('/')
-    || !/^(?:issue(?:\/|\?|$)|issueLink(?:Type)?(?:\?|$)|mypermissions\?|myself$|user\/assignable\/search\?|attachment\/content\/\d+$)/.test(resource)
+    || !/^(?:issue(?:\/|\?|$)|issueLink(?:Type)?(?:\?|$)|mypermissions\?|myself$|project$|user\/assignable\/search\?|attachment\/content\/\d+$)/.test(resource)
     || !['GET', 'POST', 'PUT', 'DELETE'].includes(method)) throw new Error('不支持的 Jira 事项资源');
   const auth = getAuthHeaders();
   if (!auth) throw new Error(jiraAuthUnavailableMessage());
-  let target = new URL(`/rest/api/2/${resource}`, jiraBaseUrl);
-  if (target.origin !== new URL(jiraBaseUrl).origin) throw new Error('Jira 资源来源不正确');
+  const base = new URL(`${jiraBaseUrl}/`);
+  const rest = new URL('rest/api/2/', base);
+  const target = new URL(resource, rest);
+  if (target.origin !== base.origin || !target.pathname.startsWith(rest.pathname)) throw new Error('Jira 资源来源不正确');
   const read = async url => {
     const response = await fetchJiraHandoff(url, { headers: { ...auth, Accept: 'application/json' }, redirect: 'manual' });
     await requireJiraReadResponse(response, '事项'); return response;
   };
   if (/^attachment\/content\/\d+$/.test(resource)) {
     const id = resource.split('/').at(-1);
-    const metadata = await (await read(new URL(`/rest/api/2/attachment/${id}`, jiraBaseUrl))).json();
-    target = new URL(metadata.content);
-    if (target.origin !== new URL(jiraBaseUrl).origin || !target.pathname.startsWith(`/secure/attachment/${id}/`)) throw new Error('附件下载来源不正确');
-    return read(target);
+    const metadata = await (await read(new URL(`attachment/${id}`, rest))).json();
+    const download = new URL(metadata.content);
+    const attachmentPath = new URL(`secure/attachment/${id}/`, base).pathname;
+    if (download.origin !== base.origin || !download.pathname.startsWith(attachmentPath)) throw new Error('附件下载来源不正确');
+    return read(download);
   }
   const multipart = body instanceof FormData;
   const response = await fetchJiraHandoff(target, { method, redirect: 'manual', headers: { ...auth, Accept: 'application/json',
@@ -3520,6 +3516,7 @@ export async function handleJiraTaskCalendarRequest(request, response) {
   const url = new URL(request.url, `http://${request.headers.host || "localhost"}`);
 
   try {
+    assertIntegrationRequest(url.pathname, process.env, request.method);
     if (url.pathname === "/api/health") {
       if (request.method !== "GET") {
         response.setHeader("Allow", "GET");
@@ -4374,7 +4371,7 @@ let schedulerStartup = null;
 let schedulerInterval = null;
 
 function runSchedulerTick() {
-  if (automationRestartHeld) return Promise.resolve();
+  if (automationRestartHeld || !pluginEnabled("jira")) return Promise.resolve();
   if (!schedulerTickPromise) schedulerTickPromise = automationSchedulerTick().finally(() => { schedulerTickPromise = null; });
   return schedulerTickPromise;
 }

@@ -8,6 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import { assertPluginEnabled, pluginEnabled } from './plugins/definitions.mjs';
 import { loadIntegrationCatalog } from './integration-catalog.js';
 import type { IntegrationCatalog } from '../shared/integration-catalog.js';
 import type { BackendFeedbackPreview, BackendFeedbackRecord, WecomPublicConfig } from '../shared/wecom-integration.js';
@@ -90,6 +91,9 @@ export async function createWecomIntegration(directory: string, options: { confi
     const data = configurationSchema.parse(stored);
     configuration = { ...data, webhook: data.webhook ? webhookUrl(data.webhook) : '', hasWebhook: !!data.webhook };
   } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('企业微信配置文件格式不正确，请核对群名称和 Webhook'); }
+  if (!options.configFile && process.env.DELIVERY_PLUGIN_WECOM_WEBHOOK) {
+    configuration = { groupName: process.env.DELIVERY_PLUGIN_WECOM_GROUP || '', webhook: webhookUrl(process.env.DELIVERY_PLUGIN_WECOM_WEBHOOK), hasWebhook: true };
+  }
   let reports: BackendFeedbackRecord[] = [];
   try { reports = JSON.parse(await fs.readFile(reportsFile, 'utf8')) as BackendFeedbackRecord[]; }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
@@ -143,7 +147,7 @@ export async function createWecomIntegration(directory: string, options: { confi
   function messageSnapshot(value: unknown, previewId: string): WecomMessagePreview {
     const input = messageInput(value);
     const snapshot = { input, previewId, groupName: redactMessage(configuration.groupName), content: input.content,
-      bytes: Buffer.byteLength(input.content, 'utf8'), limit: wecomMessageLimits[input.msgtype], canSend: !!configuration.webhook };
+      bytes: Buffer.byteLength(input.content, 'utf8'), limit: wecomMessageLimits[input.msgtype], canSend: !!configuration.webhook && pluginEnabled('wecom') };
     return { ...snapshot, hash: hash({ snapshot, webhook: hash(configuration.webhook), groupName: configuration.groupName }) };
   }
   function checkRateLimit() {
@@ -166,13 +170,14 @@ export async function createWecomIntegration(directory: string, options: { confi
     const content = sections.map(([label, text, size]) => `${label}：${clip(text, size)}`).join('\n');
     const bytes = Buffer.byteLength(content, 'utf8');
     if (bytes > 1850) throw new Error('消息摘要过长，请精简后重新预览');
-    const snapshot = { input, request, groupName: config().groupName, content, bytes, truncated: sections.some(([, text, size]) => Buffer.byteLength(text) > size), canSend: !!configuration.webhook };
+    const snapshot = { input, request, groupName: config().groupName, content, bytes, truncated: sections.some(([, text, size]) => Buffer.byteLength(text) > size), canSend: !!configuration.webhook && pluginEnabled('wecom') };
     return { ...snapshot, hash: hash({ snapshot, webhook: hash(configuration.webhook) }) };
   }
   return {
     config,
     sanitizeContent: redactMessage,
     configure: (value: unknown) => serial(async () => {
+      if (!options.configFile && process.env.DELIVERY_PLUGIN_WECOM_WEBHOOK) throw new Error('此机器人由插件管理，请到设置中的接入插件修改并重启');
       const data = configurationSchema.parse(value);
       const webhook = data.webhook ? webhookUrl(data.webhook) : configuration.webhook;
       if (!webhook) throw new Error('首次配置需要填写企业微信群机器人 Webhook');
@@ -211,6 +216,7 @@ export async function createWecomIntegration(directory: string, options: { confi
       const pending = pendingMessages.get(submission);
       if (pending) return pending;
       const attempt = serial(async () => {
+        assertPluginEnabled('wecom');
         const snapshot = messageSnapshot(data.input, data.previewId);
         if (!snapshot.canSend) throw new Error('请配置群机器人');
         if (snapshot.hash !== data.hash) throw new Error('消息内容或机器人配置已变化，请重新预览');
@@ -244,6 +250,7 @@ export async function createWecomIntegration(directory: string, options: { confi
       finally { pendingMessages.delete(submission); }
     },
     send: (value: unknown) => serial(async () => {
+      assertPluginEnabled('wecom');
       const data = sendSchema.parse(value);
       const snapshot = preview(data.input);
       if (!snapshot.canSend) throw new Error('请配置群机器人');

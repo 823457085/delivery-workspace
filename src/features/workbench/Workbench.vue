@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { useIntegrationPlugins } from '../../plugins/runtime';
+const integrations = useIntegrationPlugins();
 /** 统一工作台复用同一读模型；嵌入 Agent 时由顶部导航提供入口，独立页面保留快捷入口。 */
 import { computed, inject, onBeforeUnmount, onMounted, shallowRef, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
@@ -151,14 +153,13 @@ function relative(value?: string) {
   if (minutes < 60 * 24 * 7) return `${Math.round(minutes / 1440)} 天前`;
   return dateTime(value);
 }
-const shortcuts = [
+const shortcuts = computed(() => [
   { path: '/agent', title: 'Agent 工作台', detail: '会话与执行过程', icon: Bot },
   { path: '/projects', title: '本地项目与 Git', detail: '目录扫描、代码与分支管理', icon: GitBranch },
-  { path: '/tasks/calendar', title: '任务日历', detail: 'Jira 排期与任务跟踪', icon: CalendarDays },
   { path: '/design', title: '需求开发', detail: '需求、方案与功能开发', icon: FileCheck2 },
-  { path: '/agent?view=jira-fix', title: 'Jira 缺陷修复', detail: '自动匹配仓库与分支修复', icon: Plug },
   { path: '/delivery/queue', title: '交付队列', detail: '自动巡检与执行记录', icon: Terminal },
-];
+  ...integrations.active.value.flatMap(plugin => plugin.views.map(view => ({path: view.path, title: view.label, detail: plugin.name, icon: Plug}))),
+]);
 const agentBoardDefinitions = [
   { id: 'queued', label: '待处理', tone: 'warning' },
   { id: 'running', label: '执行中', tone: 'primary' },
@@ -309,29 +310,8 @@ function agentGateLabel(run: { id: string; status: string; resultReady?: boolean
       </div>
 
       <aside class="wb-aside">
-        <section id="workbench-today" class="wb-card">
-          <div class="wb-card-head compact"><div><h2>今天要做</h2><p>{{ today }} · 以 Jira 计划日期为准</p></div><RouterLink to="/tasks/list" class="wb-link">全部任务</RouterLink></div>
-          <el-skeleton v-if="issues.isPending.value" class="wb-pad" :rows="3" animated />
-          <ul v-else-if="todayIssues.length" class="wb-today">
-            <li v-for="issue in todayIssues.slice(0, 6)" :key="issue.key"><button type="button" @click="openIssue(issue.key)"><span><small>{{ issue.key }}</small><strong>{{ issue.summary }}</strong></span><StatusPill :value="issue.status" :label="issue.status" /></button></li>
-            <li v-if="todayIssues.length > 6" class="wb-more"><RouterLink to="/tasks/calendar">还有 {{ todayIssues.length - 6 }} 项，查看任务日历</RouterLink></li>
-          </ul>
-          <p v-else class="wb-empty">{{ issues.error.value ? '任务来源读取失败' : '今天没有已排期的未完成任务 🎉' }}</p>
-        </section>
-
-        <TeamPendingTasks />
-        <PersonalTodos />
-
-        <section v-if="jiraSyncStatus" class="wb-card wb-sync">
-          <div class="wb-card-head compact"><div><h2><RefreshCw :size="14" /> Jira 自动状态同步</h2><p>每日 {{ jiraSyncStatus.schedule }}</p></div><RouterLink to="/settings" class="wb-link">设置</RouterLink></div>
-          <dl>
-            <div><dt>上次</dt><dd>{{ jiraSyncStatus.lastRunAt }}</dd></div>
-            <div><dt>下次</dt><dd>{{ jiraSyncStatus.nextRunAt }}</dd></div>
-            <div><dt>更新</dt><dd>{{ jiraSyncStatus.updatedCount }} 项</dd></div>
-            <div><dt>阻塞</dt><dd :class="{ warn: jiraSyncStatus.blockedCount }">{{ jiraSyncStatus.blockedCount }} 项</dd></div>
-          </dl>
-          <p class="wb-note">开始日期到达更新为“开发中”，结束日期到达且完成证据齐全更新为“已完成”。只处理分配给当前用户的 Jira，不创建会话、子任务或合并请求。</p>
-        </section>
+        <component v-for="widget in integrations.widgets.value" :is="widget.component" :key="widget.id" :today="today" :today-issues="todayIssues" :loading="issues.isPending.value" :error="issues.error.value" :jira-sync-status="jiraSyncStatus" @open-issue="openIssue" />
+        <TeamPendingTasks /><PersonalTodos />
 
         <section class="wb-card">
           <div class="wb-card-head compact"><div><h2>工作入口</h2><p>常用研发与交付视图</p></div></div>

@@ -1,3 +1,4 @@
+import { assertPluginEnabled } from '../plugins/definitions.mjs';
 /**
  * 工作入口共用成员本人的 Jira 连接；承接只读查询及已确认的任务、排期、评论和状态写入。
  * 固定 REST 站点并禁止重定向，凭据仅留在内存；写入只发一次，成功必须通过 GET 回读证明。
@@ -106,6 +107,8 @@ function selectProfile(previous, incoming) {
 }
 
 export async function loadJiraConfiguration(environment) {
+  assertPluginEnabled('jira');
+  assertPluginEnabled('jira', environment);
   async function readProfile(filename, required = false) {
     try { return parseEnv(await readFile(filename, 'utf8')); }
     catch (error) {
@@ -118,6 +121,7 @@ export async function loadJiraConfiguration(environment) {
     // 显式文件最高优先级，不读取其他隐式配置；不同站点不能继承环境里的旧认证。
     return selectProfile(environment, await readProfile(environment.JIRA_DEV_ENV_FILE, true));
   }
+  if (environment.DELIVERY_PLUGIN_JIRA_MANAGED === 'true') return { ...environment };
   if (environment.DELIVERY_CREDENTIALS_FILE && isAbsolute(environment.DELIVERY_CREDENTIALS_FILE)) {
     return selectProfile(environment, await readProfile(environment.DELIVERY_CREDENTIALS_FILE, false));
   }
@@ -133,6 +137,8 @@ export async function loadJiraConfiguration(environment) {
 }
 
 async function authentication(env) {
+  assertPluginEnabled('jira');
+  assertPluginEnabled('jira', env);
   let headers;
   if (env.JIRA_AUTH_HEADER) headers = { Authorization: env.JIRA_AUTH_HEADER };
   if (!headers && env.JIRA_KEYCHAIN_SERVICE && process.platform === 'darwin') {
@@ -233,6 +239,8 @@ export function createJiraClient({ env = process.env, fetchImpl = fetch } = {}) 
   }
   async function request(path, { method = 'GET', body, transition = false, operation = 'comment', emptyResponse = false } = {}) {
     const connection = await config();
+    assertPluginEnabled('jira');
+    assertPluginEnabled('jira', env);
     const url = `${connection.site}/rest/api/2/${path}`;
     const writing = !['GET', 'HEAD'].includes(method);
     const uncertainCode = transition ? 'JIRA_TRANSITION_UNCERTAIN' : operation === 'dates' ? 'JIRA_REQUIREMENT_DATES_UNCERTAIN' : operation === 'issue' ? 'JIRA_REQUIREMENT_CREATE_UNCERTAIN' : operation === 'link' ? 'JIRA_REQUIREMENT_LINK_UNCERTAIN' : 'JIRA_COMMENT_UNCERTAIN';

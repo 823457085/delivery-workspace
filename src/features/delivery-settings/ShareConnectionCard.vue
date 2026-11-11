@@ -2,7 +2,6 @@
 import { onMounted, ref, shallowRef } from 'vue';
 import { useQueryClient } from '@tanstack/vue-query';
 import { ElMessage } from 'element-plus';
-import StatusPill from '../../shared/ui/StatusPill.vue';
 
 interface ShareConfigData {
   jiraBaseUrl: string;
@@ -14,17 +13,10 @@ interface ShareConfigData {
 
 const queryClient = useQueryClient();
 const loading = shallowRef(false);
-const savingJira = shallowRef(false);
-const testingJira = shallowRef(false);
 const addingRoot = shallowRef(false);
 
-const jiraBaseUrl = shallowRef('');
-const jiraUsername = shallowRef('');
-const jiraApiToken = shallowRef('');
-const hasJiraToken = shallowRef(false);
 const projectRoots = ref<string[]>([]);
 const manualRootPath = shallowRef('');
-const credentialsFile = shallowRef('');
 
 async function loadConfig() {
   loading.value = true;
@@ -32,69 +24,11 @@ async function loadConfig() {
     const res = await fetch('/api/share/config');
     const data = (await res.json()) as ShareConfigData;
     if (!res.ok) throw new Error('读取连接配置失败');
-    jiraBaseUrl.value = data.jiraBaseUrl || '';
-    jiraUsername.value = data.jiraUsername || '';
-    hasJiraToken.value = Boolean(data.hasJiraToken);
     projectRoots.value = Array.isArray(data.projectRoots) ? data.projectRoots : [];
-    credentialsFile.value = data.credentialsFile || '.env.local';
   } catch (err) {
     ElMessage.error(err instanceof Error ? err.message : '读取配置失败');
   } finally {
     loading.value = false;
-  }
-}
-
-async function testJiraConnection() {
-  testingJira.value = true;
-  try {
-    const res = await fetch('/api/share/config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: 'test-jira',
-        jiraBaseUrl: jiraBaseUrl.value.trim(),
-        jiraUsername: jiraUsername.value.trim(),
-        jiraApiToken: jiraApiToken.value.trim() || undefined,
-      }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.message || 'Jira 连接测试失败');
-    ElMessage.success(data.message || 'Jira 连接成功');
-  } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : 'Jira 连接测试失败');
-  } finally {
-    testingJira.value = false;
-  }
-}
-
-async function saveJiraConnection() {
-  savingJira.value = true;
-  try {
-    const res = await fetch('/api/share/config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: 'save',
-        jiraBaseUrl: jiraBaseUrl.value.trim(),
-        jiraUsername: jiraUsername.value.trim(),
-        jiraApiToken: jiraApiToken.value.trim() || undefined,
-      }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.message || '保存配置失败');
-    jiraApiToken.value = '';
-    if (data.config) {
-      jiraBaseUrl.value = data.config.jiraBaseUrl;
-      jiraUsername.value = data.config.jiraUsername;
-      hasJiraToken.value = Boolean(data.config.hasJiraToken);
-      projectRoots.value = data.config.projectRoots || [];
-    }
-    ElMessage.success(data.message || 'Jira 连接已保存并生效');
-    await queryClient.invalidateQueries({ queryKey: ['source'] });
-  } catch (err) {
-    ElMessage.error(err instanceof Error ? err.message : '保存配置失败');
-  } finally {
-    savingJira.value = false;
   }
 }
 
@@ -169,39 +103,6 @@ onMounted(() => {
 
 <template>
   <section class="share-connection-grid">
-    <div class="surface">
-      <div class="surface-header">
-        <div>
-          <h2>Jira 连接与认证配置</h2>
-          <p>保存在本机 {{ credentialsFile }}，无需手动编辑配置文件，保存后立即生效</p>
-        </div>
-        <StatusPill :value="hasJiraToken ? 'active' : 'paused'" :label="hasJiraToken ? '凭据已配置' : '待配置凭据'" />
-      </div>
-      <el-form class="surface-body share-form" label-position="top" :disabled="loading || savingJira">
-        <div class="share-fields">
-          <el-form-item label="Jira 服务地址 (JIRA_BASE_URL)">
-            <el-input v-model="jiraBaseUrl" placeholder="https://jira.example.com" />
-          </el-form-item>
-          <el-form-item label="Jira 用户名 / 邮箱">
-            <el-input v-model="jiraUsername" aria-describedby="jira-username-help" placeholder="例如 zhangsan 或 zhangsan@company.com" />
-            <p id="jira-username-help" class="share-field-help">Bearer Token 模式可留空</p>
-          </el-form-item>
-        </div>
-        <el-form-item :label="hasJiraToken ? 'API Token / 密码（已保存，留空则保持原密钥不变）' : 'API Token / 密码'">
-          <el-input
-            v-model="jiraApiToken"
-            type="password"
-            show-password
-            placeholder="输入 Jira Personal Access Token 或登录密码"
-          />
-        </el-form-item>
-        <div class="share-actions">
-          <el-button :loading="testingJira" @click="testJiraConnection">测试 Jira 连接</el-button>
-          <el-button type="primary" :loading="savingJira" @click="saveJiraConnection">保存 Jira 配置</el-button>
-        </div>
-      </el-form>
-    </div>
-
     <div class="surface">
       <div class="surface-header">
         <div>

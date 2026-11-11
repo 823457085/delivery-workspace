@@ -4,9 +4,12 @@
  * IncomingMessage 交给内嵌处理器；业务契约仍由 jira-backend 模块维护，避免迁移时重写状态机。
  */
 import path from 'node:path';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { parseEnv } from 'node:util';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { AutomationData, CatchupData, IssueResponse, JiraDevScanPreview, JiraIssue, PlanItem, ProjectsData } from '../shared/hub.js';
+import { managedPluginCredential } from './plugins/store.mjs';
 
 type PrepareJiraDevPreviews = (plan: PlanItem[], limit: number, mode?: 'preview' | 'start', mayStart?: () => Promise<boolean>) => Promise<JiraDevScanPreview[]>;
 
@@ -30,10 +33,15 @@ interface JiraBackendModule {
 }
 
 function loadCredentialEnvironment(filename: string) {
-  try { process.loadEnvFile(filename); }
+  let values: ReturnType<typeof parseEnv>;
+  try { values = parseEnv(readFileSync(filename, 'utf8')); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
     throw error;
+  }
+  // Plugin bootstrap removes credentials for the previous site before starting the server.
+  for (const [key, value] of Object.entries(values)) {
+    if (value !== undefined && process.env[key] === undefined && !managedPluginCredential(key)) process.env[key] = value;
   }
 }
 

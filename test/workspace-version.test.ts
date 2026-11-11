@@ -67,3 +67,19 @@ test('HTML 和版本信息不缓存，带内容 hash 的历史 JS/CSS 可保留�
     assert.equal(workspaceStaticCacheControl(file), 'public, max-age=31536000, immutable');
   }
 });
+
+test('插件声明、服务代码和页面均参与版本核对', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'plugin-version-'));
+  t.after(() => fs.rm(root,{recursive:true,force:true}));
+  for (const directory of ['server','shared','plugins/example']) await fs.mkdir(path.join(root,directory),{recursive:true});
+  await fs.writeFile(path.join(root,'package.json'),'{}');
+  const before = await createWorkspaceBuild(root);
+  await fs.writeFile(path.join(root,'plugins/example/integration.json'),'{}');
+  const manifest = await createWorkspaceBuild(root);
+  assert.notEqual(manifest.backendSourceHash,before.backendSourceHash);
+  await fs.writeFile(path.join(root,'plugins/example/Page.vue'),'<template>插件</template>');
+  const page = await createWorkspaceBuild(root);
+  assert.notEqual(page.buildSourceHash,manifest.buildSourceHash);
+  await fs.writeFile(path.join(root,'plugins/example/server.ts'),'export const version=1;');
+  assert.notEqual(await backendSourceHash(root),manifest.backendSourceHash);
+});

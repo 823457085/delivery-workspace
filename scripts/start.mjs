@@ -12,7 +12,7 @@ if (!development && !fs.existsSync(path.join(root, 'dist', 'index.html'))) {
   process.exit(1);
 }
 // 必须由 Node 在加载任何配置模块前解析 .env；不在应用启动之后手工补变量。
-const child = spawn(process.execPath, ['--env-file-if-exists=.env', '--import', 'tsx', 'server/index.ts',
+const child = spawn(process.execPath, ['--env-file-if-exists=.env', '--import', './server/plugins/bootstrap.mjs', '--import', 'tsx', 'server/index.ts',
   ...(development ? ['--dev'] : [])], { cwd: root, stdio: 'inherit', env: { ...process.env,
     DELIVERY_CREDENTIALS_FILE: process.env.DELIVERY_CREDENTIALS_FILE || path.join(root, '.env'),
   } });

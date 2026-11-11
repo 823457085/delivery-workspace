@@ -30,6 +30,7 @@ function fixture() {
     removeEventListener: (name: string, callback: () => void) => { if (listeners.get(name) === callback) listeners.delete(name); } };
   const dependencies = { computed, ref, shallowRef, watch, document, AbortController,
     defineProps: () => props,
+    useIntegrationPlugins: () => ({ capability: () => true }),
     onMounted: (callback: () => void) => mounted.push(callback),
     onBeforeUnmount: (callback: () => void) => unmounted.push(callback),
     setTimeout: (callback: () => void, delay: number) => { const id = ++timerId; timers.set(id, { callback, delay }); return id; },

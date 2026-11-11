@@ -29,29 +29,41 @@ const query = useSource<ProjectsData>('projects', computed((): Record<string, st
 const agentWorkspace = inject(agentWorkspaceContext, undefined);
 const { data, isPending, isFetching, error } = query;
 const actions = useSourceActions();
-const { search, root, status, sort } = useWorkspacePanelState('projects', () => ({
+const { search: savedSearch, root, status, sort } = useWorkspacePanelState('projects', () => ({
   search: '',
   root: 'all',
   status: 'all',
   sort: 'workspaces',
 }));
 
+const linkedSearch = shallowRef('');
+const usesLinkedSearch = computed(() => typeof route.query.q === 'string'
+  || (typeof route.query.workspace === 'string' && !!route.query.workspace));
+const search = computed({
+  get: () => usesLinkedSearch.value ? linkedSearch.value : savedSearch.value,
+  set(value) {
+    if (!usesLinkedSearch.value) {
+      savedSearch.value = value;
+      return;
+    }
+    linkedSearch.value = value;
+    if (route.query.view === 'projects' && typeof route.query.q === 'string' && route.query.q !== value) {
+      if (!value && !route.query.workspace) savedSearch.value = '';
+      void router.replace({ query: { ...route.query, q: value || undefined } });
+    }
+  },
+});
 watch(
   () => route.query.q,
   value => {
-    if (typeof value === 'string' && value !== search.value) {
-      search.value = value;
+    if (typeof value === 'string' && value !== linkedSearch.value) {
+      linkedSearch.value = value;
       root.value = 'all';
       status.value = 'all';
     }
   },
   { immediate: true },
 );
-watch(search, value => {
-  if (typeof route.query.q === 'string' && route.query.q !== value) {
-    void router.replace({ query: { ...route.query, q: value || undefined } });
-  }
-});
 
 const selectedProjectId = shallowRef('');
 const workspaceKeyword = shallowRef('');
@@ -220,7 +232,13 @@ function openGitManager(item: LocalProject) {
 let locatedWorkspace = '', refreshedWorkspace = '', missingWorkspace = '';
 function locateRequestedWorkspace() {
   const path = typeof route.query.workspace === 'string' ? route.query.workspace : '';
-  if (!path) { locatedWorkspace = ''; refreshedWorkspace = ''; missingWorkspace = ''; return; }
+  if (!path) {
+    if (locatedWorkspace) gitDrawer.value = false;
+    locatedWorkspace = '';
+    refreshedWorkspace = '';
+    missingWorkspace = '';
+    return;
+  }
   const request = JSON.stringify([path, route.query.git === '1']);
   if (locatedWorkspace !== request && (gitProject.value?.path !== path || route.query.git !== '1')) gitDrawer.value = false;
   if (locatedWorkspace === request || !data.value || isFetching.value) return;

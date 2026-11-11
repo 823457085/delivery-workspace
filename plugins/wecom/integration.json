@@ -1,0 +1,13 @@
+{
+  "id": "wecom",
+  "name": "企微通知 Webhook",
+  "description": "群消息、联调反馈和自动报告通知",
+  "capabilities": [
+    "notifications.send"
+  ],
+  "prefix": "WECOM",
+  "views": [],
+  "sourceKeys": [],
+  "apiPrefixes": [],
+  "apiPaths": []
+}
