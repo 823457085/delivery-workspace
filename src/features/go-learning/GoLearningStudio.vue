@@ -188,17 +188,17 @@ const totalProgressPercent = computed(() => {
 });
 
 const goShortVersion = computed(() => {
-  const raw = overview.value?.environment?.version || '';
-  if (!raw) return '模拟演练模式';
+  const environment = overview.value?.environment;
+  if (!environment?.installed) return '模拟演练模式';
+  const raw = environment.version;
   const cleaned = raw.replace(/^go version\s+/i, '').trim();
   return cleaned.split(/\s+/)[0] || cleaned;
 });
 
 const goArchText = computed(() => {
-  const raw = overview.value?.environment?.version || '';
-  if (!raw) return '内置预期输出与接口模拟器';
-  const parts = raw.replace(/^go version\s+/i, '').trim().split(/\s+/);
-  return parts[1] || 'darwin/arm64';
+  const environment = overview.value?.environment;
+  if (!environment?.installed) return '接口模拟器';
+  return environment.version.match(/^go version\s+\S+\s+(\S+)/i)?.[1] || '';
 });
 
 const editorLineCount = computed(() => {
@@ -305,15 +305,12 @@ async function applyDaySnapshot(snapshotKey = selectedSnapshot.value, skipConfir
       headers: { 'Content-Type': 'application/json', 'X-Delivery-Confirmed': 'yes' },
       body: JSON.stringify({ snapshot: snapshotKey }),
     });
-    if (res.ok) {
-      const data = await res.json();
-      if (overview.value) {
-        overview.value.sandboxFiles = cleanSandboxFiles(data.sandboxFiles);
-        overview.value.tasksJsonContent = data.tasksJsonContent;
-        overview.value.progress = data.progress;
-      }
-    } else {
-      await fetchOverview();
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.message || '加载快照失败');
+    if (overview.value) {
+      overview.value.sandboxFiles = cleanSandboxFiles(data.sandboxFiles);
+      overview.value.tasksJsonContent = data.tasksJsonContent;
+      overview.value.progress = data.progress;
     }
     selectedSnapshot.value = snapshotKey;
     selectedFilePath.value = 'main.go';
@@ -329,7 +326,7 @@ async function applyDaySnapshot(snapshotKey = selectedSnapshot.value, skipConfir
 }
 
 async function saveCurrentFile() {
-  if (!selectedFilePath.value) return;
+  if (!selectedFilePath.value) return false;
   savingFile.value = true;
   try {
     const res = await fetch('/api/go-learning/sandbox/save-file', {
@@ -348,17 +345,17 @@ async function saveCurrentFile() {
     }
     editorDirty.value = false;
     ElMessage.success(`已保存 ${selectedFilePath.value}`);
+    return true;
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '保存文件失败');
+    return false;
   } finally {
     savingFile.value = false;
   }
 }
 
 async function runSandboxCommand(action: GoCommandAction, args?: string[], switchTab = true) {
-  if (editorDirty.value) {
-    await saveCurrentFile();
-  }
+  if (editorDirty.value && !await saveCurrentFile()) return;
   if (switchTab) {
     rightTab.value = 'Runner';
   }
@@ -369,8 +366,13 @@ async function runSandboxCommand(action: GoCommandAction, args?: string[], switc
       headers: { 'Content-Type': 'application/json', 'X-Delivery-Confirmed': 'yes' },
       body: JSON.stringify({ action, ...(args ? { args } : {}) }),
     });
-    if (!res.ok) throw new Error('fallback');
+    if (res.status === 404 || !res.headers.get('content-type')?.includes('application/json')) throw new Error('fallback');
     const data = await res.json();
+    if (!res.ok) {
+      commandResult.value = null;
+      ElMessage.error(data.message || 'Go 命令执行失败');
+      return;
+    }
     commandResult.value = data.result;
     if (overview.value) {
       overview.value.sandboxFiles = cleanSandboxFiles(data.sandboxFiles);
@@ -434,7 +436,7 @@ async function openExternalApp(app: 'terminal' | 'cursor') {
   try {
     const res = await fetch(`/api/workspace/${app}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Delivery-Confirmed': 'yes' },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ workspacePath: sandboxPath }),
     });
     const data = await res.json();
