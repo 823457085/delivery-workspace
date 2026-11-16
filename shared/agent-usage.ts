@@ -9,8 +9,13 @@ export interface AgentModelUsage {
   reasoningTokens: number | null;
   costUsd: number | null;
 }
+export interface AgentContextUsage {
+  usedTokens: number;
+  windowTokens: number;
+}
 export interface AgentUsage {
   source: string;
+  context?: AgentContextUsage;
   inputTokens: number | null;
   cachedInputTokens: number | null;
   outputTokens: number | null;
@@ -18,6 +23,12 @@ export interface AgentUsage {
   costUsd: number | null;
   costSource: 'claude_code_self_reported' | null;
   models: AgentModelUsage[] | null;
+}
+
+export function readAgentContextUsage(usedTokens: unknown, windowTokens: unknown): AgentContextUsage | undefined {
+  if (typeof usedTokens !== 'number' || !Number.isSafeInteger(usedTokens) || usedTokens < 0
+    || typeof windowTokens !== 'number' || !Number.isSafeInteger(windowTokens) || windowTokens <= 0) return;
+  return { usedTokens, windowTokens };
 }
 export interface AgentUsageRunRecord {
   runId: string; workflowId?: string; profileId?: string;

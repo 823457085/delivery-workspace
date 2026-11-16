@@ -10,6 +10,7 @@
  */
 
 import type { AgentAccessMode, AgentRun, AgentRunMode } from './agent-runtime.js';
+import type { AgentContextUsage } from './agent-usage.js';
 import { summarizeRunTelemetry } from './agent-session-telemetry.js';
 
 export type PreflightIssueKind = 'secret_leak' | 'destructive_command';
@@ -40,6 +41,7 @@ export interface ConversationContextMeter {
   turnCount: number;
   level: ContextLoadLevel;
   usedNativeTelemetry: boolean;
+  reportedWindow: boolean;
   advice: string;
 }
 
@@ -211,14 +213,15 @@ export type ContextMeterRunInput = Pick<AgentRun, 'id' | 'status' | 'objective'>
   & Partial<Pick<AgentRun, 'provider' | 'model' | 'createdAt' | 'updatedAt' | 'usage' | 'events' | 'changedFiles' | 'result' | 'error' | 'revisesRunId' | 'supplements'>>;
 
 /**
- * 评估当前会话的有效上下文水位（默认以 120k tokens 为高质量代码专注窗口基准）。
+ * 有实测窗口时展示 Codex 的最新单次请求；没有时使用工作台参考窗口。
  */
 export function estimateConversationContextMeter(
   runs: readonly ContextMeterRunInput[],
   draft = '',
   recommendedBudgetTokens = 120_000,
+  reportedContext?: AgentContextUsage,
 ): ConversationContextMeter {
-  const budgetTokens = Math.max(16_000, recommendedBudgetTokens);
+  const budgetTokens = reportedContext?.windowTokens ?? Math.max(16_000, recommendedBudgetTokens);
   const supersededIds = new Set<string>();
   for (const run of runs) {
     if (run.revisesRunId) supersededIds.add(run.revisesRunId);
@@ -226,41 +229,41 @@ export function estimateConversationContextMeter(
   const activeRuns = runs.filter(run => !supersededIds.has(run.id));
   const draftTokens = estimateTextTokens(draft);
 
-  // 优先检查最近一轮已完成的原生 CLI Telemetry 是否上报了真实上下文 inputTokens
   let latestReportedContextTokens = 0;
-  for (let idx = activeRuns.length - 1; idx >= 0; idx--) {
-    const candidate = activeRuns[idx]!;
-    const telemetry = summarizeRunTelemetry({
-      id: candidate.id,
-      provider: candidate.provider || 'codex',
-      model: candidate.model || '',
-      status: candidate.status,
-      createdAt: candidate.createdAt || '',
-      updatedAt: candidate.updatedAt || '',
-      usage: candidate.usage,
-      events: candidate.events || [],
-      changedFiles: candidate.changedFiles,
-    });
-    if (telemetry.usageKnown && typeof telemetry.inputTokens === 'number' && telemetry.inputTokens > 0) {
-      // 若单轮包含多步工具循环，inputTokens 是累计值；结合 totalActions 折算单步近似窗口规模
-      const actionCount = telemetry.tools.totalActions;
-      const stepDivisor = Math.max(1, actionCount > 1 ? Math.min(actionCount, 6) : 1);
-      latestReportedContextTokens = Math.round(telemetry.inputTokens / stepDivisor) + (telemetry.outputTokens ?? 0);
-      break;
-    }
-  }
-
   let charEstimatedHistory = 0;
-  for (const run of activeRuns) {
-    charEstimatedHistory += estimateTextTokens(run.objective || '');
-    for (const sup of run.supplements || []) {
-      charEstimatedHistory += estimateTextTokens(sup.objective || '');
+  if (!reportedContext) {
+    for (let idx = activeRuns.length - 1; idx >= 0; idx--) {
+      const candidate = activeRuns[idx]!;
+      const telemetry = summarizeRunTelemetry({
+        id: candidate.id,
+        provider: candidate.provider || 'codex',
+        model: candidate.model || '',
+        status: candidate.status,
+        createdAt: candidate.createdAt || '',
+        updatedAt: candidate.updatedAt || '',
+        usage: candidate.usage,
+        events: candidate.events || [],
+        changedFiles: candidate.changedFiles,
+      });
+      if (telemetry.usageKnown && typeof telemetry.inputTokens === 'number' && telemetry.inputTokens > 0) {
+        // 对缺少实际窗口的累计用量按工具步骤估算。Codex 的 last 已是单次调用。
+        const actionCount = telemetry.tools.totalActions;
+        const stepDivisor = candidate.usage?.source === 'thread/tokenUsage/updated' ? 1 : Math.max(1, Math.min(actionCount, 6));
+        latestReportedContextTokens = Math.round(telemetry.inputTokens / stepDivisor) + (telemetry.outputTokens ?? 0);
+        break;
+      }
     }
-    charEstimatedHistory += estimateTextTokens(run.result || run.error || '');
+    for (const run of activeRuns) {
+      charEstimatedHistory += estimateTextTokens(run.objective || '');
+      for (const sup of run.supplements || []) {
+        charEstimatedHistory += estimateTextTokens(sup.objective || '');
+      }
+      charEstimatedHistory += estimateTextTokens(run.result || run.error || '');
+    }
   }
 
-  const usedNativeTelemetry = latestReportedContextTokens > charEstimatedHistory && latestReportedContextTokens <= budgetTokens * 4;
-  const baseHistoryTokens = usedNativeTelemetry ? latestReportedContextTokens : charEstimatedHistory;
+  const useEstimatedTelemetry = latestReportedContextTokens > charEstimatedHistory && latestReportedContextTokens <= budgetTokens * 4;
+  const baseHistoryTokens = reportedContext?.usedTokens ?? (useEstimatedTelemetry ? latestReportedContextTokens : charEstimatedHistory);
   const estimatedTokens = baseHistoryTokens + draftTokens;
   const usageRatio = estimatedTokens / budgetTokens;
   const usagePercent = Math.min(999, Math.round(usageRatio * 100));
@@ -269,7 +272,9 @@ export function estimateConversationContextMeter(
   let advice = '上下文窗口充裕，注意力集中度高。';
   if (usageRatio >= 1) {
     level = 'compaction_needed';
-    advice = '上下文已超出推荐专注窗口，长程指令易漂移；建议点击右上菜单「导出跨 Agent 交接简报」或「基于此会话新建」分叉精简。';
+    advice = reportedContext
+      ? '占用已达到 Codex 上报的窗口，可整理上下文或「基于此会话新建」后继续。'
+      : '估算占用已达工作台参考窗口，可「导出跨 Agent 交接简报」或「基于此会话新建」。';
   } else if (usageRatio >= 0.8) {
     level = 'heavy';
     advice = '会话上下文已达高负载区间（>=80%），复杂重构建议分叉新会话继承关键结论以降低延迟与幻觉。';
@@ -285,7 +290,8 @@ export function estimateConversationContextMeter(
     usagePercent,
     turnCount: activeRuns.length,
     level,
-    usedNativeTelemetry,
+    usedNativeTelemetry: !!reportedContext || useEstimatedTelemetry,
+    reportedWindow: !!reportedContext,
     advice,
   };
 }

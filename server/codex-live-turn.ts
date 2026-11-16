@@ -146,7 +146,6 @@ export function runCodexLiveTurn(binary: string, context: LiveContext, prompt: s
         write({ id: message.id, error: { code: -32601, message: 'Delivery does not support this interactive request' } });
         return;
       }
-      context.onUsage?.(message);
       const params = object(message.params);
       if (!threadId || params.threadId !== threadId) return;
       const turn = object(params.turn);
@@ -155,6 +154,7 @@ export function runCodexLiveTurn(binary: string, context: LiveContext, prompt: s
         void recordTurn(turn.id).catch(error => finish(error instanceof Error ? error : new Error(String(error))));
       }
       if (!turnId || (params.turnId && params.turnId !== turnId)) return;
+      context.onUsage?.(message);
       if (message.method === 'item/agentMessage/delta' && typeof params.itemId === 'string' && typeof params.delta === 'string') {
         if (messageId !== params.itemId) { messageId = params.itemId; result = ''; }
         result += params.delta;

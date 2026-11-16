@@ -3,10 +3,11 @@
  * 发送前安全护栏与上下文预算水位条（借鉴 Zed Agent Panel + Cursor Composer + Gitleaks）。
  * 独立子组件：保持父组件 AgentComposer.vue 的脚本依赖契约纯净，仅在检测到风险或达到多轮水位时挂载渲染。
  */
-import { computed } from 'vue';
+import { computed, shallowRef, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { ShieldAlert, Sparkles, TriangleAlert } from '@lucide/vue';
 import type { AgentAccessMode, AgentRunMode } from '../../../shared/agent-runtime';
+import { readAgentContextUsage, type AgentContextUsage } from '../../../shared/agent-usage';
 import {
   estimateConversationContextMeter,
   redactPromptSecrets,
@@ -22,6 +23,24 @@ const props = defineProps<{
 }>();
 
 const draft = defineModel<string>('draft', { default: '' });
+const historicalContext = shallowRef<AgentContextUsage>();
+const historicalRunId = computed(() => {
+  const run = props.conversation.latest;
+  return run.provider === 'codex' && !run.usage?.context && run.sessionId && run.codexTurnId
+    && !['queued', 'running'].includes(run.status) ? run.id : '';
+});
+watch(historicalRunId, async (id, _previous, onCleanup) => {
+  historicalContext.value = undefined;
+  if (!id) return;
+  const controller = new AbortController();
+  onCleanup(() => controller.abort());
+  try {
+    const response = await fetch(`/api/agent-runtimes/runs/${encodeURIComponent(id)}/context-usage`, { signal: controller.signal });
+    if (!response.ok) return;
+    const { context } = await response.json();
+    if (!controller.signal.aborted) historicalContext.value = readAgentContextUsage(context?.usedTokens, context?.windowTokens);
+  } catch { /* Older records may lack context telemetry. */ }
+}, { immediate: true });
 
 const preflight = computed(() =>
   scanPromptPreflight(draft.value, {
@@ -31,8 +50,12 @@ const preflight = computed(() =>
 );
 
 const contextMeter = computed(() =>
-  estimateConversationContextMeter(props.conversation.runs, draft.value),
+  estimateConversationContextMeter(props.conversation.runs, draft.value, undefined, props.conversation.latest.usage?.context || historicalContext.value),
 );
+const meterTitle = computed(() => [
+  contextMeter.value.reportedWindow ? 'Codex 最近一次上报的上下文窗口。草稿用量为估算。' : '工作台参考窗口，上下文占用为估算。',
+  contextMeter.value.advice,
+].join(' '));
 
 const showContextMeter = computed(() =>
   contextMeter.value.turnCount >= 2 || contextMeter.value.estimatedTokens >= 2400,
@@ -89,7 +112,7 @@ function applySecretRedaction() {
       v-if="showContextMeter"
       class="context-meter-strip"
       :data-level="contextMeter.level"
-      :title="contextMeter.advice"
+      :title="meterTitle"
     >
       <div class="context-meter-left">
         <span class="context-meter-label">上下文水位</span>
@@ -97,12 +120,13 @@ function applySecretRedaction() {
           <span class="context-meter-fill" :style="{ width: meterBarWidth }" />
         </span>
         <span class="context-meter-stat">
-          ~{{ formatCompactTokens(contextMeter.estimatedTokens) }} / {{ formatCompactTokens(contextMeter.budgetTokens) }} tok
+          {{ !contextMeter.reportedWindow || draft ? '~' : '' }}{{ formatCompactTokens(contextMeter.estimatedTokens) }} / {{ formatCompactTokens(contextMeter.budgetTokens) }} tok
           ({{ contextMeter.usagePercent }}%) · {{ contextMeter.turnCount }} 轮
+          <template v-if="!contextMeter.reportedWindow"> · 参考</template>
         </span>
       </div>
       <span v-if="contextMeter.level === 'compaction_needed'" class="context-meter-badge is-danger">
-        超出专注窗口 · 建议导出交接简报或分叉新会话
+        {{ contextMeter.reportedWindow ? '已达上下文窗口' : '已达参考窗口' }} · 可导出交接简报或分叉新会话
       </span>
       <span v-else-if="contextMeter.level === 'heavy'" class="context-meter-badge is-warning">
         高负载 (&gt;=80%) · 复杂改动建议分叉新会话

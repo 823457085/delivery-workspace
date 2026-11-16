@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { AgentProvider } from '../shared/agent-runtime.js';
-import { emptyAgentUsage, usageTokenCount, type AgentUsage, type AgentUsageRunRecord,
+import { emptyAgentUsage, readAgentContextUsage, usageTokenCount, type AgentContextUsage, type AgentUsage, type AgentUsageRunRecord,
   type AgentModelUsage, type AgentUsageGroup, type AgentUsageSummary } from '../shared/agent-usage.js';
 export { emptyAgentUsage, evaluateUsageGate } from '../shared/agent-usage.js';
 
@@ -25,17 +25,22 @@ export function extractAgentUsage(provider: AgentProvider, event: unknown): Agen
   const item = object(event), params = object(item.params);
   if (provider === 'codex') {
     let usage: Record<string, unknown>;
+    let context: AgentContextUsage | undefined;
     if (item.method === 'thread/tokenUsage/updated') {
       const tokenUsage = object(params.tokenUsage || params.token_usage);
       // total 包含原生会话之前轮次；本轮只采 last。无 last 时不把会话累计冒充本轮用量。
       const last = object(tokenUsage.last);
       const breakdown = object(last.breakdown || tokenUsage.breakdown);
       usage = Object.keys(last).length ? { ...breakdown, ...last } : {};
+      const input = first(usage.inputTokens, usage.input_tokens);
+      const output = first(usage.outputTokens, usage.output_tokens);
+      context = readAgentContextUsage(first(usage.totalTokens, usage.total_tokens) ?? (input !== null && output !== null ? input + output : null),
+        first(tokenUsage.modelContextWindow, tokenUsage.model_context_window));
     } else if (item.type === 'turn.completed' || item.method === 'turn/completed') {
       usage = object(item.usage || object(params.turn).usage || params.usage);
     } else return undefined;
     if (!Object.keys(usage).length) return undefined;
-    return { ...emptyAgentUsage(provider), ...tokenFields(usage), source: String(item.method || item.type) };
+    return { ...emptyAgentUsage(provider), ...tokenFields(usage), source: String(item.method || item.type), ...(context ? { context } : {}) };
   }
   if (provider === 'claude') {
     if (item.type !== 'result' && !item.modelUsage && !item.usage) return undefined;

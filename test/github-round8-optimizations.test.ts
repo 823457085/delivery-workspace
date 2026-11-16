@@ -319,6 +319,15 @@ test('Round 8 · 上下文预算水位计：过滤被修订旧轮、融合原生
   assert.equal(heavyMeter.estimatedTokens, 90_000);
   assert.equal(heavyMeter.level, 'heavy');
 
+  const reported = estimateConversationContextMeter(
+    [{ id: 'r-reported', provider: 'codex', status: 'completed', objective: '分析大型模块' }],
+    '', undefined, { usedTokens: 237_015, windowTokens: 475_000 },
+  );
+  assert.equal(reported.reportedWindow, true);
+  assert.equal(reported.estimatedTokens, 237_015);
+  assert.equal(reported.budgetTokens, 475_000);
+  assert.equal(reported.usagePercent, 50);
+
   const compactNeededMeter = estimateConversationContextMeter(
     [
       {

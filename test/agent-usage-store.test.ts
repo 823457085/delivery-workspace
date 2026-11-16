@@ -12,8 +12,10 @@ test('三类 CLI 的真实字段归一化，未知为 null，Claude 费用只标
   assert.equal(codex.reasoningTokens, null);
   assert.equal(codex.costUsd, null);
   const rpc = extractAgentUsage('codex', { method: 'thread/tokenUsage/updated', params: { tokenUsage: {
-    total: { inputTokens: 900, outputTokens: 100 }, last: { inputTokens: 100, cachedInputTokens: 50, outputTokens: 10, reasoningOutputTokens: 4 } } } })!;
+    modelContextWindow: 475000, total: { inputTokens: 900, outputTokens: 100 },
+    last: { totalTokens: 110, inputTokens: 100, cachedInputTokens: 50, outputTokens: 10, reasoningOutputTokens: 4 } } } })!;
   assert.deepEqual([rpc.inputTokens, rpc.cachedInputTokens, rpc.outputTokens, rpc.reasoningTokens], [100, 50, 10, 4]);
+  assert.deepEqual(rpc.context, { usedTokens: 110, windowTokens: 475000 });
   const breakdown = extractAgentUsage('codex', { method: 'thread/tokenUsage/updated', params: { tokenUsage: {
     total: { inputTokens: 9000 }, last: { breakdown: { inputTokens: 12, outputTokens: 3 } } } } })!;
   assert.equal(usageTokenCount(breakdown), 15);

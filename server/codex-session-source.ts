@@ -1,12 +1,14 @@
 /**
  * 设计说明：该适配器只读取 Codex 自己维护的会话索引与历史投影，不复制或改写源数据库。
- * 列表读取轻量元数据，正文在用户选中会话后按需读取；直接解析 rollout JSONL 会扩大耦合且成本更高。
+ * 列表和正文从 Codex 索引读取。旧轮次的上下文水位按需从对应 rollout 读取。
  */
 import { execFile } from 'node:child_process';
+import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import type { CodexSessionDetail, CodexSessionSummary, CodexSessionTurn } from '../shared/agent-runtime.js';
+import { readAgentContextUsage, type AgentContextUsage } from '../shared/agent-usage.js';
 
 const exec = promisify(execFile);
 const sessionIdPattern = /^[0-9a-f]{8}-[0-9a-f-]{27}$/i;
@@ -36,6 +38,7 @@ interface SqliteTurnRow {
 export interface CodexSessionSource {
   listSessions(): Promise<CodexSessionSummary[]>;
   session(id: string): Promise<CodexSessionDetail>;
+  contextUsage?(id: string, turnId: string): Promise<AgentContextUsage | undefined>;
 }
 
 function isoFromMilliseconds(value: number) {
@@ -97,7 +100,7 @@ function turn(row: SqliteTurnRow, session: CodexSessionSummary): CodexSessionTur
   };
 }
 
-export function createCodexSessionSource(codexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex')): CodexSessionSource {
+export function createCodexSessionSource(codexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex')) {
   const stateDatabase = path.join(codexHome, 'state_5.sqlite');
   const historyDatabase = path.join(codexHome, 'thread_history_1.sqlite');
   async function query<T>(database: string, sql: string) {
@@ -137,5 +140,43 @@ export function createCodexSessionSource(codexHome = process.env.CODEX_HOME || p
     `);
     return { ...sessionSummary, turns: turnRows.map((row) => turn(row, sessionSummary)).filter((item): item is CodexSessionTurn => !!item) };
   }
-  return { listSessions, session };
+  async function contextUsage(id: string, turnId: string) {
+    if (!sessionIdPattern.test(id) || !sessionIdPattern.test(turnId)) return;
+    try {
+      const [row] = await query<{ rollout_path: string }>(stateDatabase, `SELECT rollout_path FROM threads WHERE id = '${id}' LIMIT 1`);
+      if (!row?.rollout_path) return;
+      const [home, rollout] = await Promise.all([fs.realpath(codexHome), fs.realpath(row.rollout_path)]);
+      const relative = path.relative(home, rollout);
+      if (path.extname(rollout) !== '.jsonl' || !['sessions', 'archived_sessions'].some(dir => relative.startsWith(dir + path.sep))) return;
+      const file = await fs.open(rollout, 'r');
+      try {
+        const stat = await file.stat();
+        if (!stat.isFile()) return;
+        const start = Math.max(0, stat.size - 8 * 1024 * 1024);
+        const buffer = Buffer.alloc(stat.size - start);
+        const { bytesRead } = await file.read(buffer, 0, buffer.length, start);
+        const lines = buffer.toString('utf8', 0, bytesRead).split('\n');
+        if (start) lines.shift();
+        let activeTurn: string | undefined;
+        let usage: AgentContextUsage | undefined;
+        for (const line of lines) {
+          if (!/"(?:task_started|turn_context|token_count)"/.test(line)) continue;
+          try {
+            const { type, payload } = JSON.parse(line);
+            if (type === 'turn_context' || type === 'event_msg' && payload?.type === 'task_started') {
+              if (typeof payload?.turn_id === 'string') activeTurn = payload.turn_id;
+            }
+            if (activeTurn === turnId && type === 'event_msg' && payload?.type === 'token_count') {
+              const info = payload.info;
+              const last = info?.last_token_usage;
+              const measured = readAgentContextUsage(last?.total_tokens, info?.model_context_window);
+              if (measured) usage = measured;
+            }
+          } catch { /* Skip an incomplete rollout line. */ }
+        }
+        return usage;
+      } finally { await file.close(); }
+    } catch { return undefined; }
+  }
+  return { listSessions, session, contextUsage };
 }

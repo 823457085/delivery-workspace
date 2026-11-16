@@ -38,3 +38,31 @@ test('Codex 会话源保留原生完成时间，不用最终回复或更新时�
     await fs.rm(codexHome, { recursive: true, force: true });
   }
 });
+
+test('旧会话的水位只取所选原生轮次，并拒绝会话目录外的路径', async () => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-context-test-'));
+  const session = '33333333-3333-3333-3333-333333333333';
+  const first = '11111111-1111-1111-1111-111111111111';
+  const second = '22222222-2222-2222-2222-222222222222';
+  try {
+    await fs.mkdir(path.join(home, 'sessions'));
+    const rollout = path.join(home, 'sessions', 'rollout.jsonl');
+    const turn = (id: string, total: number, window: number) => [
+      { type: 'event_msg', payload: { type: 'task_started', turn_id: id } },
+      { type: 'event_msg', payload: { type: 'token_count', info: {
+        model_context_window: window, last_token_usage: { total_tokens: total }, total_token_usage: { total_tokens: 20_000_000 },
+      } } },
+    ];
+    await fs.writeFile(rollout, [...turn(first, 237015, 475000), ...turn(second, 10000, 200000)].map(event => JSON.stringify(event)).join('\n'));
+    const database = path.join(home, 'state_5.sqlite');
+    await exec('sqlite3', [database, `CREATE TABLE threads(id TEXT, rollout_path TEXT); INSERT INTO threads VALUES('${session}','${rollout}');`]);
+    const source = createCodexSessionSource(home);
+    assert.deepEqual(await source.contextUsage(session, first), { usedTokens: 237015, windowTokens: 475000 });
+    assert.deepEqual(await source.contextUsage(session, second), { usedTokens: 10000, windowTokens: 200000 });
+    const outside = path.join(home, 'rollout.jsonl');
+    await fs.copyFile(rollout, outside);
+    await fs.unlink(rollout);
+    await fs.symlink(outside, rollout);
+    assert.equal(await source.contextUsage(session, first), undefined);
+  } finally { await fs.rm(home, { recursive: true, force: true }); }
+});

@@ -1270,6 +1270,10 @@ const server = http.createServer(async (request, response) => {
           const input = agentWorkflowDecisionSchema.parse(await body(request));
           json(response, 200, await agentRuntimes.decideWorkflow(decideAgentWorkflow[1], input.action, input.requestId)); return;
         }
+        const runContext = url.pathname.match(/^\/api\/agent-runtimes\/runs\/([0-9a-f-]{36})\/context-usage$/);
+        if (request.method === 'GET' && runContext) {
+          json(response, 200, { context: await agentRuntimes.getRunContextUsage(runContext[1]) || null }); return;
+        }
         const previewAgentFile = url.pathname.match(/^\/api\/agent-runtimes\/runs\/([0-9a-f-]{36})\/preview-file$/);
         if (request.method === 'GET' && previewAgentFile) {
           const input = z.object({ path: z.string().min(1).max(2000) }).strict().parse(Object.fromEntries(url.searchParams));

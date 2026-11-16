@@ -1585,7 +1585,12 @@ export async function createAgentRuntimeService(directory: string, options: Serv
         }
         const result = await adapter.execute({ run, resumeSessionId, continueOriginal, forkSessionId, forkLastTurnId, imagePaths, fileAttachments,
           onBeforeTurn: async () => { workspaceBefore = run.mode === 'agent' ? await snapshotGitWorkspace(run.workspacePath, snapshotExclusions) : undefined; },
-          onUsage: event => { const usage = extractAgentUsage(run.provider, event); if (usage) run.usage = usage; },
+          onUsage: event => {
+            const usage = extractAgentUsage(run.provider, event);
+            if (!usage) return;
+            if (!usage.context && run.usage?.context) usage.context = run.usage.context;
+            run.usage = usage;
+          },
           attachmentDirectory: runtimeAttachmentDirectory(run),
           attachmentReadDirectories, signal: controller.signal,
           onPid: async (pid) => {
@@ -3804,6 +3809,12 @@ export async function createAgentRuntimeService(directory: string, options: Serv
       finally { await exclusive(async () => { hostWorkspaceLocks.delete(owner); await launchReadyQueues(); }); }
     },
     getRun: (id: string) => runs.find(run => run.id === id),
+    async getRunContextUsage(id: string) {
+      const run = runs.find(item => item.id === id);
+      if (run?.provider !== 'codex') return undefined;
+      if (run.usage?.context || !run.sessionId || !run.codexTurnId) return run.usage?.context;
+      return codexSessionSource.contextUsage?.(run.sessionId, run.codexTurnId);
+    },
     knowledgeCitations(reference: string) {
       const resourceField = `"reference":${JSON.stringify(reference)}`;
       return runs.filter(run => run.knowledgeContext?.includes(resourceField) || run.supplements?.some(item => item.knowledgeContext?.includes(resourceField)))
