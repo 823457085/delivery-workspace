@@ -3,7 +3,6 @@
   "name": "Go 实训",
   "description": "Go 实训工坊、学习进度和本机沙盒",
   "local": true,
-  "preferCustomApplicationMenu": true,
   "prefix": "GO_LEARNING",
   "capabilities": [],
   "section": {

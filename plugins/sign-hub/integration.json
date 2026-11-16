@@ -3,7 +3,6 @@
   "name": "Sign Hub",
   "description": "接入本机 Sign Hub 自动签到控制台",
   "local": true,
-  "preferCustomApplicationMenu": true,
   "prefix": "SIGN_HUB",
   "capabilities": [],
   "section": {

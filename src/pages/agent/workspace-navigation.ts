@@ -1,6 +1,7 @@
 import type { NavigationPreferences } from '../../../shared/workspace-navigation';
 import type { CustomPluginInfo } from '../../../shared/custom-plugins';
 import { integrationCatalog } from '../../../shared/integration-plugins';
+import customApplicationMenuReplacements from '../../plugins/custom-application-menu-replacements.json';
 export interface WorkspaceView { id: string; label: string; path: string; mode?: string; embedded?: boolean; pluginId?: string; component?: string; customPluginId?: string }
 export interface WorkspaceSection { id: string; label: string; shortLabel?: string; icon?: string; items: WorkspaceView[] }
 /** 统一工作入口；核心底座仅保留高频宿主骨架，外围研发工具与业务连接全部走插件按需挂载。 */
@@ -34,9 +35,7 @@ export function registeredWorkspaceSections(activeIds: string[], customPlugins: 
 
 /** Choose one menu for integrations that have declared a same-ID application replacement. */
 export function workspaceMenuSections(activeIds: string[], customPlugins: CustomPluginInfo[], navigation?: NavigationPreferences) {
-  const pairedIds = new Set(integrationCatalog
-    .filter(plugin => plugin.preferCustomApplicationMenu && activeIds.includes(plugin.id))
-    .map(plugin => plugin.id));
+  const pairedIds = new Set(customApplicationMenuReplacements.filter(id => activeIds.includes(id)));
   const applicationIds = new Set(customPlugins
     .filter(({ manifest, enabled, showInMenu, error, grants }) => enabled && showInMenu && !error
       && manifest.page.kind === 'application' && grants.includes('application.local')

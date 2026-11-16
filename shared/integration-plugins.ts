@@ -12,7 +12,6 @@ import refactorControl from '../plugins/refactor-control/integration.json';
 import overseasRequirements from '../plugins/overseas-requirements/integration.json';
 export interface IntegrationView { id: string; label: string; path: string; section: string; component: string; mode?: string; embedded?: boolean }
 export interface IntegrationManifest { id: string; name: string; description: string; capabilities: string[]; prefix: string; probe?: string; local?: boolean; localPort?: number;
- preferCustomApplicationMenu?: boolean;
  section?: { id: string; label: string; shortLabel: string; icon: string }; views: IntegrationView[];
  slots?: {id: string; component: string; label: string}[];
  widgets?: {id: string; component: string}[]; historyPaths?: string[];
