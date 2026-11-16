@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, shallowRef } from 'vue';
+import { computed, ref, shallowRef, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import type { SessionWorkspaceUsage } from '../../../shared/project-workspaces';
 import ProjectWorkspaceActions from '../project-inventory/ProjectWorkspaceActions.vue';
@@ -8,7 +8,24 @@ const entries = shallowRef<SessionWorkspaceUsage[]>();
 const scanning = ref(false);
 const actionBusy = ref(false);
 const selectedPath = ref('');
+const search = ref('');
+const filter = ref<'all' | 'eligible' | 'protected'>('all');
 const timeFormat = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'short' });
+
+const visibleEntries = computed(() => {
+  const query = search.value.trim().toLowerCase();
+  return (entries.value ?? []).filter(entry =>
+    (filter.value === 'all' || (filter.value === 'eligible') === entry.eligible)
+    && (!query || [entry.branch, entry.path, ...entry.sessions.map(session => session.title)]
+      .some(value => value.toLowerCase().includes(query))));
+});
+const reclaimable = computed(() => {
+  const eligible = (entries.value ?? []).filter(entry => entry.eligible);
+  const known = eligible.filter(entry => entry.bytes !== null);
+  const bytes = eligible.length && !known.length ? null : known.reduce((total, entry) => total + (entry.bytes ?? 0), 0);
+  return { bytes, unknown: eligible.length - known.length };
+});
+watch([search, filter], () => { selectedPath.value = ''; });
 
 function formatTime(value: string) {
   const time = Date.parse(value);
@@ -57,8 +74,19 @@ function removeEntry(folder: string) {
       </div>
       <el-button :loading="scanning" :disabled="actionBusy" @click="scan">扫描工作区</el-button>
     </div>
-    <el-table v-if="entries" v-loading="scanning" :data="entries" row-key="path" max-height="480"
-      empty-text="没有找到会话关联的 worktree">
+    <div v-if="entries?.length" class="session-workspaces-filters">
+      <el-input v-model="search" clearable placeholder="搜索会话、分支或路径" aria-label="搜索会话工作区"
+        :disabled="actionBusy || scanning" />
+      <el-select v-model="filter" aria-label="筛选会话工作区" :disabled="actionBusy || scanning">
+        <el-option label="全部" value="all" />
+        <el-option label="可清理" value="eligible" />
+        <el-option label="受保护" value="protected" />
+      </el-select>
+      <span>可清理占用：{{ reclaimable.bytes === null ? '未统计' : '约 ' + formatSize(reclaimable.bytes) }}<template
+        v-if="reclaimable.bytes !== null && reclaimable.unknown">（另有 {{ reclaimable.unknown }} 项未统计）</template></span>
+    </div>
+    <el-table v-if="entries" v-loading="scanning" :data="visibleEntries" row-key="path" max-height="480"
+      :empty-text="entries.length ? '没有符合筛选条件的工作区' : '没有找到会话关联的 worktree'">
       <el-table-column label="工作区" min-width="235">
         <template #default="{ row }">
           <strong>{{ row.branch || '分支未知' }}</strong>
@@ -100,6 +128,9 @@ function removeEntry(folder: string) {
 .session-workspaces { margin-top: 18px; }
 .session-workspaces-header { gap: 14px; flex-wrap: wrap; }
 .session-workspaces-header p { margin: 4px 0 0; color: var(--ui-muted); }
+.session-workspaces-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 0 16px 12px; color: var(--ui-muted); }
+.session-workspaces-filters .el-input { max-width: 320px; }
+.session-workspaces-filters .el-select { width: 120px; }
 .workspace-path { overflow-wrap: anywhere; color: var(--ui-muted); }
 .session-titles { margin: 4px 0; padding-inline-start: 18px; }
 summary { cursor: pointer; }
