@@ -5,14 +5,14 @@ import { ElMessage } from 'element-plus';
 import { ArrowUp, ArrowDown, GripVertical } from '@lucide/vue';
 import { integrationCatalog } from '../../../shared/integration-plugins';
 import { menuIconNames, type NavigationPreferences } from '../../../shared/workspace-navigation';
-import { navigationPreferencesForSave, registeredWorkspaceSections, type WorkspaceSection } from '../../pages/agent/workspace-navigation';
+import { navigationPreferencesForSave, registeredWorkspaceSections, workspaceMenuSections, type WorkspaceSection } from '../../pages/agent/workspace-navigation';
 import { menuIcons, menuIconLabels, workspaceMenuIcons } from '../../shared/menu-icons';
 import { useIntegrationPlugins } from '../../plugins/runtime';
 import { customPluginsQueryKey, pluginRequest, useCustomPlugins } from './api';
 const client = useQueryClient(), custom = useCustomPlugins(), integrations = useIntegrationPlugins();
 const opened = ref(false), saving = ref(false), rows = ref<WorkspaceSection[]>([]), selected = ref(''), dragged = ref(''), dropTarget = ref('');
 const draft = ref<NavigationPreferences>({ order: [], icons: {} });
-const visibleIds = computed(() => new Set(registeredWorkspaceSections(integrations.active.value.map(p => p.id), custom.plugins.value).map(s => s.id)));
+const visibleIds = computed(() => new Set(workspaceMenuSections(integrations.active.value.map(p => p.id), custom.plugins.value).map(s => s.id)));
 const reordered = ref(false);
 function iconComponent(id: string) {
   const row = rows.value.find(row => row.id === id);

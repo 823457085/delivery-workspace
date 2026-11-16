@@ -11,7 +11,7 @@ import { createCustomPluginRuntime } from '../server/plugins/custom-runtime.js';
 import { createWorkspaceTodos } from '../server/workspace-todos.js';
 import { createPluginApplications } from '../server/plugins/applications.js';
 import { integrationCatalog } from '../shared/integration-plugins.js';
-import { registeredWorkspaceSections } from '../src/pages/agent/workspace-navigation.js';
+import { workspaceLocation, workspaceMenuSections } from '../src/pages/agent/workspace-navigation.js';
 
 async function fixture(t:any, kind:'sign'|'shan') {
  const calls:any[]=[]; let unauthorized=false; let redirect=false;
@@ -90,9 +90,14 @@ test('两个可分发包独立安装、菜单、配置持久化、撤权及移�
   assert.equal(integrationCatalog.some(item=>item.id===id),true);
   const input={directory,digest:p.digest,grants:p.manifest.permissions,confirmed:true,trustedLocalCode:true,showInMenu:true};
   await runtime.install(input);
-  const menuIds = () => registeredWorkspaceSections([id],runtime.list().plugins).map(menu=>menu.id);
-  assert.ok(menuIds().includes(id));
+  const menuIds = () => workspaceMenuSections([id],runtime.list().plugins).map(menu=>menu.id);
+  assert.ok(!menuIds().includes(id));
   assert.ok(menuIds().includes(`custom:${id}`));
+  assert.equal(workspaceLocation(`/${id}`)?.query.view,id);
+  await runtime.change(id,{showInMenu:false});
+  assert.ok(menuIds().includes(id));
+  assert.ok(!menuIds().includes(`custom:${id}`));
+  await runtime.change(id,{showInMenu:true});
   const saved=await runtime.configure(id,{revision:(await runtime.configuration(id)).revision,values:f.configuration});
   assert.equal(JSON.stringify(saved).includes(kind==='sign'?'fixture-token':'fixture-password'),false);
   assert.ok((await apps.page(id)).javascript.length>0);
@@ -102,6 +107,8 @@ test('两个可分发包独立安装、菜单、配置持久化、撤权及移�
   assert.ok(!menuIds().includes(`custom:${id}`));
   await runtime.change(id,{enabled:true});assert.equal((await apps.call(id,{method:'status'}) as any).configured,true);
   await runtime.change(id,{grants:['storage.read']});apps.stop(id);await assert.rejects(apps.page(id),/授权/);
+  assert.ok(menuIds().includes(id));
+  assert.ok(!menuIds().includes(`custom:${id}`));
   await runtime.change(id,{remove:true});apps.stop(id);await assert.rejects(apps.page(id),/移除/);
   await runtime.install(input);assert.deepEqual(await runtime.applicationConfiguration(id),f.configuration);
  }

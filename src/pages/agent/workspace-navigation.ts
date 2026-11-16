@@ -31,6 +31,23 @@ export function registeredWorkspaceSections(activeIds: string[], customPlugins: 
  for (const view of customPluginViews(customPlugins)) sections.splice(sections.length - 1, 0, { id: view.id, label: view.label, icon: 'plugins', items: [view] });
  return applyNavigationPreferences(sections.filter(section => section.items.length), navigation);
 }
+
+/** Choose one menu for integrations that have declared a same-ID application replacement. */
+export function workspaceMenuSections(activeIds: string[], customPlugins: CustomPluginInfo[], navigation?: NavigationPreferences) {
+  const pairedIds = new Set(integrationCatalog
+    .filter(plugin => plugin.preferCustomApplicationMenu && activeIds.includes(plugin.id))
+    .map(plugin => plugin.id));
+  const applicationIds = new Set(customPlugins
+    .filter(({ manifest, enabled, showInMenu, error, grants }) => enabled && showInMenu && !error
+      && manifest.page.kind === 'application' && grants.includes('application.local')
+      && !manifest.capabilities?.some(capability => capability.required && !grants.includes(capability.id)))
+    .map(plugin => plugin.manifest.id));
+  return registeredWorkspaceSections(
+    activeIds.filter(id => !pairedIds.has(id) || !applicationIds.has(id)),
+    customPlugins.filter(({ manifest }) => !pairedIds.has(manifest.id) || applicationIds.has(manifest.id)),
+    navigation,
+  );
+}
 export function applyNavigationPreferences(sections: WorkspaceSection[], preferences: NavigationPreferences) {
  const rank = new Map(preferences.order.map((id, index) => [id, index]));
  return sections.map(section => ({ ...section, icon: preferences.icons[section.id] || section.icon }))

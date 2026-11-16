@@ -3,6 +3,7 @@
   "name": "闪连",
   "description": "接入本机闪连控制台",
   "local": true,
+  "preferCustomApplicationMenu": true,
   "prefix": "SHANLIAN",
   "capabilities": [],
   "section": {

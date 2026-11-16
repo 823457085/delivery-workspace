@@ -6,7 +6,7 @@ import path from 'node:path';
 import { createCustomPluginRuntime } from '../server/plugins/custom-runtime.js';
 import { createWorkspaceTodos } from '../server/workspace-todos.js';
 import { createPluginApplications } from '../server/plugins/applications.js';
-import { registeredWorkspaceSections } from '../src/pages/agent/workspace-navigation.js';
+import { workspaceMenuSections, workspaceView } from '../src/pages/agent/workspace-navigation.js';
 import { integrationCatalog } from '../shared/integration-plugins.js';
 import { createCustomPluginRoutes } from '../server/plugins/custom-routes.js';
 
@@ -65,13 +65,14 @@ test('application package uses generic installation, explicit native trust, pinn
   } finally { if(old===undefined)delete process.env.JIRA_AUTH_HEADER;else process.env.JIRA_AUTH_HEADER=old; }
 });
 
-test('Go custom package coexists with built-in Go training and keeps its own workspace and progress', async t => {
+test('Go custom package takes the menu slot and keeps its own workspace and progress', async t => {
   const f = await fixture(t), source=path.resolve('plugins/go-learning/package');
   assert.ok(integrationCatalog.some(p=>p.id==='go-learning'));
   const preview=await f.install(source);
-  const menuIds = () => registeredWorkspaceSections(['go-learning'],f.runtime.list().plugins).map(p=>p.id);
-  assert.ok(menuIds().includes('learning'));
+  const menuIds = () => workspaceMenuSections(['go-learning'],f.runtime.list().plugins).map(p=>p.id);
+  assert.ok(!menuIds().includes('learning'));
   assert.ok(menuIds().includes('custom:go-learning'));
+  assert.equal(workspaceView('go-studio')?.pluginId, 'go-learning');
   const overview:any=await f.apps.call('go-learning',{method:'overview'});
   assert.equal(overview.days.length,7);
   assert.ok(overview.sandboxPath.startsWith(path.join(f.root,'plugins','data','go-learning')));
