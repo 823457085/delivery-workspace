@@ -66,6 +66,7 @@ import { assertIntegrationRequest } from './plugins/definitions.mjs';
 import { createPluginStore } from './plugins/store.mjs';
 import { createCustomPluginRuntime } from './plugins/custom-runtime.js';
 import { createPluginApplications } from './plugins/applications.js';
+import { discoverBundledPlugins } from './plugins/bundled-packages.js';
 import { createPluginDistribution } from './plugins/distribution.js';
 import { servePluginCenter } from './plugins/management-assets.js';
 import { createCustomPluginRoutes } from './plugins/custom-routes.js';
@@ -278,7 +279,7 @@ const pluginDistribution = createPluginDistribution(customPlugins, path.join(cus
 ], id => pluginApplications.stop(id));
 const customPluginRoutes = createCustomPluginRoutes(customPlugins, pluginJira, {
   json, body, port, applications: pluginApplications,
-  examples: [], distribution: pluginDistribution,
+  examples: await discoverBundledPlugins(path.join(root, 'plugins')), distribution: pluginDistribution,
   citations: reference => agentRuntimes.knowledgeCitations(reference),
 });
 const desktopAccounts = createDesktopAccountsService();
