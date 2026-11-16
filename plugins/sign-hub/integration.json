@@ -1,0 +1,30 @@
+{
+  "id": "sign-hub",
+  "name": "Sign Hub",
+  "description": "接入本机 Sign Hub 自动签到控制台",
+  "local": true,
+  "prefix": "SIGN_HUB",
+  "capabilities": [],
+  "section": {
+    "id": "sign-hub",
+    "label": "Sign Hub",
+    "shortLabel": "Sign Hub",
+    "icon": "checklist"
+  },
+  "views": [
+    {
+      "id": "sign-hub",
+      "label": "Sign Hub 自动签到",
+      "path": "/sign-hub",
+      "section": "sign-hub",
+      "component": "panel",
+      "embedded": true
+    }
+  ],
+  "sourceKeys": [],
+  "apiPrefixes": [],
+  "apiPaths": [
+    "/api/sign-hub/session"
+  ],
+  "localPort": 5288
+}

@@ -1,6 +1,6 @@
 # Go 实训工坊：自定义应用插件
 
-在 `codex/integration-plugins` 分支将 main（790dac0）的完整 Go 实训改为独立应用包。课程、编辑器、快照、代码执行、测试、HTTP 调试、笔记与进度都由本包实现。工作台仅提供通用安装授权、菜单、应用加载、专属目录、会话草稿和打开本机应用接口，不再注册 Go 接入插件或 `/api/go-learning` 业务路由。
+Go 实训可额外安装为独立应用包。课程、编辑器、快照、代码执行、测试、HTTP 调试、笔记与进度都由本包实现，通过通用宿主接口接入。既有 Go 实训仍保留原菜单、链接和 `/api/go-learning` 业务路由。
 
 ## 添加到工作台
 
@@ -14,7 +14,7 @@ node plugins/go-learning/install.mjs http://localhost:5199 --trust-local-code
 
 本机执行意味着运行可信代码，拥有当前用户文件和网络权限；独立进程不是操作系统安全沙箱。安装脚本只安装已打包并审查的本地文件；重复执行不会重置授权、启停、菜单或数据，不会覆盖不同版本。
 
-打开 `/agent?view=plugins&plugin=go-learning`。主菜单由自定义插件设置控制，支持排序和图标修改。停用、移除和撤回授权沿用通用生命周期。它不再作为 Jira/Confluence 类型的服务接入出现。
+打开 `/agent?view=plugins&plugin=go-learning`。主菜单由自定义插件设置控制，支持排序和图标修改。停用、移除和撤回授权沿用通用生命周期。这些设置只影响自定义应用版。
 
 ## 构建与分发
 
@@ -34,7 +34,7 @@ node plugins/go-learning/build.mjs
 
 新应用的进度、代码和 Go 缓存存储在 `DELIVERY_DATA_DIR/custom-plugins/data/go-learning/application/`，练习目录在其 `workspace/work/go-taskmgr-lab/`。移除插件保留这些数据，恢复同版本继续使用。
 
-之前固定版的 `.data/go-learning`、`work/go-taskmgr-lab` 和旧 `go-seven-days` 阅读插件的数据保持原样，**不会自动复制或覆盖**。本版本使用独立应用数据；如需迁入历史学习记录，应先核对来源并单独迁移。浏览器旧链接 `/go-studio` 不再作为宿主内置页面；请使用上述自定义插件链接。
+之前固定版的 `.data/go-learning`、`work/go-taskmgr-lab` 和旧 `go-seven-days` 阅读插件的数据保持原样，**不会自动复制或覆盖**。本版本使用独立应用数据；如需迁入历史学习记录，应先核对来源并单独迁移。继续从旧链接 `/go-studio` 查看原有进度与代码。
 
 插件保留 main 的内置七天课程数据、代码快照和详细文档缺失时的降级逻辑。本机详细课件可放在应用工作目录的 `work/go-learning-docs/`，不依赖分享者的私人目录。
 

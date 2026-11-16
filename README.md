@@ -88,4 +88,4 @@ Jira、Confluence 和企微可在设置中的接入插件卡片配置。自定�
 
 ## 自定义应用插件
 
-本分支在记录插件之外支持 `hostApi: 2` 独立应用包，包含通用配置、stdio MCP、会话草稿与插件工作区能力。Go 实训、Alert Hub、[Sign Hub](plugins/sign-hub/README.md) 和 [Shanlian](plugins/shanlian/README.md) 均通过自定义插件管理安装；主菜单图标和顺序沿用工作台菜单设置。首次检查不默认信任本机代码，更新保留原授权、配置和数据。安装与开发参见 [自定义插件指南](docs/custom-plugin-guide.md)、[应用接口规范](docs/custom-plugin-application-api.md) 和 [插件 Agent 规范](plugins/AGENTS.md)。
+工作台在记录插件之外支持 `hostApi: 2` 独立应用包，包含通用配置、stdio MCP、会话草稿与插件工作区能力。Go 实训、Alert Hub、[Sign Hub](plugins/sign-hub/README.md) 和 [Shanlian](plugins/shanlian/README.md) 都可通过自定义插件管理安装；主菜单图标和顺序沿用工作台菜单设置。既有 Go 实训、Sign Hub 和闪连仍保留原入口与配置，新应用包可按需单独安装。首次检查不默认信任本机代码，更新保留原授权、配置和数据。安装与开发参见 [自定义插件指南](docs/custom-plugin-guide.md)、[应用接口规范](docs/custom-plugin-application-api.md) 和 [插件 Agent 规范](plugins/AGENTS.md)。

@@ -8,9 +8,12 @@ import { createGoLearningService } from '../plugins/go-learning/service.js';
 import { createGoLearningRoutes } from '../plugins/go-learning/routes.js';
 import { workspaceLocation, workspaceView } from '../src/pages/agent/workspace-navigation.js';
 
-test('Go 实训不注册固定宿主页面，安装后由自定义插件贡献菜单', () => {
-  assert.equal(workspaceView('go-studio'), undefined);
-  assert.equal(workspaceLocation('/go-studio', { day: '3' }), undefined);
+test('Go 实训保留固定宿主页面和旧链接的课程参数', () => {
+  assert.equal(workspaceView('go-studio')?.pluginId, 'go-learning');
+  assert.deepEqual(workspaceLocation('/go-studio', { day: '3' }), {
+    path: '/agent',
+    query: { day: '3', view: 'go-studio' },
+  });
 });
 
 test('Go 实训工坊服务端支持 7 天课程读取、进度保存、沙盒快照切换、命令运行与 HTTP 调试', async t => {

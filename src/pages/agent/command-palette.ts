@@ -74,6 +74,8 @@ const VIEW_ALIASES: Record<string, string> = {
   queue: 'queue auto delivery pipeline 执行中心 自动交付 队列 流水线',
   'go-studio': 'go golang learning studio 实训 教程 沙箱 练习',
   interfaces: 'interfaces openapi swagger api 接口 联调 文档 调试',
+  'sign-hub': 'sign hub checkin 签到 自动签到',
+  shanlian: 'shanlian vpn proxy 闪连 网络 隧道',
   settings: 'settings config credentials 连接 策略 设置 凭据 chrome',
   plugins: 'plugins extensions mcp 功能插件 扩展 接入',
   automation: 'automation cron report 自动化 日报 周报 巡检',

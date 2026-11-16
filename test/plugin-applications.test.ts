@@ -65,11 +65,13 @@ test('application package uses generic installation, explicit native trust, pinn
   } finally { if(old===undefined)delete process.env.JIRA_AUTH_HEADER;else process.env.JIRA_AUTH_HEADER=old; }
 });
 
-test('Go package is absent from integrations; install, real Go run, saved progress and remove/restore use the custom host only', async t => {
+test('Go custom package coexists with built-in Go training and keeps its own workspace and progress', async t => {
   const f = await fixture(t), source=path.resolve('plugins/go-learning/package');
-  assert.equal(integrationCatalog.some(p=>p.id==='go-learning'),false);
+  assert.ok(integrationCatalog.some(p=>p.id==='go-learning'));
   const preview=await f.install(source);
-  assert.equal(registeredWorkspaceSections([],f.runtime.list().plugins).some(p=>p.id==='custom:go-learning'),true);
+  const menuIds = () => registeredWorkspaceSections(['go-learning'],f.runtime.list().plugins).map(p=>p.id);
+  assert.ok(menuIds().includes('learning'));
+  assert.ok(menuIds().includes('custom:go-learning'));
   const overview:any=await f.apps.call('go-learning',{method:'overview'});
   assert.equal(overview.days.length,7);
   assert.ok(overview.sandboxPath.startsWith(path.join(f.root,'plugins','data','go-learning')));
@@ -94,6 +96,8 @@ test('Go package is absent from integrations; install, real Go run, saved progre
   }
   await f.runtime.change('go-learning',{remove:true}); f.apps.stop('go-learning');
   await assert.rejects(f.apps.page('go-learning'),/移除/);
+  assert.ok(menuIds().includes('learning'));
+  assert.ok(!menuIds().includes('custom:go-learning'));
   await f.runtime.install({directory:source,digest:preview.digest,grants:preview.manifest.permissions,confirmed:true,trustedLocalCode:true});
   assert.equal((await f.apps.call('go-learning',{method:'overview'}) as any).progress.notes['1'],'custom plugin note');
 });

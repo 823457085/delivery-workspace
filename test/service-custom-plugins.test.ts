@@ -87,16 +87,19 @@ test('两个可分发包独立安装、菜单、配置持久化、撤权及移�
  t.after(async()=>{await apps.close();await runtime.close();await fs.rm(root,{recursive:true,force:true});});
  for(const [id,kind] of [['sign-hub','sign'],['shanlian','shan']] as const){
   const f=await fixture(t,kind),directory=path.resolve('plugins',id,'package'),p=await runtime.inspect(directory);
-  assert.equal(integrationCatalog.some(item=>item.id===id),false);
+  assert.equal(integrationCatalog.some(item=>item.id===id),true);
   const input={directory,digest:p.digest,grants:p.manifest.permissions,confirmed:true,trustedLocalCode:true,showInMenu:true};
   await runtime.install(input);
-  assert.equal(registeredWorkspaceSections([],runtime.list().plugins).some(menu=>menu.id===`custom:${id}`),true);
+  const menuIds = () => registeredWorkspaceSections([id],runtime.list().plugins).map(menu=>menu.id);
+  assert.ok(menuIds().includes(id));
+  assert.ok(menuIds().includes(`custom:${id}`));
   const saved=await runtime.configure(id,{revision:(await runtime.configuration(id)).revision,values:f.configuration});
   assert.equal(JSON.stringify(saved).includes(kind==='sign'?'fixture-token':'fixture-password'),false);
   assert.ok((await apps.page(id)).javascript.length>0);
   await apps.call(id,{method:'read',input:{operation:kind==='sign'?'accounts':'nodes'}});
   await runtime.change(id,{enabled:false});apps.stop(id);assert.throws(()=>apps.call(id,{method:'status'}),/停用/);
-  assert.equal(registeredWorkspaceSections([],runtime.list().plugins).some(menu=>menu.id===`custom:${id}`),false);
+  assert.ok(menuIds().includes(id), '停用自定义版后旧版入口仍可使用');
+  assert.ok(!menuIds().includes(`custom:${id}`));
   await runtime.change(id,{enabled:true});assert.equal((await apps.call(id,{method:'status'}) as any).configured,true);
   await runtime.change(id,{grants:['storage.read']});apps.stop(id);await assert.rejects(apps.page(id),/授权/);
   await runtime.change(id,{remove:true});apps.stop(id);await assert.rejects(apps.page(id),/移除/);
@@ -106,9 +109,8 @@ test('两个可分发包独立安装、菜单、配置持久化、撤权及移�
  assert.equal((await reloaded.configuration('sign-hub')).secrets.token,true);
  assert.equal((await reloaded.configuration('shanlian')).secrets.password,true);
 });
-test('后端覆盖两个服务的业务路由，旧固定页面和读取宿主令牌实现已移除',async()=>{
+test('新应用包覆盖两个服务的业务路由并使用自己的页面和宿主请求桥',async()=>{
  assert.ok(Object.keys(signOperations).length>=30);assert.ok(Object.keys(shanOperations).length>=14);
- for(const file of ['server/sign-hub-session.ts','plugins/sign-hub/integration.json','plugins/shanlian/integration.json','src/features/sign-hub/SignHubPanel.vue','src/features/shanlian/ShanlianPanel.vue'])await assert.rejects(fs.access(file));
  const source=await fs.readFile('plugins/shanlian/ui.js','utf8');assert.equal(source.includes('fetch('),false);assert.equal(source.includes('history.replaceState'),false);
  for(const id of ['sign-hub','shanlian'])assert.equal((await fs.readFile(`plugins/${id}/package/ui.js`,'utf8')).includes('<iframe'),false);
 });
