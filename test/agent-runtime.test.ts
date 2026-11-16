@@ -1067,7 +1067,7 @@ test('运行成功后保存结果，并按精确 session id 创建续接运行',
   } finally { await service.close(); await fs.rm(directory, { recursive: true, force: true }); }
 });
 
-test('基于已完成的 Codex 会话创建独立分叉，不归入原会话链', async () => {
+test('Codex 分叉共享有本地改动的工作区，并保留独立会话', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-fork-test-'));
   const repository = path.join(directory, 'repository');
   await exec('git', ['init', '-b', 'main', repository]);
@@ -1098,14 +1098,23 @@ test('基于已完成的 Codex 会话创建独立分叉，不归入原会话链'
   };
   try {
     const source = await service.start({ provider: 'codex', mode: 'agent', model: 'test-model', reasoningEffort: 'high', serviceTier: 'priority',
-      objective: '原会话任务', workspacePath: repository });
+      objective: '原会话任务', workspacePath: repository, isolateWorkspace: true });
     await waitCompleted(source.id);
+    await fs.writeFile(path.join(source.workspacePath, 'README.md'), 'uncommitted\n');
+    await fs.writeFile(path.join(source.workspacePath, 'draft.md'), 'untracked\n');
+    const worktrees = () => exec('git', ['-C', repository, 'worktree', 'list', '--porcelain']).then(result => result.stdout);
+    const before = await worktrees();
     const forked = await service.fork(source.id, '新会话继续处理');
     await waitCompleted(forked.id);
     assert.equal(forked.parentRunId, undefined);
+    assert.notEqual(forked.conversationId, source.conversationId);
     assert.equal(forked.sessionId, 'forked-session-5678');
-    assert.match(forked.branch, /^feature\//);
-    assert.notEqual(forked.workspacePath, source.workspacePath);
+    assert.equal(forked.branch, source.branch);
+    assert.equal(forked.workspacePath, source.workspacePath);
+    assert.equal(forked.sourceWorkspacePath, source.sourceWorkspacePath);
+    assert.equal(await fs.readFile(path.join(forked.workspacePath, 'README.md'), 'utf8'), 'uncommitted\n');
+    assert.equal(await fs.readFile(path.join(forked.workspacePath, 'draft.md'), 'utf8'), 'untracked\n');
+    assert.equal(await worktrees(), before);
     assert.equal(forked.serviceTier, 'priority');
     const standard = await service.resume(source.id, '常速继续', undefined, undefined, [], undefined, 'append', 'default');
     assert.equal(standard.serviceTier, 'default');
@@ -1121,7 +1130,7 @@ test('基于已完成的 Codex 会话创建独立分叉，不归入原会话链'
   } finally { await service.close(); await fs.rm(directory, { recursive: true, force: true }); }
 });
 
-test('未绑定项目的 Codex 侧边会话继承已完成轮次并使用独立目录', async () => {
+test('未绑定项目的 Codex 侧边会话共享原会话目录', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-side-chat-'));
   const sourceTurn = '11111111-1111-1111-1111-111111111111';
   const childTurn = '22222222-2222-2222-2222-222222222222';
@@ -1151,10 +1160,9 @@ test('未绑定项目的 Codex 侧边会话继承已完成轮次并使用独立�
     assert.deepEqual(calls.at(-1), { session: source.sessionId, turn: sourceTurn });
     assert.notEqual(side.conversationId, source.conversationId);
     assert.notEqual(side.sessionId, source.sessionId);
-    assert.notEqual(side.workspacePath, source.workspacePath);
+    assert.equal(side.workspacePath, source.workspacePath);
     assert.equal(side.sourceWorkspacePath, '');
-    assert.deepEqual(await fs.readdir(side.workspacePath), []);
-    assert.equal(await fs.readFile(path.join(source.workspacePath, 'source-only.txt'), 'utf8'), '原会话文件');
+    assert.equal(await fs.readFile(path.join(side.workspacePath, 'source-only.txt'), 'utf8'), '原会话文件');
   } finally {
     await service.close();
     await fs.rm(directory, { recursive: true, force: true });
