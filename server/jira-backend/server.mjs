@@ -1486,6 +1486,29 @@ async function getLocalProjects(refresh = false) {
   return localProjectScanPromise;
 }
 
+async function inspectLinkedLocalProject(requestedPath) {
+  if (!requestedPath || !path.isAbsolute(requestedPath) || path.resolve(requestedPath) !== requestedPath
+    || /[\u0000-\u001f\u007f]/.test(requestedPath)) return null;
+
+  // 普通扫描跳过 .local 等隐藏目录，深链接只检查指定的 Git 工作区。
+  const runtimeWorkspaces = path.resolve(process.env.DELIVERY_DATA_DIR || ".data", "agent-runtimes", "workspaces");
+  for (const root of [runtimeWorkspaces, ...getLocalProjectRoots()]) {
+    const relative = path.relative(root, requestedPath);
+    if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) continue;
+    const realRoot = await fs.realpath(root).catch(() => "");
+    const realWorkspace = await fs.realpath(requestedPath).catch(() => "");
+    if (!realRoot || realWorkspace !== path.resolve(realRoot, relative)) continue;
+    if (await runGit(realWorkspace, ["rev-parse", "--show-toplevel"]) !== realWorkspace) return null;
+
+    const project = await inspectGitRepository(requestedPath, root);
+    const labels = await readLocalProjectLabels();
+    project.customDisplayName = labels[project.projectId] || "";
+    project.displayName = project.customDisplayName || project.suggestedDisplayName || "";
+    return project;
+  }
+  return null;
+}
+
 async function updateLocalProjectDisplayName(projectId, value) {
   const payload = await getLocalProjects();
   const projects = payload.projects.filter((project) => project.projectId === projectId);
@@ -1508,7 +1531,7 @@ async function updateLocalProjectDisplayName(projectId, value) {
 async function openLocalProjectFolder(value) {
   const payload = await getLocalProjects();
   const requestedPath = path.resolve(String(value || ""));
-  const project = payload.projects.find((item) => item.path === requestedPath);
+  const project = payload.projects.find((item) => item.path === requestedPath) || await inspectLinkedLocalProject(requestedPath);
   if (!project) return false;
 
   await fs.access(project.path);
@@ -4320,7 +4343,10 @@ export async function handleJiraTaskCalendarRequest(request, response) {
 
     if (url.pathname === "/api/local-projects" && request.method === "GET") {
       const payload = await getLocalProjects(url.searchParams.get("refresh") === "true");
-      sendJson(response, 200, payload);
+      const requestedPath = url.searchParams.get("workspace");
+      const linkedProject = requestedPath && !payload.projects.some(project => project.path === requestedPath)
+        ? await inspectLinkedLocalProject(requestedPath) : null;
+      sendJson(response, 200, linkedProject ? { ...payload, projects: [...payload.projects, linkedProject] } : payload);
       return;
     }
 

@@ -579,7 +579,7 @@ test('@ 文件候选只返回当前 Git 工作区的相对路径', async () => {
   } finally { await service.close(); await fs.rm(directory, { recursive: true, force: true }); await fs.rm(repository, { recursive: true, force: true }); }
 });
 
-test('新会话可读取本地分支并在启动前安全切换', async () => {
+test('新会话优先复用已有分支的工作树，必要时才安全切换原工作区', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-branch-test-'));
   const repository = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-branch-repository-'));
   await exec('git', ['init', '-b', 'main', repository]);
@@ -590,20 +590,34 @@ test('新会话可读取本地分支并在启动前安全切换', async () => {
   await exec('git', ['-C', repository, 'commit', '-m', 'initial']);
   await exec('git', ['-C', repository, 'switch', '-c', 'feature/demo']);
   await exec('git', ['-C', repository, 'switch', 'main']);
+  const linked = path.join(directory, '已有 工作树');
+  await exec('git', ['-C', repository, 'worktree', 'add', '-b', 'feature/linked', linked]);
   const adapter: AgentRuntimeAdapter = { id: 'codex', health: async () => health('codex'), execute: async () => '已完成' };
-  const service = await createAgentRuntimeService(directory, { adapters: [adapter] });
+  const cursorAdapter: AgentRuntimeAdapter = { ...adapter, id: 'cursor', health: async () => health('cursor') };
+  const service = await createAgentRuntimeService(directory, { adapters: [adapter, cursorAdapter] });
   try {
     const state = await listGitBranches(repository);
     assert.equal(state.current, 'main');
-    assert.deepEqual(state.branches, ['feature/demo', 'main']);
+    assert.deepEqual(state.branches, ['feature/demo', 'feature/linked', 'main']);
 
     await fs.writeFile(path.join(repository, 'README.md'), '# dirty\n');
     await assert.rejects(switchGitWorkspaceBranch(repository, 'feature/demo'), /存在未提交改动/);
+    const beforeWorktrees = (await exec('git', ['-C', repository, 'worktree', 'list', '--porcelain'])).stdout;
+    const input = { provider: 'codex' as const, mode: 'agent' as const, model: 'test-model', objective: '在所选分支工作',
+      workspacePath: repository, branch: 'feature/linked', isolateWorkspace: false };
+    await assert.rejects(service.start({ ...input, provider: 'cursor', cursorTrustPath: await fs.realpath(repository) }), /信任确认/);
+    const reused = await service.start(input);
+    assert.equal(reused.workspacePath, await fs.realpath(linked));
+    assert.equal(reused.branch, 'feature/linked');
+    assert.deepEqual((await listGitBranches(repository)).branches, state.branches);
+    assert.equal((await exec('git', ['-C', repository, 'worktree', 'list', '--porcelain'])).stdout, beforeWorktrees);
+    assert.equal((await listGitBranches(repository)).current, 'main');
+    assert.equal(await fs.readFile(path.join(repository, 'README.md'), 'utf8'), '# dirty\n');
     await fs.writeFile(path.join(repository, 'README.md'), '# main\n');
 
-    const run = await service.start({ provider: 'codex', mode: 'agent', model: 'test-model', objective: '在所选分支工作',
-      workspacePath: repository, branch: 'feature/demo' });
+    const run = await service.start({ ...input, branch: 'feature/demo' });
     assert.equal(run.branch, 'feature/demo');
+    assert.equal(run.workspacePath, await fs.realpath(repository));
     assert.equal((await exec('git', ['-C', repository, 'branch', '--show-current'])).stdout.trim(), 'feature/demo');
   } finally {
     await service.close();
@@ -638,7 +652,7 @@ test('新会话从所选分支创建隔离工作区，不切换或覆盖源仓�
     assert.equal(first.baseBranch, 'feature/demo');
     assert.equal(first.isolatedWorkspace, true);
     assert.notEqual(first.workspacePath, await fs.realpath(repository));
-    assert.match(first.branch, /^codex\/delivery-agent-feature-demo-/);
+    assert.match(first.branch, /^feature\/delivery-agent-feature-demo-/);
     assert.equal(await fs.readFile(path.join(first.workspacePath, 'README.md'), 'utf8'), '# feature\n');
     assert.equal((await exec('git', ['-C', repository, 'branch', '--show-current'])).stdout.trim(), 'main');
     assert.equal(await fs.readFile(path.join(repository, 'README.md'), 'utf8'), '# dirty main\n');

@@ -38,6 +38,7 @@ const attachments = defineModel<AgentAttachment[]>('attachments', { required: tr
 const workspacePath = defineModel<string>('workspacePath', { required: true });
 const workspacePaths = defineModel<string[]>('workspacePaths', { default: () => [] });
 const branch = defineModel<string>('branch', { required: true });
+const isolateWorkspace = defineModel<boolean>('isolateWorkspace', { required: true });
 const emit = defineEmits<{ send: []; chooseWorkspace: []; configureModels: [] }>();
 const promptEditor = useTemplateRef<InstanceType<typeof AgentPromptEditor>>('promptEditor');
 const branchOptions = shallowRef<string[]>([]);
@@ -54,7 +55,8 @@ watch(mode, (value) => { if (value !== 'agent') accessMode.value = 'workspace'; 
 watch(() => runtime.value?.accessModes, modes => {
   if (modes && !modes.includes(accessMode.value)) accessMode.value = 'workspace';
 });
-watch(() => workspacePath.value, async (nextPath, _previousPath, onCleanup) => {
+watch(() => workspacePath.value, async (nextPath, previousPath, onCleanup) => {
+  const draftBranch = previousPath === undefined ? branch.value : '';
   branchOptions.value = [];
   branch.value = '';
   if (!nextPath) { branchesLoading.value = false; return; }
@@ -68,7 +70,7 @@ watch(() => workspacePath.value, async (nextPath, _previousPath, onCleanup) => {
     if (controller.signal.aborted || workspacePath.value !== nextPath) return;
     if (!response.ok) throw new Error(result.message || '分支列表读取失败');
     branchOptions.value = result.branches;
-    branch.value = result.current || (result.branches.includes(branch.value) ? branch.value : result.branches[0] || '');
+    branch.value = (result.branches.includes(draftBranch) ? draftBranch : result.current) || result.branches[0] || '';
   } catch (error) {
     if (!controller.signal.aborted) ElMessage.error(error instanceof Error ? error.message : '分支列表读取失败');
   } finally {
@@ -164,19 +166,20 @@ defineExpose({ focusPrompt });
               <AgentWorkspaceSelector
                 v-model:workspace-path="workspacePath"
                 v-model:workspace-paths="workspacePaths"
-                v-model:branch="branch"
                 :workspaces="workspaces"
                 :disabled="!!changing"
                 @choose-workspace="emit('chooseWorkspace')"
               />
               <label v-if="workspacePath && (branchesLoading || branchOptions.length)" class="new-branch">
                 <GitBranch :size="13" />
-                <select v-model="branch" aria-label="切换分支" :disabled="branchesLoading || !!changing">
+                <select v-model="branch" :aria-label="isolateWorkspace ? '选择基准分支' : '选择分支'" :disabled="branchesLoading || !!changing">
                   <option v-if="branchesLoading" value="">读取分支…</option>
                   <option v-for="item in branchOptions" :key="item" :value="item">{{ item }}</option>
                 </select>
                 <ChevronDown :size="12" />
               </label>
+              <el-checkbox v-if="workspacePath && branchOptions.length" v-model="isolateWorkspace" size="small"
+                :disabled="!branch || !!changing" title="勾选后从所选分支新建分支和独立工作区">新建分支</el-checkbox>
             </div>
             <div class="new-access"><AgentAccessSelector v-model="accessMode" :mode="mode" :provider="provider" :access-modes="runtime?.accessModes" :disabled="!!changing" /></div>
           </div>
