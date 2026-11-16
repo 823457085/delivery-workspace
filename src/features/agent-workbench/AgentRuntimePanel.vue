@@ -114,6 +114,7 @@ watch(mobile, () => { mobilePanel.value = ''; });
 // 布局和栏宽独立于配色，切换主题时保留用户当前的面板状态。
 const leftWidth = shallowRef(240);
 const rightWidth = shallowRef(280);
+const sideChatShare = shallowRef(50);
 const executionColumnWidth = computed(() => `min(${rightWidth.value}px, 28vw)`);
 function toggleSessions() {
   if (mobile.value) mobilePanel.value = mobilePanel.value === 'sessions' ? '' : 'sessions';
@@ -901,7 +902,7 @@ onBeforeUnmount(() => {
         'has-left-rail': desktopSideControls && leftCollapsed,
         'has-right-rail': desktopSideControls && desktopDetailsAvailable && rightCollapsed,
         'has-side-chat': sideChatVisible,
-      }">
+      }" :style="sideChatVisible ? { '--main-chat-width': `${100 - sideChatShare}fr`, '--side-chat-width': `${sideChatShare}fr` } : undefined">
         <button v-if="desktopSideControls" type="button" class="studio-side-toggle left"
           aria-controls="studio-session-sidebar" :aria-expanded="!leftCollapsed"
           :aria-label="leftCollapsed ? '展开会话列表' : '收起会话列表'"
@@ -940,6 +941,7 @@ onBeforeUnmount(() => {
             </button>
           </template>
         </AgentConversation>
+        <AgentPanelResize v-if="sideChatVisible" v-model="sideChatShare" side="right" variant="side-chat" aria-controls="agent-side-chat" />
         <section v-if="sideChatVisible" id="agent-side-chat" class="side-chat-column" aria-label="侧边聊天">
           <header class="side-chat-bar">
             <nav class="side-chat-tabs" aria-label="侧边会话标签">
@@ -1017,7 +1019,10 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .session-shell.has-side-chat {
-  grid-template-columns: var(--visible-session-width, var(--session-column-width)) minmax(0, 1fr) minmax(0, 1fr);
+  --chat-pane-min-width: 320px;
+  grid-template-columns: var(--visible-session-width, var(--session-column-width))
+    minmax(var(--chat-pane-min-width), var(--main-chat-width))
+    minmax(var(--chat-pane-min-width), var(--side-chat-width));
 }
 .side-chat-column {
   display: flex;
