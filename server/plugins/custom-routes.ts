@@ -12,9 +12,12 @@ export function createCustomPluginRoutes(runtime: CustomPluginRuntime, jira: Plu
   distribution?: PluginDistribution;
   citations: (reference: string) => { runId: string; title: string; createdAt: string; url: string }[];
 }) {
+  const listeners = new Set<ServerResponse>();
   return async (request: IncomingMessage, response: ServerResponse, url: URL) => {
     if (!url.pathname.startsWith('/api/custom-plugins')) return false;
-    const send = (status: number, data: unknown) => { io.json(response, status, data); return true; };
+    const send = (status: number, data: unknown) => { io.json(response, status, data);
+      if (request.method === 'POST' && status < 300) for (const stream of listeners) { if (stream.destroyed || stream.writableLength > 64_000) { listeners.delete(stream); stream.end(); } else stream.write('data: changed\n\n'); }
+      return true; };
     if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(request.socket.remoteAddress || '') || ![`localhost:${io.port}`, `127.0.0.1:${io.port}`].includes(request.headers.host || '')) return send(403, { message: '仅接受本机插件管理请求' });
     if (!['GET', 'POST'].includes(request.method || '')) return send(405, { message: '请求方法不支持' });
     if (request.headers['sec-fetch-site'] === 'cross-site' || request.headers.origin && request.headers.origin !== `http://${request.headers.host}`) return send(403, { message: '仅接受本机同源插件管理请求' });
@@ -24,10 +27,27 @@ export function createCustomPluginRoutes(runtime: CustomPluginRuntime, jira: Plu
       const parts = url.pathname.split('/').slice(3), [id, action] = parts;
       if (parts.length > 2) return send(404, { message: '插件操作不存在' });
       if (request.method === 'GET') {
+        if (id === 'events') {
+          response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', 'Connection': 'keep-alive' });
+          response.write(': connected\n\n'); listeners.add(response);
+          const timer = setInterval(() => response.write(': heartbeat\n\n'), 20000); timer.unref();
+          response.once('close', () => { clearInterval(timer); listeners.delete(response); }); return true;
+        }
         if (id === 'protocol') return send(200, { protocol: 1, sdk: '2.1.0', hostApi: [1, 2] });
         if (id === 'catalogs' && io.distribution) return send(200, await io.distribution.catalogs());
         if (id === 'install-tasks' && action && io.distribution) return send(200, await io.distribution.getTask(action));
-        if (!id) return send(200, { ...runtime.list(), examples: io.examples });
+        if (!id) {
+          const result = runtime.list();
+          const plugins = await Promise.all(result.plugins.map(async plugin => {
+            try {
+              const config = await runtime.configuration(plugin.manifest.id);
+              const missing = plugin.manifest.configuration?.fields.some(f => f.required && !(f.type === 'password' ? config.secrets[f.key] : config.values[f.key]?.trim()));
+              const ungranted = plugin.manifest.capabilities?.some(c => c.required && !plugin.grants.includes(c.id));
+              return { ...plugin, state: missing ? 'pending-configuration' : ungranted ? 'pending-authorization' : plugin.enabled ? 'enabled' : 'disabled' };
+            } catch (error) { return { ...plugin, state: 'configuration-error', error: error instanceof Error ? error.message : '配置不可读' }; }
+          }));
+          return send(200, { ...result, plugins, examples: io.examples });
+        }
         if (id === 'resources') return send(200, await runtime.search((url.searchParams.get('q') || '').slice(0, 200), url.searchParams.get('provider') || ''));
         if (id === 'resource') return send(200, await runtime.resolveReference(url.searchParams.get('reference') || ''));
         if (action === 'configuration') return send(200, await runtime.configuration(id));
@@ -57,6 +77,7 @@ export function createCustomPluginRoutes(runtime: CustomPluginRuntime, jira: Plu
           if ((input as any).grants || !current?.enabled || !current.grants.includes('application.local')) io.applications?.stop(id);
           return send(200, result);
         }
+        if (action === 'capability-call' && io.applications) return send(200, await io.applications.capabilityCall(id, input));
         if (action === 'application-call' && io.applications) return send(200, await io.applications.call(id, input));
         if (action === 'compose' && io.applications) return send(200, await io.applications.compose(id, input));
         if (action === 'open-workspace' && io.applications) return send(200, await io.applications.open(id, input));

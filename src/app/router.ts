@@ -1,5 +1,5 @@
 import { createRouter, createWebHistory, type RouteLocation } from 'vue-router';
-import { legacyExecutionPaths, legacyRedirectPaths, workspaceLocation, workspaceViews } from '../pages/agent/workspace-navigation';
+import { legacyExecutionPaths, legacyRedirectPaths, pluginManagementRedirect, workspaceLocation, workspaceViews } from '../pages/agent/workspace-navigation';
 
 const redirectWorkspace = (to: RouteLocation) => ({ ...workspaceLocation(to.path, to.query)!, hash: to.hash });
 
@@ -11,3 +11,8 @@ export const router = createRouter({ history: createWebHistory(), scrollBehavior
   ...Object.keys(legacyRedirectPaths).map(path => ({ path, redirect: redirectWorkspace })),
   { path: '/:pathMatch(.*)*', redirect: '/agent?view=today' },
 ] });
+
+router.beforeEach(to => {
+  const target = pluginManagementRedirect(to.path, to.query);
+  if (target) return { ...target, hash: to.hash, replace: true };
+});

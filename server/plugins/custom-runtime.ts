@@ -84,7 +84,7 @@ export async function createCustomPluginRuntime(directory: string, todos: Awaite
   function info(id: string, active = true) {
     const entry = installed.get(pluginIdSchema.parse(id));
     if (!entry || entry.removed) throw new Error('插件已移除或尚未添加；历史引用内容仍保存在会话快照');
-    if (active && entry.manifest.capabilities?.some(c => c.required && !entry.grants.includes(c.id))) throw new Error('插件必需能力已撤回');
+    if (active && entry.manifest.capabilities?.some(c => c.required && !entry.grants.includes(c.id))) throw new Error('插件必需能力授权已撤回');
     if (active && (!entry.enabled || errors.has(id))) throw new Error(errors.get(id) || '插件已停用');
     return entry;
   }

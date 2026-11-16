@@ -86,6 +86,10 @@ Jira、Confluence 和企微可在设置中的接入插件卡片配置。自定�
 
 主要开发验证在 macOS；原生目录选择器、Terminal.app 和桌面会话协作属于 macOS 接入，其他系统可手动输入工作区路径。Linux 使用端口检测和启动服务时需要安装 `lsof` 和 `zsh`。完整功能还取决于接收方 CLI/MCP 版本及外部账号权限。
 
-## 自定义应用插件
+## 独立插件协作
 
-本分支在记录插件之外支持 `hostApi: 2` 独立应用包，包含通用配置、stdio MCP、会话草稿与插件工作区能力。Go 实训、Alert Hub、[Sign Hub](plugins/sign-hub/README.md) 和 [Shanlian](plugins/shanlian/README.md) 均通过自定义插件管理安装；主菜单图标和顺序沿用工作台菜单设置。首次检查不默认信任本机代码，更新保留原授权、配置和数据。安装与开发参见 [自定义插件指南](docs/custom-plugin-guide.md)、[应用接口规范](docs/custom-plugin-application-api.md) 和 [插件 Agent 规范](plugins/AGENTS.md)。
+本分支作为宿主，只补充通用运行、授权、配置、主题和能力接口。新插件业务在独立 `delivery-plugins` 仓库，市场和管理前端在 `delivery-plugin-center` 仓库。宿主通过本地部署的中心构建产物和独立发布包接入，不跨仓库导入源码。详见 [三仓库协作协议](docs/plugin-repository-contract.md)。
+
+插件中心入口为「连接与策略设置 → 自定义插件」，旧 `/agent?view=plugins` 链接会自动跳转。默认读取 `vendor/plugin-center`；可通过 `DELIVERY_PLUGIN_CENTER_DIR` 指定构建产物。市场连接在固定插件的「自定义插件」卡片中配置，支持 HTTP、MCP 和 GitHub。Jira/Confluence 保留为固定外部插件，继续使用原有配置和工作流。
+
+独立仓库：[插件实现](https://github.com/ly-wo/delivery-plugins)、[插件中心](https://github.com/ly-wo/delivery-plugin-center)。

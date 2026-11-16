@@ -1,3 +1,4 @@
+import { applicationFixture, applicationManifest } from './plugin-application-fixture.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -28,7 +29,7 @@ async function fixture(t: any) {
 test('application package uses generic installation, explicit native trust, pinned assets and isolated host capabilities', async t => {
   const f = await fixture(t), source = path.join(f.root, 'package');
   await fs.mkdir(source);
-  const manifest = JSON.parse(await fs.readFile('plugins/go-learning/plugin.json', 'utf8'));
+  const manifest = applicationManifest();
   manifest.id = 'another-application'; manifest.name = '独立示例';
   await fs.writeFile(path.join(source, 'plugin.json'), JSON.stringify(manifest));
   await fs.writeFile(path.join(source, 'ui.js'), 'window.sample=true;');
@@ -65,47 +66,35 @@ test('application package uses generic installation, explicit native trust, pinn
   } finally { if(old===undefined)delete process.env.JIRA_AUTH_HEADER;else process.env.JIRA_AUTH_HEADER=old; }
 });
 
-test('Go package is absent from integrations; install, real Go run, saved progress and remove/restore use the custom host only', async t => {
-  const f = await fixture(t), source=path.resolve('plugins/go-learning/package');
-  assert.equal(integrationCatalog.some(p=>p.id==='go-learning'),false);
+test('independent application installs without fixed registration and retains data after remove/restore', async t => {
+  const f=await fixture(t),source=await applicationFixture(t),id='sample-application';
+  assert.equal(integrationCatalog.some(p=>p.id===id),false);
   const preview=await f.install(source);
-  assert.equal(registeredWorkspaceSections([],f.runtime.list().plugins).some(p=>p.id==='custom:go-learning'),true);
-  const overview:any=await f.apps.call('go-learning',{method:'overview'});
-  assert.equal(overview.days.length,7);
-  assert.ok(overview.sandboxPath.startsWith(path.join(f.root,'plugins','data','go-learning')));
-  const run:any=await f.apps.call('go-learning',{method:'sandbox/run',input:{action:'run'}});
-  if(overview.environment.installed) { assert.equal(run.result.exitCode,0); assert.match(run.result.stdout,/TaskMgr|任务/); }
-  else assert.equal(run.result.exitCode,-1);
-  await f.apps.call('go-learning',{method:'progress',input:{note:{day:1,content:'custom plugin note'}}});
-  const saved:any=await f.apps.call('go-learning',{method:'overview'});
-  assert.equal(saved.progress.notes['1'],'custom plugin note');
-  if (overview.environment.installed && process.platform !== 'win32') {
-    await f.apps.call('go-learning',{method:'sandbox/save-file',input:{filePath:'main.go',content:'package main\nimport ("os"; "strconv"; "time")\nfunc main(){os.WriteFile("process.pid",[]byte(strconv.Itoa(os.Getpid())),0600);time.Sleep(30*time.Second)}'}});
-    const running = f.apps.call('go-learning',{method:'sandbox/run',input:{action:'run'}});
-    const stopped = assert.rejects(running,/已停止/);
-    let pid = 0;
-    for(let n=0;n<150;n++) {try {pid=Number(await fs.readFile(path.join(overview.sandboxPath,'process.pid'),'utf8'));break;}catch{} await new Promise(r=>setTimeout(r,100));}
-    assert.ok(pid>0,'Go child should have started');
-    await f.runtime.change('go-learning',{enabled:false});f.apps.stop('go-learning');await stopped;
-    let alive=true;
-    for(let n=0;n<40;n++) {try {process.kill(pid,0);}catch{alive=false;break;}await new Promise(r=>setTimeout(r,100));}
-    assert.equal(alive,false,'Stopping the plugin must also stop its detached Go process');
-    await f.runtime.change('go-learning',{enabled:true});
+  assert.equal(registeredWorkspaceSections([],f.runtime.list().plugins).some(p=>p.id===`custom:${id}`),true);
+  const overview:any=await f.apps.call(id,{method:'read'});
+  assert.ok(overview.workspace.startsWith(path.join(f.root,'plugins','data',id)));
+  await f.apps.call(id,{method:'write',input:{note:'saved application data'}});
+  if(process.platform!=='win32') {
+    const child:any=await f.apps.call(id,{method:'child'});assert.ok(child.pid>0);
+    await f.runtime.change(id,{enabled:false});f.apps.stop(id);
+    let alive=true;for(let n=0;n<40;n++){try{process.kill(child.pid,0)}catch{alive=false;break}await new Promise(r=>setTimeout(r,100));}
+    assert.equal(alive,false,'Stopping the plugin closes its owned process');
+    await f.runtime.change(id,{enabled:true});
   }
-  await f.runtime.change('go-learning',{remove:true}); f.apps.stop('go-learning');
-  await assert.rejects(f.apps.page('go-learning'),/移除/);
+  await f.runtime.change(id,{remove:true});f.apps.stop(id);
+  await assert.rejects(f.apps.page(id),/移除/);
   await f.runtime.install({directory:source,digest:preview.digest,grants:preview.manifest.permissions,confirmed:true,trustedLocalCode:true});
-  assert.equal((await f.apps.call('go-learning',{method:'overview'}) as any).progress.notes['1'],'custom plugin note');
+  assert.equal((await f.apps.call(id,{method:'read'}) as any).note.note,'saved application data');
 });
 
 test('application routes retain same-origin, confirmation and post-body capability checks', async t=>{
-  const f=await fixture(t);await f.install(path.resolve('plugins/go-learning/package'));
+  const f=await fixture(t);await f.install(await applicationFixture(t));
   let status=0,value:any;let afterBody=async()=>{};
   const route=createCustomPluginRoutes(f.runtime,{} as any,{port:5317,applications:f.apps,examples:[],citations:()=>[],json(_r,s,v){status=s;value=v},async body(){await afterBody();return {method:'overview'}}});
   const req:any={method:'POST',socket:{remoteAddress:'127.0.0.1'},headers:{host:'localhost:5317',origin:'http://localhost:5317','content-type':'application/json','x-delivery-confirmed':'yes'}};
-  const url=new URL('http://localhost:5317/api/custom-plugins/go-learning/application-call');
+  const url=new URL('http://localhost:5317/api/custom-plugins/sample-application/application-call');
   await route({...req,headers:{...req.headers,origin:'https://evil.test'}},{} as any,url);assert.equal(status,403);
   await route({...req,headers:{...req.headers,'content-type':'text/plain'}},{} as any,url);assert.equal(status,415);
-  afterBody=async()=>{await f.runtime.change('go-learning',{enabled:false})};
+  afterBody=async()=>{await f.runtime.change('sample-application',{enabled:false})};
   await route(req,{} as any,url);assert.equal(status,400);assert.match(value.message,/停用/);
 });

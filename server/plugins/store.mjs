@@ -1,3 +1,5 @@
+import { githubOptions, githubRepository } from './github-source.mjs';
+import { catalogEndpoint } from './catalog-connection.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -17,26 +19,29 @@ export async function readPluginFile(file) {
     throw new Error('插件配置无法读取，请检查本机 plugins.json；未覆盖原文件');
   }
 }
-function site(value) {
+function site(value, link = false) {
   let url;
   try { url = new URL(value); } catch { throw new Error('请输入有效的服务地址'); }
-  if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error('服务地址不能含凭据、查询参数或片段');
+  if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || !link && (url.search || url.hash)) throw new Error(link ? '链接须为不含账号密码的 HTTP 或 HTTPS 地址' : '服务地址不能含凭据、查询参数或片段');
+  if (link) return url.href;
   return url.href.replace(/\/+$/, '');
 }
 function validate(id, input) {
   const plugin = definition(id);
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('插件配置格式无效');
-  const fields = plugin.local ? ['enabled', 'installed'] : id === 'wecom' ? ['enabled', 'installed', 'groupName', 'webhook'] : ['enabled', 'installed', 'baseUrl', 'username', 'token'];
+  const fields = plugin.local ? ['enabled', 'installed'] : ['link', 'catalog'].includes(plugin.connection?.type) ? ['enabled', 'installed', 'baseUrl', ...(plugin.connection?.type === 'catalog' ? ['transport', 'githubKind', 'githubPath', 'githubPolicy', 'githubRef', 'githubToken', 'clearGithubToken'] : [])] : id === 'wecom' ? ['enabled', 'installed', 'groupName', 'webhook'] : ['enabled', 'installed', 'baseUrl', 'username', 'token'];
   if (Object.keys(input).some(key => !fields.includes(key))) throw new Error('插件配置包含不支持的字段');
   if (typeof input.enabled !== 'boolean') throw new Error('请选择插件启用状态');
   if (input.installed !== undefined && typeof input.installed !== 'boolean') throw new Error('插件安装状态无效');
+  if (input.clearGithubToken !== undefined && typeof input.clearGithubToken !== 'boolean') throw new Error('清除 GitHub 凭据选项无效');
   const output = { ...input };
-  for (const key of fields.filter(key => !['enabled', 'installed'].includes(key))) {
+  for (const key of fields.filter(key => !['enabled', 'installed', 'clearGithubToken'].includes(key))) {
     if (input[key] === undefined) continue;
     if (typeof input[key] !== 'string' || input[key].length > 4096 || /[\x00-\x1f\x7f]/.test(input[key])) throw new Error('插件字段格式无效');
     output[key] = input[key].trim();
   }
-  if (output.baseUrl) output.baseUrl = site(output.baseUrl);
+  if (output.transport !== undefined && !['http', 'mcp', 'github'].includes(output.transport)) throw new Error('请选择 HTTP、MCP 或 GitHub 连接');
+  if (output.baseUrl) output.baseUrl = site(output.baseUrl, ['link', 'catalog'].includes(plugin.connection?.type));
   if (output.webhook) {
     let url;
     try { url = new URL(output.webhook); } catch { throw new Error('企微 Webhook 地址无效'); }
@@ -51,6 +56,7 @@ export function applyPluginEnvironment(data, env) {
     if (!config) continue;
     env[`DELIVERY_PLUGIN_${plugin.prefix}_ENABLED`] = String(config.enabled);
     env[`DELIVERY_PLUGIN_${plugin.prefix}_INSTALLED`] = String(config.installed !== false);
+    if (['link', 'catalog'].includes(plugin.connection?.type)) continue;
     if (plugin.id === 'wecom') {
       if (config.webhook) { env.DELIVERY_PLUGIN_WECOM_WEBHOOK = config.webhook; env.DELIVERY_PLUGIN_WECOM_GROUP = config.groupName || ''; }
     } else if (config.baseUrl) {
@@ -64,7 +70,7 @@ export function applyPluginEnvironment(data, env) {
     }
   }
 }
-export async function createPluginStore({ file = pluginFile(), env = process.env, fetchImpl = fetch, wecomConfig = () => ({}), legacyProbe, port = Number(env.DELIVERY_PORT || env.PORT) } = {}) {
+export async function createPluginStore({ file = pluginFile(), env = process.env, fetchImpl = fetch, wecomConfig = () => ({}), legacyProbe, catalogProbe, port = Number(env.DELIVERY_PORT || env.PORT) } = {}) {
   const startup = await readPluginFile(file);
   let queue = Promise.resolve();
   async function list() {
@@ -72,6 +78,11 @@ export async function createPluginStore({ file = pluginFile(), env = process.env
     return pluginDefinitions.map(plugin => {
       const saved = data.plugins[plugin.id];
       const enabled = saved?.enabled ?? env[`DELIVERY_PLUGIN_${plugin.prefix}_ENABLED`] !== 'false';
+      if (['link', 'catalog'].includes(plugin.connection?.type)) {
+        const baseUrl = saved?.baseUrl || '';
+        return { ...plugin, enabled, installed: saved?.installed !== false, runningEnabled: pluginEnabled(plugin.id, env),
+          runningConfigured: !!baseUrl, configured: !!baseUrl, restartRequired: false, baseUrl, transport: saved?.transport || 'http', githubKind: saved?.githubKind || 'market', githubPath: saved?.githubPath || '', githubPolicy: saved?.githubPolicy || 'stable', githubRef: saved?.githubRef || '', githubTokenConfigured: !!saved?.githubToken, username: '', groupName: '', source: 'plugin' };
+      }
       if (plugin.local) {
         const configured = !plugin.localPort || plugin.localPort === port;
         return { ...plugin, enabled, installed: saved?.installed !== false, runningEnabled: pluginEnabled(plugin.id, env),
@@ -95,6 +106,27 @@ export async function createPluginStore({ file = pluginFile(), env = process.env
   async function candidate(id, input) {
     if (definition(id).local) throw new Error('本机插件请在管理页启用或停用');
     const next = validate(id, input), current = (await readPluginFile(file)).plugins[id];
+    if (['link', 'catalog'].includes(definition(id).connection?.type)) {
+      if (next.installed === undefined && current?.installed !== undefined) next.installed = current.installed;
+      if (definition(id).connection?.type === 'catalog') {
+        next.transport ??= current?.transport || 'http';
+        if (next.transport === 'github') {
+          const options = githubOptions(next);
+          next.baseUrl = options.url;
+          next.githubKind = options.kind; next.githubPath = options.directory;
+          next.githubPolicy = options.policy; next.githubRef = options.ref;
+          const sameRepo = current?.transport === 'github' && githubRepository(current.baseUrl).url.toLowerCase() === options.url.toLowerCase();
+          if (next.clearGithubToken) delete next.githubToken;
+          else if (!next.githubToken && sameRepo && current.githubToken) next.githubToken = current.githubToken;
+        } else {
+          if (next.githubToken) throw new Error('GitHub 凭据只能用于 GitHub 来源');
+          if (next.baseUrl) catalogEndpoint(next.baseUrl, next.transport);
+          for (const key of ['githubToken', 'githubKind', 'githubPath', 'githubPolicy', 'githubRef']) delete next[key];
+        }
+        delete next.clearGithubToken;
+      }
+      return next;
+    }
     // Saving an unchanged legacy connection must not replace its credential source with an empty token.
     const prefix = definition(id).prefix;
     if (id !== 'wecom' && !current?.baseUrl && !next.token && next.baseUrl
@@ -109,6 +141,19 @@ export async function createPluginStore({ file = pluginFile(), env = process.env
   }
   return {
     list,
+    // Backend-only source descriptions. Never return these from a management route.
+    async catalogSources() {
+      const data = await readPluginFile(file);
+      return pluginDefinitions.filter(p => p.connection?.type === 'catalog').map(p => {
+        const config = data.plugins[p.id];
+        const enabled = (config?.enabled ?? env[`DELIVERY_PLUGIN_${p.prefix}_ENABLED`] !== 'false') && config?.installed !== false;
+        return { id: p.id, name: p.name, location: config?.baseUrl || '', transport: config?.transport || 'http',
+          githubKind: config?.githubKind, githubPath: config?.githubPath, githubPolicy: config?.githubPolicy, githubRef: config?.githubRef,
+          ...(config?.transport === 'github' ? { githubToken: config.githubToken } : {}),
+          ...(!enabled ? { error: '市场连接已停用；已安装插件仍可管理' } : !config?.baseUrl ? { error: '请先配置市场连接；已安装插件仍可管理' } : {}),
+        };
+      });
+    },
     state(id, input) {
       const plugin = definition(id);
       if (!input || typeof input !== 'object' || Object.keys(input).some(key => !['enabled', 'installed'].includes(key)) || !Object.keys(input).length || Object.values(input).some(value => typeof value !== 'boolean')) throw new Error('插件状态无效');
@@ -136,12 +181,17 @@ export async function createPluginStore({ file = pluginFile(), env = process.env
         finally { await fs.rm(temp, { force: true }); }
         env[`DELIVERY_PLUGIN_${definition(id).prefix}_ENABLED`] = String(next.enabled);
         env[`DELIVERY_PLUGIN_${definition(id).prefix}_INSTALLED`] = String(next.installed !== false);
-        return { plugins: await list(), message: '启停状态已生效；连接变更请在任务结束后重启工作台生效' };
+        return { plugins: await list(), message: ['link', 'catalog'].includes(definition(id).connection?.type) ? '链接已保存并生效' : '启停状态已生效；连接变更请在任务结束后重启工作台生效' };
       });
       queue = result.catch(() => {}); return result;
     },
     async test(id, input) {
       const plugin = definition(id), config = await candidate(id, input);
+      if (['link', 'catalog'].includes(plugin.connection?.type)) {
+        if (!config.baseUrl) throw new Error('请先填写链接');
+        if (plugin.connection?.type === 'catalog' && catalogProbe) return catalogProbe(config);
+        return { message: '链接格式检查通过，未访问外部服务' };
+      }
       if (id === 'wecom') {
         if (!config.webhook && !wecomConfig().hasWebhook) throw new Error('请先填写 Webhook');
         return { message: 'Webhook 格式检查通过，未发送消息；实际送达请在消息页预览并确认发送' };

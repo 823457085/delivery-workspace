@@ -8,7 +8,7 @@ export const workspaceSections: WorkspaceSection[] = [
   { id: 'today', label: '今日工作', items: [{ id: 'today', label: '我的工作台', path: '/workbench' }, { id: 'overview', label: '工作总览', path: '/overview' }] },
   { id: 'projects', label: '项目与 Git', items: [{ id: 'projects', label: '本地项目与 Git', path: '/projects' }] },
   { id: 'execution', label: 'AI 交付', items: [{ id: 'design', label: '需求开发', path: '/design' }, { id: 'queue', label: '执行中心', path: '/delivery/queue', mode: 'queue' }] },
-  { id: 'automation', label: '自动化 / 设置', items: [{ id: 'settings', label: '连接与策略设置', path: '/settings' }, { id: 'plugins', label: '功能插件', path: '/agent?view=plugins' }, { id: 'automation', label: '自动化与报告', path: '/agent?view=automation' }] },
+  { id: 'automation', label: '自动化 / 设置', items: [{ id: 'settings', label: '连接与策略设置', path: '/settings' }, { id: 'automation', label: '自动化与报告', path: '/agent?view=automation' }] },
 ];
 export const pluginViews: WorkspaceView[] = integrationCatalog.flatMap(plugin => plugin.views.map(view => ({...view, pluginId: plugin.id})));
 // All declared URLs remain resolvable even while a provider is disabled. Rendering is gated separately.
@@ -47,6 +47,8 @@ export function workspaceView(value: unknown, customPlugins: CustomPluginInfo[] 
     // Menu visibility is presentation only: keep the page identity (and unsaved edits) stable.
     const plugin = customPlugins.find(plugin => plugin.manifest.id === selectedPlugin && plugin.enabled && !plugin.error);
     if (plugin) return customPluginPage(plugin);
+    // Keep unavailable plugin deep links on their status page while loading or disabled.
+    return { id: 'plugins', label: '自定义插件', path: '/agent?view=plugins' };
   }
   const id = value === 'plan' || value === 'runs' ? 'queue' : value;
   return typeof id === 'string' ? workspaceViews.find(item => item.id === id) : undefined;
@@ -63,10 +65,17 @@ export function workspaceLocation(path: string, query: Record<string, unknown> =
 }
 
 export function navigationPreferencesForSave(preferences: NavigationPreferences, orderedIds: string[], reordered: boolean): NavigationPreferences {
- return { order: reordered ? [...orderedIds, ...preferences.order.filter(id => !orderedIds.includes(id))] : [...preferences.order], icons: { ...preferences.icons } };
+ return { order: reordered ? [...orderedIds, ...preferences.order.filter(id => !orderedIds.includes(id))] : [...preferences.order], icons: { ...preferences.icons }, ...(preferences.groups ? { groups: { ...preferences.groups } } : {}) };
 }
 
 export function workspaceChatQuery(mode: 'session' | 'group', sessionId = '', roomId = ''): Record<string, string> {
   if (mode === 'group') return roomId ? { group: '1', room: roomId } : { group: '1' };
   return sessionId ? { session: sessionId } : {};
+}
+
+/** Legacy management URLs resolve to the single settings entry; business pages stay independent. */
+export function pluginManagementRedirect<T extends Record<string, unknown>>(path: string, query: T) {
+  if (path !== '/agent' || query.view !== 'plugins' || typeof query.plugin === 'string' && query.plugin.trim()) return undefined;
+  const { plugin: _plugin, ...rest } = query;
+  return { path: '/agent', query: { ...rest, view: 'settings', settingsTab: 'plugins' } };
 }

@@ -2,6 +2,7 @@
 import jira from '../../plugins/jira/integration.json' with { type: 'json' };
 import confluence from '../../plugins/confluence/integration.json' with { type: 'json' };
 import wecom from '../../plugins/wecom/integration.json' with { type: 'json' };
+import pluginMarket from '../../plugins/plugin-market/integration.json' with { type: 'json' };
 import interfaceCenter from '../../plugins/interface-center/integration.json' with { type: 'json' };
 import systemCatalog from '../../plugins/system-catalog/integration.json' with { type: 'json' };
 import portMonitor from '../../plugins/port-monitor/integration.json' with { type: 'json' };
@@ -9,7 +10,7 @@ import deployments from '../../plugins/deployments/integration.json' with { type
 import refactorControl from '../../plugins/refactor-control/integration.json' with { type: 'json' };
 import overseasRequirements from '../../plugins/overseas-requirements/integration.json' with { type: 'json' };
 export const pluginDefinitions = [
-  jira, confluence, wecom,
+  jira, confluence, wecom, pluginMarket,
   interfaceCenter, systemCatalog, portMonitor, deployments, refactorControl, overseasRequirements,
 ];
 const defaultBaseUrls = {

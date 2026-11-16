@@ -123,7 +123,7 @@ function currentChatQuery() {
 }
 function open(id?: string) {
   const custom = workspaceSections.value.flatMap(section => section.items).find(item => item.id === id)?.customPluginId;
-  const query = custom ? { view: 'plugins', plugin: custom } : id === 'plugins' ? { view: id } : id ? panelLocations.get(id) || { view: id } : currentChatQuery();
+  const query = custom ? { view: 'plugins', plugin: custom } : id === 'plugins' ? { view: 'settings', settingsTab: 'plugins' } : id ? panelLocations.get(id) || { view: id } : currentChatQuery();
   void router.push({ path: '/agent', query });
 }
 function openSingleChat() {

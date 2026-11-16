@@ -14,5 +14,6 @@ export interface PluginApplicationHost {
   dataDirectory: string;
   workspaceDirectory: string;
   configuration: Readonly<Record<string, string>>;
+  capabilities: { call(name: string, method: string, input?: unknown, provider?: string): Promise<unknown> };
   mcp: { connect(options: { command: string; args?: string[]; env?: Record<string, string>; timeoutMs?: number }): Promise<PluginMcpConnection> };
 }

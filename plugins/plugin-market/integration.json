@@ -1,0 +1,17 @@
+{
+  "id": "plugin-market",
+  "name": "自定义插件",
+  "description": "连接插件市场，浏览与安装插件，并管理本机已安装插件",
+  "prefix": "PLUGIN_MARKET",
+  "connection": {
+    "type": "catalog",
+    "label": "市场连接地址",
+    "openLabel": "打开自定义插件",
+    "openPath": "/agent?view=settings&settingsTab=plugins"
+  },
+  "capabilities": [],
+  "views": [],
+  "sourceKeys": [],
+  "apiPrefixes": [],
+  "apiPaths": []
+}

@@ -12,30 +12,32 @@
     "doctor": "node --env-file-if-exists=.env --import tsx scripts/doctor.mjs",
     "dev": "node scripts/start.mjs --dev",
     "start": "node scripts/start.mjs",
-    "build": "vue-tsc --noEmit && tsc --noEmit -p tsconfig.server.json && vite build",
+    "build": "node scripts/build-plugin-sdk.mjs && vue-tsc --noEmit && tsc --noEmit -p tsconfig.server.json && vite build",
     "test": "node --import tsx --test test/*.test.ts tools/remote-access/gateway.test.mjs",
-    "state:backup": "node --env-file-if-exists=.env --import tsx scripts/state-backup.ts"
+    "state:backup": "node --env-file-if-exists=.env --import tsx scripts/state-backup.ts",
+    "sdk:pack": "node scripts/build-plugin-sdk.mjs && npm pack ./packages/plugin-sdk --pack-destination vendor"
   },
   "dependencies": {
     "@lucide/vue": "1.41.0",
     "@mastra/core": "1.64.0",
     "@mastra/libsql": "1.22.3",
+    "@modelcontextprotocol/sdk": "1.32.2",
     "@tanstack/vue-query": "5.102.8",
     "element-plus": "2.14.5",
     "monaco-editor": "0.57.0",
     "vue": "3.5.42",
     "vue-router": "5.3.1",
+    "ws": "8.21.3",
     "yaml": "2.9.0",
-    "zod": "4.5.4",
-    "ws": "8.21.3"
+    "zod": "4.5.4"
   },
   "devDependencies": {
     "@types/node": "26.4.1",
+    "@types/ws": "8.18.1",
     "@vitejs/plugin-vue": "6.0.8",
     "tsx": "4.23.13",
     "typescript": "5.9.3",
     "vite": "8.2.2",
-    "vue-tsc": "3.3.11",
-    "@types/ws": "8.18.1"
+    "vue-tsc": "3.3.11"
   }
 }

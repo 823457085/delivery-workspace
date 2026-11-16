@@ -98,7 +98,7 @@ watch(open, async visible => {
   } finally {
     loading.value = false;
   }
-});
+}, { immediate: true });
 
 function onPluginChange(nextId: string) {
   selectedPluginId.value = nextId;
@@ -148,7 +148,7 @@ async function submit() {
 
 function openPluginCenter() {
   open.value = false;
-  void router.push({ path: '/agent', query: { view: 'plugins' } });
+  void router.push({ path: '/agent', query: { view: 'settings', settingsTab: 'plugins' } });
 }
 </script>
 
