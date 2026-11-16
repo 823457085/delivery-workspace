@@ -29,7 +29,7 @@ function submit() {
   <el-dialog :model-value="open" :title="inSide ? '在侧边新建继承会话' : '基于此会话新建'" width="min(600px, 92vw)" class="agent-fork-dialog"
     :close-on-click-modal="false" :close-on-press-escape="!submitting" :show-close="!submitting"
     @opened="focusPrompt" @update:model-value="!$event && emit('cancel')">
-    <p class="fork-description">新会话会继承当前会话截至已完成轮次的上下文。分叉后，两边可以各自继续。</p>
+    <p class="fork-description">新会话会继承已完成轮次的上下文，并与原会话共用工作区。两边各自续聊，共享文件改动。</p>
     <AgentPromptEditor v-if="source" ref="promptEditor" v-model="objective" v-model:attachments="attachments"
       :attachment-draft="attachmentDraft"
       :workspace-path="source.workspacePath" provider="codex" :modes="[source.mode]" :selected-mode="source.mode" mode-locked

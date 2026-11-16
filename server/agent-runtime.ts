@@ -2616,7 +2616,7 @@ export async function createAgentRuntimeService(directory: string, options: Serv
     return explicit.size ? explicit : new Set([sessionId]);
   }
 
-  async function assertPreciseForkReady(source: AgentRun, preparedWorkspace = false, requireGit = true) {
+  function assertPreciseForkReady(source: AgentRun) {
     if (source.provider !== 'codex' || !source.sessionId) throw new Error('该运行没有可分叉的 Codex 会话 ID');
     if (source.status !== 'completed' || !source.codexTurnId || !codexTurnPattern.test(source.codexTurnId)) {
       throw new Error('该消息没有可验证的已完成 Codex 轮次，不能从指定位置安全分叉');
@@ -2625,9 +2625,12 @@ export async function createAgentRuntimeService(directory: string, options: Serv
       && (active.has(run.id) || waiting.has(run.id)))
       || [...active.values()].some((item) => item.forkSessionId === source.sessionId)
       || [...waiting.values()].some((item) => item.forkSessionId === source.sessionId)) {
-      throw new Error('原 Codex 会话仍有运行或排队消息，请等待完成后再隔离');
+      throw new Error('原 Codex 会话仍有运行或排队消息，请等待完成后再分叉');
     }
-    if (!requireGit) return;
+  }
+
+  async function assertIsolatedForkReady(source: AgentRun, preparedWorkspace = false) {
+    assertPreciseForkReady(source);
     const identity = await workspaceIdentity(source.workspacePath);
     if (!identity.headSha || !identity.branch || identity.branch === 'detached HEAD') {
       throw new Error('当前工作区不是可创建独立分支的 Git 工作区');
@@ -2780,7 +2783,7 @@ export async function createAgentRuntimeService(directory: string, options: Serv
       || !byTurn.get(turn.id)?.conversationId || byTurn.get(turn.id)?.conversationId === conversationId)) {
       throw new Error('分叉位置之后存在未归属或未完成的 Codex 轮次，不能安全分叉');
     }
-    await assertPreciseForkReady(source, !!preparedWorkspacePath);
+    await assertIsolatedForkReady(source, !!preparedWorkspacePath);
     const health = await runtimeHealth('codex', true);
     if (!health.ready || !health.binary) throw new Error(health.message || 'Codex 执行器不可用');
     const workspace = preparedWorkspacePath
@@ -2864,7 +2867,7 @@ export async function createAgentRuntimeService(directory: string, options: Serv
     }
     if (source.provider === 'codex' && source.sessionId
       && (source.requiresIsolation || codexSessionConversations(source.sessionId).size > 1)) {
-      await assertPreciseForkReady(source);
+      await assertIsolatedForkReady(source);
       if (runs.some((run) => conversationIdFor(run) === conversationIdFor(source)
         && (active.has(run.id) || waiting.has(run.id)))) {
         throw new Error('当前会话已有运行或排队消息，请等待完成后再隔离');
@@ -2974,16 +2977,14 @@ export async function createAgentRuntimeService(directory: string, options: Serv
   async function fork(runId: string, objective: string, model?: string, reasoningEffort?: AgentReasoningEffort | '', attachmentIds: string[] = [], serviceTier?: AgentServiceTier) {
     const source = runs.find((run) => run.id === runId);
     if (!source) throw new Error('找不到该 Agent 运行');
-    // 未绑定项目的会话继承 Codex 轮次，start 会给新会话分配新的空目录。
-    const sessionOnly = source.sourceWorkspacePath === '' && !source.branch && !source.headSha;
-    await assertPreciseForkReady(source, false, !sessionOnly);
+    assertPreciseForkReady(source);
+    const { workspacePath, sourceWorkspacePath, baseBranch, isolatedWorkspace } = source;
+    if (!workspacePath.trim()) throw new Error('原会话没有可共享的工作区');
     return start({ provider: 'codex', mode: source.mode, model: model === undefined ? source.model : model,
       reasoningEffort: reasoningEffort === undefined ? source.reasoningEffort : reasoningEffort,
       serviceTier: serviceTier === undefined ? source.serviceTier : serviceTier,
-      objective, attachmentIds, accessMode: source.accessMode, workspacePath: sessionOnly ? '' : source.workspacePath,
-      branch: sessionOnly ? undefined : source.branch, isolateWorkspace: !sessionOnly }, '', '', '', source.sessionId, 'append', undefined,
-    sessionOnly ? undefined : forkWorkspaceMetadata(source),
-    { forkLastTurnId: source.codexTurnId, branchPrefix: 'feature/' });
+      objective, attachmentIds, accessMode: source.accessMode, workspacePath }, '', '', '', source.sessionId, 'append', undefined,
+    { sourceWorkspacePath, baseBranch, isolatedWorkspace }, { forkLastTurnId: source.codexTurnId });
   }
 
   async function addCustomModel(input: AgentCustomModelInput) {
