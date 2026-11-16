@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mergeDeploymentProjects, parseDeploymentLinks } from '../src/features/deployments/native-deployments';
-const repository = 'aaaaaaaaaaaaaaaaaaaaaaaa/demo-project/demo';
+const repository = 'aaaaaaaaaaaaaaaaaaaaaaaa/Raytheon_project/demo';
 const fixture = () => ({ id: `codeup.aliyun.com:${repository}`, name: 'demo', repository,
   projectUrl: `https://codeup.aliyun.com/${repository}/pipeline`,
   environments: [{ environment: 'pre', name: '预发流水线', url: 'https://flow.aliyun.com/pipelines/123/current' }] });

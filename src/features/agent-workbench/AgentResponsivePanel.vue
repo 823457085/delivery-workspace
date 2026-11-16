@@ -7,7 +7,7 @@ const emit = defineEmits<{ close: [] }>();
 <template>
   <div v-show="mobile || open" class="responsive-panel" :class="{ mobile }">
     <el-drawer v-if="mobile" :model-value="open" :title="title" :direction="side === 'left' ? 'ltr' : 'rtl'"
-      size="min(92vw, 400px)" class="agent-mobile-drawer" @update:model-value="!$event && emit('close')">
+      size="min(92vw, 400px)" class="agent-mobile-drawer" append-to-body @update:model-value="!$event && emit('close')">
       <slot />
     </el-drawer>
     <slot v-else />

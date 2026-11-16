@@ -118,11 +118,17 @@ export function useAgentAttachments(attachments: Ref<AgentAttachment[]>, disable
     finally { finish(); }
   }
 
-  function fromTransfer(transfer: DataTransfer | null, event: Event) {
+  function fromTransfer(transfer: DataTransfer | null, event: Event, onCompanionText?: (text: string) => void) {
     const files = [...(transfer?.files || [])].filter(supportedFile);
     if (!files.length) return;
+    const companionText = typeof transfer?.getData === 'function' ? transfer.getData('text/plain') : '';
+    const trimmedText = companionText.trim();
+    const isBareFilename = files.length === 1 && trimmedText === files[0]!.name;
     event.preventDefault();
     void addFiles(files);
+    if (trimmedText && !isBareFilename && onCompanionText) {
+      onCompanionText(companionText);
+    }
   }
 
   return { uploading, pending, canAdd, addFiles, remove, fromTransfer };

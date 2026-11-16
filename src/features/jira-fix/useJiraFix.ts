@@ -46,7 +46,7 @@ export function useJiraFix(openRun: (id: string) => void) {
     if (!response.ok) throw new Error(result.message || '请求失败');
     return result;
   }
-  const query = useQuery({ queryKey: ['jira-fix'], retry: false,
+  const query = useQuery({ queryKey: ['jira-fix'], retry: false, refetchIntervalInBackground: false,
     queryFn: async ({ signal }): Promise<JiraFixRecord[]> => {
       const response = await fetch('/api/agent-runtimes/jira-fix', { signal });
       const result = await response.json();

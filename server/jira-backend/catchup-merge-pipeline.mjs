@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
-import { sourceDataRoot } from "./config.mjs";
+import { homedir } from "node:os";
 import path from "node:path";
 
 import { DEFAULT_AUTOMATION_SETTINGS } from "./automation-core.mjs";
@@ -15,7 +15,13 @@ import { catchupAdminExclusionReason, catchupAdminScopeReviewReason } from "./ca
  */
 
 export const CATCHUP_MERGE_JOB_ID = "catchup-merge:sequence";
-export const CATCHUP_MERGE_WORKSPACE = process.env.APEX_CATCHUP_MERGE_WORKSPACE || path.join(sourceDataRoot, "workspaces", "merge");
+export const CATCHUP_MERGE_WORKSPACE = path.join(
+  homedir(),
+  "Desktop",
+  "APEX重构追平",
+  "merge",
+  "target-admin"
+);
 export const CATCHUP_MERGE_PIPELINE_STATUSES = Object.freeze([
   "PENDING",
   "QUEUED",
@@ -248,7 +254,7 @@ function isEvidenceBackedSkip(result) {
     /(?:前序|此前|相邻)需求.*未合入.*(?:回归|验证|N\/A)/i,
     /合并前.*(?:未执行|无法执行).*合并后.*(?:跨功能|跨需求|相邻功能)?.*回归/,
     /尚非源分支祖先.*(?:留待|后续).*(?:正式)?合入阶段.*回归/,
-    /\b[A-Z][A-Z0-9_]*-\d+\b.*(?:目标历史中不存在|尚未进入目标).*(?:顺序合入|合入规则).*(?:回归|N\/A)/i,
+    /\bGBP-\d+\b.*(?:目标历史中不存在|尚未进入目标).*(?:顺序合入|合入规则).*(?:回归|N\/A)/i,
     /相邻需求回归.*后续独立项/,
     /(?:跨需求|相邻功能).*(?:回归|验证).*(?:留待|后续).*(?:合入|人工|交付).*(?:阶段|验证)?/
   ].some((pattern) => pattern.test(result.evidence));
@@ -1059,7 +1065,7 @@ function mergeJobPrompt(item, claimToken, callbackUrl, evidenceRoot, phase = "pr
     `预期：${testCase.expected.join("；")}`
   ].join("\n")).join("\n\n");
   const sourceWorkspace = item.deliveryWorkspacePath || "";
-  const handoffDirectory = path.join(process.env.APEX_CATCHUP_SESSIONS_ROOT || path.join(sourceDataRoot, "sessions"), item.requirementId);
+  const handoffDirectory = path.join(homedir(), "Desktop", "APEX重构追平", "sessions", item.requirementId);
   const evidenceDirectory = path.join(evidenceRoot, item.requirementId);
   const servicePort = 6900 + Number(item.order || 0);
   const serviceUrl = `http://localhost:${servicePort}`;
@@ -1082,8 +1088,8 @@ function mergeJobPrompt(item, claimToken, callbackUrl, evidenceRoot, phase = "pr
       ? `统一目标分支固定为 \`${CATCHUP_MERGE_TARGET_BRANCH}\`，目标合入 worktree 固定为 \`${CATCHUP_MERGE_WORKSPACE}\`；源分支固定为 \`${item.sourceBranch}\`，需求交付 worktree 为 \`${sourceWorkspace || "未登记，需从 MR/远端唯一核对"}\`。`
       : `统一目标分支固定为 \`${CATCHUP_MERGE_TARGET_BRANCH}\`；本轮预演与${codeOnly ? "代码边界自测" : " Chrome 自测"}只在当前需求自己的交付 worktree \`${sourceWorkspace || "未登记，需从 MR/远端唯一核对"}\` 运行，源分支固定为 \`${item.sourceBranch}\`。共享目标合入 worktree 仅在人工审核通过后的 delivery 阶段使用，本轮不得因其 dirty 状态阻塞独立需求预演。`,
     phase === "delivery"
-      ? `先核对源交付与目标合入 worktree 的真实路径、branch、HEAD、origin、dirty 状态和远端 SHA，并优先用远端 SHA 检查源提交是否已被目标包含：已包含时无需触碰本地工作区，直接完成远端回读并回调 completed。尚未包含且目标 worktree 有其他需求改动时，禁止覆盖、reset、stash 或暂存这些改动；改用不触碰工作区和 index 的 Git 对象级合并：以最新远端目标为第一父提交、源 SHA 为第二父提交，先用 git merge-tree --write-tree 检查并生成合并树，无冲突后用 git commit-tree 生成合并提交，再以普通 fast-forward push 推送目标分支。推送前再次读取远端目标 SHA，发生竞态就基于新 SHA 重新计算；只有真实内容冲突、鉴权或远端推送失败才回调 blocked。不得在 未登记且含有其他需求改动的工作树写产品代码。`
-      : `先核对当前需求交付 worktree 的真实路径、branch、HEAD、origin、dirty 状态以及源/目标远端 SHA；使用远端引用完成只读 merge-tree/差异预演。不得读取、修改或依赖共享目标合入 worktree的工作区状态，也不得在 未登记且含有其他需求改动的工作树写产品代码。`,
+      ? `先核对源交付与目标合入 worktree 的真实路径、branch、HEAD、origin、dirty 状态和远端 SHA，并优先用远端 SHA 检查源提交是否已被目标包含：已包含时无需触碰本地工作区，直接完成远端回读并回调 completed。尚未包含且目标 worktree 有其他需求改动时，禁止覆盖、reset、stash 或暂存这些改动；改用不触碰工作区和 index 的 Git 对象级合并：以最新远端目标为第一父提交、源 SHA 为第二父提交，先用 git merge-tree --write-tree 检查并生成合并树，无冲突后用 git commit-tree 生成合并提交，再以普通 fast-forward push 推送目标分支。推送前再次读取远端目标 SHA，发生竞态就基于新 SHA 重新计算；只有真实内容冲突、鉴权或远端推送失败才回调 blocked。不得在 ${path.join(homedir(), "Desktop", "apex admin", "admin")} 的脏 feature/v0.1 工作树写产品代码。`
+      : `先核对当前需求交付 worktree 的真实路径、branch、HEAD、origin、dirty 状态以及源/目标远端 SHA；使用远端引用完成只读 merge-tree/差异预演。不得读取、修改或依赖共享目标合入 worktree的工作区状态，也不得在 ${path.join(homedir(), "Desktop", "apex admin", "admin")} 的脏 feature/v0.1 工作树写产品代码。`,
     phase === "delivery"
       ? "delivery 阶段不再启动本地服务。"
       : codeOnly
@@ -1096,9 +1102,9 @@ function mergeJobPrompt(item, claimToken, callbackUrl, evidenceRoot, phase = "pr
       : "发现当前需求代码功能缺口时，必须在当前需求交付 worktree 修复并重测；只允许暂存本需求文件，按仓库 AGENTS.md 提交并推送源分支，禁止 git add . / git add -A。预演阶段禁止合入、提交或推送统一目标分支。",
     phase === "delivery"
       ? exceptionDelivery
-        ? "用户只豁免当前环境的自测门槛，并未确认截图或 P0 通过；不重新要求测试环境登录和补图。仅执行授权源 SHA 的 Git 合入、必要的代码检查记录、目标提交、推送与远端回读，用 git ls-remote 和 merge-base --is-ancestor 证明目标包含授权 SHA。真实 Git 冲突或推送失败仍须 blocked。"
+        ? "用户只豁免当前环境的自测门槛，并未确认截图或 P0 通过；不重新要求 i18n-test 登录和补图。仅执行授权源 SHA 的 Git 合入、必要的代码检查记录、目标提交、推送与远端回读，用 git ls-remote 和 merge-base --is-ancestor 证明目标包含授权 SHA。真实 Git 冲突或推送失败仍须 blocked。"
         : "用户已审核本需求截图并明确确认通过。delivery 阶段不得重新执行或重新判定 Chrome/P0 自测，也不得因已有 N/A 跳过项退回自测；只执行本需求 Git 合入、必要的代码检查记录、提交、推送与远端回读。完成后用 git ls-remote 和 merge-base --is-ancestor 证明远端目标包含源 SHA。"
-      : `立即在当前需求隔离 worktree 执行 git fetch --prune origin，再用刚回读的 origin/${CATCHUP_MERGE_TARGET_BRANCH} 与源远端 SHA 完成 merge-tree 和三点差异预演；需求增量必须使用 git diff --name-only origin/${CATCHUP_MERGE_TARGET_BRANCH}...origin/<当前源分支>，目标在左、源分支在右，禁止反向执行 source...target 后把目标已有改动误判为源分支污染。远端网络失败时短暂重试；预演阶段若仍不可达，必须记录外部网络 N/A，并使用本地已有 tracking refs 做临时只读预演后继续 Demo 对比、代码修复、自动检查和 Chrome 自测，不能仅因 GitLab 暂时不可达提前回调 blocked；真正 delivery 的 fetch、推送和远端回读仍必须成功。若远端可达，不得沿用 prompt、历史结果、本地旧引用或其他 task 中记录的目标 SHA。若目标 SHA 在检查期间变化，必须重新 fetch 并基于新 SHA 重算，不能把旧基线产生的大范围差异判为当前需求污染。预演任务彼此并行，当前目标未包含其他前序需求的源 SHA 是正常状态，不能仅因此回调 blocked；只有以最新远端目标重算后，本需求源分支仍真实夹带无关需求代码或发生内容冲突，才可据此阻塞。预演阶段不得合入、提交或推送统一目标分支。当前需求源分支存在功能缺口时按上一条完成修复、提交和推送后重新预演。出现冲突时逐块保留目标已有语义并重放本需求增量，检查共享类型、mapper、路由、公共组件和相邻需求，禁止整文件覆盖。`,
+      : "立即在当前需求隔离 worktree 执行 git fetch --prune origin，再用刚回读的 origin/feature/sync-demo-apex-master 与源远端 SHA 完成 merge-tree 和三点差异预演；需求增量必须使用 git diff --name-only origin/feature/sync-demo-apex-master...origin/<当前源分支>，目标在左、源分支在右，禁止反向执行 source...target 后把目标已有改动误判为源分支污染。远端网络失败时短暂重试；预演阶段若仍不可达，必须记录外部网络 N/A，并使用本地已有 tracking refs 做临时只读预演后继续 Demo 对比、代码修复、自动检查和 Chrome 自测，不能仅因 GitLab 暂时不可达提前回调 blocked；真正 delivery 的 fetch、推送和远端回读仍必须成功。若远端可达，不得沿用 prompt、历史结果、本地旧引用或其他 task 中记录的目标 SHA。若目标 SHA 在检查期间变化，必须重新 fetch 并基于新 SHA 重算，不能把旧基线产生的大范围差异判为当前需求污染。预演任务彼此并行，当前目标未包含其他前序需求的源 SHA 是正常状态，不能仅因此回调 blocked；只有以最新远端目标重算后，本需求源分支仍真实夹带无关需求代码或发生内容冲突，才可据此阻塞。预演阶段不得合入、提交或推送统一目标分支。当前需求源分支存在功能缺口时按上一条完成修复、提交和推送后重新预演。出现冲突时逐块保留目标已有语义并重放本需求增量，检查共享类型、mapper、路由、公共组件和相邻需求，禁止整文件覆盖。",
     phase === "delivery"
       ? "本 turn 只完成用户已批准的本需求合入交付，不开始其他需求；成功后回写 completed，失败回写 blocked。"
       : codeOnly
@@ -1111,7 +1117,7 @@ function mergeJobPrompt(item, claimToken, callbackUrl, evidenceRoot, phase = "pr
       ? exceptionDelivery ? "例外授权已记录；当前环境无法完成的浏览器自测不阻塞本轮 Git 交付，原失败与未验证记录保留。" : "人工截图审核结论已经冻结，本轮不得重新登录页面、补截图或要求用户再次确认；浏览器、业务数据与 N/A 跳过项不再作为 delivery 阻塞条件。"
       : codeOnly
         ? "本项不执行浏览器验收。所有 P0 必须用冻结事实、Git 差异、代码调用链和自动化检查逐项证明；消费者端或外部邮件链路可按责任边界记 N/A，Admin 代码范围不得跳过。"
-        : `浏览器功能验收只允许使用用户指定的 Chrome 插件 [@Chrome](plugin://browser@openai-bundled?browserFamily=chrome)，只访问 ${serviceUrl}，禁止改用 127.0.0.1 或其他需求端口（登录态按 origin 隔离）。登录使用用户在当前任务授权的测试账号与凭据；配置的账号为 \`${DEFAULT_AUTOMATION_SETTINGS.loginKeychainAccount || "未配置"}\`，macOS 钥匙串服务为 \`${DEFAULT_AUTOMATION_SETTINGS.loginKeychainService || "未配置"}\`。未配置时须由使用者提供授权登录方式，不得继承其他人的登录授权。优先复用 Chrome 登录态或浏览器保存的凭据；当前端口没有同源登录态时应实际完成登录，不能仅因重定向到登录页立即回调 blocked。密码只允许直接填入 Chrome，禁止打印、回显、写入文件/日志/提示词/截图/回调。若 Chrome 返回 L006324 等账号密码错误，先用同一 localhost origin 的登录接口安全核验钥匙串凭据；接口成功时说明是浏览器自动填充或残留值问题，必须清空账号和密码输入框并用 fill 精确重新填入后重试，不能回调 blocked。只有同源接口也明确拒绝凭据，或登录工具不可用且重试后仍无法登录，才可判定登录阻塞。开始 P0 前确认真实业务菜单和已登录用户；不得把登录页、空凭证校验或认证错误截图作为功能证据。真实菜单缺少需求入口或交付分支缺少页面接线属于待修复功能缺口，应检查并修复当前需求代码后重测，不能标记 N/A。`,
+        : `浏览器功能验收只允许使用用户指定的 Chrome 插件 [@Chrome](plugin://browser@openai-bundled?browserFamily=chrome)，只访问 ${serviceUrl}，禁止改用 127.0.0.1 或其他需求端口（登录态按 origin 隔离）。仅在当前任务明确授权的环境和账号范围内复用 Chrome 登录态；未授权、授权范围不清、账号未配置或登录状态失效时，暂停并请用户完成登录。不得沿用其他任务的授权、读取其他账户凭据、把凭据写入提示词或日志，或打印回显。开始 P0 前确认真实业务菜单和已登录用户；不得把登录页、空凭证校验或认证错误截图作为功能证据。真实菜单缺少需求入口或交付分支缺少页面接线属于待修复功能缺口，应检查并修复当前需求代码后重测，不能标记 N/A。`,
     phase === "delivery"
       ? exceptionDelivery ? "沿用已有证据，不得将例外授权转换成截图审核通过或自动补成 PASS。" : "沿用已审核的截图与 P0 证据，不新增、不删除、不重新判定。"
       : codeOnly

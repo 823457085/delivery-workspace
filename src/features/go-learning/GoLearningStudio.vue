@@ -91,7 +91,6 @@ function cleanSandboxFiles(files?: GoSandboxFile[]): GoSandboxFile[] {
 }
 
 async function fetchOverview(day?: number) {
-  const keepDraft = day !== undefined && editorDirty.value;
   loading.value = true;
   try {
     const query = day ? `?day=${day}` : '';
@@ -116,13 +115,16 @@ async function fetchOverview(day?: number) {
     overview.value = data;
     selectedSnapshot.value = data.progress.activeSnapshot || `day${data.progress.currentDay}`;
     noteDraft.value = data.progress.notes[String(data.progress.currentDay)] || '';
-    if (!keepDraft) syncSelectedFile();
+    syncSelectedFile();
+    if (data.environment?.installed && (!commandResult.value || commandResult.value.simulated)) {
+      void runSandboxCommand('run', undefined, false);
+    }
   } catch {
     const fallback = loadLocalFallbackOverview(day || overview.value?.progress.currentDay || 1);
     overview.value = fallback;
     selectedSnapshot.value = fallback.progress.activeSnapshot;
     noteDraft.value = fallback.progress.notes[String(fallback.progress.currentDay)] || '';
-    if (!keepDraft) syncSelectedFile();
+    syncSelectedFile();
   } finally {
     loading.value = false;
   }
@@ -151,16 +153,6 @@ function selectFile(filePath: string) {
 
 async function selectDay(day: number) {
   if (!overview.value) return;
-  try {
-    const res = await fetch('/api/go-learning/progress', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Delivery-Confirmed': 'yes' },
-      body: JSON.stringify({ currentDay: day }),
-    });
-    if (!res.ok) throw new Error('fallback');
-  } catch {
-    saveLocalFallbackProgress({ ...overview.value.progress, currentDay: day });
-  }
   await fetchOverview(day);
   const targetSnapshot = `day${day}`;
   if (!editorDirty.value && selectedSnapshot.value !== targetSnapshot) {
@@ -188,17 +180,17 @@ const totalProgressPercent = computed(() => {
 });
 
 const goShortVersion = computed(() => {
-  const environment = overview.value?.environment;
-  if (!environment?.installed) return '模拟演练模式';
-  const raw = environment.version;
+  const raw = overview.value?.environment?.version || '';
+  if (!raw) return '模拟演练模式';
   const cleaned = raw.replace(/^go version\s+/i, '').trim();
   return cleaned.split(/\s+/)[0] || cleaned;
 });
 
 const goArchText = computed(() => {
-  const environment = overview.value?.environment;
-  if (!environment?.installed) return '接口模拟器';
-  return environment.version.match(/^go version\s+\S+\s+(\S+)/i)?.[1] || '';
+  const raw = overview.value?.environment?.version || '';
+  if (!raw) return '内置预期输出与接口模拟器';
+  const parts = raw.replace(/^go version\s+/i, '').trim().split(/\s+/);
+  return parts[1] || 'darwin/arm64';
 });
 
 const editorLineCount = computed(() => {
@@ -305,12 +297,15 @@ async function applyDaySnapshot(snapshotKey = selectedSnapshot.value, skipConfir
       headers: { 'Content-Type': 'application/json', 'X-Delivery-Confirmed': 'yes' },
       body: JSON.stringify({ snapshot: snapshotKey }),
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.message || '加载快照失败');
-    if (overview.value) {
-      overview.value.sandboxFiles = cleanSandboxFiles(data.sandboxFiles);
-      overview.value.tasksJsonContent = data.tasksJsonContent;
-      overview.value.progress = data.progress;
+    if (res.ok) {
+      const data = await res.json();
+      if (overview.value) {
+        overview.value.sandboxFiles = cleanSandboxFiles(data.sandboxFiles);
+        overview.value.tasksJsonContent = data.tasksJsonContent;
+        overview.value.progress = data.progress;
+      }
+    } else {
+      await fetchOverview();
     }
     selectedSnapshot.value = snapshotKey;
     selectedFilePath.value = 'main.go';
@@ -326,7 +321,7 @@ async function applyDaySnapshot(snapshotKey = selectedSnapshot.value, skipConfir
 }
 
 async function saveCurrentFile() {
-  if (!selectedFilePath.value) return false;
+  if (!selectedFilePath.value) return;
   savingFile.value = true;
   try {
     const res = await fetch('/api/go-learning/sandbox/save-file', {
@@ -345,17 +340,17 @@ async function saveCurrentFile() {
     }
     editorDirty.value = false;
     ElMessage.success(`已保存 ${selectedFilePath.value}`);
-    return true;
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '保存文件失败');
-    return false;
   } finally {
     savingFile.value = false;
   }
 }
 
 async function runSandboxCommand(action: GoCommandAction, args?: string[], switchTab = true) {
-  if (editorDirty.value && !await saveCurrentFile()) return;
+  if (editorDirty.value) {
+    await saveCurrentFile();
+  }
   if (switchTab) {
     rightTab.value = 'Runner';
   }
@@ -366,13 +361,8 @@ async function runSandboxCommand(action: GoCommandAction, args?: string[], switc
       headers: { 'Content-Type': 'application/json', 'X-Delivery-Confirmed': 'yes' },
       body: JSON.stringify({ action, ...(args ? { args } : {}) }),
     });
-    if (res.status === 404 || !res.headers.get('content-type')?.includes('application/json')) throw new Error('fallback');
+    if (!res.ok) throw new Error('fallback');
     const data = await res.json();
-    if (!res.ok) {
-      commandResult.value = null;
-      ElMessage.error(data.message || 'Go 命令执行失败');
-      return;
-    }
     commandResult.value = data.result;
     if (overview.value) {
       overview.value.sandboxFiles = cleanSandboxFiles(data.sandboxFiles);
@@ -875,7 +865,7 @@ onMounted(() => {
         </div>
         <div class="kpi-foot" :title="overview.environment.goproxy">
           <span v-if="overview.environment.installed">
-            路径 <code>{{ overview.environment.goBinaryPath }}</code> · GOPROXY <code>{{ overview.environment.goproxy }}</code>
+            路径 <code>/opt/homebrew/bin/go</code> · 镜像 <code>goproxy.cn</code>
           </span>
           <span v-else>未安装 Go 亦可正常浏览教程与运行模拟输出</span>
         </div>
@@ -955,8 +945,12 @@ onMounted(() => {
     <!-- Compact Toolchain Bar -->
     <div v-if="overview && overview.environment.installed" class="toolchain-strip">
       <div class="toolchain-items">
-        <span class="toolchain-title">本机 Go 工具链</span>
-        <span class="tool-chip"><i class="dot"></i>CGO_ENABLED <code>{{ overview.environment.cgoEnabled }}</code></span>
+        <span class="toolchain-title">已就绪开发套件</span>
+        <span class="tool-chip"><i class="dot"></i>go <code>/opt/homebrew/bin/go</code></span>
+        <span class="tool-chip"><i class="dot"></i>gopls <code>v0.24.0</code></span>
+        <span class="tool-chip"><i class="dot"></i>dlv 调试器 <code>~/go/bin/dlv</code></span>
+        <span class="tool-chip"><i class="dot"></i>Cursor 插件 <code>golang.go</code></span>
+        <span class="tool-chip"><i class="dot"></i>GOPROXY <code>goproxy.cn</code></span>
       </div>
       <div class="toolchain-actions">
         <el-button size="small" type="primary" plain :loading="runningCommand" @click="runSandboxCommand('run')">
@@ -973,7 +967,7 @@ onMounted(() => {
         </span>
       </div>
       <div class="toolchain-actions">
-        <el-button size="small" @click="copyText('brew install go', '安装命令')">
+        <el-button size="small" @click="copyText('brew install go && go env -w GOPROXY=https://goproxy.cn,direct', '安装命令')">
           <Copy :size="13" style="margin-right: 4px" />复制安装命令
         </el-button>
       </div>
@@ -1564,7 +1558,8 @@ onMounted(() => {
     <el-drawer
       v-model="showGuideDrawer"
       title="《7 天上手 Go》10 分钟大白话核心概念图解导读"
-      size="680px"
+      size="min(680px, 95vw)"
+      append-to-body
     >
       <div v-if="overview" class="drawer-markdown-wrap studio-markdown">
         <AgentMarkdown :source="overview.guideMarkdown" />
@@ -1575,7 +1570,8 @@ onMounted(() => {
     <el-drawer
       v-model="showCheatDrawer"
       title="Go 核心语法与常用命令一页速查表 (Cheat Sheet)"
-      size="640px"
+      size="min(640px, 95vw)"
+      append-to-body
     >
       <div v-if="overview" class="drawer-markdown-wrap studio-markdown">
         <AgentMarkdown :source="overview.cheatSheetMarkdown" />
@@ -1586,7 +1582,8 @@ onMounted(() => {
     <el-drawer
       v-model="showTutorDrawer"
       :title="`AI 助教陪练 · ${currentDay?.title || 'Go 实训'}`"
-      size="620px"
+      size="min(620px, 95vw)"
+      append-to-body
     >
       <div v-if="overview && currentDay" class="tutor-drawer-body">
         <div class="tutor-mode-switcher" role="tablist">
@@ -1831,9 +1828,9 @@ onMounted(() => {
 }
 
 .kpi-pill.is-accent {
-  border-color: color-mix(in srgb, var(--ui-accent) 35%, transparent);
-  background: var(--ui-accent-soft);
-  color: var(--ui-accent);
+  border-color: var(--ui-border);
+  background: var(--ui-raised, var(--ui-bg));
+  color: var(--ui-text);
   font-family: var(--mono);
   font-weight: 600;
 }
@@ -2043,7 +2040,7 @@ onMounted(() => {
 }
 
 .header-icon {
-  color: var(--ui-accent);
+  color: var(--ui-secondary);
 }
 
 .sidebar-header h3 {
@@ -2086,9 +2083,9 @@ onMounted(() => {
 }
 
 .day-card.active {
-  border-color: color-mix(in srgb, var(--ui-accent) 38%, transparent);
-  background: var(--ui-accent-soft);
-  box-shadow: inset 3px 0 0 var(--ui-accent);
+  border-color: var(--ui-border);
+  background: var(--ui-raised, var(--ui-bg));
+  box-shadow: inset 2.5px 0 0 var(--ui-text);
 }
 
 .day-card-top {
@@ -2100,10 +2097,15 @@ onMounted(() => {
 
 .day-num {
   font-family: var(--mono);
-  font-weight: 650;
+  font-weight: 600;
   font-size: 10.5px;
   letter-spacing: 0.03em;
-  color: var(--ui-accent);
+  color: var(--ui-muted);
+}
+
+.day-card.active .day-num {
+  color: var(--ui-text);
+  font-weight: 650;
 }
 
 .day-percent {
@@ -2208,9 +2210,10 @@ onMounted(() => {
 
 .stage-pill {
   padding: 2px 7px;
+  border: 1px solid var(--ui-border);
   border-radius: 5px;
-  background: var(--ui-accent-soft);
-  color: var(--ui-accent);
+  background: var(--ui-surface, var(--ui-panel));
+  color: var(--ui-text);
   font: 600 10.5px var(--mono);
   letter-spacing: 0.04em;
 }
@@ -2250,7 +2253,7 @@ onMounted(() => {
 }
 
 .goal-icon {
-  color: var(--ui-accent);
+  color: var(--ui-secondary);
   flex-shrink: 0;
   margin-top: 2px;
 }
@@ -2310,9 +2313,9 @@ onMounted(() => {
 
 .center-segmented-tabs button.active {
   background: var(--ui-surface, var(--ui-panel));
-  color: var(--ui-accent);
+  color: var(--ui-text);
   font-weight: 600;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
 }
 
 .center-scroll-body {
@@ -2383,14 +2386,21 @@ onMounted(() => {
 }
 
 .studio-markdown :deep(:not(pre) > code) {
-  padding: 2px 6px;
+  padding: 1.5px 6px;
   margin: 0 2px;
   border-radius: 5px;
-  border: 1px solid color-mix(in srgb, var(--ui-accent) 25%, var(--ui-border));
-  background: color-mix(in srgb, var(--ui-accent) 10%, var(--ui-bg));
-  color: var(--ui-accent);
+  border: 1px solid var(--ui-border);
+  background: var(--ui-surface, var(--ui-panel));
+  color: var(--ui-text);
   font-family: var(--mono);
   font-size: 12px;
+}
+
+.plain-card-links :deep(.el-button.is-link) {
+  color: var(--ui-secondary);
+}
+.plain-card-links :deep(.el-button.is-link:hover) {
+  color: var(--ui-accent);
 }
 
 .interactive-section {
@@ -2414,7 +2424,7 @@ onMounted(() => {
 }
 
 .sec-icon {
-  color: var(--ui-accent);
+  color: var(--ui-secondary);
 }
 
 .section-head h3 {
@@ -2673,9 +2683,9 @@ onMounted(() => {
 
 .right-segmented-tabs button.active {
   background: var(--ui-surface, var(--ui-panel));
-  color: var(--ui-accent);
+  color: var(--ui-text);
   font-weight: 600;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
 }
 
 .right-panel-body {
@@ -2718,9 +2728,9 @@ onMounted(() => {
 }
 
 .file-tab-btn.active {
-  border-color: color-mix(in srgb, var(--ui-accent) 45%, transparent);
-  background: var(--ui-accent-soft);
-  color: var(--ui-accent);
+  border-color: color-mix(in srgb, var(--ui-text) 30%, var(--ui-border));
+  background: var(--ui-surface, var(--ui-panel));
+  color: var(--ui-text);
   font-weight: 600;
 }
 
@@ -2743,10 +2753,10 @@ onMounted(() => {
 .code-editor-shell {
   display: grid;
   grid-template-columns: 38px minmax(0, 1fr);
-  height: 400px;
+  height: 380px;
   border: 1px solid var(--ui-border);
   border-radius: 8px;
-  background: #0b1120;
+  background: var(--ui-raised, var(--ui-bg));
   overflow: hidden;
 }
 
@@ -2755,10 +2765,10 @@ onMounted(() => {
   flex-direction: column;
   align-items: flex-end;
   padding: 12px 8px 12px 4px;
-  border-right: 1px solid rgba(148, 163, 184, 0.14);
-  background: rgba(15, 23, 42, 0.7);
-  color: #475569;
-  font: 11.5px/1.65 var(--mono);
+  border-right: 1px solid var(--ui-divider, var(--ui-border));
+  background: color-mix(in srgb, var(--ui-raised) 82%, var(--ui-surface));
+  color: var(--ui-muted);
+  font: 11.5px/1.6 var(--mono);
   user-select: none;
   overflow: hidden;
 }
@@ -2769,8 +2779,8 @@ onMounted(() => {
   padding: 12px 14px;
   border: 0;
   background: transparent;
-  color: #e2e8f0;
-  font: 12px/1.65 var(--mono);
+  color: var(--ui-text);
+  font: 12px/1.6 var(--mono);
   resize: none;
   outline: none;
   tab-size: 4;
@@ -2811,15 +2821,15 @@ onMounted(() => {
 }
 
 .terminal-box {
-  min-height: 250px;
-  max-height: 390px;
+  min-height: 220px;
+  max-height: 360px;
   overflow: auto;
-  padding: 12px 14px;
+  padding: 11px 13px;
   border: 1px solid var(--ui-border);
   border-radius: 8px;
-  background: #0b1120;
-  color: #e2e8f0;
-  font: 11.5px/1.65 var(--mono);
+  background: var(--ui-raised, var(--ui-bg));
+  color: var(--ui-text);
+  font: 11.5px/1.6 var(--mono);
 }
 
 .terminal-header {
@@ -2829,7 +2839,7 @@ onMounted(() => {
   gap: 8px;
   padding-bottom: 8px;
   margin-bottom: 8px;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+  border-bottom: 1px solid var(--ui-divider, var(--ui-border));
 }
 
 .terminal-badges {
@@ -2840,16 +2850,16 @@ onMounted(() => {
 .sim-badge {
   padding: 1px 6px;
   border-radius: 4px;
-  background: rgba(56, 189, 248, 0.18);
-  color: #38bdf8;
+  background: var(--ui-accent-soft);
+  color: var(--ui-accent);
   font-size: 10px;
 }
 
 .real-badge {
   padding: 1px 6px;
   border-radius: 4px;
-  background: rgba(16, 185, 129, 0.18);
-  color: #34d399;
+  background: var(--ui-success-bg);
+  color: var(--ui-success);
   font-size: 10px;
 }
 
@@ -2860,21 +2870,21 @@ onMounted(() => {
 }
 
 .exit-badge.ok {
-  background: rgba(16, 185, 129, 0.2);
-  color: #34d399;
+  background: var(--ui-success-bg);
+  color: var(--ui-success);
 }
 
 .exit-badge.err {
-  background: rgba(239, 68, 68, 0.25);
-  color: #f87171;
+  background: var(--ui-danger-bg);
+  color: var(--ui-danger);
 }
 
 .terminal-notice {
   margin-bottom: 8px;
   padding: 6px 8px;
   border-radius: 5px;
-  background: rgba(245, 158, 11, 0.16);
-  color: #fcd34d;
+  background: var(--ui-warning-bg);
+  color: var(--ui-warning);
   font-family: var(--sans);
   font-size: 11px;
 }
@@ -2887,11 +2897,11 @@ onMounted(() => {
 }
 
 .terminal-stderr {
-  color: #fca5a5;
+  color: var(--ui-danger);
 }
 
 .terminal-empty {
-  color: #94a3b8;
+  color: var(--ui-muted);
   font-family: var(--sans);
   font-size: 12px;
 }
@@ -3076,7 +3086,7 @@ onMounted(() => {
 }
 
 .tutor-icon {
-  color: var(--ui-accent);
+  color: var(--ui-secondary);
 }
 
 .tutor-actions {
@@ -3120,9 +3130,9 @@ onMounted(() => {
 
 .tutor-mode-switcher button.active {
   background: var(--ui-surface, var(--ui-panel));
-  color: var(--ui-accent);
+  color: var(--ui-text);
   font-weight: 650;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
 }
 
 .tutor-status-card {
@@ -3160,8 +3170,9 @@ onMounted(() => {
   margin: 0;
   padding: 10px 12px;
   border-radius: 7px;
-  background: #0b1120;
-  color: #e2e8f0;
+  border: 1px solid var(--ui-border);
+  background: var(--ui-raised, var(--ui-bg));
+  color: var(--ui-text);
   font: 11.5px/1.55 var(--mono);
   white-space: pre-wrap;
   max-height: 180px;
@@ -3169,7 +3180,7 @@ onMounted(() => {
 }
 
 .tutor-mini-pre.err {
-  color: #fca5a5;
+  color: var(--ui-danger);
 }
 
 .tutor-hints-list {
@@ -3261,11 +3272,11 @@ onMounted(() => {
 }
 
 .review-item-card.is-pass .review-badge {
-  color: #34d399;
+  color: var(--ui-success);
 }
 
 .review-item-card.is-warn .review-badge {
-  color: #fbbf24;
+  color: var(--ui-warning);
 }
 
 .review-item-card p {
@@ -3346,13 +3357,13 @@ onMounted(() => {
 }
 
 .quiz-explain.ok {
-  background: rgba(16, 185, 129, 0.12);
-  color: #a7f3d0;
+  background: var(--ui-success-bg);
+  color: var(--ui-success);
 }
 
 .quiz-explain.warn {
-  background: rgba(245, 158, 11, 0.12);
-  color: #fde68a;
+  background: var(--ui-warning-bg);
+  color: var(--ui-warning);
 }
 
 .quiz-explain p {

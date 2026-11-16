@@ -25,7 +25,7 @@
 ```json
 {
   "schema_version": "1.0",
-  "kit_id": "delivery-workspace/ai-delivery-kit",
+  "kit_id": "hahabianli/ai-delivery-kit",
   "kit_version": "1.0.0",
   "gate": "G2a",
   "mode": "blocking",

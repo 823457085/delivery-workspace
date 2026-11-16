@@ -1,0 +1,22 @@
+{
+  "id": "overseas-requirements",
+  "name": "需求推进管理",
+  "description": "海外及多系统需求排期推进、多语言产物核对与人工验收台账",
+  "local": true,
+  "prefix": "OVERSEAS_REQUIREMENTS",
+  "capabilities": [],
+  "views": [
+    {
+      "id": "requirements",
+      "label": "需求管理",
+      "path": "/requirements",
+      "section": "execution",
+      "component": "panel"
+    }
+  ],
+  "sourceKeys": [],
+  "apiPrefixes": [
+    "/api/overseas-requirements"
+  ],
+  "apiPaths": []
+}

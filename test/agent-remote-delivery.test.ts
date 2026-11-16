@@ -517,3 +517,28 @@ test('普通会话关联匹配支持按 sourceId、独立 worktree、分支和 J
   } as any;
   assert.equal(matchConversationJiraDevTask(byBranchConversation, [task])?.taskId, task.taskId);
 });
+
+test('写后不确定记录支持人工核对后显式解除锁定，且超过 2MB 未跟踪大文件使用轻量指纹', async () => {
+  const f = await fixture();
+  let shouldFail = true;
+  const service = await createAgentRemoteDelivery({
+    ...f.options,
+    publishComment: async () => {
+      if (shouldFail) throw new Error('网关响应超时');
+      return { url: 'https://jira.example.test/browse/TEST-1#comment-99', verified: true };
+    },
+  });
+  try {
+    await fs.writeFile(path.join(f.repo, 'huge-recording.mp4'), Buffer.alloc(2 * 1024 * 1024 + 64, 7));
+    const preview = await service.preview(f.roomId);
+    assert.ok(preview.projects[0].files.some(file => file.path === 'huge-recording.mp4'));
+    const uncertain = await service.submit(f.roomId, { requestId: randomUUID(), kind: 'jira', fingerprint: preview.fingerprint });
+    assert.equal(uncertain.status, 'uncertain');
+    await assert.rejects(service.submit(f.roomId, { requestId: randomUUID(), kind: 'jira', fingerprint: preview.fingerprint }), /待核对/);
+    const unlocked = await service.reconcile(f.roomId, { attemptId: uncertain.id, resolution: 'retry' });
+    assert.equal(unlocked.status, 'failed');
+    shouldFail = false;
+    const retried = await service.submit(f.roomId, { requestId: randomUUID(), kind: 'jira', fingerprint: preview.fingerprint });
+    assert.equal(retried.status, 'completed');
+  } finally { await service.close(); await f.cleanup(); }
+});

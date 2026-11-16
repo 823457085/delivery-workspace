@@ -1,3 +1,4 @@
+import { assertPluginEnabled, pluginEnabled } from './plugins/definitions.mjs';
 /**
  * 设计说明：联调反馈和通用消息共用机器人配置、脱敏、限额与串行发送，避免两个入口重复刷群。
  * 边界是手动预览发送、本机草稿模板及回执，不修改接口审核、Jira 或运行 Agent；无需额外消息队列。
@@ -8,7 +9,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { assertPluginEnabled, pluginEnabled } from './plugins/definitions.mjs';
 import { loadIntegrationCatalog } from './integration-catalog.js';
 import type { IntegrationCatalog } from '../shared/integration-catalog.js';
 import type { BackendFeedbackPreview, BackendFeedbackRecord, WecomPublicConfig } from '../shared/wecom-integration.js';
@@ -81,7 +81,7 @@ export async function createWecomIntegration(directory: string, options: { confi
   const messageLibraryFile = path.join(directory, 'wecom-messages-library.json');
   const operations = new Map(plan.stages.flatMap(stage => stage.operations).map(item => [item.path, item]));
   const catalog = new Map([
-    ...inventory.items.map(item => [item.id, { path: item.path, method: operations.get(item.path)?.method || item.contract?.method || '', name: operations.get(item.path)?.summary || item.name }] as const),
+    ...inventory.items.map(item => [item.id, { path: item.path, method: item.contract?.method || operations.get(item.path)?.method || '', name: item.name }] as const),
     ...[...operations.values()].filter(item => !inventory.items.some(record => record.path === item.path)).map(item => [`plan:${item.operationId}`, { path: item.path, method: item.method, name: item.summary }] as const),
   ]);
   let configuration: WecomPublicConfig & { webhook: string } = { groupName: '', webhook: '', hasWebhook: false };

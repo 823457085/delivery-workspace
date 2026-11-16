@@ -6,6 +6,6 @@ const { busy, label, progress, restart } = useWorkspaceRestart();
 </script>
 
 <template>
-  <p v-if="progress" role="status">{{ progress }}</p>
-  <el-button size="small" type="primary" :loading="busy && !progress" :disabled="busy" @click="restart">{{ label }}</el-button>
+  <p v-if="progress" role="status" style="margin: 0 0 8px; font-size: 12px; opacity: 0.9;">{{ progress }}</p>
+  <el-button size="small" type="primary" :loading="busy" :disabled="busy" @click="restart">{{ label }}</el-button>
 </template>

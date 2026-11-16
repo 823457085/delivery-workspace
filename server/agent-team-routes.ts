@@ -13,7 +13,7 @@ const decisionInput = z.object({ action: z.enum(['retry', 'retry_review_codex', 
   .refine(input => input.accessMode === undefined || ['retry', 'retry_review_codex'].includes(input.action), '只有重试操作可以选择访问权限');
 export function createAgentTeamRoutes(team: Awaited<ReturnType<typeof createAgentTeamService>>, governance: Awaited<ReturnType<typeof createAgentTeamGovernance>>,
   usage: Awaited<ReturnType<typeof createAgentUsageStore>>, io: { json(response: ServerResponse, status: number, value: unknown): void;
-    body(request: IncomingMessage, limit?: number): Promise<unknown>; port: number }) {
+    body(request: IncomingMessage, limit?: number): Promise<unknown>; port: number; trackSse?: (response: ServerResponse) => void }) {
   return async (request: IncomingMessage, response: ServerResponse, url: URL): Promise<boolean> => {
     const prefix = '/api/agent-runtimes', route = url.pathname.slice(prefix.length);
     if (!/^\/(?:team-chat|team-tasks|agent-profiles|agent-usage|agent-evaluations)(?:\/|$)/.test(route) && !/^\/runs\/[0-9a-f-]+\/team-task$/.test(route)) return false;
@@ -23,6 +23,7 @@ export function createAgentTeamRoutes(team: Awaited<ReturnType<typeof createAgen
     }
     if (route === '/team-tasks/events' && request.method === 'GET') {
       response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+      io.trackSse?.(response);
       response.write(`event: ready\ndata: ${JSON.stringify({ revision: team.revision() })}\n\n`);
       const unsubscribe = team.subscribe(event => { if (!response.destroyed) response.write(`id: ${event.eventId}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`); });
       const heartbeat = setInterval(() => { if (!response.destroyed) response.write(': keepalive\n\n'); }, 15000);

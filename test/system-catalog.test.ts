@@ -7,9 +7,7 @@ import http from 'node:http';
 import { createSystemCatalog, createSystemCatalogRoutes, parseProjectSystems, parseSystemAccounts } from '../server/system-catalog.js';
 import { repositoryKey, systemWebUrl } from '../shared/system-catalog.js';
 
-const site = 'https://wiki.example.test';
-const config = { projectsPage: '101', accountsPage: '102', repository: 'https://gitlab.example.test/demo/multilingual-management' };
-const source = { id: '101', title: '项目资料', url: 'https://wiki.example.test/pages/101', version: 3 };
+const source = { id: '1212505', title: '项目资料', url: 'https://wiki.example.test/pages/1212505', version: 3 };
 const markdown = (branch = 'develop') => `<ac:structured-macro ac:name="markdown"><ac:plain-text-body><![CDATA[
 ## 原始系统名称 L0001
 | 环境 | 分支 | 项目地址 | 流水线 | 备注 |
@@ -32,7 +30,7 @@ test('保留 Markdown/HTML 的原始字段、分支、链接差异及无网址�
   assert.equal(systems[0].environments[0].url, 'https://dev.example.test/');
   assert.equal(systems[0].environments[1].branch, 'i8n-test');
   assert.equal(systems[0].environments[0].id, parseProjectSystems(markdown('feature/new'), source, '海外')[0].environments[0].id);
-  const html = parseProjectSystems(domestic, { ...source, id: '103' }, '国内');
+  const html = parseProjectSystems(domestic, { ...source, id: '22373141' }, '国内');
   assert.equal(html.length, 2);
   assert.equal(html[0].environments[0].url, 'https://prod.example.test/');
   assert.equal(html[0].environments[0].sourceHref, 'https://test.example.test/');
@@ -84,7 +82,7 @@ test('本机项目按环境追加，重试去重，冲突整批拒绝，Confluen
   assert.equal(synced.localSystems?.[0].environments[0].accounts[0].hasPassword, true);
   assert.doesNotMatch(JSON.stringify(synced), /local-secret/);
   await service.close();
-  const reloaded = await createSystemCatalog(directory, request, site, readProjects, config);
+  const reloaded = await createSystemCatalog(directory, request, undefined, readProjects);
   assert.equal((await reloaded.list()).localSystems?.[0].id, project.id);
   assert.equal(reloaded.reveal(env.id).accounts[0].password, 'local-secret');
 });
@@ -110,7 +108,7 @@ test('删除导航项目后同步和重启不恢复，重新录入本机项目�
   await assert.rejects(service.removeProject({ systemId: 'unknown' }), /项目不存在/);
   await service.close();
 
-  const reloaded = await createSystemCatalog(directory, request, site, readProjects, config);
+  const reloaded = await createSystemCatalog(directory, request, undefined, readProjects);
   assert.deepEqual((await reloaded.list()).systems.map(system => system.id), [survivor.id]);
   assert.deepEqual((await reloaded.sync()).systems.map(system => system.id), [survivor.id]);
   assert.deepEqual(reloaded.reveal(survivor.environments[0].id).accounts.length, 2);
@@ -126,16 +124,16 @@ async function setup(t: { after(fn: () => Promise<void>): void }) {
   await fs.mkdir(workspace);
   await fs.writeFile(path.join(workspace, 'README.md'), '# multilingual-management\n\n## 环境信息\n\n| 环境 | 访问地址 | 分支名 |\n| --- | --- | --- |\n| 测试环境 | https://language-test.example.test/ | `test` |\n| 预发环境 | https://language-pre.example.test/ | `pre` |\n| 生产环境 | https://language.example.test/ | `prod` |\n\n## Getting started\n');
   const readProjects = async () => ({ projects: [{ path: workspace,
-    remoteUrl: 'git@gitlab.example.test:demo/multilingual-management.git',
-    webUrl: 'https://gitlab.example.test/demo/multilingual-management' }] });
+    remoteUrl: 'git@gitlab.hahabianli.com:raytheon-project/raytheon-front-end-project/multilingual-management.git',
+    webUrl: 'https://gitlab.hahabianli.com/raytheon-project/raytheon-front-end-project/multilingual-management' }] });
   let fail = false, branch = 'develop';
   const request = async (resource: string) => {
     const id = resource.match(/content\/(\d+)/)?.[1];
     if (fail) return new Response('', { status: 503 });
-    return Response.json({ id, title: id === '102' ? '账号来源' : '项目来源', version: { number: 3 },
-      body: { storage: { value: id === '101' ? markdown(branch) : id === '103' ? domestic : credentials } } });
+    return Response.json({ id, title: id === '15335517' ? '账号来源' : '项目来源', version: { number: 3 },
+      body: { storage: { value: id === '1212505' ? markdown(branch) : id === '22373141' ? domestic : credentials } } });
   };
-  const service = await createSystemCatalog(directory, request, site, readProjects, config);
+  const service = await createSystemCatalog(directory, request, 'https://wiki.example.test', readProjects);
   return { directory, service, request, readProjects, fail: () => { fail = true; }, branch: () => { branch = 'feature/new'; } };
 }
 
@@ -144,7 +142,7 @@ test('真实服务数据流仅把账号摘要给列表，按域名精确关联�
   const catalog = await service.list();
   assert.equal(catalog.systems.length, 2);
   assert(catalog.systems.every(system => system.region === '海外'));
-  assert(!catalog.sources.some(source => source.id === '103'));
+  assert(!catalog.sources.some(source => source.id === '22373141'));
   const multilingual = catalog.systems.find(system => system.name === '多语言管理平台')!;
   assert.deepEqual(multilingual.environments.map(env => [env.branch, env.url]), [
     ['test', 'https://language-test.example.test/'], ['pre', 'https://language-pre.example.test/'], ['prod', 'https://language.example.test/'],
@@ -165,7 +163,7 @@ test('本机账号在重新同步、分支更新和重新加载后保留，清�
   assert.doesNotMatch(JSON.stringify(saved), /local-user|local-secret/);
   branch(); await service.sync();
   assert.equal(service.reveal(env.id).accounts[0].username, 'local-user');
-  const reloaded = await createSystemCatalog(directory, request, site, readProjects, config);
+  const reloaded = await createSystemCatalog(directory, request, undefined, readProjects);
   assert.equal(reloaded.reveal(env.id).accounts[0].password, 'local-secret');
   await reloaded.save({ environmentId: env.id, accounts: [] });
   await reloaded.sync();
@@ -180,9 +178,9 @@ test('旧缓存自动收敛为海外系统并补齐多语言平台，已有本�
   const legacy = JSON.parse(await fs.readFile(file, 'utf8'));
   delete legacy.scope;
   legacy.catalog.systems = legacy.catalog.systems.filter((system: { name: string }) => system.name !== '多语言管理平台');
-  legacy.catalog.systems.push(...parseProjectSystems(domestic, { ...source, id: '103' }, '国内'));
+  legacy.catalog.systems.push(...parseProjectSystems(domestic, { ...source, id: '22373141' }, '国内'));
   await fs.writeFile(file, JSON.stringify(legacy));
-  const reloaded = await createSystemCatalog(directory, request, site, readProjects, config);
+  const reloaded = await createSystemCatalog(directory, request, undefined, readProjects);
   const catalog = await reloaded.list();
   assert.deepEqual(catalog.systems.map(system => system.name), ['原始系统名称 L0001', '多语言管理平台']);
   assert.equal(reloaded.reveal(env.id).accounts[0].password, 'preserved-secret');
@@ -247,7 +245,7 @@ test('账号读回版本随真实记录变化，串行写锁内拒绝并发旧�
   const persisted = await fs.readFile(filename, 'utf8');
   await assert.rejects(service.save({ environmentId: environments[0].id, expectedRevision: first.revision, accounts: [] }), /账号已更新/);
   assert.equal(await fs.readFile(filename, 'utf8'), persisted, '冲突不触碰持久记录');
-  const reloaded = await createSystemCatalog(directory, request, site, readProjects, config);
+  const reloaded = await createSystemCatalog(directory, request, undefined, readProjects);
   assert.equal((reloaded.reveal(environments[0].id) as typeof first).revision, current.revision);
   await reloaded.save({ environmentId: environments[0].id, accounts: [] });
   assert.equal(reloaded.reveal(environments[0].id).accounts.length, 0, '旧客户端不传版本仍兼容');

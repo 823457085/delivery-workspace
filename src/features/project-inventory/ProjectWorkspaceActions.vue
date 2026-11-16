@@ -55,8 +55,12 @@ async function submit(kind: 'delete' | 'schedule' | 'cancel') {
   try {
     let confirmName: string | undefined;
     if (kind !== 'cancel') {
-      const impact = kind === 'delete' ? (discardChanges ? '将删除本地工作区并丢弃暂存、未暂存、未跟踪文件及未完成的合并，无法恢复。' : '将立即删除本地工作区目录，无法恢复。')
-        : `将在 ${deadlineLabel(deadline!)} 删除本地工作区目录，无法恢复。`;
+      const baseImpact = kind === 'delete' ? (discardChanges ? '将删除本地工作区并丢弃暂存、未暂存、未跟踪文件及未完成的合并，无法恢复（7 天内可从本机隔离回收区找回）。' : '将立即删除本地工作区目录，无法恢复（7 天内可从本机隔离回收区找回）。')
+        : `将在 ${deadlineLabel(deadline!)} 删除本地工作区目录，无法恢复（7 天内可从本机隔离回收区找回）。`;
+      const ignoredNotice = current.ignoredFiles?.length
+        ? `\n注意：检测到被 Git 忽略的本地文件（${current.ignoredFiles.slice(0, 6).join('、')}${current.ignoredFiles.length > 6 ? ' 等' : ''}）。`
+        : '';
+      const impact = `${baseImpact}${ignoredNotice}`;
       try {
         const confirmed = await ElMessageBox.prompt(`${impact}\n${current.path}\n请输入目录名“${name}”确认。`,
           kind === 'delete' ? '删除工作区' : '设置自动删除', {

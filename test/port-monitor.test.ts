@@ -11,12 +11,14 @@ import {
   findManagedProcess,
   inferPortFromCommand,
   isProjectService,
+  matchInventoryProject,
   parseAllPm2Processes,
   parseLsofCwds,
   parseLsofListeners,
   parseManagedProcesses,
   parsePortList,
   parsePsProcesses,
+  scanListeningPorts,
 } from '../server/port-monitor.js';
 
 const service = { service: 'Node 服务', mode: '', manager: '', launchCommand: '', project: { name: '示例项目', workspacePath: '/tmp/a', branch: 'feature/demo' } };
@@ -31,7 +33,7 @@ test('解析 lsof 监听端口和 IPv6 地址', () => {
 });
 
 test('解析进程、工作目录并隐藏常见命令行密钥参数', () => {
-  const processes = parsePsProcesses(' 123 1 lzr node server.js --token abc123\n456 1 root python app.py API_KEY=secret\n');
+  const processes = parsePsProcesses(' 123 1 devuser node server.js --token abc123\n456 1 root python app.py API_KEY=secret\n');
   assert.equal(processes.get(123)?.command, 'node server.js --token [redacted]');
   assert.equal(processes.get(456)?.command, 'python app.py API_KEY=[redacted]');
   assert.deepEqual([...parseLsofCwds('p123\nfcwd\nn/tmp/demo\n')], [[123, '/tmp/demo']]);
@@ -74,14 +76,14 @@ test('项目目录里的浏览器、自动化工具和全局 CLI 不冒充项目
 });
 
 test('监听子进程按父链匹配 PM2，启动参数来自实际 PM2 配置', () => {
-  const processes = parsePsProcesses('100 1 lzr npm run dev\n101 100 lzr sh -c vite\n102 101 lzr node vite.js\n');
+  const processes = parsePsProcesses('100 1 devuser npm run dev\n101 100 devuser sh -c vite\n102 101 devuser node vite.js\n');
   const managed = parseManagedProcesses(JSON.stringify([{ pid: 100, name: 'project-preview', pm2_env: { pm_exec_path: '/work/npm', args: ['run', 'dev', '--', '--mode', 'test'], SECRET: 'never-returned' } }]));
   assert.equal(findManagedProcess(102, processes, managed)?.name, 'project-preview');
   assert.deepEqual(managed.get(100)?.args, ['run', 'dev', '--', '--mode', 'test']);
   assert.equal(JSON.stringify([...managed.values()]).includes('never-returned'), false);
-  const agentChild = parsePsProcesses('100 1 lzr node server/index.ts\n200 100 lzr /Applications/CodexCLI/codex app-server --stdio\n201 200 lzr node vite.js\n');
+  const agentChild = parsePsProcesses('100 1 devuser node server/index.ts\n200 100 devuser /Applications/CodexCLI/codex app-server --stdio\n201 200 devuser node vite.js\n');
   assert.equal(findManagedProcess(201, agentChild, managed), undefined);
-  const antigravityChild = parsePsProcesses('100 1 lzr node server/index.ts\n200 100 lzr /Users/demo/.local/bin/agy --print\n201 200 lzr node vite.js\n');
+  const antigravityChild = parsePsProcesses('100 1 devuser node server/index.ts\n200 100 devuser /Users/example/.local/bin/agy --print\n201 200 devuser node vite.js\n');
   assert.equal(findManagedProcess(201, antigravityChild, managed), undefined);
 });
 
@@ -122,6 +124,38 @@ test('从命令参数与 PM2 名称推断端口，并汇总已停止与 PM2 托�
   assert.equal(snapshot.summary.pm2Count, 2);
   assert.equal(snapshot.summary.projectCount, 2);
   assert.equal(snapshot.selfPort, 5288);
+});
+
+test('已知本地项目直接复用项目清单元数据，并发 dedupe 扫描共享单次结果', async () => {
+  const known = {
+    projectId: 'apex-admin', projectName: 'admin', displayName: 'Apex 后台', suggestedDisplayName: 'Apex 后台',
+    repository: 'ops/admin', path: '/work/admin', displayPath: '/work/admin', relativePath: 'admin',
+    rootPath: '/work', rootLabel: 'work', folderName: 'admin', branch: 'feature/fast', upstream: '',
+    clean: true, changed: 0, staged: 0, modified: 0, untracked: 0, detached: false, ahead: 0, behind: 0, webUrl: '', remoteUrl: '',
+  };
+  assert.deepEqual(matchInventoryProject('/work/admin', [known]), {
+    name: 'Apex 后台', workspacePath: '/work/admin', branch: 'feature/fast',
+  });
+  assert.equal(matchInventoryProject('/work/admin', [{ ...known, detached: true }]), undefined);
+  assert.equal(matchInventoryProject('/work/other', [known]), undefined);
+
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'delivery-port-dedupe-'));
+  try {
+    let readCount = 0;
+    const readProjects = async () => {
+      readCount += 1;
+      await new Promise(resolve => setTimeout(resolve, 30));
+      return { projects: [known] };
+    };
+    const [first, second] = await Promise.all([
+      scanListeningPorts([], { dataDir: dir, root: dir, selfPort: 5288, readProjects, dedupe: true }),
+      scanListeningPorts([], { dataDir: dir, root: dir, selfPort: 5288, readProjects, dedupe: true }),
+    ]);
+    assert.equal(readCount, 1);
+    assert.equal(first, second);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
 });
 
 

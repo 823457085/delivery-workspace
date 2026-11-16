@@ -8,6 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
 import { stageResultSchema, type DesignExecution, type ExecutionStage, type ExecutorHealth, type StageResult, type ToolProof } from '../../shared/design-execution.js';
 import { allowedTools, stagePrompt } from './policy.js';
+import { frontendTechSolutionSkill } from '../frontend-tech-solution.mjs';
 import { cliBinary, codexHome } from '../cli-runtime.js';
 
 const exec = promisify(execFile);
@@ -104,7 +105,7 @@ export function createCodexExecutor(options: { binary?: string; timeoutMs?: numb
       exec(binary, ['--version'], { timeout: 10_000 }), exec(binary, ['login', 'status'], { timeout: 10_000 }), inventory(),
       Promise.all([
         ...['apex-frontend-tech-design-delivery', 'apex-jira-feature-development', 'delivery-gate-docs', 'confluence-markdown-publish', 'jira-task-compliance'].map((name) => fs.access(path.join(skillRoot, name, 'SKILL.md'))),
-        fs.access(path.join(kitRoot, 'prompts/S2a-tech-design.md')), fs.access(path.join(kitRoot, 'artifacts/templates/tech-design.md')),
+        fs.access(frontendTechSolutionSkill),
       ]),
     ]);
     const cli = version.status === 'fulfilled' ? version.value.stdout.trim() : '';

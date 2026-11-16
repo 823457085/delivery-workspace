@@ -317,21 +317,22 @@ test('暂停编辑晚返回不抢回其他会话，不覆盖续聊草稿；保�
   assert.equal(refreshes, 1);
 });
 
-test('暂停确认期间防重复点击，取消不会发送暂停请求', async () => {
-  const confirmation = deferred<void>();
+test('暂停编辑无需弹窗确认，请求期间防止重复点击', async () => {
+  const response = deferred<AgentRun>();
   const changing = shallowRef('');
-  let requests = 0;
+  let confirmations = 0, requests = 0;
   const actions = loadActions<{ pauseForEdit: (run: AgentRun) => Promise<AgentRun | undefined> }>(
     '../src/features/agent-workbench/useAgentRuntimes.ts', ['pauseForEdit'], {
-      changing, ElMessageBox: { confirm: () => confirmation.promise }, ElMessage: { error: () => {} },
-      post: async () => { requests++; return run('a'); },
+      changing, ElMessageBox: { confirm: async () => { confirmations++; } }, ElMessage: { error: () => {} },
+      post: async () => { requests++; return response.promise; },
     });
   const first = actions.pauseForEdit({ ...run('a'), status: 'running' });
   assert.equal(changing.value, 'edit:a');
   assert.equal(await actions.pauseForEdit({ ...run('a'), status: 'running' }), undefined);
-  confirmation.reject(new Error('cancel'));
-  assert.equal(await first, undefined);
-  assert.equal(requests, 0);
+  assert.equal(confirmations, 0);
+  assert.equal(requests, 1);
+  response.resolve(run('a'));
+  assert.equal((await first)?.id, 'a');
   assert.equal(changing.value, '');
 });
 const image = { id: 'image-1', name: 'example.png', mimeType: 'image/png' as const, size: 1024, url: '/attachments/image-1' };
@@ -391,8 +392,9 @@ function sendingFixture(initial = buildAgentConversations([run('a'), run('b')]))
     orchestrate: (_parent: unknown, input: unknown) => { workflowInputs.push(input); return workflowResponse.promise; },
     resumedConversationId, reconcileAgentConversation, providerSwitchInput, agentConversationContinuation, agentConversationInsertRun,
     query: { refetch: () => queryRefresh.promise }, findAgentConversation,
-    dailyReportForDate: () => undefined, canStart: shallowRef(true), start: (input: unknown) => { reportInputs.push(input); return response.promise; }, form, workspacePaths: shallowRef([]), newAttachments, newAttachmentDraft, submittingNew, panelDisposed: false, resetForm: () => {},
+    canStart: shallowRef(true), start: (input: unknown) => { reportInputs.push(input); return response.promise; }, form, workspacePaths: shallowRef([]), newAttachments, newAttachmentDraft, submittingNew, panelDisposed: false, resetForm: () => {},
     dailyReportStarting, changing: shallowRef(''), sideWorkspacePath: shallowRef('/repo'), dailyReportRuntime: shallowRef({}),
+    dailyReportForDate: () => undefined,
     createDailyReportInput: (date: string) => ({ objective: date, mode: 'ask' }), agentModelDefaults: shallowRef(codexWorkbenchDefaults),
     fork: () => response.promise, forkSource: shallowRef({ id: 'a' }), forkObjective: shallowRef('基于此会话新建'), forkAttachments, forkAttachmentDraft,
   }, true))!;
@@ -564,7 +566,7 @@ test('Codex 仍走原 CLI 续接，取消时附件不丢弃', async () => {
   } finally { state.dispose(); }
 });
 
-test('日报重复点击只创建一次，保留当前会话的草稿及附件', async () => {
+test('日报重复点击只创建一次，独立选择新会话并保留原草稿及附件', async () => {
   const state = sendingFixture();
   try {
     const original = state.selectedConversationId.value;
@@ -575,7 +577,7 @@ test('日报重复点击只创建一次，保留当前会话的草稿及附件',
     assert.equal(state.reportInputs.length, 1);
     state.response.resolve({ id: 'daily-report' });
     await pending;
-    assert.equal(state.selectedConversationId.value, original);
+    assert.equal(state.selectedConversationId.value, 'daily-report');
     assert.equal(state.dailyReportStarting.value, false);
     state.actions.selectConversation(original);
     assert.equal(state.drafts.draft.value, '未发送开发要求');
@@ -729,7 +731,7 @@ test('已发送成功但列表刷新失败时不恢复已发送内容', async ()
     state.drafts.draft.value = '本次发送';
     state.drafts.attachments.value = [image];
     const pending = state.actions.sendMessage({ queuePlacement: 'append' });
-    state.response.resolve({ id: 'a' });
+    state.response.resolve({ id: 'new-run', conversationId: 'a' });
     await Promise.resolve();
     state.queryRefresh.reject(new Error('刷新失败'));
     await assert.rejects(pending, /刷新失败/);
@@ -878,18 +880,14 @@ test('删除确认及请求期间防重复点击，并明确会停止运行和�
   assert.equal(changing.value, '');
 });
 
-test('删除排队消息经确认后调用单轮删除接口，确认期间防止重复操作', async () => {
-  const confirmation = deferred<void>(), response = deferred<void>();
+test('删除排队消息直接调用单轮删除接口，请求期间防止重复操作', async () => {
+  const response = deferred<void>();
   const changing = shallowRef('');
-  let requests = 0;
+  let confirmations = 0, requests = 0;
   const runtime = loadActions<{ deleteQueuedRun: (run: AgentRun) => Promise<boolean> }>(
     '../src/features/agent-workbench/useAgentRuntimes.ts', ['deleteQueuedRun'], {
       changing,
-      ElMessageBox: { confirm: async (message: string) => {
-        assert.match(message, /删除后不会执行/);
-        assert.match(message, /后续排队.*不受影响/);
-        return confirmation.promise;
-      } },
+      ElMessageBox: { confirm: async () => { confirmations++; } },
       ElMessage: { success: () => {}, error: () => {} },
       post: async (path: string) => {
         assert.equal(path, '/api/agent-runtimes/runs/queued/delete');
@@ -901,8 +899,7 @@ test('删除排队消息经确认后调用单轮删除接口，确认期间防�
   const pending = runtime.deleteQueuedRun(queued);
   assert.equal(changing.value, 'delete:queued');
   assert.equal(await runtime.deleteQueuedRun(queued), false);
-  confirmation.resolve();
-  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(confirmations, 0);
   assert.equal(requests, 1);
   response.resolve();
   assert.equal(await pending, true);
@@ -1272,7 +1269,7 @@ test('普通续聊仅在显式选择模式时发送 mode 字段，旧调用不�
 });
 
 
-test('Cursor 启动沿用普通权限确认，编辑与重试不再单独确认目录信任', async () => {
+test('启动、编辑与普通重试直接发送无阻塞弹窗，中断任务恢复仍保留独立安全确认', async () => {
   const current = { ...run('cursor-run'), provider: 'cursor' as const, mode: 'ask' as const, model: 'cursor-model', workspacePath: '/actual-workspace', status: 'failed' as const };
   const confirmations: { body: string; title: string; options: { confirmButtonText: string } }[] = [];
   const inputs: { path: string; body: Record<string, unknown> }[] = [];
@@ -1281,31 +1278,27 @@ test('Cursor 启动沿用普通权限确认，编辑与重试不再单独确认�
     revise: (run: AgentRun, objective: string) => Promise<AgentRun | undefined>;
     retry: (run: AgentRun, selection?: Pick<AgentRun, 'mode' | 'accessMode'>) => Promise<AgentRun | undefined>;
   }>('../src/features/agent-workbench/useAgentRuntimes.ts', ['start', 'revise', 'retry'], {
-    changing: shallowRef(''), agentProviderLabels: { cursor: 'Cursor Agent' },
+    changing: shallowRef(''),
     ElMessageBox: { confirm: async (body: string, title: string, options: { confirmButtonText: string }) => { confirmations.push({ body, title, options }); } },
     ElMessage: { success: () => {}, error: (message: string) => assert.fail(message) },
     post: async (path: string, body: Record<string, unknown>) => { inputs.push({ path, body }); return current; },
   });
   const startInput: StartAgentRunInput = { provider: 'cursor', mode: 'ask', model: 'cursor-model', objective: '只读审查', accessMode: 'workspace', workspacePath: '/source' };
   await actions.start(startInput);
-  assert.equal(confirmations.length, 1);
-  assert.equal(confirmations[0].title, '启动 Agent');
-  assert.equal(confirmations[0].options.confirmButtonText, '确认启动');
-  assert.match(confirmations[0].body, /不会修改工作区或外部系统/);
-  assert.doesNotMatch(confirmations[0].body, /信任/);
+  assert.equal(confirmations.length, 0, '常规启动不再弹出二次确认框');
   assert.equal(inputs[0].body.cursorTrustPath, undefined);
   assert.equal(inputs[0].body.model, 'cursor-model');
   await actions.revise(current, ' 编辑后继续审查 ');
   const selection = { mode: 'ask' as const, accessMode: 'workspace' as const };
   await actions.retry(current, selection);
-  assert.equal(confirmations.length, 1, '编辑与普通重试没有追加信任确认');
+  assert.equal(confirmations.length, 0, '编辑与普通重试没有追加确认框');
   assert.deepEqual(inputs.slice(1), [
     { path: '/api/agent-runtimes/runs/cursor-run/revise', body: { objective: '编辑后继续审查' } },
     { path: '/api/agent-runtimes/runs/cursor-run/retry', body: selection },
   ]);
   assert.equal(current.model, 'cursor-model'); assert.equal(current.mode, 'ask'); assert.equal(current.accessMode, 'workspace');
   await actions.retry({ ...current, recovery: { previousStatus: 'running', previousPid: null, state: 'needs-review', checkedAt: '2026-11-04T00:00:00Z', message: 'runtime_restarted' } } as AgentRun);
-  assert.equal(confirmations.length, 2);
-  assert.equal(confirmations[1].title, '确认中断任务恢复', '独立的恢复确认继续保留');
+  assert.equal(confirmations.length, 1);
+  assert.equal(confirmations[0].title, '确认中断任务恢复', '独立的恢复确认继续保留');
   assert.deepEqual(inputs.at(-1)?.body, {});
 });

@@ -1,1 +1,603 @@
-[]
+[
+  {
+    "id": "apex-bff-211",
+    "path": "待定义（旧接口：/console/advertising_campaign/system/screen_device_production_models）",
+    "method": "",
+    "name": "带屏设备生产型号配置查询",
+    "source": "workbook",
+    "workbook": {
+      "id": "apex-bff-211",
+      "sourceRow": 211,
+      "module": "带屏设备配置",
+      "pageModule": "带屏设备配置",
+      "platform": "全球 Apex",
+      "priority": "P1",
+      "name": "带屏设备生产型号配置查询",
+      "path": "待定义（旧接口：/console/advertising_campaign/system/screen_device_production_models）",
+      "planNote": "",
+      "completion": "",
+      "remark": "",
+      "contract": null
+    },
+    "ui": {
+      "module": "系统配置",
+      "page": "带屏设备配置 · 待定位",
+      "route": "",
+      "kind": "unmapped"
+    }
+  },
+  {
+    "id": "apex-bff-212",
+    "path": "待定义（建议 /admin/v1/system/screen-device/default-image；旧接口 /console/advertising_campaign/default_ad_cover）",
+    "method": "",
+    "name": "查询当前默认展示图片",
+    "source": "workbook",
+    "workbook": {
+      "id": "apex-bff-212",
+      "sourceRow": 212,
+      "module": "带屏设备配置",
+      "pageModule": "带屏设备配置",
+      "platform": "全球 Apex",
+      "priority": "P1",
+      "name": "查询当前默认展示图片",
+      "path": "待定义（建议 /admin/v1/system/screen-device/default-image；旧接口 /console/advertising_campaign/default_ad_cover）",
+      "planNote": "",
+      "completion": "",
+      "remark": "",
+      "contract": null
+    },
+    "ui": {
+      "module": "系统配置",
+      "page": "带屏设备配置 · 待定位",
+      "route": "",
+      "kind": "unmapped"
+    }
+  },
+  {
+    "id": "apex-bff-213",
+    "path": "待定义（建议 /admin/v1/system/screen-device/default-image/replace；旧接口 /console/advertising_campaign/materials/upload，source=1）",
+    "method": "",
+    "name": "更换默认展示图片并保存应用",
+    "source": "workbook",
+    "workbook": {
+      "id": "apex-bff-213",
+      "sourceRow": 213,
+      "module": "带屏设备配置",
+      "pageModule": "带屏设备配置",
+      "platform": "全球 Apex",
+      "priority": "P1",
+      "name": "更换默认展示图片并保存应用",
+      "path": "待定义（建议 /admin/v1/system/screen-device/default-image/replace；旧接口 /console/advertising_campaign/materials/upload，source=1）",
+      "planNote": "",
+      "completion": "",
+      "remark": "",
+      "contract": null
+    },
+    "ui": {
+      "module": "系统配置",
+      "page": "带屏设备配置 · 待定位",
+      "route": "",
+      "kind": "unmapped"
+    }
+  },
+  {
+    "id": "plan:getAdminAdvertisingDeviceCapability",
+    "path": "/admin/v1/advertising/devices/capability",
+    "method": "GET",
+    "name": "广告设备存储能力",
+    "source": "plan",
+    "plan": {
+      "method": "GET",
+      "path": "/admin/v1/advertising/devices/capability",
+      "summary": "广告设备存储能力",
+      "operationId": "getAdminAdvertisingDeviceCapability",
+      "contractStatus": "draft-upstream-pending",
+      "status": "待联调",
+      "upstreamRequired": [
+        "后端补齐对应 proto/RPC，或确认由 BFF legacy adapter 承接。"
+      ],
+      "stageId": "12",
+      "stageTitle": "广告素材与投放计划"
+    },
+    "ui": {
+      "module": "待定位模块",
+      "page": "广告投放",
+      "route": "",
+      "kind": "unmapped"
+    }
+  },
+  {
+    "id": "plan:checkAdminAdvertisingDeviceCapacity",
+    "path": "/admin/v1/advertising/devices/capacity/check",
+    "method": "POST",
+    "name": "检查广告设备素材容量",
+    "source": "plan",
+    "plan": {
+      "method": "POST",
+      "path": "/admin/v1/advertising/devices/capacity/check",
+      "summary": "检查广告设备素材容量",
+      "operationId": "checkAdminAdvertisingDeviceCapacity",
+      "contractStatus": "draft-upstream-pending",
+      "status": "待联调",
+      "upstreamRequired": [
+        "后端补齐对应 proto/RPC，或确认由 BFF legacy adapter 承接。"
+      ],
+      "stageId": "12",
+      "stageTitle": "广告素材与投放计划"
+    },
+    "ui": {
+      "module": "待定位模块",
+      "page": "广告投放",
+      "route": "",
+      "kind": "unmapped"
+    }
+  },
+  {
+    "id": "plan:listAdminAdvertisingDevices",
+    "path": "/admin/v1/advertising/devices/list",
+    "method": "GET",
+    "name": "广告投放设备列表",
+    "source": "plan",
+    "plan": {
+      "method": "GET",
+      "path": "/admin/v1/advertising/devices/list",
+      "summary": "广告投放设备列表",
+      "operationId": "listAdminAdvertisingDevices",
+      "contractStatus": "draft-upstream-pending",
+      "status": "待联调",
+      "upstreamRequired": [
+        "后端补齐对应 proto/RPC，或确认由 BFF legacy adapter 承接。"
+      ],
+      "stageId": "12",
+      "stageTitle": "广告素材与投放计划"
+    },
+    "ui": {
+      "module": "待定位模块",
+      "page": "广告投放",
+      "route": "",
+      "kind": "unmapped"
+    }
+  },
+  {
+    "id": "plan:getAdminAdvertisingDeviceMaterialCleanupOptions",
+    "path": "/admin/v1/advertising/devices/material-cleanup-options",
+    "method": "POST",
+    "name": "查询广告设备可清理素材",
+    "source": "plan",
+    "plan": {
+      "method": "POST",
+      "path": "/admin/v1/advertising/devices/material-cleanup-options",
+      "summary": "查询广告设备可清理素材",
+      "operationId": "getAdminAdvertisingDeviceMaterialCleanupOptions",
+      "contractStatus": "draft-upstream-pending",
+      "status": "待联调",
+      "upstreamRequired": [
+        "后端补齐对应 proto/RPC，或确认由 BFF legacy adapter 承接。"
+      ],
+      "stageId": "12",
+      "stageTitle": "广告素材与投放计划"
+    },
+    "ui": {
+      "module": "待定位模块",
+      "page": "广告投放",
+      "route": "",
+      "kind": "unmapped"
+    }
+  },
+  {
+    "id": "plan:removeAdminAdvertisingDeviceMaterials",
+    "path": "/admin/v1/advertising/devices/materials/remove",
+    "method": "POST",
+    "name": "移除设备上的广告素材",
+    "source": "plan",
+    "plan": {
+      "method": "POST",
+      "path": "/admin/v1/advertising/devices/materials/remove",
+      "summary": "移除设备上的广告素材",
+      "operationId": "removeAdminAdvertisingDeviceMaterials",
+      "contractStatus": "draft-upstream-pending",
+      "status": "待联调",
+      "upstreamRequired": [
+        "后端补齐对应 proto/RPC，或确认由 BFF legacy adapter 承接。"
+      ],
+      "stageId": "12",
+      "stageTitle": "广告素材与投放计划"
+    },
+    "ui": {
+      "module": "待定位模块",
+      "page": "广告投放",
+      "route": "",
+      "kind": "unmapped"
+    }
+  },
+  {
+    "id": "plan:batchDeleteAdminAdvertisingMaterials",
+    "path": "/admin/v1/advertising/materials/batch-delete",
+    "method": "POST",
+    "name": "批量删除广告素材",
+    "source": "plan",
+    "plan": {
+      "method": "POST",
+      "path": "/admin/v1/advertising/materials/batch-delete",
+      "summary": "批量删除广告素材",
+      "operationId": "batchDeleteAdminAdvertisingMaterials",
+      "contractStatus": "draft-upstream-pending",
+      "status": "待联调",
+      "upstreamRequired": [
+        "后端补齐对应 proto/RPC，或确认由 BFF legacy adapter 承接。"
+      ],
+      "stageId": "12",
+      "stageTitle": "广告素材与投放计划"
+    },
+    "ui": {
+      "module": "待定位模块",
+      "page": "广告投放",
+      "route": "",
+      "kind": "unmapped"
+    }
+  },
+  {
+    "id": "plan:createAdminAdvertisingMaterial",
+    "path": "/admin/v1/advertising/materials/create",
+    "method": "POST",
+    "name": "登记广告素材",
+    "source": "plan",
+    "plan": {
+      "method": "POST",
+      "path": "/admin/v1/advertising/materials/create",
+      "summary": "登记广告素材",
+      "operationId": "createAdminAdvertisingMaterial",
+      "contractStatus": "draft-upstream-pending",
+      "status": "待联调",
+      "upstreamRequired": [
+        "后端补齐对应 proto/RPC，或确认由 BFF legacy adapter 承接。"
+      ],
+      "stageId": "12",
+      "stageTitle": "广告素材与投放计划"
+    },
+    "ui": {
+      "module": "待定位模块",
+      "page": "广告投放",
+      "route": "",
+      "kind": "unmapped"
+    }
+  },
+  {
+    "id": "plan:deleteAdminAdvertisingMaterial",
+    "path": "/admin/v1/advertising/materials/delete",
+    "method": "POST",
+    "name": "删除广告素材",
+    "source": "plan",
+    "plan": {
+      "method": "POST",
+      "path": "/admin/v1/advertising/materials/delete",
+      "summary": "删除广告素材",
+      "operationId": "deleteAdminAdvertisingMaterial",
+      "contractStatus": "draft-upstream-pending",
+      "status": "待联调",
+      "upstreamRequired": [
+        "后端补齐对应 proto/RPC，或确认由 BFF legacy adapter 承接。"
+      ],
+      "stageId": "12",
+      "stageTitle": "广告素材与投放计划"
+    },
+    "ui": {
+      "module": "待定位模块",
+      "page": "广告投放",
+      "route": "",
+      "kind": "unmapped"
+    }
+  },
+  {
+    "id": "plan:checkAdminAdvertisingMaterialDelete",
+    "path": "/admin/v1/advertising/materials/delete-check",
+    "method": "POST",
+    "name": "检查广告素材删除影响",
+    "source": "plan",
+    "plan": {
+      "method": "POST",
+      "path": "/admin/v1/advertising/materials/delete-check",
+      "summary": "检查广告素材删除影响",
+      "operationId": "checkAdminAdvertisingMaterialDelete",
+      "contractStatus": "draft-upstream-pending",
+      "status": "待联调",
+      "upstreamRequired": [
+        "后端补齐对应 proto/RPC，或确认由 BFF legacy adapter 承接。"
+      ],
+      "stageId": "12",
+      "stageTitle": "广告素材与投放计划"
+    },
+    "ui": {
+      "module": "待定位模块",
+      "page": "广告投放",
+      "route": "",
+      "kind": "unmapped"
+    }
+  },
+  {
+    "id": "plan:getAdminAdvertisingMaterialDetail",
+    "path": "/admin/v1/advertising/materials/detail",
+    "method": "GET",
+    "name": "广告素材详情",
+    "source": "plan",
+    "plan": {
+      "method": "GET",
+      "path": "/admin/v1/advertising/materials/detail",
+      "summary": "广告素材详情",
+      "operationId": "getAdminAdvertisingMaterialDetail",
+      "contractStatus": "draft-upstream-pending",
+      "status": "待联调",
+      "upstreamRequired": [
+        "后端补齐对应 proto/RPC，或确认由 BFF legacy adapter 承接。"
+      ],
+      "stageId": "12",
+      "stageTitle": "广告素材与投放计划"
+    },
+    "ui": {
+      "module": "待定位模块",
+      "page": "广告投放",
+      "route": "",
+      "kind": "unmapped"
+    }
+  },
+  {
+    "id": "plan:listAdminAdvertisingMaterials",
+    "path": "/admin/v1/advertising/materials/list",
+    "method": "GET",
+    "name": "广告素材列表",
+    "source": "plan",
+    "plan": {
+      "method": "GET",
+      "path": "/admin/v1/advertising/materials/list",
+      "summary": "广告素材列表",
+      "operationId": "listAdminAdvertisingMaterials",
+      "contractStatus": "draft-upstream-pending",
+      "status": "待联调",
+      "upstreamRequired": [
+        "后端补齐对应 proto/RPC，或确认由 BFF legacy adapter 承接。"
+      ],
+      "stageId": "12",
+      "stageTitle": "广告素材与投放计划"
+    },
+    "ui": {
+      "module": "待定位模块",
+      "page": "广告投放",
+      "route": "",
+      "kind": "unmapped"
+    }
+  },
+  {
+    "id": "plan:listAdminAdvertisingMaterialMerchants",
+    "path": "/admin/v1/advertising/materials/merchants/list",
+    "method": "GET",
+    "name": "广告素材商户聚合列表",
+    "source": "plan",
+    "plan": {
+      "method": "GET",
+      "path": "/admin/v1/advertising/materials/merchants/list",
+      "summary": "广告素材商户聚合列表",
+      "operationId": "listAdminAdvertisingMaterialMerchants",
+      "contractStatus": "draft-upstream-pending",
+      "status": "待联调",
+      "upstreamRequired": [
+        "后端补齐对应 proto/RPC，或确认由 BFF legacy adapter 承接。"
+      ],
+      "stageId": "12",
+      "stageTitle": "广告素材与投放计划"
+    },
+    "ui": {
+      "module": "待定位模块",
+      "page": "广告投放",
+      "route": "",
+      "kind": "unmapped"
+    }
+  },
+  {
+    "id": "plan:renameAdminAdvertisingMaterial",
+    "path": "/admin/v1/advertising/materials/rename",
+    "method": "POST",
+    "name": "重命名广告素材",
+    "source": "plan",
+    "plan": {
+      "method": "POST",
+      "path": "/admin/v1/advertising/materials/rename",
+      "summary": "重命名广告素材",
+      "operationId": "renameAdminAdvertisingMaterial",
+      "contractStatus": "draft-upstream-pending",
+      "status": "待联调",
+      "upstreamRequired": [
+        "后端补齐对应 proto/RPC，或确认由 BFF legacy adapter 承接。"
+      ],
+      "stageId": "12",
+      "stageTitle": "广告素材与投放计划"
+    },
+    "ui": {
+      "module": "待定位模块",
+      "page": "广告投放",
+      "route": "",
+      "kind": "unmapped"
+    }
+  },
+  {
+    "id": "plan:validateAdminAdvertisingMerchant",
+    "path": "/admin/v1/advertising/merchants/validate",
+    "method": "GET",
+    "name": "校验广告投放商户",
+    "source": "plan",
+    "plan": {
+      "method": "GET",
+      "path": "/admin/v1/advertising/merchants/validate",
+      "summary": "校验广告投放商户",
+      "operationId": "validateAdminAdvertisingMerchant",
+      "contractStatus": "draft-upstream-pending",
+      "status": "待联调",
+      "upstreamRequired": [
+        "后端补齐对应 proto/RPC，或确认由 BFF legacy adapter 承接。"
+      ],
+      "stageId": "12",
+      "stageTitle": "广告素材与投放计划"
+    },
+    "ui": {
+      "module": "待定位模块",
+      "page": "广告投放",
+      "route": "",
+      "kind": "unmapped"
+    }
+  },
+  {
+    "id": "plan:previewAdminAdvertisingPlanConflicts",
+    "path": "/admin/v1/advertising/plans/conflicts/preview",
+    "method": "POST",
+    "name": "预览广告计划设备冲突",
+    "source": "plan",
+    "plan": {
+      "method": "POST",
+      "path": "/admin/v1/advertising/plans/conflicts/preview",
+      "summary": "预览广告计划设备冲突",
+      "operationId": "previewAdminAdvertisingPlanConflicts",
+      "contractStatus": "draft-upstream-pending",
+      "status": "待联调",
+      "upstreamRequired": [
+        "后端补齐对应 proto/RPC，或确认由 BFF legacy adapter 承接。"
+      ],
+      "stageId": "12",
+      "stageTitle": "广告素材与投放计划"
+    },
+    "ui": {
+      "module": "待定位模块",
+      "page": "广告投放",
+      "route": "",
+      "kind": "unmapped"
+    }
+  },
+  {
+    "id": "plan:createAdminAdvertisingPlan",
+    "path": "/admin/v1/advertising/plans/create",
+    "method": "POST",
+    "name": "创建广告投放计划",
+    "source": "plan",
+    "plan": {
+      "method": "POST",
+      "path": "/admin/v1/advertising/plans/create",
+      "summary": "创建广告投放计划",
+      "operationId": "createAdminAdvertisingPlan",
+      "contractStatus": "draft-upstream-pending",
+      "status": "待联调",
+      "upstreamRequired": [
+        "后端补齐对应 proto/RPC，或确认由 BFF legacy adapter 承接。"
+      ],
+      "stageId": "12",
+      "stageTitle": "广告素材与投放计划"
+    },
+    "ui": {
+      "module": "待定位模块",
+      "page": "广告投放",
+      "route": "",
+      "kind": "unmapped"
+    }
+  },
+  {
+    "id": "plan:getAdminAdvertisingPlanDetail",
+    "path": "/admin/v1/advertising/plans/detail",
+    "method": "GET",
+    "name": "广告投放计划详情",
+    "source": "plan",
+    "plan": {
+      "method": "GET",
+      "path": "/admin/v1/advertising/plans/detail",
+      "summary": "广告投放计划详情",
+      "operationId": "getAdminAdvertisingPlanDetail",
+      "contractStatus": "draft-upstream-pending",
+      "status": "待联调",
+      "upstreamRequired": [
+        "后端补齐对应 proto/RPC，或确认由 BFF legacy adapter 承接。"
+      ],
+      "stageId": "12",
+      "stageTitle": "广告素材与投放计划"
+    },
+    "ui": {
+      "module": "待定位模块",
+      "page": "广告投放",
+      "route": "",
+      "kind": "unmapped"
+    }
+  },
+  {
+    "id": "plan:listAdminAdvertisingPlans",
+    "path": "/admin/v1/advertising/plans/list",
+    "method": "GET",
+    "name": "广告投放计划列表",
+    "source": "plan",
+    "plan": {
+      "method": "GET",
+      "path": "/admin/v1/advertising/plans/list",
+      "summary": "广告投放计划列表",
+      "operationId": "listAdminAdvertisingPlans",
+      "contractStatus": "draft-upstream-pending",
+      "status": "待联调",
+      "upstreamRequired": [
+        "后端补齐对应 proto/RPC，或确认由 BFF legacy adapter 承接。"
+      ],
+      "stageId": "12",
+      "stageTitle": "广告素材与投放计划"
+    },
+    "ui": {
+      "module": "待定位模块",
+      "page": "广告投放",
+      "route": "",
+      "kind": "unmapped"
+    }
+  },
+  {
+    "id": "plan:terminateAdminAdvertisingPlan",
+    "path": "/admin/v1/advertising/plans/terminate",
+    "method": "POST",
+    "name": "终止广告投放计划",
+    "source": "plan",
+    "plan": {
+      "method": "POST",
+      "path": "/admin/v1/advertising/plans/terminate",
+      "summary": "终止广告投放计划",
+      "operationId": "terminateAdminAdvertisingPlan",
+      "contractStatus": "draft-upstream-pending",
+      "status": "待联调",
+      "upstreamRequired": [
+        "后端补齐对应 proto/RPC，或确认由 BFF legacy adapter 承接。"
+      ],
+      "stageId": "12",
+      "stageTitle": "广告素材与投放计划"
+    },
+    "ui": {
+      "module": "待定位模块",
+      "page": "广告投放",
+      "route": "",
+      "kind": "unmapped"
+    }
+  },
+  {
+    "id": "plan:updateAdminAdvertisingPlan",
+    "path": "/admin/v1/advertising/plans/update",
+    "method": "POST",
+    "name": "更新广告投放计划",
+    "source": "plan",
+    "plan": {
+      "method": "POST",
+      "path": "/admin/v1/advertising/plans/update",
+      "summary": "更新广告投放计划",
+      "operationId": "updateAdminAdvertisingPlan",
+      "contractStatus": "draft-upstream-pending",
+      "status": "待联调",
+      "upstreamRequired": [
+        "后端补齐对应 proto/RPC，或确认由 BFF legacy adapter 承接。"
+      ],
+      "stageId": "12",
+      "stageTitle": "广告素材与投放计划"
+    },
+    "ui": {
+      "module": "待定位模块",
+      "page": "广告投放",
+      "route": "",
+      "kind": "unmapped"
+    }
+  }
+]

@@ -17,7 +17,7 @@ const makeWorkbook = `import sys,zipfile
 from xml.etree import ElementTree as E
 X='http://schemas.openxmlformats.org/spreadsheetml/2006/main';R='http://schemas.openxmlformats.org/officeDocument/2006/relationships';P='http://schemas.openxmlformats.org/package/2006/relationships'
 w=E.Element('worksheet',{'xmlns':X});E.SubElement(w,'dimension',{'ref':'A1'});d=E.SubElement(w,'sheetData')
-for i,vs in enumerate([['问题编号','修改状态','问题说明','请求接口','预期 / 后端关注','请求参数','','提出人(人员)','提出人'],['FIRST','待测试','首次检查','GET /admin/list','接口原文 L123','region=NA','','示例用户（人员全名）','示例用户'],['RETEST','已修复待复测','需要复测','GET /admin/options','保留字段','id=2','','人员辅助值','L_REPORTER_001'],['DEFER','暂不处理','暂缓','GET /admin/deferred','','','','示例成员（人员全名）','示例成员']],1):
+for i,vs in enumerate([['问题编号','修改状态','问题说明','请求接口','预期 / 后端关注','请求参数','','提出人(人员)','提出人'],['FIRST','待测试','首次检查','GET /admin/list','接口原文 L123','region=NA','','李子锐（人员全名）','李子锐'],['RETEST','已修复待复测','需要复测','GET /admin/options','保留字段','id=2','','人员辅助值','L_REPORTER_001'],['DEFER','暂不处理','暂缓','GET /admin/deferred','','','','梁士龙（人员全名）','梁士龙']],1):
  r=E.SubElement(d,'row',{'r':str(i)})
  for j,v in enumerate(vs):
   c=E.SubElement(r,'c',{'r':chr(65+j)+str(i),'t':'inlineStr'});E.SubElement(E.SubElement(c,'is'),'t').text=v
@@ -34,8 +34,8 @@ async function fixture(t: TestContext, options: { missingLegacy?: boolean; histo
   await fs.writeFile(path.join(projectPath, 'package.json'), JSON.stringify({ scripts: { dev: 'node fixture.mjs' } }));
   if (options.missingLegacy) {
     await fs.mkdir(path.join(directory, 'public/integration-runs'), { recursive: true });
-    await fs.writeFile(path.join(directory, 'public/integration-runs/execution-plan.json'), JSON.stringify({ automation: {
-      workspacePath: path.join(directory, 'deleted-old-workspace'), baseUrl: 'http://127.0.0.1:6791', environment: 'DEV', assignee: 'demo-user',
+    await fs.writeFile(path.join(directory, 'public/integration-runs/lizirui-plan.json'), JSON.stringify({ automation: {
+      workspacePath: path.join(directory, 'deleted-old-workspace'), baseUrl: 'http://127.0.0.1:6791', environment: 'DEV', assignee: 'lizirui',
     } }));
   }
   const source = path.join(directory, 'original.xlsx');
@@ -70,7 +70,7 @@ async function fixture(t: TestContext, options: { missingLegacy?: boolean; histo
 test('真实XLSX导入→精确选择接口→项目工作区派发→结构化报告→自动新版文档，原件与未执行项保持独立', async t => {
   const f = await fixture(t), dashboard = await f.control.dashboard();
   assert.equal(f.doc.rows.length, 3); assert.equal(f.doc.imageCount, 1);
-  assert.deepEqual(f.doc.rows.map(row => row.reporter), ['示例用户', 'L_REPORTER_001', '示例成员']);
+  assert.deepEqual(f.doc.rows.map(row => row.reporter), ['李子锐', 'L_REPORTER_001', '梁士龙']);
   const launch = f.launch({ revision: dashboard.revision });
   const preview = await f.control.preview(launch);
   assert.deepEqual(preview.jobs[0].targetIds, [f.doc.rows[0].id]);
@@ -322,7 +322,7 @@ test('旧文档仅回补缺失提出人，保留分类版本、状态、行ID、
     const migrated = JSON.parse(await fs.readFile(stateFile, 'utf8'));
     assert.notEqual(migrated.revision, legacy.revision);
     assert.deepEqual(migrated.documents, [{ ...legacy.documents[0], rows: rows.map((row: object, index: number) =>
-      index < 2 ? { ...row, reporter: ['示例用户', 'L_REPORTER_001'][index] } : row) }]);
+      index < 2 ? { ...row, reporter: ['李子锐', 'L_REPORTER_001'][index] } : row) }]);
     const doc = (await reopened.snapshot()).documents[0];
     assert.equal(doc.rows[0].state, 'blocked', '回补人员不重算已有处理分类');
     assert.equal(doc.rows[1].latest?.actual, '保留执行原文 L456');

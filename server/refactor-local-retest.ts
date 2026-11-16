@@ -14,6 +14,7 @@ const git = async (cwd: string, args: string[], signal?: AbortSignal) => (await 
   ['-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', '-C', cwd, ...args],
   { timeout: 60_000, maxBuffer: 2_000_000, signal, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } })).stdout.trim();
 const lockfiles = ['pnpm-lock.yaml', 'package-lock.json', 'yarn.lock'];
+const stoppedRetestCacheDirs = ['node_modules', '.vite', '.next', '.nuxt', '.turbo'];
 
 export async function refactorBranches(workspacePath: string) {
   const source = await fs.realpath(workspacePath);
@@ -122,11 +123,29 @@ export function createLocalRetests(root: string, directory: string, options: { t
       throw new Error('本地页面跳转到其他服务，未将远端页面作为分支复测入口');
     return response.status >= 200 && response.status < 400;
   }
+  async function slimStoppedWorkspace(id: string, workspacePath?: string) {
+    const worktree = await fs.realpath(path.join(directory, id, 'workspace')).catch(() => '');
+    if (!worktree) return;
+    const roots = new Set<string>([worktree]);
+    if (workspacePath && (workspacePath === worktree || workspacePath.startsWith(`${worktree}${path.sep}`))) {
+      roots.add(workspacePath);
+    }
+    for (const rootDir of roots) {
+      for (const cacheName of stoppedRetestCacheDirs) {
+        const candidate = path.join(rootDir, cacheName);
+        const stat = await fs.lstat(candidate).catch(() => undefined);
+        if (stat && !stat.isSymbolicLink() && stat.isDirectory()) {
+          await fs.rm(candidate, { recursive: true, force: true }).catch(() => {});
+        }
+      }
+    }
+  }
   async function stop(id: string) {
+    const child = children.get(id);
     controllers.get(id)?.abort(); killChild(id);
     const value = live.get(id) || await fs.readFile(path.join(directory, id, 'runtime.json'), 'utf8').then(text => JSON.parse(text) as RefactorLocalRuntime).catch(() => undefined);
     // After a workspace restart, only stop a recorded process group if its current listeners still belong to this job's worktree.
-    if (!children.has(id) && value?.state === 'running' && process.platform !== 'win32') {
+    if (!child && value?.state === 'running' && process.platform !== 'win32') {
       const workspace = await fs.realpath(path.join(directory, id, 'workspace')).catch(() => '');
       if (workspace && (value.workspacePath === workspace || value.workspacePath.startsWith(`${workspace}${path.sep}`))) {
         const snapshot = await scanListeningPorts([value.port], { root }).catch(() => undefined);
@@ -137,11 +156,15 @@ export function createLocalRetests(root: string, directory: string, options: { t
         }
       }
     }
+    if (child && child.exitCode === null && child.signalCode === null) {
+      await Promise.race([new Promise<void>(resolve => child.once('exit', () => resolve())), delay(800)]);
+    }
     if (value) {
       value.state = 'stopped'; live.delete(id);
       await fs.writeFile(path.join(directory, id, 'runtime.json'), JSON.stringify(value, null, 2), { mode: 0o600 });
     }
     children.delete(id); phases.delete(id);
+    await slimStoppedWorkspace(id, value?.workspacePath);
   }
   async function prepare(id: string, plan: RefactorLocalPlan): Promise<RefactorLocalRuntime> {
     if (closed || cancelled.has(id)) throw new Error('本地复测已停止');

@@ -4,9 +4,6 @@ export const navigation = [
     { path: '/workbench', title: '我的工作台', icon: 'workbench' },
     { path: '/overview', title: '工作总览', icon: 'overview' },
     { path: '/projects', title: '本地项目与 Git', icon: 'projects' },
-    { path: '/systems', title: '系统导航', icon: 'projects' },
-    { path: '/ports', title: '端口检测', icon: 'ports' },
-    { path: '/go-studio', title: 'Go 实训工坊', icon: 'code' },
   ] },
   { group: 'AI 自动交付', items: [
     { path: '/agent', title: 'Agent 工作台', icon: 'bot' },

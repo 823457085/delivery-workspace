@@ -9,11 +9,11 @@ import { StringDecoder } from 'node:string_decoder';
 import { promisify } from 'node:util';
 import type { AgentRuntimeAdapter } from './agent-runtime.js';
 import type { AgentRun, AgentRuntimeHealth, AgentModelOption } from '../shared/agent-runtime.js';
-import { antigravityBinary } from './cli-runtime.js';
+import { antigravityBinary, antigravityMetadataTimeoutMs, cliChildEnvironment } from './cli-runtime.js';
 import { prepareAntigravityAgentProfile } from './antigravity-agent-profile.js';
 import { verificationArtifactDirectory } from './agent-workflow.js';
 import { agentToolDescription as agentToolDisplay } from '../shared/agent-tool-progress.js';
-import { antigravityTurnBaseline, confirmsAntigravityHistoricalError,
+import { antigravityTransportError, antigravityTurnBaseline, confirmsAntigravityHistoricalError, confirmsAntigravityTransportRecovery,
   type AntigravityTurnBaseline, type AntigravityStreamStep } from './antigravity-turn-evidence.js';
 
 const exec = promisify(execFile);
@@ -57,16 +57,59 @@ export function antigravityRunArguments(run: Pick<AgentRun, 'mode' | 'accessMode
 // A long-lived agy process can retain expired credentials while a new process can sign in silently.
 // Only explicit authentication failures qualify for one same-session continuation; model/quota errors do not.
 const authenticationFailure = /\b(?:UNAUTHENTICATED|AUTHENTICATION_(?:REQUIRED|FAILED)|AUTH_REQUIRED|INVALID_CREDENTIALS|unauthorized)\b|(?:not|no longer) (?:logged|signed) in(?:to)?\b|(?:authentication|authorization|login|sign.?in)\s+(?:is\s+)?(?:required|failed|failure)\b|(?:invalid|expired|revoked)\s+(?:(?:access|refresh|auth)\s+)?(?:token|credentials)\b|(?:access|refresh|auth) token (?:has )?expired\b/i;
+const networkFailure = /ENOTFOUND|EAI_AGAIN|EADDRNOTAVAIL|can't assign requested address|network (?:error|unreachable)|connection (?:reset|refused)|deadline exceeded|timed? out/i;
 function antigravityErrorText(value: unknown) {
   const detail = record(value);
   return typeof value === 'string' ? value : [detail.code, detail.status, detail.message]
     .filter(part => typeof part === 'string' || typeof part === 'number' && Number.isFinite(part)).join(' ');
 }
 class AntigravityAuthenticationError extends Error {}
+class AntigravityStartupNetworkError extends Error {}
 
 function isAuthenticationFailure(value: unknown) {
   const detail = record(value);
   return detail.code === 401 || detail.status === 401 || authenticationFailure.test(antigravityErrorText(value));
+}
+
+function isNetworkFailure(message: string) {
+  return antigravityTransportError.test(message) || networkFailure.test(message);
+}
+
+function isEligibilityNetworkFailure(value: unknown) {
+  const message = antigravityErrorText(value);
+  return !isAuthenticationFailure(value) && /eligibility check failed/i.test(message) && isNetworkFailure(message);
+}
+
+async function checkAntigravityLogin(binary: string, cwd: string, signal?: AbortSignal, timeout = antigravityMetadataTimeoutMs): Promise<{
+  state: 'verified' | 'denied' | 'network' | 'unavailable' | 'unknown'; model?: string;
+}> {
+  let stdout = '', stderr = '', killed = false, exited = false;
+  try {
+    ({ stdout, stderr } = await exec(binary, ['-p', '/model', '--output-format', 'json', '--settings',
+      JSON.stringify({ disableSlashCommands: false, useG1Credits: false })],
+    { cwd, env: cliChildEnvironment('antigravity'), signal, timeout, killSignal: 'SIGKILL', maxBuffer: 1_000_000 }));
+    exited = true;
+  } catch (error) {
+    const details = record(error);
+    stdout = typeof details.stdout === 'string' ? details.stdout : '';
+    stderr = typeof details.stderr === 'string' ? details.stderr : '';
+    killed = details.killed === true;
+  }
+  let status: Record<string, unknown> = {};
+  let plainOutput = '';
+  try { status = record(JSON.parse(stdout)); } catch { plainOutput = stdout; }
+  const command = record(status.command), reported = record(command.data).id;
+  if (exited && status.status === 'SUCCESS' && status.num_turns === 0 && command.name === 'model') {
+    return { state: 'verified', model: typeof reported === 'string' ? reported : '' };
+  }
+  if (isAuthenticationFailure(status.error)) return { state: 'denied' };
+  const diagnostic = [antigravityErrorText(status.error), stderr, plainOutput].join('\n');
+  if (killed || isNetworkFailure(diagnostic)) return { state: 'network' };
+  if (isAuthenticationFailure(diagnostic)) return { state: 'denied' };
+  // agy can hide a failed model-catalog fetch behind this zero-turn /model error.
+  if (status.status === 'ERROR' && status.num_turns === 0
+    && status.error === '/model failed: no model configuration is available for this account') return { state: 'unavailable' };
+  return { state: 'unknown' };
 }
 
 function antigravityFailure(value: unknown, model = '', toolDescription = '') {
@@ -74,7 +117,7 @@ function antigravityFailure(value: unknown, model = '', toolDescription = '') {
   const prefix = `Antigravity CLI${model ? `（${model}）` : ''}`;
   // Quota/credit words can occur in filenames or metadata failures; they do not prove exhausted model allowance.
   if (isAuthenticationFailure(value)) return `${prefix} 本轮认证凭证失效，请在终端运行 agy 确认登录后续接`;
-  if (/ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|network (?:error|unreachable)|connection (?:reset|refused)|deadline exceeded|timed? out/i.test(message)) return `${prefix} 网络连接异常或请求超时，本轮未完成，请稍后重试`;
+  if (isNetworkFailure(message)) return `${prefix} 网络连接异常或请求超时，本轮未完成，请稍后重试`;
   if (permissionFailure.test(message) || /permission|denied|approval/i.test(message)) return `${prefix} 工具权限被拒绝${toolDescription ? `：${toolDescription}` : ''}。本轮已停止，已有结果已保留；请核对本轮授权材料，不要重复访问被拒绝目标`;
   if (/conversation|session/i.test(message) && /not found|invalid|unknown/i.test(message)) return `${prefix} 找不到原会话，请新建会话后重试`;
   if (/\bINSUFFICIENT_CREDITS\b|\b(?:out of|insufficient)\s+(?:extra\s+)?credits\b|\bcredit balance\s+(?:is\s+)?(?:insufficient|zero)\b/i.test(message)) return `${prefix} 报告 AI credits 余额不足，本轮未完成`;
@@ -187,7 +230,7 @@ async function executeAntigravity(binary: string, context: Context, prompt: stri
   if (context.signal.aborted) throw new Error('运行已停止');
   const workspacePath = await fs.realpath(context.run.workspacePath);
   const readOnly = context.run.mode !== 'agent';
-  const location = `\n\n工作台执行目录：${JSON.stringify(workspacePath)}\n用户所说的“当前工作区”和相对文件路径均以此目录为基准；用户明确指定其他绝对路径时，仍按本轮访问权限处理。额外附加的附件目录仅供读取。隔离 Agent 配置目录由 CLI 使用，请勿浏览或读取。\n`
+  const location = `\n\n工作台执行目录：${JSON.stringify(workspacePath)}\n用户所说的“当前工作区”和相对文件路径均以此目录为基准；用户明确指定其他绝对路径时，仍按本轮访问权限处理。额外附加的附件目录仅供读取。隔离 Agent 配置目录由 CLI 使用，请勿浏览或读取。\n普通回复使用 Markdown。仅在本轮明确要求工作台结构化报告时使用 delivery-report 围栏，内容必须是要求的 JSON 对象。\n`
     + (readOnly ? '本轮为只读模式，请使用原生文件读取、目录浏览和搜索工具。终端命令和文件修改交给具备权限的后续岗位；无法核验的事项按实记录。'
       : context.run.accessMode === 'workspace' ? '本轮可读写授权的工作区文件，并在终端沙箱内运行检查、测试和构建命令；不得改为沙箱外执行。运行使用相对路径的终端命令前，必须显式 cd 到上述工作台执行目录；附件目录不是主工作区。' : '')
     + (context.run.team ? `\n团队共享产物与历史附件为只读材料，路径：${JSON.stringify(context.attachmentReadDirectories || [])}。\n`
@@ -208,23 +251,21 @@ async function executeAntigravity(binary: string, context: Context, prompt: stri
       const content = text + location + attachments.text;
       const stdin = JSON.stringify({ event: 'user', message: { content } }) + '\n';
       const baseline = resumeSessionId ? await antigravityTurnBaseline(transcriptRoot, resumeSessionId) : undefined;
-      return runAntigravityProcess(binary, { ...attemptContext, resumeSessionId }, stdin, directories, profile?.name || '', content, gitDirectories, baseline);
+      return runAntigravityProcess(binary, { ...attemptContext, resumeSessionId }, stdin, directories, profile?.name || '', content, gitDirectories, transcriptRoot, baseline);
     };
     try { return await attempt(prompt); }
     catch (error) {
+      if (error instanceof AntigravityStartupNetworkError && !sessionId && !context.signal.aborted) {
+        // An eligibility failure occurs before init and before CLI can send the user turn to the model.
+        context.onEvent('lifecycle', 'Antigravity 启动时的网络检查失败，正在重试连接一次');
+        return await attempt(prompt);
+      }
       if (!(error instanceof AntigravityAuthenticationError) || !sessionId || context.signal.aborted) throw error;
       context.onEvent('diagnostic', 'Antigravity CLI 本轮认证凭证失效；已有执行记录和成果已保留，正在验证登录');
       // This native command makes no model request and never enables paid credit overage.
-      let authenticated = false;
-      try {
-        const { stdout } = await exec(binary, ['-p', '/model', '--output-format', 'json', '--settings',
-          JSON.stringify({ disableSlashCommands: false, useG1Credits: false })],
-        { cwd: profile?.directory || workspacePath, signal: context.signal, timeout: 15_000, killSignal: 'SIGKILL', maxBuffer: 1_000_000 });
-        const status = record(JSON.parse(stdout));
-        authenticated = status.status === 'SUCCESS' && status.num_turns === 0 && record(status.command).name === 'model';
-      } catch { /* A failed or indeterminate probe never authorizes another model turn. */ }
+      const login = await checkAntigravityLogin(binary, profile?.directory || workspacePath, context.signal);
       if (context.signal.aborted) throw new Error('运行已停止');
-      if (!authenticated) throw new Error('Antigravity CLI 本轮认证凭证失效；自动恢复检查未能确认登录，原会话已保留，请稍后续接');
+      if (login.state !== 'verified') throw new Error('Antigravity CLI 本轮认证凭证失效；自动恢复检查未能确认登录，原会话已保留，请稍后续接');
       context.onEvent('lifecycle', 'Antigravity 登录验证成功，正在续接原会话（仅自动恢复一次）');
       const continuation = '上一轮因运行进程的认证凭证失效而中断，当前进程已重新验证登录。请在本原生会话中继续尚未完成的任务：先核对已有回复、工具结果与文件成果，从中断处继续；不要重做已完成步骤，不要重复执行提交、发布或其他有副作用的操作。继续遵守原用户要求及本轮权限，不能将已有部分输出当作最终完成。';
       // Never replay the original request or recurse. The retry gets its own native evidence baseline.
@@ -234,16 +275,16 @@ async function executeAntigravity(binary: string, context: Context, prompt: stri
 }
 
 function runAntigravityProcess(binary: string, context: Context, stdin: string, directories: string[], agentName: string,
-  prompt: string, readOnlyMetadataDirectories: string[], baseline?: AntigravityTurnBaseline) {
+  prompt: string, readOnlyMetadataDirectories: string[], transcriptRoot: string, baseline?: AntigravityTurnBaseline) {
   return new Promise<string>((resolve, reject) => {
     const child = spawn(process.execPath, [fileURLToPath(new URL('./cli-start-gate.mjs', import.meta.url))], {
       cwd: context.run.workspacePath, stdio: ['pipe', 'pipe', 'pipe', 'ipc'], shell: false,
-      detached: process.platform !== 'win32', env: { ...process.env },
+      detached: process.platform !== 'win32', env: cliChildEnvironment('antigravity'),
     });
     const stdout = new StringDecoder('utf8'), stderr = new StringDecoder('utf8');
     let buffer = '', diagnostic = '', result = '', liveText = '', publishedText = '', lastPublished = '', lastOutput = '', sessionId = context.resumeSessionId || '';
-    let confirmedSession = false, finished = false, closed = false, failure = '', authenticationFailed = false;
-    let historicalError: string | undefined, invalidTurnEvidence = false;
+    let confirmedSession = false, finished = false, closed = false, failure: Error | undefined;
+    let resultError: string | undefined, invalidTurnEvidence = false;
     let completionTimer: ReturnType<typeof setTimeout> | undefined;
     let processing: Promise<void> = Promise.resolve(), recording: Promise<void> = Promise.resolve();
     const toolSteps = new Map<number, { name: string; display: string; phases: Set<string>; terminal: boolean }>();
@@ -278,9 +319,9 @@ function runAntigravityProcess(binary: string, context: Context, stdin: string, 
         else child.kill(signal);
       } catch { /* Already exited. */ }
     };
-    const terminate = (reason: string, auth = false) => {
+    const terminate = (reason: string | Error, auth = false) => {
       if (failure) return;
-      failure = reason; authenticationFailed = auth;
+      failure = typeof reason === 'string' ? auth ? new AntigravityAuthenticationError(reason) : new Error(reason) : reason;
       if (closed) return;
       kill('SIGTERM'); killTimer = setTimeout(() => kill('SIGKILL'), 5000);
     };
@@ -292,6 +333,11 @@ function runAntigravityProcess(binary: string, context: Context, stdin: string, 
       processing = processing.then(async () => {
         if (failure || context.signal.aborted) return;
         const data = event.event === 'init' ? event : record(event[event.event === 'result' ? 'result' : 'step_update']);
+        if (!confirmedSession && event.event === 'result' && data.status === 'ERROR' && isEligibilityNetworkFailure(data.error)
+          && (data.response === undefined || data.response === '')) {
+          terminate(new AntigravityStartupNetworkError(antigravityFailure(data.error, context.run.model)));
+          return;
+        }
         if (['init', 'step_update', 'result'].includes(String(event.event))) {
           const id = data.conversation_id;
           if (typeof id !== 'string' || !sessionPattern.test(id) || (sessionId && sessionId !== id)) {
@@ -318,9 +364,9 @@ function runAntigravityProcess(binary: string, context: Context, stdin: string, 
         }
         if (event.event === 'step_update') {
           const tool = record(data.tool_info), error = record(tool.error);
-          if (baseline) {
+          if (!context.resumeSessionId || baseline) {
             const index = data.step_index;
-            if (!Number.isSafeInteger(index) || Number(index) < baseline.stepCount || typeof data.step_type !== 'string'
+            if (!Number.isSafeInteger(index) || Number(index) < (baseline?.stepCount ?? 0) || typeof data.step_type !== 'string'
               || typeof data.state !== 'string') invalidTurnEvidence = true;
             else {
               const previous = turnSteps.get(Number(index));
@@ -359,7 +405,7 @@ function runAntigravityProcess(binary: string, context: Context, stdin: string, 
             }
             toolSteps.set(data.step_index, activity);
           }
-          if (permissionFailure.test(String(error.message || error.type || ''))) {
+          if (permissionFailure.test(antigravityErrorText(tool.error) || String(error.type || ''))) {
             // The current step may omit parameters on failure; only reuse this step's already-observed public target.
             const activity = data.step_type === 'tool' && typeof data.step_index === 'number' ? toolSteps.get(data.step_index) : undefined;
             const description = activity?.display && activity.display !== activity.name ? activity.display : '';
@@ -368,22 +414,25 @@ function runAntigravityProcess(binary: string, context: Context, stdin: string, 
         }
         if (event.event === 'result') {
           if (data.status !== 'SUCCESS') {
-            if (data.status !== 'ERROR' || !baseline
-              || !(data.error === baseline.error || typeof data.error === 'string' && baseline.errors?.includes(data.error)) || invalidTurnEvidence
+            const error = typeof data.error === 'string' ? data.error : '';
+            const historical = error && (error === baseline?.error || baseline?.errors?.includes(error));
+            const transport = error && (!context.resumeSessionId || baseline?.native) && antigravityTransportError.test(error)
+              && !isAuthenticationFailure(error) && !permissionFailure.test(error);
+            if (data.status !== 'ERROR' || (!historical && !transport) || invalidTurnEvidence
               || typeof data.response !== 'string' || !data.response.trim()) {
               const auth = data.status === 'ERROR' && isAuthenticationFailure(data.error)
                 && (data.response === undefined || typeof data.response === 'string' && !data.response.trim());
               if (auth) flushResponses();
               terminate(antigravityFailure(data.error || data.status || '', context.run.model), auth); return;
             }
-            // Preserve the natural exit code; a matching old error is only a candidate until close-time verification.
-            historicalError = data.error as string;
+            // Preserve the natural exit code while the native trajectory is being finalized.
+            resultError = error;
           }
           result = typeof data.response === 'string' ? data.response : '';
           if (!result.trim()) { terminate('Antigravity CLI 未返回可确认的最终回复'); return; }
           if (result.length > 2_000_000) { terminate('Antigravity CLI 回复超过大小限制'); return; }
           finished = true;
-          if (historicalError) {
+          if (resultError) {
             // agy can spend five seconds shutting down its language server after closing stream input.
             // Leave cleanup headroom while still bounding a process that never exits.
             if (!closed) completionTimer = setTimeout(() => terminate('Antigravity CLI 返回结束记录后未正常退出，本轮完成状态无法确认'), 15_000);
@@ -412,15 +461,20 @@ function runAntigravityProcess(binary: string, context: Context, stdin: string, 
       await recording; await processing;
       clearTimeout(killTimer); clearTimeout(completionTimer); context.signal.removeEventListener('abort', stop);
       if (context.signal.aborted) { reject(new Error('运行已停止')); return; }
-      if (failure) { reject(authenticationFailed ? new AntigravityAuthenticationError(failure) : new Error(failure)); return; }
+      if (failure) { reject(failure); return; }
       if (code !== 0 || signal) {
         const reason = signal ? `被信号 ${signal} 终止` : `异常退出（退出码 ${code}）`;
         // A completed result outweighs startup log keywords. Only explicit runtime auth errors qualify.
+        const lastDiagnostic = diagnostic.trim().split(/\r?\n/).at(-1) || '';
+        if (!signal && !confirmedSession && isEligibilityNetworkFailure(lastDiagnostic)) {
+          reject(new AntigravityStartupNetworkError(antigravityFailure(lastDiagnostic, context.run.model)));
+          return;
+        }
         const auth = !signal && !finished && authenticationFailure.test(diagnostic);
         const message = finished ? `Antigravity CLI 已返回最终回复，但进程${reason}；请核对已有结果后续聊`
           : auth ? `${antigravityFailure(diagnostic, context.run.model)}（${reason}）`
             : confirmedSession ? `Antigravity CLI 进程${reason}，未确认本轮完成；已有回复已保留`
-              : `${antigravityFailure(diagnostic.trim().split(/\r?\n/).at(-1) || '', context.run.model)}（${reason}）`;
+              : `${antigravityFailure(lastDiagnostic, context.run.model)}（${reason}）`;
         if (auth) {
           try { flushResponses(); }
           catch { reject(new Error('Antigravity CLI 会话或输出记录保存失败，已停止本轮')); return; }
@@ -428,16 +482,20 @@ function runAntigravityProcess(binary: string, context: Context, stdin: string, 
         reject(auth ? new AntigravityAuthenticationError(message) : new Error(message)); return;
       }
       if (!finished || !confirmedSession) { reject(new Error('Antigravity CLI 未返回本轮成功结束记录，请核对已有结果后重试')); return; }
-      if (historicalError && baseline) {
+      if (resultError) {
         let index = -1;
         for (const stepIndex of responses.keys()) index = Math.max(index, stepIndex);
         const response = responses.get(index);
-        const verified = await confirmsAntigravityHistoricalError(baseline, { error: historicalError, response: result,
-          prompt, steps: turnSteps, responses, lastResponse: response ? { index, text: response.text, done: response.done } : undefined });
+        const evidence = { error: resultError, response: result, prompt, steps: turnSteps, responses,
+          lastResponse: response ? { index, text: response.text, done: response.done } : undefined };
+        const historical = baseline && await confirmsAntigravityHistoricalError(baseline, evidence);
+        const recovered = !historical && antigravityTransportError.test(resultError)
+          && await confirmsAntigravityTransportRecovery(transcriptRoot, sessionId, baseline, evidence);
         if (context.signal.aborted) { reject(new Error('运行已停止')); return; }
-        if (!verified || invalidTurnEvidence) { reject(new Error(antigravityFailure(historicalError, context.run.model))); return; }
+        if ((!historical && !recovered) || invalidTurnEvidence) { reject(new Error(antigravityFailure(resultError, context.run.model))); return; }
         try {
-          context.onEvent('lifecycle', '已核实本轮完整结束；CLI 结束记录中的错误来自此前轮次');
+          context.onEvent('lifecycle', historical ? '已核实本轮完整结束；CLI 结束记录中的错误来自此前轮次'
+            : '已核实本轮完整结束；CLI 结束记录中的网络错误已核对');
           publishResult();
         } catch { reject(new Error('Antigravity CLI 会话或输出记录保存失败，已停止本轮')); return; }
       }
@@ -458,43 +516,50 @@ function runAntigravityProcess(binary: string, context: Context, stdin: string, 
 
 export function createAntigravityAdapter(binary = antigravityBinary, promptForRun: (run: AgentRun) => string = run => run.objective,
   transcriptRoot = path.join(os.homedir(), '.gemini', 'antigravity-cli', 'brain')): AgentRuntimeAdapter {
-  let cached: AgentRuntimeHealth | undefined;
-  return { id: 'antigravity', health: async (force = false) => {
-    if (!force && cached && Date.now() - Date.parse(cached.checkedAt) < 30_000) return cached;
+  let cached: AgentRuntimeHealth | undefined, verified: AgentRuntimeHealth | undefined;
+  return { id: 'antigravity', invalidateHealth: () => { cached = verified = undefined; }, health: async (force = false) => {
+    if (!force && cached && Date.now() - Date.parse(cached.checkedAt) < (cached.ready ? 30_000 : 3000)) return cached;
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'delivery-antigravity-health-'));
     try {
       // No TTY: official headless commands never open OAuth; /model only reports state, without a model request.
       // Read-only probes can ignore SIGTERM while stuck in login. Enforce their timeouts.
-      const probe = { cwd: directory, killSignal: 'SIGKILL' as const };
+      const probe = { cwd: directory, env: cliChildEnvironment('antigravity'), killSignal: 'SIGKILL' as const };
       const [version, help, model, catalog] = await Promise.allSettled([
         exec(binary, ['--version'], { ...probe, timeout: 10_000, maxBuffer: 256_000 }),
         exec(binary, ['--help'], { ...probe, timeout: 10_000, maxBuffer: 256_000 }),
-        exec(binary, ['-p', '/model', '--output-format', 'json', '--settings',
-          JSON.stringify({ disableSlashCommands: false, useG1Credits: false })], { ...probe, timeout: 15_000, maxBuffer: 1_000_000 }),
+        (async () => {
+          const deadline = Date.now() + antigravityMetadataTimeoutMs;
+          const login = await checkAntigravityLogin(binary, directory);
+          const remaining = deadline - Date.now();
+          return remaining > 0 && (login.state === 'network' || login.state === 'unavailable')
+            ? checkAntigravityLogin(binary, directory, undefined, remaining) : login;
+        })(),
         exec(binary, ['models'], { ...probe, timeout: 15_000, maxBuffer: 1_000_000 }),
       ]);
       const versionText = version.status === 'fulfilled' ? version.value.stdout.trim().slice(0, 200) : '';
       const compatible = help.status === 'fulfilled' && ['--settings', '--input-format', '--output-format', '--conversation', '--disable-slash-commands', '--agent', '--add-dir']
         .every(flag => (help.value.stdout + help.value.stderr).includes(flag));
-      let models: AgentModelOption[] = [], defaultModel = '', authenticated = false;
-      let authenticationMessage = 'Antigravity CLI 暂时无法确认登录状态，请稍后刷新';
+      let models: AgentModelOption[] = [];
       if (catalog.status === 'fulfilled') { try { models = antigravityModels(catalog.value.stdout); } catch { /* Do not fabricate model names. */ } }
-      if (model.status === 'fulfilled') {
-        try {
-          const data = record(JSON.parse(model.value.stdout)); const command = record(data.command);
-          authenticated = data.status === 'SUCCESS' && data.num_turns === 0 && command.name === 'model';
-          if (isAuthenticationFailure(data.error)) authenticationMessage = 'Antigravity CLI 登录不可用，请在终端运行 agy 完成登录';
-          const reported = record(command.data).id;
-          if (typeof reported === 'string' && models.some(option => option.id === reported)) defaultModel = reported;
-        } catch { /* Do not expose unparsed output or account details. */ }
-      } else {
-        const reason = record(model.reason);
-        const diagnostic = [antigravityErrorText(model.reason), reason.stderr].filter(part => typeof part === 'string').join(' ');
-        if (isAuthenticationFailure(diagnostic)) authenticationMessage = 'Antigravity CLI 登录不可用，请在终端运行 agy 完成登录';
-        else if (reason.killed || /ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|timed? out|deadline exceeded/i.test(diagnostic)) {
-          authenticationMessage = 'Antigravity CLI 登录状态检查超时或网络异常，尚未确认登录失效，请检查网络后刷新';
-        }
+      const login = model.status === 'fulfilled' ? model.value : { state: 'unknown' as const };
+      if (login.state === 'denied') verified = undefined;
+      // These probe failures can be temporary. The native run still authenticates itself.
+      if ((login.state === 'network' || login.state === 'unavailable') && verified && compatible && verified.version === versionText
+        && Date.now() - Date.parse(verified.checkedAt) < 120_000) {
+        const { defaultModel: previousModel } = verified;
+        const availableModels = models.length ? models : verified.models;
+        return { ...verified, models: availableModels,
+          defaultModel: availableModels.some(option => option.id === previousModel) ? previousModel : '',
+          message: login.state === 'network' ? 'Antigravity 登录探测暂遇网络异常，沿用最近验证的连接状态'
+            : 'Antigravity 暂未读取到模型配置，沿用最近验证的连接状态',
+          checkedAt: new Date().toISOString() };
       }
+      const authenticated = login.state === 'verified';
+      const defaultModel = models.some(option => option.id === login.model) ? login.model || '' : '';
+      const authenticationMessage = login.state === 'denied' ? 'Antigravity CLI 登录不可用，请在终端运行 agy 完成登录'
+        : login.state === 'network' ? 'Antigravity CLI 登录状态检查超时或网络异常，请稍后刷新'
+          : login.state === 'unavailable' ? 'Antigravity CLI 暂未读取到账号模型配置，请稍后刷新'
+          : 'Antigravity CLI 暂时无法确认登录状态，请稍后刷新';
       const ready = !!versionText && compatible && authenticated && models.length > 0;
       cached = { provider: 'antigravity', label: 'Antigravity CLI', binary, version: versionText, authenticated, ready,
         message: ready ? 'Antigravity 已连接；Ask/Plan 仅读取，工作区模式可读写文件并在沙箱内执行命令，完全访问可执行命令'
@@ -502,6 +567,7 @@ export function createAntigravityAdapter(binary = antigravityBinary, promptForRu
             : !authenticated ? authenticationMessage : 'Antigravity CLI 未能读取模型列表，请稍后刷新',
         modes: ['agent', 'plan', 'ask'], accessModes: ['workspace', 'full'], writable: true, models,
         defaultModel, checkedAt: new Date().toISOString() };
+      if (ready) verified = cached;
       return cached;
     } finally { await fs.rm(directory, { recursive: true, force: true }); }
   }, execute: context => executeAntigravity(binary, context, promptForRun(context.run), transcriptRoot) };

@@ -22,6 +22,7 @@ import type { JiraFixRecord } from '../shared/jira-fix.js';
 import type { RequirementDevelopmentRecord } from '../shared/requirement-development.js';
 import type { JiraDevScanPreview, JiraIssue, PlanItem } from '../shared/hub.js';
 import { readDeliveryReport } from '../shared/delivery-report.js';
+import { isJiraIssueDone } from '../shared/jira-status.mjs';
 import { groupRunStatus, type GroupBinding, type GroupJiraSource, type GroupExecutionProgress } from '../shared/agent-group-chat.js';
 
 const exec = promisify(execFile);
@@ -198,7 +199,7 @@ export async function createJiraDevTaskService(options: Options) {
   const currentAutomationIssue = (issue: JiraDevIssue | undefined, expected: JiraIssue) =>
     !!issue && !issue.materialStatus && issue.key === expected.key && issue.url === expected.url
       && (!issue.issueType?.name || issue.issueType.name.trim().toLowerCase() === expected.issueType.trim().toLowerCase())
-      && !/已完成|关闭|done|closed/i.test(`${issue.status || ''} ${issue.statusCategory || ''}`);
+      && !isJiraIssueDone(issue);
   function automationScope(issue: JiraDevIssue | undefined) {
     if (!issue) return;
     const { summary, description, assignee, assigneeId, startDate, endDate, dueDate, project, issueType,

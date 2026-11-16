@@ -1,5 +1,4 @@
 import { execFile, spawn as spawnChild } from "node:child_process";
-import { gitBinary } from "./config.mjs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -25,9 +24,9 @@ export { AtomicCatchupCliLedger, CatchupCliDispatcherError, acquireCatchupCliLoc
  * 只保留防止崩溃后重复创建 task 的最小运行账本，并按真实 workspace/thread 串行。
  */
 
-export const CATCHUP_CODEX_BINARY = process.env.DELIVERY_CODEX_BIN || "codex";
+export const CATCHUP_CODEX_BINARY = "/Applications/ChatGPT.app/Contents/Resources/codex";
 export const CATCHUP_CLI_DISPATCHER_ID =
-  "delivery-workspace:catchup-cli-dispatcher";
+  "launchagent:com.lizirui.jira-task-calendar.catchup-cli-dispatcher";
 export const CATCHUP_CLI_ENDPOINT = process.env.CATCHUP_CLI_ENDPOINT
   || `http://127.0.0.1:${process.env.DELIVERY_PORT || process.env.PORT || 5199}`;
 export const CATCHUP_CLI_MAX_CONCURRENT = 8;
@@ -205,7 +204,7 @@ export async function validateCatchupCliJobWorkspace(job, options = {}) {
     }
     const realpath = options.realpath || fs.realpath;
     const workspacePath = await realpath(normalized.workspacePath);
-    const runGit = options.runGit || (async (args, opts) => (await execFileAsync(gitBinary, args, { cwd: opts.cwd, timeout: 5000 })).stdout);
+    const runGit = options.runGit || (async (args, opts) => (await execFileAsync("/usr/bin/git", args, { cwd: opts.cwd, timeout: 5000 })).stdout);
     const root = await realpath(String(await runGit(["rev-parse", "--show-toplevel"], { cwd: workspacePath })).trim());
     const branch = String(await runGit(["branch", "--show-current"], { cwd: workspacePath })).trim();
     if (root !== workspacePath || branch !== normalized.branch) {
@@ -216,7 +215,7 @@ export async function validateCatchupCliJobWorkspace(job, options = {}) {
   if (normalized.kind === "merge") {
     const realpath = options.realpath || fs.realpath;
     const runGit = options.runGit || (async (args, runOptions) => {
-      const { stdout } = await execFileAsync(gitBinary, args, {
+      const { stdout } = await execFileAsync("/usr/bin/git", args, {
         cwd: runOptions.cwd,
         encoding: "utf8",
         maxBuffer: 64 * 1024,

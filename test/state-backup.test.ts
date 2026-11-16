@@ -62,6 +62,24 @@ test('写入保留有效历史版本、同内容去重并限制保留数量', as
   assert.deepEqual(contents.map(content => JSON.parse(content).id).sort(), ['three', 'two']);
 }));
 
+test('运行账本备份被同长度篡改后仍完整复核并保留坏副本', async () => fixture(async directory => {
+  const ledger = 'agent-runtimes/agent-runs.json';
+  const store = await createStateBackupStore(directory, { keep: 1 });
+  const run = { id: 'run', createdAt: '2026-01-01T00:00:00Z', workspacePath: directory, status: 'queued' };
+  await store.writeJson(ledger, [run]);
+  const [original] = await store.list(ledger);
+  const file = path.join(directory, '.state-backups', Buffer.from(ledger).toString('base64url'), original.id);
+  const before = await fs.stat(file);
+  const content = await fs.readFile(file, 'utf8');
+  await fs.writeFile(file, content.replace('queued', 'failed'));
+  await fs.utimes(file, before.atime, before.mtime);
+  await store.writeJson(ledger, [{ ...run, status: 'completed' }]);
+  const entries = await store.list(ledger);
+  assert.equal(entries.find(entry => entry.id === original.id)?.valid, false);
+  assert.equal(entries.filter(entry => entry.valid).length, 1);
+  assert.equal((await store.readJson<typeof run[]>(ledger))[0].status, 'completed');
+}));
+
 test('两个独立 store 并行快照清理同一旧副本时均成功且副本可校验', async context => fixture(async directory => {
   const stores = await Promise.all([createStateBackupStore(directory), createStateBackupStore(directory)]);
   for (let index = 0; index < 5; index++) await stores[0].writeJson(relative, { id: `seed-${index}` });
@@ -370,4 +388,21 @@ test('CLI 在隔离目录中列出、校验；坏编号非零退出且不输出�
   await assert.rejects(run('verify', relative, '../../escape'), error => {
     assert.equal((error as { code: number }).code, 1); return true;
   });
+}));
+
+test('预序列化 JSON 写入保持结构校验、大小限制与 SHA256 备份完整性', async () => fixture(async directory => {
+  const ledger = 'agent-runtimes/agent-runs.json';
+  const store = await createStateBackupStore(directory, { keep: 2, maxBytes: 4096 });
+  const records = [
+    { id: 'run-1', createdAt: '2026-01-01T00:00:00Z', workspacePath: directory, status: 'completed', result: 'ok' },
+    { id: 'run-2', createdAt: '2026-01-02T00:00:00Z', workspacePath: directory, status: 'failed', result: 'err' },
+  ];
+  const preformattedJson = `[${records.map(item => JSON.stringify(item)).join(',')}]\n`;
+  await store.writeJson(ledger, records, { preformattedJson });
+  assert.deepEqual(await store.readJson(ledger), records);
+  const [entry] = await store.list(ledger);
+  assert.equal(entry?.valid, true);
+  assert.equal((await store.verify(ledger, entry.id)).valid, true);
+  await assert.rejects(store.writeJson(ledger, [{}], { preformattedJson: '[{}]\n' }), /结构校验失败/);
+  await assert.rejects(store.writeJson(ledger, records, { preformattedJson: `[${JSON.stringify({ ...records[0], result: 'x'.repeat(5000) })}]\n` }), /大小限制/);
 }));

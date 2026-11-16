@@ -30,9 +30,9 @@ function taskTitle(run: AgentRun) {
 </script>
 
 <template>
-  <section class="integration-execution" aria-label="联调执行进度">
+  <section class="integration-execution" aria-label="李子锐联调执行进度">
     <header class="execution-heading">
-      <div><h2>联调执行</h2><p>当前账号 · 全部名下接口 · 按模块独立会话并行执行</p></div>
+      <div><h2>联调执行</h2><p>李子锐 · 全部名下接口 · 按模块独立会话并行执行</p></div>
       <div class="execution-actions">
         <el-button :loading="progress.isFetching.value" @click="refresh">刷新进度</el-button>
         <el-button type="primary" :disabled="!canStartAll" :loading="sending" @click="startAll">并行执行待办</el-button>
@@ -42,7 +42,7 @@ function taskTitle(run: AgentRun) {
       <MetricStrip :items="metrics" />
       <section class="execution-tasks surface" aria-label="各模块执行会话">
         <div class="tasks-title"><h3>模块执行会话</h3><small>{{ active.length }} 个会话执行或排队 · 进度每 5 秒刷新</small></div>
-        <el-table :data="taskRows" row-key="id" empty-text="当前没有联调任务">
+        <el-table :data="taskRows" row-key="id" empty-text="李子锐当前没有联调任务">
           <el-table-column label="模块 / 会话" min-width="200"><template #default="{ row }"><strong>{{ row.title }}</strong><small v-if="row.module !== row.title" class="task-detail">{{ row.module }}</small></template></el-table-column>
           <el-table-column label="接口" width="120"><template #default="{ row }">{{ row.total }} 条<small class="task-detail">本轮 {{ row.executable }} · 暂不联调 {{ row.deferredCount }}</small><small class="task-detail">待查询 {{ row.pending }}</small></template></el-table-column>
           <el-table-column label="本轮检查进度" width="130"><template #default="{ row }">{{ row.checked }} / {{ row.executable }}<small class="task-detail">实测通过 {{ row.passed }}</small></template></el-table-column>

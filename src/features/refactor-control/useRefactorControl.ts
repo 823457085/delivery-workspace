@@ -2,7 +2,7 @@
 import { watch } from 'vue';
 import { useQuery, useQueryClient } from '@tanstack/vue-query';
 import { ElMessage } from 'element-plus';
-import type { RefactorConfig, RefactorDashboard, RefactorLaunch, RefactorPreview } from '../../../shared/refactor-control';
+import { refactorJobActive, type RefactorConfig, type RefactorDashboard, type RefactorLaunch, type RefactorPreview } from '../../../shared/refactor-control';
 
 const base = '/api/agent-runtimes/refactor-control';
 export const refactorWorkspaceQueryKey = ['refactor-workspace'];
@@ -21,7 +21,13 @@ export async function refactorRequest<T>(suffix = '', body?: unknown, signal?: A
 export function useRefactorControl() {
   const client = useQueryClient();
   const key = ['refactor-control'];
-  const dashboard = useQuery({ queryKey: key, queryFn: ({ signal }) => refactorRequest<RefactorDashboard>('', undefined, signal), refetchInterval: 5000, retry: false });
+  const dashboard = useQuery({
+    queryKey: key,
+    queryFn: ({ signal }) => refactorRequest<RefactorDashboard>('', undefined, signal),
+    refetchIntervalInBackground: false,
+    refetchInterval: q => q.state.data?.jobs.some(refactorJobActive) ? 2500 : 15_000,
+    retry: false,
+  });
   watch(() => dashboard.error.value?.message || dashboard.data.value?.sourceError, error => { if (error) ElMessage.error(error); });
   async function configure(config: RefactorConfig, revision: string) {
     const data = await refactorRequest<RefactorDashboard>('/config', { config, revision });

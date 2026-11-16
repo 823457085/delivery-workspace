@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { ensureWorkspaceBuild } from '../server/workspace-build.js';
+import { ensureWorkspaceBuild, pruneStaleBuildAssets } from '../server/workspace-build.js';
 import { createWorkspaceBuild, createWorkspaceVersionReader } from '../server/workspace-version.js';
 import { workspaceVersionState } from '../shared/workspace-version.js';
 
@@ -160,4 +160,44 @@ test('缺少新版本标记或不完整候选不会被当成可用构建', async
     return { stdout: '', stderr: '' };
   } }), /页面自动构建失败/);
   assert.equal((await ensureWorkspaceBuild(f.root, f.dist, { build: f.build })).rebuilt, true);
+});
+
+test('过期 hash 构建资源按保留期自动清理，当前引用、近期产物与非 hash 文件安全保留', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'delivery-prune-assets-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const oldTime = new Date(Date.now() - 5 * 86400_000);
+  await fs.writeFile(path.join(dir, 'agent-AbCdEf12.js'), 'active');
+  await fs.writeFile(path.join(dir, 'agent-OldHash99.js'), 'expired');
+  await fs.writeFile(path.join(dir, 'agent-Recent88.js'), 'recent');
+  await fs.writeFile(path.join(dir, 'manual-guide.js'), 'static');
+  await fs.utimes(path.join(dir, 'agent-AbCdEf12.js'), oldTime, oldTime);
+  await fs.utimes(path.join(dir, 'agent-OldHash99.js'), oldTime, oldTime);
+  await fs.utimes(path.join(dir, 'manual-guide.js'), oldTime, oldTime);
+
+  const result = await pruneStaleBuildAssets(dir, ['agent-AbCdEf12.js']);
+  assert.equal(result.removed, 1);
+  assert.ok(result.bytes > 0);
+  const remaining = (await fs.readdir(dir)).sort();
+  assert.deepEqual(remaining, ['agent-AbCdEf12.js', 'agent-Recent88.js', 'manual-guide.js']);
+});
+
+test('非活跃历史构建产物超出体积预算时优先回收较早批次，保留近15分钟活跃过渡窗口', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'delivery-prune-budget-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const now = Date.now();
+  const min5Ago = new Date(now - 5 * 60_000);
+  const min30Ago = new Date(now - 30 * 60_000);
+  const min90Ago = new Date(now - 90 * 60_000);
+  await fs.writeFile(path.join(dir, 'index-Active01.js'), 'x'.repeat(100));
+  await fs.writeFile(path.join(dir, 'editor-Protected02.js'), 'x'.repeat(500));
+  await fs.writeFile(path.join(dir, 'editor-KeepBudget03.js'), 'x'.repeat(400));
+  await fs.writeFile(path.join(dir, 'editor-OverBudget04.js'), 'x'.repeat(400));
+  await fs.utimes(path.join(dir, 'editor-Protected02.js'), min5Ago, min5Ago);
+  await fs.utimes(path.join(dir, 'editor-KeepBudget03.js'), min30Ago, min30Ago);
+  await fs.utimes(path.join(dir, 'editor-OverBudget04.js'), min90Ago, min90Ago);
+
+  const result = await pruneStaleBuildAssets(dir, ['index-Active01.js'], 6 * 3600_000, 950);
+  assert.equal(result.removed, 1);
+  const remaining = (await fs.readdir(dir)).sort();
+  assert.deepEqual(remaining, ['editor-KeepBudget03.js', 'editor-Protected02.js', 'index-Active01.js']);
 });

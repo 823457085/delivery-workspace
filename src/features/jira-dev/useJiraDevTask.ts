@@ -342,17 +342,36 @@ export function useJiraDevTask(workflow: JiraDevWorkflow, openRun: (id: string) 
     if (workflow === 'jira' && value.plan?.status === 'applied' && value.repairMode !== 'direct') form.branchName = value.branchName;
     save();
   }
-  async function prepare() {
-    if (busy.value || reading.value || locked.value) return;
+  async function prepare(options: { openPreview?: boolean } = {}) {
+    if (busy.value || reading.value || locked.value) return false;
     const problem = validate();
-    if (problem) { status.value = problem; ElMessage.warning(problem); return; }
+    if (problem) { status.value = problem; ElMessage.warning(problem); return false; }
     busy.value = true; status.value = '正在核对项目与生成任务预览…';
     try {
       accept(await jiraDevRequest<JiraDevTaskView>('prepare', requestBody()));
       status.value = task.value?.warning || '请核对预览，确认后在工作台新建会话开始。';
-      previewOpen.value = true;
-    } catch (error) { status.value = errorText(error); }
+      if (options.openPreview !== false) previewOpen.value = true;
+      return true;
+    } catch (error) { status.value = errorText(error); return false; }
     finally { busy.value = false; }
+  }
+  async function quickStart(runtime: JiraDevRuntimeSelection) {
+    if (busy.value || reading.value || launched.value) return;
+    if (!task.value) {
+      if (!await prepare({ openPreview: false })) return;
+    }
+    const current = task.value;
+    if (!current) return;
+    const groupRequirement = workflow === 'requirement' && runtime.collaborationMode === 'group';
+    // 需要远端新建/确认 Jira 事项、存在阻塞项或群聊尚未完成评审准备时，自动落回预览窗供核对，不静默误建远端单据。
+    if (startBlocker.value || current.plan?.requiresConfirmation || (groupRequirement && current.preparation?.review?.status !== 'ready')) {
+      if (groupRequirement && !current.preparation?.review?.status && !startBlocker.value && !current.plan?.requiresConfirmation) {
+        await prepareReview(runtime);
+      }
+      previewOpen.value = true;
+      return;
+    }
+    await start(runtime);
   }
   async function openScanPreview(id: string, issueKey: string) {
     if (busy.value || reading.value || locked.value && taskId.value !== id) return false;
@@ -479,5 +498,5 @@ export function useJiraDevTask(workflow: JiraDevWorkflow, openRun: (id: string) 
   // 草稿只保存表单；刷新后若已填写有效 Jira 且未锁定，自动只读重新读取，恢复事项摘要与默认值。
   void restore().then(() => { syncChildSchedules(); if (!locked.value && parseJiraSource(form.source)) void readIssue(); });
   return { form, issue, task, plan, taskId, reading, busy, status, locked, launched, needsApply, startBlocker, startLabel, previewOpen,
-    developmentCandidates, versions, versionStatus, childSchedules, plannedChildren, problem, selectedProjects, selectProjects, editProject, edit, editSchedule, readIssue, loadVersions, prepare, openScanPreview, check, prepareReview, start, next };
+    developmentCandidates, versions, versionStatus, childSchedules, plannedChildren, problem, selectedProjects, selectProjects, editProject, edit, editSchedule, readIssue, loadVersions, prepare, quickStart, openScanPreview, check, prepareReview, start, next };
 }

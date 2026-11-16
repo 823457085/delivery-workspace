@@ -20,7 +20,7 @@ test('中英混排：整体判为中文但含成段英文时仍翻译；只夹�
     + '我改了需求开发表单的样式和布局，也补了几处功能缺陷。类型检查、相关测试和前端构建都通过了，刷新页面就能看到，这些改动不用重启后端。Jira 修复页用的是同一个表单，所以也一起变了。';
   assert.equal(detectAgentLanguage(mixed + '左右两张卡加了同级标题，多语言选项放进浅底的选项块，排期单独成一组，折叠项换成细箭头。'), 'zh');
   assert.equal(needsAgentTranslation(mixed, 'zh'), true);
-  assert.equal(needsAgentTranslation('已修改 [JiraDevTask.vue](file:///Users/demo/src/features/jira-dev/JiraDevTask.vue)，运行 `pnpm build` 通过，Jira 修复页同步生效。', 'zh'), false);
+  assert.equal(needsAgentTranslation('已修改 [JiraDevTask.vue](file:///Users/example/src/features/jira-dev/JiraDevTask.vue)，运行 `pnpm build` 通过，Jira 修复页同步生效。', 'zh'), false);
   assert.equal(needsAgentTranslation('构建通过：\n```\nvue-tsc --noEmit && tsc --noEmit -p tsconfig.server.json && vite build\n```\n刷新页面即可。', 'zh'), false);
   assert.equal(needsAgentTranslation('Please review the change. 请确认登录页面的需求是否已经完整覆盖所有异常场景。', 'en'), true);
   assert.match(agentTranslatePrompt({ texts: ['x'], target: 'zh' }), /只翻译这些句子/);

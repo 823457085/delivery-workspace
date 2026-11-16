@@ -5,8 +5,8 @@ set -euo pipefail
 PKG="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-SPACE_KEY="${CONFLUENCE_SPACE_KEY:-}"
-PARENT_ID="${CONFLUENCE_PARENT_ID:-}"
+SPACE_KEY="${CONFLUENCE_SPACE_KEY:-SOP}"
+PARENT_ID="${CONFLUENCE_PARENT_ID:-360520}"
 HUB_TITLE="AI 原生产研测交付门禁 v1.0"
 
 build_body() {
@@ -25,7 +25,7 @@ echo "  - ${PKG}/guides/confluence-one-pager.md"
 echo "  - ${PKG}/guides/pilot-90day-checklist.md"
 echo ""
 echo "已发布 Hub（若存在）："
-echo "  Set CONFLUENCE_BASE_URL and the target page id for your own site."
+echo "  https://confluence.hahabianli.com/spaces/SOP/pages/33746027/"
 echo ""
 echo "生成 Storage 预览："
 echo "  build_body guides/confluence-one-pager.md | head -c 200"

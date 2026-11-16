@@ -96,9 +96,9 @@ function sidebar(props: { conversations: AgentConversation[]; selectedId: string
     .map(node => node.getText(tree)).join('\n'), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
   const dependencies = { computed, shallowRef, watch, agentConversationProjectPath, compareAgentConversations, isPinnedAgentSession,
     defineProps: () => props, defineEmits: () => () => {} };
-  return new Function(...Object.keys(dependencies), `${code}\nreturn { projectGroups, visibleGroups, pinnedConversations };`)
+  return new Function(...Object.keys(dependencies), `${code}\nreturn { projectGroups, visibleGroups, pinnedConversations, query, showOlder, olderConversationCount };`)
     (...Object.values(dependencies)) as { projectGroups: ComputedRef<Group[]>; visibleGroups: ComputedRef<Group[]>;
-      pinnedConversations: ComputedRef<AgentConversation[]> };
+      pinnedConversations: ComputedRef<AgentConversation[]>; query: { value: string }; showOlder: { value: boolean }; olderConversationCount: ComputedRef<number> };
 }
 
 test('真实侧栏的项目分组、组内会话与置顶区在并发输出时保持稳定', () => {
@@ -122,4 +122,26 @@ test('真实侧栏的项目分组、组内会话与置顶区在并发输出时�
   props.conversations = list([run('followup', 40, { conversationId: 'a-old', parentRunId: 'a-old', status: 'queued' }), ...runs]);
   assert.deepEqual(state.projectGroups.value.map(group => group.path), ['/project-a', '/project-c', '/project-b']);
   assert.deepEqual(ids(state.visibleGroups.value[0].conversations), ['a-old', 'a-new']);
+});
+
+test('侧栏搜索跨越7天窗口检索历史会话正文，且可一键展开更早会话', () => {
+  const twentyDaysAgo = new Date(Date.now() - 20 * 24 * 3600_000).toISOString();
+  const runs = [
+    run('recent-1', 5, { objective: '优化首页加载', result: '已完成分包' }),
+    run('archive-deep', 1, { createdAt: twentyDaysAgo, updatedAt: twentyDaysAgo, objective: '历史架构决策', result: '核心幂等令牌 X-SPECIAL-TOKEN-99 方案' }),
+  ];
+  const props = shallowReactive({ conversations: list(runs), selectedId: 'recent-1', pinnedIds: new Set<string>() });
+  const state = sidebar(props);
+  assert.equal(state.olderConversationCount.value, 1);
+  assert.deepEqual(state.visibleGroups.value.flatMap(group => ids(group.conversations)), ['recent-1']);
+
+  // 输入正文关键词时自动检索 7 天外的历史归档
+  state.query.value = 'x-special-token-99';
+  assert.deepEqual(state.visibleGroups.value.flatMap(group => ids(group.conversations)), ['archive-deep']);
+
+  // 清空关键词后默认回到近 7 天，手动展开更早会话可同时浏览全部
+  state.query.value = '';
+  assert.deepEqual(state.visibleGroups.value.flatMap(group => ids(group.conversations)), ['recent-1']);
+  state.showOlder.value = true;
+  assert.deepEqual(state.visibleGroups.value.flatMap(group => ids(group.conversations)), ['recent-1', 'archive-deep']);
 });

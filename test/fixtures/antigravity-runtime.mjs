@@ -11,6 +11,25 @@ if (args.includes('-p')) {
   if (args.includes('--settings') && JSON.parse(value('--settings')).disableSlashCommands !== false) { console.error('status command expansion disabled'); process.exit(1); }
   if (name.startsWith('logged-out')) { console.error('authentication required private@example.invalid'); process.exit(1); }
   if (value('-p') === '/model') {
+    if (name.startsWith('auth-health-rolling')) {
+      const stateFile = path.join(path.dirname(process.argv[1]), 'health-state');
+      const state = await fs.readFile(stateFile, 'utf8').catch(() => '');
+      if (state === 'network' || state === 'network-once') {
+        if (state === 'network-once') await fs.writeFile(stateFile, 'ready');
+        console.log(JSON.stringify({ status: 'ERROR', error: 'Eligibility check failed: Get "https://private.invalid/oauth": EOF' }));
+        console.error('You are not logged into Antigravity.');
+        process.exit(1);
+      }
+      if (state === 'denied') {
+        console.log(JSON.stringify({ status: 'ERROR', error: { code: 401 } }));
+        console.error('ETIMEDOUT');
+        process.exit(1);
+      }
+      if (state === 'unavailable') {
+        console.log(JSON.stringify({ status: 'ERROR', num_turns: 0, error: '/model failed: no model configuration is available for this account' }));
+        process.exit(1);
+      }
+    }
     if (name.startsWith('auth-health-network')) { console.error('ETIMEDOUT: model status request timed out'); process.exit(1); }
     if (name.startsWith('auth-health-unknown')) { console.error('status could not be read'); process.exit(1); }
     if (name.startsWith('auth-health-bad-json')) { console.log('invalid status payload'); process.exit(0); }
@@ -42,6 +61,10 @@ if (scenario === 'hang') { setInterval(() => {}, 1000); await new Promise(() => 
 const session = args.includes('--conversation') ? value('--conversation') : 'antigravity-test-session';
 const emit = data => process.stdout.write(JSON.stringify(data) + '\n');
 const step = (data, conversation_id = session) => emit({ event: 'step_update', step_update: { conversation_id, ...data } });
+if (scenario === 'startup-network-always' || (scenario === 'startup-network-once' && !previous.length)) {
+ emit({ event: 'result', result: { status: 'ERROR', error: 'Eligibility check failed: Get "https://private.invalid/oauth": EOF', response: '' } });
+ process.exit(1);
+}
 if (scenario === 'auth-failure-code') { emit({ event: 'result', result: { conversation_id: '', status: 'ERROR', error: { code: 'UNAUTHENTICATED', message: 'Sign-in required' } } }); process.exit(1); }
 if (scenario === 'error-before-init') { emit({ event: 'result', result: { conversation_id: '', status: 'ERROR', error: 'authentication required' } }); process.exit(1); }
 emit({ event: 'init', conversation_id: session, init: { agent: scenario === 'wrong-agent' ? 'ambient-agent' : args.includes('--agent') ? value('--agent') : 'native-default', permission_mode: scenario === 'wrong-permission' ? 'always-proceed' : JSON.parse(value('--settings')).toolPermission } });
@@ -151,7 +174,71 @@ if (scenario.startsWith('history-')) {
  if (scenario === 'history-cleanup-delay') await new Promise(resolve => setTimeout(resolve, 6000));
  process.exit(scenario === 'history-exit2' ? 2 : 0);
 }
+if (scenario.startsWith('transport-')) {
+ const first = args.includes('--conversation') ? 3 : 0;
+ const transcript = path.join(process.cwd(), 'native', session, '.system_generated', 'logs', 'transcript_full.jsonl');
+ const database = path.join(process.cwd(), 'conversations', session + '.db');
+ const retry = 'API error (attempt 1): request failed: write: broken pipe';
+ const cancellation = 'cannot kill task "test/task-7": task is not running (status: DONE)';
+ const editError = 'target content not found in the file; the Target must exactly match existing file text, including whitespace';
+ const response = '检查开始。\n网络恢复后完成。';
+ const rows = [
+  ['USER_INPUT', 14, 'DONE', 3, `<USER_REQUEST>\n${content}\n</USER_REQUEST>`],
+  ['PLANNER_RESPONSE', 15, 'DONE', 3, '检查开始。'],
+  ['GENERIC', 132, 'RUNNING', 3, '后台命令已启动'],
+  ['GENERIC', 132, 'ERROR', 7, '命令已经结束', scenario === 'transport-tool-error' ? 'unrelated tool failed' : cancellation],
+  ['ERROR_MESSAGE', 17, 'DONE', 3, '', retry],
+  ['PLANNER_RESPONSE', 15, 'DONE', 3, '网络恢复后完成。'],
+ ];
+ const edit = scenario.startsWith('transport-edit-');
+ const priorNetwork = scenario.startsWith('transport-edit-prior-network');
+ if (edit) {
+  const editCall = Path => [{ name: 'edit_file', args: { Path } }];
+  rows[2] = ['PLANNER_RESPONSE', 15, 'DONE', 3, '', undefined, editCall('/work/source.ts')];
+  rows[3][5] = editError;
+  rows.splice(5, 0, ['PLANNER_RESPONSE', 15, 'DONE', 3, '', undefined,
+   editCall(scenario.endsWith('other-file') ? '/work/other.ts' : '/work/source.ts')],
+   ['GENERIC', 132, 'DONE', 3, 'edit succeeded']);
+ }
+ if (priorNetwork) rows.splice(4, 1);
+ if (scenario === 'transport-terminal-error') [rows[4], rows[5]] = [rows[5], rows[4]];
+ await fs.mkdir(path.dirname(database), { recursive: true });
+ const db = new DatabaseSync(database);
+ try {
+  db.exec('CREATE TABLE IF NOT EXISTS trajectory_meta(trajectory_id TEXT, cascade_id TEXT); CREATE TABLE IF NOT EXISTS steps(idx INTEGER PRIMARY KEY, step_type INTEGER, status INTEGER, error_details BLOB, step_payload BLOB);');
+  if (!first) db.prepare('INSERT INTO trajectory_meta VALUES (?, ?)').run('transport-trajectory', session);
+  const insert = db.prepare('INSERT INTO steps VALUES(?, ?, ?, ?, ?)');
+  for (const [offset, [, type, , status, , error]] of rows.entries()) {
+   const message = Buffer.from(retry);
+   const payload = type === 17 ? Buffer.concat([Buffer.from([194, 1, message.length + 4, 26, message.length + 2, 10, message.length]), message]) : null;
+   insert.run(first + offset, type, status, type === 132 && error ? Buffer.from(error) : null, payload);
+  }
+ } finally { db.close(); }
+ await fs.mkdir(path.dirname(transcript), { recursive: true });
+ await fs.appendFile(transcript, rows.map(([type, , status, , content, error, tool_calls], offset) => JSON.stringify({
+  step_index: first + offset, type, status, content, ...(error ? { error } : {}), ...(tool_calls ? { tool_calls } : {}),
+ })).join('\n') + '\n');
+ step({ step_index: first, step_type: 'user_input', state: 'DONE' });
+ step({ step_index: first + 1, step_type: 'agent_response', state: 'DONE', text_delta: '检查开始。\n' });
+ step({ step_index: first + 2, step_type: edit ? 'agent_response' : 'tool', state: edit ? 'DONE' : 'ACTIVE' });
+ step({ step_index: first + 3, step_type: 'tool', state: 'ERROR', tool_info: { error: { message: rows[3][5] } } });
+ if (edit) {
+  const correction = first + (priorNetwork ? 4 : 5);
+  step({ step_index: correction, step_type: 'agent_response', state: 'DONE' });
+  step({ step_index: correction + 1, step_type: 'tool', state: 'DONE' });
+ }
+ if (scenario === 'transport-stream-retry') step({ step_index: first + 4, step_type: 'error_message', state: 'DONE', error: retry });
+ const end = scenario === 'transport-terminal-error' ? first + 4 : first + rows.length - 1;
+ step({ step_index: end, step_type: 'agent_response', state: 'DONE', text_delta: '网络恢复后完成。' });
+ const error = priorNetwork ? scenario.endsWith('-raw')
+  ? 'agent executor error: generating and executing: request failed: Post "https://test.invalid/model": EOF'
+  : 'There was a network issue connecting to the server, please try again.'
+  : scenario === 'transport-mismatch' ? 'API error (attempt 2): request failed: write: broken pipe' : retry;
+ emit({ event: 'result', result: { conversation_id: session, status: 'ERROR', response, error } });
+ process.exit(scenario === 'transport-exit2' ? 2 : 0);
+}
 const failureMessages = {
+ 'terminal-network-address': 'There was a network issue connecting to the server, please try again.',
  'quota-rate-limit': { code: 429, message: 'Too many requests: rate limit exceeded' },
  'quota-number-only': { code: 429 },
  'quota-rate-with-quota-code': { code: 'QUOTA_EXCEEDED', message: 'Rate limit exceeded: retry after 1s' },

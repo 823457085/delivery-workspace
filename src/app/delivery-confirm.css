@@ -10,56 +10,50 @@
   padding: 0;
   overflow: hidden;
   border: 1px solid var(--ui-border);
-  border-radius: 14px;
+  border-radius: 16px;
   background: var(--ui-surface);
   color: var(--ui-text);
-  font: 13px/1.65 var(--sans, sans-serif);
-  box-shadow: 0 12px 40px color-mix(in srgb, var(--ui-text) 14%, transparent);
+  font: 400 14px/20px var(--sans, sans-serif);
+  box-shadow: var(--ui-shadow);
 }
 .el-message-box__header {
   flex-shrink: 0;
   position: relative;
-  padding: 20px 48px 10px 22px;
+  padding: 24px 48px 12px 24px;
 }
 .el-message-box__header.show-close { padding-right: 64px; }
 .el-message-box__title {
   color: var(--ui-text);
-  font: 650 17px/1.45 var(--sans, sans-serif);
-  letter-spacing: -.02em;
+  font: 600 18px/28px var(--sans, sans-serif);
+  letter-spacing: -0.015em;
 }
 :root[data-theme='ink'] .el-message-box__title {
   font-family: 'Songti SC', 'STSong', 'Noto Serif SC', serif;
   font-weight: 700;
-  letter-spacing: .02em;
+  letter-spacing: 0.02em;
 }
 .el-message-box__headerbtn {
   top: 16px;
-  right: 14px;
+  right: 16px;
   width: 32px;
   height: 32px;
   border-radius: 8px;
-  transition: background 160ms ease;
+  transition: background 300ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 .el-message-box__headerbtn:hover { background: var(--ui-hover); }
 .el-message-box__content {
   min-height: 0;
   overflow-y: auto;
-  padding: 4px 22px 18px;
+  padding: 4px 24px 24px;
 }
-.el-message-box__container {
-  display: block;
-}
-.el-message-box__status {
-  display: none;
-}
-.el-message-box__message {
-  padding: 0;
-}
+.el-message-box__container { display: block; }
+.el-message-box__status { display: none; }
+.el-message-box__message { padding: 0; }
 .el-message-box__message p {
   margin: 0;
   color: var(--ui-secondary);
-  font-size: 13px;
-  line-height: 1.75;
+  font-size: 14px;
+  line-height: 22px;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
@@ -67,18 +61,24 @@
   display: flex;
   flex-shrink: 0;
   justify-content: flex-end;
-  gap: 10px;
-  padding: 14px 22px 18px;
+  gap: 8px;
+  padding: 16px 24px;
   border-top: 1px solid var(--ui-divider);
   background: var(--ui-surface);
 }
 .el-message-box__btns .el-button {
   height: 36px;
   margin: 0;
-  padding-inline: 18px;
+  padding: 8px 16px;
   border-radius: 8px;
-  font: 550 13px var(--sans, sans-serif);
+  font: 500 14px/20px var(--sans, sans-serif);
+  transition:
+    background 300ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 300ms cubic-bezier(0.22, 1, 0.36, 1),
+    color 300ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 300ms cubic-bezier(0.22, 1, 0.36, 1);
 }
+.el-message-box__btns .el-button:active:not(.is-disabled) { transform: scale(0.98); }
 .el-message-box__btns .el-button--default {
   border-color: var(--ui-border);
   background: var(--ui-surface);

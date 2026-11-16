@@ -35,16 +35,32 @@ const modeDetails: Record<AgentRunMode, { label: string; detail: string }> = {
   ask: { label: 'Ask 模式', detail: '只读回答当前问题' },
 };
 
+export interface AgentFolderMentionItem {
+  path: string;
+  fileCount: number;
+}
+
+export interface AgentSymbolMentionItem {
+  name: string;
+  kind: string;
+  path: string;
+  line: number;
+  exported?: boolean;
+  signature?: string;
+}
+
 export function shouldPrioritizeSkillMentions(query: string | undefined) {
   const term = query?.trim() || '';
   if (!term) return false;
-  if (/^(?:jira(?:任务)?|项目|接口|合入|文档|confluence)(?:[:：\s]|$)/i.test(term)) return false;
+  if (/^(?:jira(?:任务)?|项目|接口|合入|文档|confluence|folder|dir|目录|symbol|sym|fn|符号|函数)(?:[:：\s]|$)/i.test(term)) return false;
   return !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*-\d+$/i.test(term);
 }
 
 export function useAgentMentions(draft: Ref<string>, context: () => AgentMentionContext, disabled: () => boolean,
   onSelectMode: (mode: AgentRunMode) => void, providers = useIntegrationPlugins().mentions) {
   const files = shallowRef<string[]>([]);
+  const folders = shallowRef<AgentFolderMentionItem[]>([]);
+  const symbols = shallowRef<AgentSymbolMentionItem[]>([]);
   const skills = shallowRef<AgentSkillOption[]>([]);
   const notes = shallowRef<AgentNote[]>([]);
   const documents = shallowRef<AgentMentionOption[]>([]);
@@ -57,8 +73,27 @@ export function useAgentMentions(draft: Ref<string>, context: () => AgentMention
   const prioritizeSkills = computed(() => shouldPrioritizeSkillMentions(mentionQuery.value));
   const options = computed<AgentMentionOption[]>(() => {
     const state = context();
-    const term = (mentionQuery.value || '').toLowerCase();
+    const rawTerm = mentionQuery.value || '';
+    const term = rawTerm.toLowerCase();
     if (documentProvider(term)) return documents.value;
+    const explicitFolder = /^(?:folder|dir|目录)[:：]/i.test(rawTerm);
+    const explicitSymbol = /^(?:symbol|sym|fn|符号|函数)[:：]/i.test(rawTerm);
+    const folderOptions = folders.value.map(folder => ({
+      id: `folder:${folder.path}`,
+      kind: 'folder' as const,
+      label: folder.path,
+      detail: `工作区目录模块 · ${folder.fileCount} 个文件`,
+      value: folder.path,
+    }));
+    const symbolOptions = symbols.value.map(sym => ({
+      id: `symbol:${sym.path}:${sym.line}:${sym.name}`,
+      kind: 'symbol' as const,
+      label: `${sym.name} (${sym.kind})`,
+      detail: `${sym.path}:${sym.line}${sym.signature ? ` · ${sym.signature}` : ''}`,
+      value: `${sym.path}:${sym.line}`,
+    }));
+    if (explicitFolder) return folderOptions;
+    if (explicitSymbol) return symbolOptions;
     const availableModes = state.modeLocked && state.selectedMode ? [state.selectedMode] : state.modes;
     const modes = availableModes.filter((mode) => {
       const item = modeDetails[mode];
@@ -76,18 +111,18 @@ export function useAgentMentions(draft: Ref<string>, context: () => AgentMention
     const fileOptions = files.value.map((file) => ({ id: `file:${file}`, kind: 'file' as const, label: file, detail: '工作区文件', value: file }));
     const noteOptions = notes.value.map(note => ({ id: note.reference, kind: 'note' as const, label: note.title, detail: note.path, value: note.reference }));
     return prioritizeSkills.value
-      ? [...skillOptions, ...noteOptions, ...modes, ...fileOptions]
-      : [...business, ...modes, ...skillOptions, ...noteOptions, ...fileOptions];
+      ? [...skillOptions, ...noteOptions, ...modes, ...symbolOptions, ...folderOptions, ...fileOptions]
+      : [...business, ...modes, ...skillOptions, ...noteOptions, ...folderOptions, ...symbolOptions, ...fileOptions];
   });
   const activeOption = computed(() => options.value[activeIndex.value]);
 
   watch([mentionQuery, () => context().workspacePath, () => context().provider, disabled, providers], ([query, workspace, provider, isDisabled], _previous, onCleanup) => {
     documentError.value = '';
     documents.value = [];
-    if (query === undefined || isDisabled) { open.value = false; files.value = []; skills.value = []; notes.value = []; loading.value = false; return; }
+    if (query === undefined || isDisabled) { open.value = false; files.value = []; folders.value = []; symbols.value = []; skills.value = []; notes.value = []; loading.value = false; return; }
     open.value = true;
     activeIndex.value = 0;
-    files.value = []; skills.value = []; notes.value = [];
+    files.value = []; folders.value = []; symbols.value = []; skills.value = []; notes.value = [];
     const controller = new AbortController();
     const timer = setTimeout(async () => {
       loading.value = true;
@@ -104,25 +139,30 @@ export function useAgentMentions(draft: Ref<string>, context: () => AgentMention
         const params = new URLSearchParams({ workspacePath: workspace, provider, q: query });
         const [workspaceResult, noteResult] = await Promise.allSettled([
           workspace ? fetch(`/api/agent-runtimes/mentions?${params}`, { signal: controller.signal }).then(async response => {
-            const data = await response.json() as { message?: string; files?: unknown; skills?: unknown };
+            const data = await response.json() as { message?: string; files?: unknown; skills?: unknown; folders?: unknown; symbols?: unknown };
             if (!response.ok) throw new Error(data.message || '候选项读取失败');
             return data;
-          }) : Promise.resolve({ files: [], skills: [] }),
+          }) : Promise.resolve({ files: [], skills: [], folders: [], symbols: [] }),
           noteRequest<{ notes: AgentNote[] }>(`notes?q=${encodeURIComponent(query)}`, undefined, controller.signal),
         ]);
         if (controller.signal.aborted) return;
-        const data = workspaceResult.status === 'fulfilled' ? workspaceResult.value : { files: [], skills: [] };
+        const data = workspaceResult.status === 'fulfilled' ? workspaceResult.value : { files: [], skills: [], folders: [], symbols: [] };
         notes.value = noteResult.status === 'fulfilled' ? noteResult.value.notes : [];
         files.value = Array.isArray(data.files) ? data.files.filter((item: unknown): item is string => typeof item === 'string') : [];
+        folders.value = Array.isArray(data.folders) ? data.folders.filter((item: unknown): item is AgentFolderMentionItem => !!item && typeof item === 'object'
+          && typeof (item as AgentFolderMentionItem).path === 'string' && typeof (item as AgentFolderMentionItem).fileCount === 'number') : [];
+        symbols.value = Array.isArray(data.symbols) ? data.symbols.filter((item: unknown): item is AgentSymbolMentionItem => !!item && typeof item === 'object'
+          && typeof (item as AgentSymbolMentionItem).name === 'string' && typeof (item as AgentSymbolMentionItem).path === 'string'
+          && typeof (item as AgentSymbolMentionItem).line === 'number') : [];
         skills.value = Array.isArray(data.skills) ? data.skills.filter((item: unknown): item is AgentSkillOption => !!item && typeof item === 'object'
           && typeof (item as AgentSkillOption).invocation === 'string' && typeof (item as AgentSkillOption).name === 'string') : [];
         activeIndex.value = 0;
       } catch {
-        if (!controller.signal.aborted) { files.value = []; skills.value = []; notes.value = []; }
+        if (!controller.signal.aborted) { files.value = []; folders.value = []; symbols.value = []; skills.value = []; notes.value = []; }
       } finally { if (!controller.signal.aborted) loading.value = false; }
     }, 120);
     onCleanup(() => { clearTimeout(timer); controller.abort(); });
-  });
+  }, { immediate: true });
 
   function replaceTrigger(replacement = '') {
     draft.value = draft.value.replace(/(^|\s)@([^\s@"]*)$/, (_match, prefix: string) => `${prefix}${replacement}`);

@@ -9,11 +9,7 @@ import { canonicalProjectPath } from './tasks.mjs';
 import { validateTaskBranches } from './task-workspace.mjs';
 import { writePrivateJson } from './ui-state.mjs';
 
-export function defaultDesignDestination() {
-  const { CONFLUENCE_BASE_URL: site, DELIVERY_DESIGN_SPACE_KEY: spaceKey,
-    DELIVERY_DESIGN_PARENT_ID: parentId, DELIVERY_DESIGN_PARENT_TITLE: title } = process.env;
-  return site && spaceKey && parentId && title ? normalizeDesignDestination({ site, spaceKey, parentId, title }) : null;
-}
+export const defaultDesignDestination = Object.freeze({ site: 'https://confluence.hahabianli.com', spaceKey: 'SOP', parentId: '57521475', title: '技术方案-2026', url: 'https://confluence.hahabianli.com/pages/viewpage.action?pageId=57521475' });
 const execute = promisify(execFile);
 const git = async (path, args) => (await execute('git', ['-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', '-C', path, ...args], {
   env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))), GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' },
@@ -53,7 +49,7 @@ export function createProjectPreferences({ dataDirectory }) {
     try { const records = JSON.parse(await readFile(file, 'utf8')); if (!records || Array.isArray(records) || typeof records !== 'object') throw new Error(); return records; }
     catch (error) { if (error.code === 'ENOENT') return {}; throw new Error('项目偏好无法读取，未覆盖原记录。'); }
   };
-  const view = (identity, item) => ({ ...identity, revision: item?.revision || 'new', settings: item?.settings || { baseBranch: '', designMode: 'default' }, designDestination: item?.settings?.designMode === 'local' ? null : item?.settings?.designMode === 'custom' ? item.settings.designDestination : defaultDesignDestination(), updatedAt: item?.updatedAt || '' });
+  const view = (identity, item) => ({ ...identity, revision: item?.revision || 'new', settings: item?.settings || { baseBranch: '', designMode: 'default' }, designDestination: item?.settings?.designMode === 'local' ? null : item?.settings?.designMode === 'custom' ? item.settings.designDestination : defaultDesignDestination, updatedAt: item?.updatedAt || '' });
   return {
     async get({ projectPath }) { const identity = await projectIdentity(projectPath); return view(identity, (await load())[identity.scopeId]); },
     async set({ projectPath, scopeId, expectedRevision, settings }) {

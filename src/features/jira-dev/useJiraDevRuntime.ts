@@ -24,12 +24,12 @@ export function useJiraDevRuntime(workflow: JiraDevWorkflow, projectCount: () =>
   const automatic = computed({ get: () => selection.collaborationMode !== 'manual', set: (value: boolean) => { selection.collaborationMode = value ? 'group' : 'manual'; } });
   const query = useQuery({ queryKey: ['jira-dev-runtimes'], retry: false, staleTime: 60_000,
     queryFn: async ({ signal }): Promise<AgentRuntimeHealth[]> => {
-      const response = await fetch('/api/agent-runtimes', { signal });
+      const response = await fetch('/api/agent-runtimes/status', { signal });
       const data = await response.json();
       if (!response.ok) throw new Error(data.message || '执行器状态读取失败');
       return data.runtimes;
     } });
-  const teamQuery = useQuery({ queryKey: ['agent-group-chat'], queryFn: ({ signal }) => readGroupDashboard(signal), enabled: automatic, retry: false, refetchInterval: 3000 });
+  const teamQuery = useQuery({ queryKey: ['agent-group-chat'], queryFn: ({ signal }) => readGroupDashboard(signal), enabled: automatic, retry: false, refetchInterval: 15_000, refetchIntervalInBackground: false });
   const team = computed(() => teamQuery.data.value?.config);
   const teamMembers = computed(() => team.value?.members.filter(member => member.enabled) || []);
   watch([automatic, team], ([enabled, value]) => { if (enabled && value) selection.groupConfigRevision = value.revision; else delete selection.groupConfigRevision; }, { immediate: true });

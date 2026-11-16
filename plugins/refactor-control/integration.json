@@ -1,0 +1,22 @@
+{
+  "id": "refactor-control",
+  "name": "重构管理",
+  "description": "大型专项重构分批推进、遗留问题追踪与回归复测台",
+  "local": true,
+  "prefix": "REFACTOR_CONTROL",
+  "capabilities": [],
+  "views": [
+    {
+      "id": "integration-execution",
+      "label": "重构管理",
+      "path": "/refactor/control",
+      "section": "execution",
+      "component": "panel"
+    }
+  ],
+  "sourceKeys": [],
+  "apiPrefixes": [
+    "/api/agent-runtimes/refactor-control"
+  ],
+  "apiPaths": []
+}

@@ -23,6 +23,11 @@ const runSchema = z.object({ id: z.uuid(), requestId: z.uuid(), bindingId: z.uui
 const stateSchema = z.object({ bindings: z.array(storedBinding), runs: z.array(runSchema) }).strict();
 const startSchema = z.object({ bindingId: z.uuid(), requestId: z.uuid(), parameters: z.record(z.string().max(200), z.union([z.string().max(20_000), z.boolean()])),
   acknowledgeUnknown: z.boolean().optional() }).strict();
+const resolveRunSchema = z.object({
+  id: z.uuid(),
+  resolution: z.enum(['cancelled', 'failed']),
+  note: z.string().trim().max(500).optional(),
+}).strict();
 const active = (run: DeploymentRun) => ['dispatching', 'queued', 'running'].includes(run.status);
 const unknownMessage = '提交结果待确认，请先到 Jenkins 核对；确认没有同次执行后再重新发起';
 interface Options {
@@ -120,16 +125,33 @@ export async function createJenkinsDeployments(directory: string, options: Optio
       const api = client();
       if (!run.buildNumber) {
         if (!run.queueId) throw new Error('部署记录缺少排队编号');
-        const queue = await api.json(`/queue/item/${run.queueId}/api/json?tree=id,cancelled,why,executable[number,url]`);
-        if (queue.id !== undefined && queue.id !== run.queueId) throw new Error('Jenkins 排队编号不匹配');
-        if (queue.cancelled === true) return updateRun(id, { status: 'cancelled', result: 'CANCELLED', error: undefined });
-        if (!queue.executable) return updateRun(id, { error: undefined });
-        const executable = queue.executable as { number?: unknown; url?: unknown };
-        if (typeof executable.url !== 'string') throw new Error('Jenkins 未返回本次构建地址');
-        const build = buildFromUrl(executable.url, run.jobFullName, api.baseUrl);
-        if (executable.number !== build.number) throw new Error('Jenkins 构建编号不匹配');
-        run.buildNumber = build.number;
-        run.buildUrl = build.url;
+        let queue: Record<string, unknown> | undefined;
+        try {
+          queue = await api.json(`/queue/item/${run.queueId}/api/json?tree=id,cancelled,why,executable[number,url]`);
+        } catch (queueErr) {
+          // Jenkins 队列项在构建完成后被回收（HTTP 404）时，按 queueId 回查最近构建列表恢复真实构建号（修复 P1-17）
+          if ((queueErr as { httpStatus?: number }).httpStatus !== 404) throw queueErr;
+          const jobBuilds = await api.json(`${jenkinsJobPath(run.jobFullName)}/api/json?tree=${encodeURIComponent('builds[number,queueId,url]{0,25}')}`);
+          const matchedBuild = Array.isArray(jobBuilds.builds)
+            ? (jobBuilds.builds as { number?: unknown; queueId?: unknown; url?: unknown }[]).find(b => b?.queueId === run.queueId)
+            : undefined;
+          if (!matchedBuild || typeof matchedBuild.url !== 'string') throw queueErr;
+          const recovered = buildFromUrl(matchedBuild.url, run.jobFullName, api.baseUrl);
+          if (matchedBuild.number !== recovered.number) throw new Error('Jenkins 构建编号不匹配');
+          run.buildNumber = recovered.number;
+          run.buildUrl = recovered.url;
+        }
+        if (queue) {
+          if (queue.id !== undefined && queue.id !== run.queueId) throw new Error('Jenkins 排队编号不匹配');
+          if (queue.cancelled === true) return updateRun(id, { status: 'cancelled', result: 'CANCELLED', error: undefined });
+          if (!queue.executable) return updateRun(id, { error: undefined });
+          const executable = queue.executable as { number?: unknown; url?: unknown };
+          if (typeof executable.url !== 'string') throw new Error('Jenkins 未返回本次构建地址');
+          const build = buildFromUrl(executable.url, run.jobFullName, api.baseUrl);
+          if (executable.number !== build.number) throw new Error('Jenkins 构建编号不匹配');
+          run.buildNumber = build.number;
+          run.buildUrl = build.url;
+        }
       }
       const result = await api.json(`${jenkinsJobPath(run.jobFullName)}/${run.buildNumber}/api/json?tree=number,queueId,building,result,url`);
       if (result.number !== run.buildNumber || result.queueId !== run.queueId) throw new Error('Jenkins 构建未匹配本次排队编号');
@@ -270,12 +292,40 @@ export async function createJenkinsDeployments(directory: string, options: Optio
         await persist();
         schedulePoll();
       } catch (error) {
-        run.status = 'unknown';
-        run.updatedAt = new Date().toISOString();
-        run.error = `${unknownMessage}。${error instanceof Error ? redactJenkins(error.message, credentials) : ''}`;
+        const httpStatus = (error as { httpStatus?: number }).httpStatus;
+        const cleanErr = error instanceof Error ? redactJenkins(error.message, credentials) : '';
+        if (typeof httpStatus === 'number' && httpStatus >= 400 && httpStatus < 500) {
+          // 明确的 HTTP 4xx 拒绝表明 Jenkins 未接受本次构建，直接记为失败而非永久锁在 unknown（修复 P1-17）
+          run.status = 'failed';
+          run.result = `HTTP_${httpStatus}`;
+          run.updatedAt = new Date().toISOString();
+          run.error = cleanErr || `Jenkins 拒绝本次构建请求（HTTP ${httpStatus}）`;
+        } else {
+          run.status = 'unknown';
+          run.updatedAt = new Date().toISOString();
+          run.error = `${unknownMessage}。${cleanErr}`;
+        }
         await persist();
       }
       return structuredClone(run);
+    })),
+    resolveRun: (input: unknown) => task(() => exclusive(async () => {
+      const data = resolveRunSchema.parse(input);
+      const run = findRun(data.id);
+      if (!['dispatching', 'queued', 'running', 'unknown'].includes(run.status)) {
+        throw new Error('该部署记录已处于终态，无需人工解除');
+      }
+      const index = state.runs.indexOf(run);
+      const reasonSuffix = data.note ? `（说明：${data.note}）` : '';
+      state.runs[index] = {
+        ...run,
+        status: data.resolution,
+        result: data.resolution === 'cancelled' ? 'MANUAL_CANCELLED' : 'MANUAL_FAILED',
+        error: `已由人工核对并标记为${data.resolution === 'cancelled' ? '已取消' : '已失败'}${reasonSuffix}`,
+        updatedAt: new Date().toISOString(),
+      };
+      await persist();
+      return structuredClone(state.runs[index]!);
     })),
     getRun,
     log: (id: string, start: number) => task(async (): Promise<DeploymentLog> => {

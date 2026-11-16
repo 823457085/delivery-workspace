@@ -1,6 +1,6 @@
 ---
 name: go-service-code-review
-description: Review Go backend services for team middleware engineering standards, including DDD layering, Bootstrap Adapter startup, Nacos configuration, Makefile/Docker conventions, logging, testing, and deployment readiness. Use for Go service code review, G3 提测准入 review, backend refactoring review, or implementation-plan validation.
+description: Review Go backend services for Raytheon middleware engineering standards, including DDD layering, Bootstrap Adapter startup, Nacos configuration, Makefile/Docker conventions, logging, testing, and deployment readiness. Use for Go service code review, G3 提测准入 review, backend refactoring review, or implementation-plan validation.
 ---
 
 # Go Service Code Review

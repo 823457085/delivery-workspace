@@ -6,6 +6,7 @@ import { onBeforeUnmount, onMounted, shallowRef } from 'vue';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query';
 import type { Dashboard, Scenario } from '../../../shared/types';
 import type { WorkflowRunContext } from '../../../shared/types';
+import { openSharedEventSource } from '../../shared/sse/sharedEventSource';
 
 async function workflowApi<T>(url: string, payload?: unknown): Promise<T> {
   const response = await fetch(url, payload === undefined ? {} : {
@@ -29,7 +30,7 @@ export function useAgentWorkflow() {
   });
   let eventSource: EventSource | undefined;
   onMounted(() => {
-    eventSource = new EventSource('/api/workflow/events');
+    eventSource = openSharedEventSource('/api/workflow/events');
     eventSource.addEventListener('open', () => { streamConnected.value = true; streamStatus.value = 'connected'; });
     eventSource.addEventListener('error', () => { streamConnected.value = false; streamStatus.value = 'reconnecting'; });
     eventSource.addEventListener('refresh', () => { void client.invalidateQueries({ queryKey: ['dashboard'] }); });

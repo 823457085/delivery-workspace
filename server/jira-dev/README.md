@@ -1,6 +1,6 @@
 # Jira 研发助手模块（当前同步版本见 `sync-state.json`）
 
-来源：`jira-dev-workbench 插件源码` 与 `plugins/jira-dev-workbench/skills`（1.2.1）。`*.mjs` 保持插件原实现，便于后续逐文件对照同步；工作台只经 `index.mjs` 使用，类型见 `index.d.mts`。
+来源：`~/Documents/Codex/2026-10-14/jira-dev-workbench-plugin/src` 与 `plugins/jira-dev-workbench/skills`（1.2.1）。`*.mjs` 保持插件原实现，便于后续逐文件对照同步；工作台只经 `index.mjs` 使用，类型见 `index.d.mts`。
 
 工作台改动不在这些文件内：
 
@@ -16,5 +16,5 @@
 
 - 读取插件更新站 `latest.json`，用插件内置 Ed25519 公钥校验签名；安装包同站 HTTPS，核对大小、SHA-256 与 `MANIFEST.sha256` 每个文件。
 - `skills/` 取自已校验的安装包，下次启动会话即生效。
-- 安装包只有打包后的 `server.mjs`，同名 `*.mjs`（含新增的相对依赖）取自本机插件源码（通过 `JIRA_DEV_PLUGIN_SOURCE` 指定），仅在其版本与云端一致时同步，并先在临时副本中导入 `index.mjs` 校验；需重启服务生效。
+- 安装包只有打包后的 `server.mjs`，同名 `*.mjs`（含新增的相对依赖）取自本机插件源码（默认 `~/Documents/Codex/2026-10-14/jira-dev-workbench-plugin`，可用 `JIRA_DEV_PLUGIN_SOURCE` 覆盖），仅在其版本与云端一致时同步，并先在临时副本中导入 `index.mjs` 校验；需重启服务生效。
 - 替换前备份到 `.data/jira-dev/sync-backups/`。表单、启动流程与 `jira-dev-prompt.ts` 等工作台改写部分不会自动改动，新版界面功能仍需人工移植并补测试。

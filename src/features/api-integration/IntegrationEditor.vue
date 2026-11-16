@@ -7,7 +7,7 @@ const emit = defineEmits<{ save: [value: IntegrationUpdate]; close: [] }>();
 const draft = reactive(structuredClone(props.value));
 </script>
 <template>
-  <el-drawer :model-value="true" :title="title" size="min(620px, 94vw)" :close-on-click-modal="false" :close-on-press-escape="!saving" :show-close="!saving" @close="emit('close')">
+  <el-drawer :model-value="true" :title="title" size="min(620px, 94vw)" append-to-body :close-on-click-modal="false" :close-on-press-escape="!saving" :show-close="!saving" @close="emit('close')">
     <el-form label-position="top" :disabled="saving" @submit.prevent="emit('save', draft)">
       <template v-if="draft.kind === 'stage'">
         <el-form-item label="负责人"><el-input v-model="draft.record.owner" aria-label="负责人" /></el-form-item>

@@ -1,49 +1,51 @@
 {
-  "sourceWorkspacePath": "/fixture/project",
+  "sourceWorkspacePath": "/workspace/ops-data-monitoring",
   "round": 0,
   "plan": {
     "templateId": "verification",
     "acceptanceCriteria": [
       {
         "id": "AC-1",
-        "text": "示例项目能够构建",
-        "source": "合成验收范围",
+        "text": "核对本轮原目录构建日志及result.json：pnpm build退出码为0，包含类型检查和生产打包成功记录。",
+        "source": "用户要求修复本地构建报错；.delivery-artifacts/original-build-check-20261106-125817/",
         "stage": "verify"
       },
       {
         "id": "AC-2",
-        "text": "复查示例改动",
-        "source": "合成验收范围",
+        "text": "独立核对现有差异仅为3个组件的4处事件参数类型标注，保留strict和事件转发行为。当前git diff --check已通过。",
+        "source": "截图中的4处TS7006；当前git diff；AGENTS.md",
         "stage": "review"
       }
     ]
   },
   "nodes": [
     {
-      "id": "fixture-verify",
+      "id": "e9f6a9a3-5324-4c1b-bc90-85fce60baf87",
       "stage": "verify",
       "profileId": "verifier",
       "status": "completed",
-      "dependencies": [],
+      "dependencies": [
+        "ceceb739-140a-4607-bc86-386797f9a25c"
+      ],
       "attempt": 1,
       "round": 0,
-      "result": "```delivery-report\n{\n  \"version\": 1,\n  \"workspacePath\": \"/fixture/project\",\n  \"validationEvidence\": {\n    \"build\": {\n      \"status\": \"passed\",\n      \"evidence\": \"示例构建命令退出码为 0\",\n      \"sha\": \"\"\n    },\n    \"tests\": {\n      \"status\": \"pending\",\n      \"evidence\": \"本节点未重新运行单元测试\",\n      \"sha\": \"\"\n    },\n    \"browser\": {\n      \"status\": \"pending\",\n      \"evidence\": \"尚待验证\",\n      \"sha\": \"\"\n    },\n    \"remote\": {\n      \"status\": \"pending\",\n      \"evidence\": \"尚待验证\",\n      \"sha\": \"\"\n    },\n    \"deployment\": {\n      \"status\": \"pending\",\n      \"evidence\": \"尚待验证\",\n      \"sha\": \"\"\n    }\n  },\n  \"taskResult\": {\n    \"role\": \"verifier\",\n    \"status\": \"succeeded\",\n    \"summary\": \"示例项目完成类型修复，本轮原目录构建通过。\",\n    \"acceptance\": [\n      {\n        \"id\": \"AC-1\",\n        \"status\": \"passed\",\n        \"evidence\": \"示例构建完成\"\n      },\n      {\n        \"id\": \"AC-2\",\n        \"status\": \"not_run\",\n        \"evidence\": \"等待独立审查\"\n      }\n    ]\n  }\n}\n```",
-      "createdAt": "2026-01-01T00:00:00.000Z",
-      "updatedAt": "2026-01-01T00:00:00.000Z"
+      "result": "```delivery-report\n{\n  \"version\": 1,\n  \"workspacePath\": \"/workspace/ops-data-monitoring\",\n  \"taskPlan\": {\n    \"templateId\": \"verification\",\n    \"reason\": \"核对本轮原目录构建证据及当前文件，不重复构建或修改源码。\",\n    \"steps\": [\n      \"核对构建日志、退出码和实际产物\",\n      \"比较原目录与验证副本的跟踪文件，保存证据\"\n    ],\n    \"questions\": []\n  },\n  \"validationEvidence\": {\n    \"build\": {\n      \"status\": \"passed\",\n      \"evidence\": \"已核对本轮原目录 pnpm build 日志及 result.json：退出码0，包含类型检查和生产打包成功记录。实际 dist/index.html 存在，11094字节。本验证节点未重复构建。\",\n      \"log\": \".delivery-artifacts/original-build-check-20261106-125817/build.log\",\n      \"sha\": \"00b2d571d4db16d4da9b134502a11c224bf5a5e5d89eac225cdfeb55c42a95ad\"\n    },\n    \"tests\": {\n      \"status\": \"pending\",\n      \"evidence\": \"本节点未重新运行单元测试；当前验收仅核对本轮构建证据。\",\n      \"sha\": \"\"\n    },\n    \"browser\": {\n      \"status\": \"pending\",\n      \"evidence\": \"未运行浏览器验证。\",\n      \"sha\": \"\"\n    },\n    \"remote\": {\n      \"status\": \"pending\",\n      \"evidence\": \"未运行远端或真实接口验证。\",\n      \"sha\": \"\"\n    },\n    \"deployment\": {\n      \"status\": \"pending\",\n      \"evidence\": \"未执行部署。\",\n      \"sha\": \"\"\n    }\n  },\n  \"verificationCommands\": [\n    \"git status --short\",\n    \"git diff --stat\",\n    \"git diff --check\",\n    \"git diff -- src/features/device/_shared/temperature-control/DeviceTemperatureControlPanel.vue src/shared/ui/AppForm/AppFormField.vue src/shared/ui/AppPagination/AppPagination.vue\",\n    \"python3 -（核对构建证据、产物及原目录与副本的910个跟踪文件哈希，退出码0）\"\n  ],\n  \"taskResult\": {\n    \"role\": \"verifier\",\n    \"status\": \"succeeded\",\n    \"summary\": \"原项目当前已包含4处TS7006类型修复，本轮原目录完整构建通过。910个跟踪文件与验证副本逐文件一致。本节点未修改源码、未重复构建，未提交或推送。Node版本及资源包体积警告未阻断构建。\",\n    \"acceptance\": [\n      {\n        \"id\": \"AC-1\",\n        \"status\": \"passed\",\n        \"evidence\": \"构建日志与result.json均记录pnpm build退出0；日志包含vue-tsc、tsc及Vite生产打包成功，实际产物存在。核验记录：.delivery-artifacts/verifier-original-evidence-20261106/evidence.json。\"\n      },\n      {\n        \"id\": \"AC-2\",\n        \"status\": \"not_run\",\n        \"evidence\": \"该项stage=review，留待独立审查。本节点已读取差异：仅3个组件4处参数类型标注，strict:true保留，git diff --check退出0；原目录与副本差异一致。记录：.delivery-artifacts/verifier-original-evidence-20261106/source.diff。\"\n      }\n    ],\n    \"blockers\": []\n  }\n}\n```",
+      "createdAt": "2026-11-06T04:58:52.932Z",
+      "updatedAt": "2026-11-06T05:11:01.694Z"
     },
     {
-      "id": "fixture-review",
+      "id": "d9aec5d1-3297-41d5-9725-1fcc4ac16db9",
       "stage": "review",
       "profileId": "reviewer",
       "status": "completed",
       "dependencies": [
-        "fixture-verify"
+        "e9f6a9a3-5324-4c1b-bc90-85fce60baf87"
       ],
       "attempt": 1,
       "round": 0,
-      "result": "```delivery-report\n{\n  \"version\": 1,\n  \"taskResult\": {\n    \"role\": \"reviewer\",\n    \"status\": \"succeeded\",\n    \"verdict\": \"approved\",\n    \"summary\": \"已复查合成改动。\",\n    \"acceptance\": [\n      {\n        \"id\": \"AC-2\",\n        \"status\": \"passed\",\n        \"evidence\": \"示例改动符合验收范围\"\n      }\n    ]\n  }\n}\n```",
-      "createdAt": "2026-01-01T00:00:00.000Z",
-      "updatedAt": "2026-01-01T00:00:00.000Z"
+      "result": "```delivery-report\n{\n  \"version\": 1,\n  \"taskResult\": {\n    \"role\": \"reviewer\",\n    \"status\": \"succeeded\",\n    \"verdict\": \"approved\",\n    \"summary\": \"独立审查通过。当前原目录相对 HEAD 1e4a06ce240a62e771e74537a98b0a474b73fcfa 的工作树为 b00e55665983e7c3e81efa495d951ffa90e6c91f，仅 3 个文件共 4 处模板事件参数类型标注。标注与既有 emit 及 Element Plus 事件首参一致，运行时仍原样转发；tsconfig.app.json 的 strict 仍为 true 且不在 diff 中。本轮构建日志退出码为 0，无 TS7006。审查未改源码、未重复构建、未提交或推送。\",\n    \"findings\": [],\n    \"blockers\": [],\n    \"acceptance\": [\n      {\n        \"id\": \"AC-2\",\n        \"status\": \"passed\",\n        \"evidence\": \"已阅读 git diff、三处源码、emit/类型契约、element-plus 声明、tsconfig.app.json 与本轮构建日志。git diff --stat 为 3 files changed, 4 insertions(+), 4 deletions(-)；git diff --check 退出码 0；git status 仅这 3 个已修改文件及未跟踪的 .delivery-artifacts/。用临时 index 重算工作树为 b00e55665983e7c3e81efa495d951ffa90e6c91f，HEAD 为 1e4a06ce240a62e771e74537a98b0a474b73fcfa，与本轮候选一致，真实 index 未改。diff 仅：DeviceTemperatureControlPanel.vue:43 标注 (value: string | number) 后仍 emit('modeChange', door, value)，与同文件第 17 行 emit、types.ts:45 的 DeviceTemperatureModeOption.value、useRemoteTemperatureControl.ts:295 的 switchMode(controlMode: string | number) 一致；AppFormField.vue:180 标注 (value: number | undefined) 后仍只把首参传给第 105 行 handleChange，该类型可赋给 types.ts:6 的 AppFormFieldValue，并与 element-plus input-number.d.ts:139 的 change 首参一致；AppPagination.vue:68-69 标注 (value: number) 后仍 emit('currentChange', value) 与 emit('sizeChange', value)，与同文件第 34-35 行及 pagination.d.ts:46、48 一致。三文件无 any、ts-ignore、ts-expect-error、ts-nocheck、el-dialog；diff 无新增 import、接口文案改写或日期时区位移。tsconfig.app.json:14 strict 为 true 且不在 diff 中。项目为 L-FSD 的 ops-data-monitoring，仓库无 review-checklist.md，已按 AGENTS.md 核对单向依赖、Page 查询、Store 请求、el-dialog、接口文案和日期位移，本次差异未触及。构建日志 .delivery-artifacts/original-build-check-20261106-125817/build.log（sha256 00b2d571d4db16d4da9b134502a11c224bf5a5e5d89eac225cdfeb55c42a95ad）记录原目录 pnpm build 先执行 vue-tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.node.json，再 vite 生产打包，日志中 TS7006 与 error TS 均为 0，含 ✓ built in 2.00s 与 EXIT_CODE=0；dist/index.html 为 11094 字节，mtime 早于日志且三份源码 mtime 早于该构建。审查记录：.delivery-artifacts/review-ac2-20261106/review.json。日志中的 Node engine 警告和 chunk 体积警告未导致失败，也不在这 4 处差异内。\"\n      }\n    ]\n  }\n}\n```",
+      "createdAt": "2026-11-06T04:58:52.932Z",
+      "updatedAt": "2026-11-06T05:14:51.723Z"
     }
   ]
 }

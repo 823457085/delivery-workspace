@@ -648,3 +648,41 @@ test('写入前拒绝未声明字段、无效日期和缺失必填日期，评�
     assert.deepEqual(written, { customfield_10109: '2026-09-30' });
   } finally { await f.close(); }
 });
+
+test('状态生效与评论交接进入不确定状态后，显式人工核对可只读回读解锁并避免重复写评论', async () => {
+  const f = await fixture();
+  try {
+    const originalTransition = f.source.transition, originalComment = f.source.comment;
+    // 1. 状态写入在到达远端前超时，远端仍停留在原状态 '1'
+    f.source.transition = async () => { throw new Error('socket hang up'); };
+    const uncertainStatus = await f.service.applyStatus(f.id, statusInput(f.run.id));
+    assert.equal(uncertainStatus.status, 'uncertain');
+    await assert.rejects(f.service.applyStatus(f.id, statusInput(f.run.id)), /结果不确定/);
+
+    const statusReconciled = await f.service.reconcile(f.id, {
+      runId: f.run.id, target: 'status', confirmed: true, authorization: 'reconcile-jira-handoff',
+    });
+    assert.equal(statusReconciled.statusChange?.status, 'failed');
+    assert.deepEqual(f.writes, []);
+    f.source.transition = originalTransition;
+
+    // 2. 交接评论已写入远端但回执超时，人工确认评论已发布后继续完成流转与指派，不重复发评论
+    let commentCalls = 0;
+    f.source.comment = async () => { commentCalls++; throw new Error('comment response timeout'); };
+    const uncertainHandoff = await f.service.submit(f.id, f.input);
+    assert.equal(uncertainHandoff.status, 'uncertain');
+    assert.equal(commentCalls, 1);
+
+    f.source.comment = originalComment;
+    const handoffReconciled = await f.service.reconcile(f.id, {
+      runId: f.run.id, target: 'handoff', commentOutcome: 'posted', confirmed: true, authorization: 'reconcile-jira-handoff',
+    });
+    assert.equal(handoffReconciled.handoff?.status, 'failed');
+    assert.equal(handoffReconciled.handoff?.commentId, 'manual-confirmed');
+
+    const completed = await f.service.submit(f.id, f.input);
+    assert.equal(completed.status, 'completed');
+    assert.equal(commentCalls, 1);
+    assert.deepEqual(f.writes, ['transition', 'assign']);
+  } finally { await f.close(); }
+});

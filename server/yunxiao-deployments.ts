@@ -71,7 +71,10 @@ export async function createYunxiaoDeployments(directory: string, options: { fet
     try { value = JSON.parse(text); } catch { throw new Error(`云效未返回有效 JSON (${response.status})`); }
     if (!response.ok) {
       const error = value as { message?: unknown; errorMessage?: unknown };
-      throw new Error(redact(typeof error?.message === 'string' ? error.message : typeof error?.errorMessage === 'string' ? error.errorMessage : `云效请求失败 (${response.status})`));
+      throw Object.assign(
+        new Error(redact(typeof error?.message === 'string' ? error.message : typeof error?.errorMessage === 'string' ? error.errorMessage : `云效请求失败 (${response.status})`)),
+        { httpStatus: response.status },
+      );
     }
     return value;
   }
@@ -195,9 +198,41 @@ export async function createYunxiaoDeployments(directory: string, options: { fet
         run.pipelineRunId = String(id); run.status = 'queued';
         await persist();
       } catch (error) {
-        run.status = 'unknown'; run.error = `${unknownMessage}。${redact(error instanceof Error ? error.message : '云效请求未确认')}`; await persist();
+        const httpStatus = (error as { httpStatus?: number }).httpStatus;
+        const cleanErr = redact(error instanceof Error ? error.message : '云效请求未确认');
+        if (typeof httpStatus === 'number' && httpStatus >= 400 && httpStatus < 500) {
+          run.status = 'failed';
+          run.result = `HTTP_${httpStatus}`;
+          run.error = cleanErr;
+        } else {
+          run.status = 'unknown';
+          run.error = `${unknownMessage}。${cleanErr}`;
+        }
+        await persist();
       }
       return structuredClone(run);
+    })),
+    resolveRun: (input: unknown) => task(() => exclusive(async () => {
+      const data = z.object({
+        id: z.uuid(),
+        resolution: z.enum(['cancelled', 'failed']),
+        note: z.string().trim().max(500).optional(),
+      }).strict().parse(input);
+      const current = findRun(data.id);
+      if (!['dispatching', 'queued', 'running', 'unknown'].includes(current.status)) {
+        throw new Error('该云效部署记录已处于终态，无需人工解除');
+      }
+      const reasonSuffix = data.note ? `（说明：${data.note}）` : '';
+      const next: DeploymentRun = {
+        ...current,
+        status: data.resolution,
+        result: data.resolution === 'cancelled' ? 'MANUAL_CANCELLED' : 'MANUAL_FAILED',
+        error: `已由人工核对并标记为${data.resolution === 'cancelled' ? '已取消' : '已失败'}${reasonSuffix}`,
+        updatedAt: new Date().toISOString(),
+      };
+      runs[runs.indexOf(current)] = next;
+      await persist();
+      return structuredClone(next);
     })),
     getRun,
     log: (id: string, jobId: string, start: number) => task(async () => {

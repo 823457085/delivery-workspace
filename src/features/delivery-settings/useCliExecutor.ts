@@ -6,7 +6,7 @@ import type { CliExecutionState } from '../../../shared/cli-execution';
 
 export function useCliExecutor() {
   const client = useQueryClient(), changing = shallowRef(false);
-  const query = useQuery({ queryKey: ['cli-executor'], refetchInterval: 5000, retry: false,
+  const query = useQuery({ queryKey: ['cli-executor'], refetchInterval: 5000, refetchIntervalInBackground: false, retry: false,
     queryFn: async ({ signal }): Promise<CliExecutionState> => {
       const response = await fetch('/api/cli-executor', { signal });
       const data = await response.json();

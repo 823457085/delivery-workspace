@@ -41,6 +41,19 @@ function payloadFields() {
 }
 async function prepare() { await run(async () => { prepared.value = await pluginRequest(`${props.pluginId}/jira-prepare`, { recordId: props.record.id, version: props.record.version, project: project.value, type: type.value, fields: payloadFields() }); }); }
 async function commit() { await run(async () => { outcome.value = await pluginRequest(`${props.pluginId}/jira-commit`, { ticketId: prepared.value.ticketId, confirmed: true }); prepared.value = undefined; emit('updated'); if (outcome.value.status === 'done') ElMessage.success('Jira 已创建并回读确认'); }); }
+async function reconcileOutcome(action: 'auto' | 'not_created') {
+  if (!outcome.value?.ticketId) return;
+  await run(async () => {
+    outcome.value = await pluginRequest(`${props.pluginId}/jira-reconcile`, {
+      ticketId: outcome.value.ticketId,
+      outcome: action,
+      confirmed: true,
+    });
+    emit('updated');
+    if (outcome.value.status === 'done') ElMessage.success(outcome.value.message || '已核对并关联 Jira 任务');
+    else if (outcome.value.status === 'failed') { outcome.value = undefined; ElMessage.info('已确认远端未创建，可重新预览创建'); }
+  });
+}
 async function find() { await run(async () => { linked.value = await pluginRequest(`${props.pluginId}/jira-find?key=${encodeURIComponent(key.value.trim().toUpperCase())}`); }); }
 async function link() { await run(async () => { await pluginRequest(`${props.pluginId}/jira-link`, { recordId: props.record.id, version: props.record.version, key: linked.value!.key, confirmed: true }); emit('updated'); open.value = false; ElMessage.success('已关联现有 Jira 任务，未修改远端内容'); }); }
 </script>
@@ -51,7 +64,14 @@ async function link() { await run(async () => { await pluginRequest(`${props.plu
       <el-input v-model="key" placeholder="Jira 任务编号，如 DEMO-123" :disabled="busy" /><el-button :disabled="busy || !key.trim()" @click="find">读取并核对任务</el-button>
       <div v-if="linked"><h3>{{ linked.key }} · {{ linked.summary }}</h3><a :href="linked.url" target="_blank" rel="noopener">打开 Jira</a><p>只建立本地关联，不修改远端任务。</p><el-button type="primary" :disabled="busy" @click="link">确认关联</el-button></div>
     </template>
-    <template v-else-if="outcome"><p role="status">{{ outcome.status === 'done' ? '创建成功，已保存关联' : outcome.message || '结果待核对' }}</p><a v-if="outcome.result" :href="outcome.result.url" target="_blank" rel="noopener">{{ outcome.result.key }} · {{ outcome.result.summary }}</a></template>
+    <template v-else-if="outcome">
+      <p role="status">{{ outcome.status === 'done' ? '创建成功，已保存关联' : outcome.message || '结果待核对' }}</p>
+      <a v-if="outcome.result" :href="outcome.result.url" target="_blank" rel="noopener">{{ outcome.result.key }} · {{ outcome.result.summary }}</a>
+      <div v-else-if="outcome.status === 'unknown' && outcome.ticketId" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+        <el-button size="small" type="primary" plain :loading="busy" @click="reconcileOutcome('auto')">按核对标记自动回读</el-button>
+        <el-button size="small" :loading="busy" @click="reconcileOutcome('not_created')">已在 Jira 核实未创建，解锁重试</el-button>
+      </div>
+    </template>
     <template v-else-if="prepared"><h3>核对即将提交的内容</h3><p>目标：{{ prepared.site }} · 预览 10 分钟内有效</p><el-table :data="previewRows"><el-table-column prop="label" label="字段" width="150" /><el-table-column prop="value" label="即将提交的内容" /></el-table><p>核对标记：{{ prepared.marker }}</p><el-button :disabled="busy" @click="prepared = undefined">返回修改</el-button><el-button type="primary" :loading="busy" @click="commit">确认创建 Jira 任务</el-button></template>
     <el-form v-else label-position="top" :disabled="busy">
       <el-form-item label="Jira 项目"><el-select v-model="project" filterable @change="selectProject"><el-option v-for="p in projects" :key="p.key" :value="p.key" :label="`${p.key} · ${p.name}`" /></el-select></el-form-item>

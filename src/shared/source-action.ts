@@ -1,6 +1,6 @@
 /** 所有原系统写操作共用确认、单次提交和冲突刷新策略；与 UI 解耦便于隔离验证，不自动重试业务写入。 */
 interface ActionEffects {
-  confirm: (title: string, impact: string) => Promise<boolean>;
+  confirm: (title: string, impact: string, key: string, data: unknown) => Promise<boolean>;
   send: (key: string, body: string) => Promise<Response>;
   refresh: () => Promise<unknown>;
   accepted?: (key: string, result: Record<string, unknown>) => void;
@@ -14,13 +14,13 @@ export function createSourceActionExecutor(effects: ActionEffects) {
     try { await effects.refresh(); }
     catch { effects.error('状态刷新失败，请手动刷新核对；不要重复提交刚才的操作'); }
   }
-  return async function execute(key: string, data: unknown, title: string, impact: string) {
+  return async function execute(key: string, data: unknown, title: string, impact: string, options?: { skipConfirm?: boolean }) {
     if (busy) return false;
     busy = true; effects.pending(true);
     let sent = false;
     try {
       const body = JSON.stringify(data);
-      if (!await effects.confirm(title, impact)) return false;
+      if (!options?.skipConfirm && !await effects.confirm(title, impact, key, data)) return false;
       sent = true;
       const response = await effects.send(key, body);
       const result = await response.json();

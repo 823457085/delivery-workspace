@@ -17,23 +17,35 @@ export async function readSource<T>(key: string, params: Record<string, string> 
   if (!response.ok || data.error) throw new Error(data.details || data.message || data.error || `读取失败 (${response.status})`);
   return data;
 }
-export function useSource<T>(key: string, params: MaybeRefOrGetter<Record<string, string>> = {}, requireOnline = false) {
+export interface SourceQueryOptions {
+  active?: MaybeRefOrGetter<boolean>;
+  staleTime?: number;
+  refetchInterval?: number | false;
+  refetchOnWindowFocus?: boolean;
+}
+
+export function useSource<T>(key: string, params: MaybeRefOrGetter<Record<string, string>> = {}, requireOnline = false, options: SourceQueryOptions = {}) {
   const plugins = useIntegrationPlugins(), owner = sourceOwner(key);
   const enabled = computed(() => !owner || plugins.available(owner.id));
+  const isActive = computed(() => options.active === undefined ? true : toValue(options.active));
+  const defaultInterval = key === 'issues' ? 30_000 : ['catchup', 'merge', 'automation'].includes(key) ? 15_000 : false;
   const query = useQuery({ enabled, queryKey: computed(() => ['source', key, toValue(params), ...(requireOnline ? ['online'] : [])]),
     queryFn: ({ signal }) => readSource<T>(key, toValue(params), signal, requireOnline),
-    staleTime: key === 'projects' ? 180_000 : 20_000, retry: false,
-    refetchOnWindowFocus: key === 'issues',
-    refetchInterval: key === 'issues' ? 30_000 : ['catchup', 'merge', 'automation'].includes(key) ? 15_000 : false,
+    staleTime: options.staleTime ?? (key === 'projects' ? 180_000 : 20_000), retry: false,
+    refetchOnWindowFocus: computed(() => isActive.value && (options.refetchOnWindowFocus ?? (key === 'issues'))),
+    refetchInterval: computed(() => isActive.value ? (options.refetchInterval ?? defaultInterval) : false),
     refetchIntervalInBackground: false,
   });
-  return { ...query, data: computed(() => enabled.value ? query.data.value : undefined), isPending: computed(() => enabled.value && query.isPending.value), refetch: (options?: Parameters<typeof query.refetch>[0]) => enabled.value ? query.refetch(options) : Promise.resolve(undefined) };
+  return { ...query, data: computed(() => enabled.value ? query.data.value : undefined), isPending: computed(() => enabled.value && query.isPending.value), refetch: (refetchOptions?: Parameters<typeof query.refetch>[0]) => enabled.value ? query.refetch(refetchOptions) : Promise.resolve(undefined) };
 }
 export function useSourceActions() {
   const client = useQueryClient();
   const pending = shallowRef(false);
   const execute = createSourceActionExecutor({
-    confirm: async (title, impact) => {
+    confirm: async (title, impact, key, data) => {
+      // 修改本地项目别名已在输入框完成确认；在 Finder 打开目录不改文件；未开启外部自动派发/流转/MR 的纯本机设置直接保存，避免重复弹窗。
+      if (key === 'project-label' || key === 'project-open') return true;
+      if (key === 'settings' && !(data && typeof data === 'object' && (data as Record<string, unknown>).jiraDevAutomationApproved)) return true;
       try { await ElMessageBox.confirm(impact, title, { confirmButtonText: '确认执行', cancelButtonText: '取消', type: 'warning', closeOnClickModal: false }); return true; }
       catch { return false; }
     },

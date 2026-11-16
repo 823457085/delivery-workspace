@@ -1,14 +1,32 @@
 /* Bento 工作面板沿用现有的滚动与状态管理，各页面按工作流组织信息。 */
 .studio-layout .workspace-panel {
-  --tile-gap: clamp(12px, 1.3vw, 20px);
-  --tile-pad: clamp(14px, 1.4vw, 20px);
-  --tile-edge: color-mix(in srgb, var(--ui-border) 78%, var(--ui-surface));
-  --tile-shadow: 0 2px 5px var(--ui-shadow-color);
+  --tile-gap: var(--sp-200, 16px);
+  --tile-pad: clamp(16px, 1.4vw, 24px);
+  --tile-edge: var(--ui-border);
+  --tile-shadow: var(--ds-shadow);
   background: var(--ui-bg);
 }
 
+/* The iframe already pads its navigation and content; line up the heading with that inset. */
+.workspace-panel--embedded {
+  width: 100%;
+  margin-inline: 0;
+}
+.workspace-panel--embedded .workspace-page-head {
+  grid-template-areas: 'identity tools';
+  width: 100%;
+  padding-inline: clamp(16px, 3vw, 32px);
+}
+#workspace-embedded-actions:not(:empty) { display: flex; }
+@media (min-height: 801px) {
+  .workspace-panel--embedded .workspace-page-head { padding-block: 10px 8px; }
+}
+@media (max-width: 550px) {
+  .workspace-console .workspace-panel--embedded .workspace-page-identity h1 { font-size: 18px; line-height: 28px; }
+}
+
 /* 内嵌面板已有统一页标题，保留各功能的摘要、指标和操作。 */
-.studio-layout .workspace-panel:has(> .workspace-page-head) :is(
+.studio-layout .workspace-panel:has(.workspace-page-head) :is(
   .task-workspace > .task-heading,
   .catalog-heading h1,
   .center-heading-title h1,
@@ -30,15 +48,16 @@
 }
 
 .studio-layout .workspace-panel .workspace-page-body :is(.surface-header, .wb-card-head) {
-  min-height: 46px;
-  padding: 10px var(--tile-pad);
+  min-height: 48px;
+  padding: 12px var(--tile-pad);
   border-color: var(--ui-divider);
   background: transparent;
 }
 
 .studio-layout .workspace-panel .workspace-page-body :is(.surface-header, .wb-card-head) h2 {
-  font-size: 15px;
-  font-weight: 650;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
 }
 
 .studio-layout .workspace-panel .workspace-page-body :is(.surface-body, .surface > .filter-bar, .surface > .table-footer) {
@@ -56,139 +75,353 @@
 }
 
 .studio-layout .workspace-panel .workspace-page-body .hub-metrics {
-  gap: var(--tile-gap);
-  margin-bottom: var(--tile-gap);
+  display: grid;
+  gap: 10px;
+  margin-bottom: var(--sp-200, 16px);
+  padding: 0;
   overflow: visible;
   border: 0;
+  border-radius: 0;
   background: transparent;
   box-shadow: none;
 }
 
 .studio-layout .workspace-panel .workspace-page-body .hub-metrics.hub-metrics > .metric-card {
-  grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-rows: auto auto;
-  min-height: 76px;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto auto auto;
+  gap: 6px;
+  min-height: 100px;
   margin: 0;
-  padding: 12px 16px;
+  padding: 14px 18px;
   border: 1px solid var(--tile-edge);
   border-radius: var(--ds-radius-lg);
   background: var(--ui-surface);
   box-shadow: var(--tile-shadow);
+  transition:
+    background var(--ds-duration-color) var(--ds-ease),
+    border-color var(--ds-duration-color) var(--ds-ease),
+    box-shadow var(--ds-duration-color) var(--ds-ease),
+    transform var(--ds-duration-color) var(--ds-ease);
+}
+
+.studio-layout .workspace-panel .workspace-page-body .hub-metrics.hub-metrics > .metric-card:hover {
+  border-color: var(--ui-accent);
+  background: var(--ui-surface);
+}
+:root[data-theme='acid'] .studio-layout .workspace-panel .workspace-page-body .hub-metrics.hub-metrics > .metric-card:nth-child(4n + 1) {
+  border-top: 2px solid var(--acid-green, #39ff14);
+}
+:root[data-theme='acid'] .studio-layout .workspace-panel .workspace-page-body .hub-metrics.hub-metrics > .metric-card:nth-child(4n + 2) {
+  border-top: 2px solid var(--acid-cyan, #00ffff);
+}
+:root[data-theme='acid'] .studio-layout .workspace-panel .workspace-page-body .hub-metrics.hub-metrics > .metric-card:nth-child(4n + 3) {
+  border-top: 2px solid var(--acid-yellow, #e6ff00);
+}
+:root[data-theme='acid'] .studio-layout .workspace-panel .workspace-page-body .hub-metrics.hub-metrics > .metric-card:nth-child(4n + 4) {
+  border-top: 2px solid var(--acid-pink, #ff6ec7);
+}
+:root[data-theme='acid'] .studio-layout .workspace-panel .workspace-page-body .hub-metrics.hub-metrics > .metric-card:hover {
+  border-color: var(--acid-yellow, #e6ff00);
+  box-shadow: 4px 4px 0 var(--acid-violet, #a020f0);
 }
 
 .studio-layout .workspace-panel .workspace-page-body .hub-metrics > .metric-card > span {
   grid-column: 1;
   grid-row: 1;
-  letter-spacing: normal;
-  font-weight: 550;
+  letter-spacing: 0.03em;
+  font-weight: 600;
 }
 
 .studio-layout .workspace-panel .workspace-page-body .hub-metrics.hub-metrics > .metric-card > strong {
-  grid-column: 2;
-  grid-row: 1 / 3;
-  align-self: center;
-  margin: 1px 0;
-  font-size: clamp(23px, 2.1vw, 32px);
-  line-height: 1.1;
-  font-weight: 650;
-  letter-spacing: -.025em;
+  grid-column: 1;
+  grid-row: 2;
+  align-self: end;
+  margin: 4px 0 0;
+  font: 700 clamp(26px, 2.2vw, 34px)/1.1 var(--ds-code, var(--mono));
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.03em;
 }
 
 .studio-layout .workspace-panel .workspace-page-body .hub-metrics.hub-metrics > .metric-card > small {
   grid-column: 1;
-  grid-row: 2;
+  grid-row: 3;
 }
 
 .studio-layout .workspace-panel .workspace-page-body :is(.hub-metrics > .metric-card.is-zero, .wb-metric.zero) strong {
   color: var(--ui-muted);
 }
 
-/* 今日工作与总览把核心列表放在主列，今日任务与连接信息进入辅助列。 */
+/* 今日工作台（圣杯中栏 Zone 3 主舞台 × Acid Rave 海报头部）：右栏内容已投射至 Zone 4，中栏专注主干流。 */
 .studio-layout .workspace-panel :is(.wb, .wb-grid, .wb-main, .wb-aside, .overview-grid, .overview-main, .overview-aside) {
   min-width: 0;
-  gap: var(--tile-gap);
+  gap: var(--sp-200, 16px);
 }
 
-.studio-layout .workspace-panel .wb-masthead {
+.studio-layout .workspace-panel .wb-bento-deck {
   display: grid;
-  grid-template-columns: minmax(200px, .75fr) minmax(0, 2fr);
-  gap: var(--tile-gap);
-  align-items: center;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 12px;
+  align-items: stretch;
   min-width: 0;
-  padding: var(--tile-pad);
+}
+
+.studio-layout .workspace-panel .wb-bento-hero {
+  grid-column: span 4;
+  grid-row: span 2;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: stretch;
+  gap: 8px;
+  padding: 14px 16px;
   border: 1px solid var(--tile-edge);
   border-radius: var(--ds-radius-lg);
   background: var(--ui-surface);
-  box-shadow: var(--tile-shadow);
+  color: var(--ui-text);
+  box-shadow: var(--ds-shadow);
+}
+:root[data-theme='acid'] .studio-layout .workspace-panel .wb-bento-hero {
+  border: 1px solid var(--acid-green, #39ff14);
+  background: #10140e;
+  color: #f8fafc;
+  box-shadow: 4px 4px 0 var(--acid-violet, #a020f0);
 }
 
-.studio-layout .workspace-panel .wb-hero {
+.studio-layout .workspace-panel .wb-hero-top {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
+  align-items: center;
+  justify-content: space-between;
   gap: 8px;
-  padding: 0;
 }
 
-.studio-layout .workspace-panel .wb-hero-title {
-  flex-wrap: wrap;
-  gap: 5px 12px;
-}
-
-.studio-layout .workspace-panel .wb-hero h1 {
-  font-size: clamp(26px, 3vw, 39px);
-  line-height: 1.1;
-  font-weight: 680;
-  letter-spacing: -.045em;
-}
-
-.studio-layout .workspace-panel .wb-summary {
+.studio-layout .workspace-panel .wb-eyebrow {
   padding: 0;
   border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ui-muted);
+  font: 600 11px/15px var(--ds-code, var(--mono));
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+:root[data-theme='acid'] .studio-layout .workspace-panel .wb-eyebrow {
+  color: var(--acid-green, #39ff14);
 }
 
-.studio-layout .workspace-panel .wb-ruler {
-  min-width: 0;
-  padding: 19px 4px 7px;
-  border-radius: var(--ds-radius-sm);
+.studio-layout .workspace-panel .wb-live-clock {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ds-radius-xs);
   background: var(--ui-raised);
+  color: var(--ui-secondary);
+  font: 600 11px/15px var(--ds-code, var(--mono));
+  font-variant-numeric: tabular-nums;
+}
+:root[data-theme='acid'] .studio-layout .workspace-panel .wb-live-clock {
+  border-color: var(--acid-yellow, #e6ff00);
+  background: #191c08;
+  color: var(--acid-yellow, #e6ff00);
 }
 
-.studio-layout .workspace-panel .wb-metrics {
-  gap: var(--tile-gap);
+.studio-layout .workspace-panel .wb-live-clock > i {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--ds-radius-xs);
+  background: var(--ui-success);
+}
+:root[data-theme='acid'] .studio-layout .workspace-panel .wb-live-clock > i {
+  background: var(--acid-green, #39ff14);
+}
+
+.studio-layout .workspace-panel .wb-bento-hero h1 {
+  margin: 0;
+  font-size: clamp(22px, 1.9vw, 26px);
+  line-height: 1.15;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  background: none;
+  -webkit-background-clip: border-box;
+  background-clip: border-box;
+  color: var(--ui-text);
+}
+:root[data-theme='acid'] .studio-layout .workspace-panel .wb-bento-hero h1 {
+  font-size: clamp(32px, 2.8vw, 42px);
+  font-weight: 800;
+  color: #f8fafc;
+  transform: skewX(-8deg);
+  transform-origin: left bottom;
+}
+
+.studio-layout .workspace-panel .wb-bento-hero .wb-summary {
+  padding: 8px 0 0;
+  border: 0;
+  border-top: 1px solid var(--ui-divider);
+  color: var(--ui-secondary);
+  font-size: 12px;
+  line-height: 17px;
+}
+:root[data-theme='acid'] .studio-layout .workspace-panel .wb-bento-hero .wb-summary {
+  border-top-color: #2e2e2e;
+  color: #b8c2cc;
+}
+
+.studio-layout .workspace-panel .wb-bento-metrics {
+  grid-column: span 8;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.studio-layout .workspace-panel .wb-bento-ruler {
+  grid-column: span 8;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  padding: 14px 18px 20px;
+  border: 1px solid var(--tile-edge);
+  border-radius: var(--ds-radius-lg);
+  background: var(--ui-surface);
+  box-shadow: var(--ds-shadow);
+}
+
+.studio-layout .workspace-panel .wb-ruler-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
+.studio-layout .workspace-panel .wb-ruler-head > strong {
+  font: 700 12.5px/18px var(--ds-display);
+  letter-spacing: 0.04em;
+  color: var(--ui-text);
+  text-transform: uppercase;
+}
+
+.studio-layout .workspace-panel .wb-ruler-head .wb-ruler-legend {
+  margin: 0;
+}
+
+.studio-layout .workspace-panel .wb-bento-ruler .wb-ruler-track {
+  height: 30px;
+  margin: 16px 8px 0;
+}
+
+.studio-layout .workspace-panel .wb-card-head > div:first-child {
+  min-width: 0;
+}
+
+.studio-layout .workspace-panel .wb-card-head .wb-link {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .studio-layout .workspace-panel .workspace-page-body .wb-metric {
-  min-height: 80px;
-  padding: 14px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: 'text icon' 'value value';
+  align-items: start;
+  gap: 8px;
+  min-height: 94px;
+  padding: 13px 15px;
+  border: 1px solid var(--tile-edge);
+  border-radius: var(--ds-radius-lg);
+  background: var(--ui-surface);
+  box-shadow: var(--ds-shadow);
+}
+:root[data-theme='acid'] .studio-layout .workspace-panel .workspace-page-body .wb-metric:nth-child(1) { border-top: 2px solid var(--acid-green, #39ff14); }
+:root[data-theme='acid'] .studio-layout .workspace-panel .workspace-page-body .wb-metric:nth-child(2) { border-top: 2px solid var(--acid-cyan, #00ffff); }
+:root[data-theme='acid'] .studio-layout .workspace-panel .workspace-page-body .wb-metric:nth-child(3) { border-top: 2px solid var(--acid-yellow, #e6ff00); }
+:root[data-theme='acid'] .studio-layout .workspace-panel .workspace-page-body .wb-metric:nth-child(4) { border-top: 2px solid var(--acid-pink, #ff6ec7); }
+
+.studio-layout .workspace-panel .workspace-page-body .wb-metric.featured {
+  border-color: var(--tile-edge);
 }
 
-.studio-layout .workspace-panel .wb-metric.active {
-  border-color: var(--ui-accent);
-  background: var(--ui-accent-soft);
-  box-shadow: inset 0 0 0 1px var(--ui-accent);
+.studio-layout .workspace-panel .workspace-page-body .wb-metric .wb-metric-text {
+  grid-area: text;
 }
 
-.studio-layout .workspace-panel .wb-metric:hover {
+.studio-layout .workspace-panel .workspace-page-body .wb-metric:hover {
   border-color: var(--ui-accent);
-  transform: none;
+  background: var(--ui-surface);
+  box-shadow: var(--ds-shadow-hover);
+}
+:root[data-theme='acid'] .studio-layout .workspace-panel .workspace-page-body .wb-metric:hover {
+  border-color: var(--acid-yellow, #e6ff00);
+  box-shadow: 4px 4px 0 var(--acid-violet, #a020f0);
+}
+
+.studio-layout .workspace-panel .workspace-page-body .wb-metric.active {
+  border-color: var(--ui-primary);
+  background: var(--ui-primary);
+  color: var(--ui-on-primary);
+  box-shadow: var(--ds-shadow-hover);
+}
+
+.studio-layout .workspace-panel .workspace-page-body .wb-metric.active .wb-metric-text > span {
+  color: var(--ui-on-primary);
+}
+
+.studio-layout .workspace-panel .workspace-page-body .wb-metric.active .wb-metric-text small {
+  color: color-mix(in srgb, var(--ui-on-primary) 72%, transparent);
+}
+
+.studio-layout .workspace-panel .workspace-page-body .wb-metric.active strong {
+  color: var(--ui-on-primary);
+}
+
+.studio-layout .workspace-panel .workspace-page-body .wb-metric.active .wb-metric-icon {
+  border-color: color-mix(in srgb, var(--ui-on-primary) 18%, transparent);
+  background: color-mix(in srgb, var(--ui-on-primary) 14%, transparent);
+  color: var(--ui-on-primary);
 }
 
 .studio-layout .workspace-panel .workspace-page-body .wb-metric .wb-metric-icon {
-  width: 34px;
-  height: 34px;
-  border: 0;
-  border-radius: var(--ds-radius-sm);
+  grid-area: icon;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--ui-divider);
+  border-radius: var(--ds-radius-xs);
   background: var(--ui-raised);
-  color: var(--ui-accent);
+  color: var(--ui-secondary);
 }
 
 .studio-layout .workspace-panel .wb-metric strong {
-  font-size: 29px;
-  font-weight: 650;
+  grid-area: value;
+  font: 700 30px/34px var(--ds-code, var(--mono));
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.03em;
+  color: var(--ui-text);
 }
 
-.studio-layout .workspace-panel :is(.wb-grid, .overview-grid) {
+.studio-layout .workspace-panel .workspace-page-body :is(.wb-aside > .wb-card, .overview-aside > .surface) {
+  border-color: var(--ui-border);
+  background: var(--ui-raised);
+  box-shadow: none;
+}
+
+.studio-layout .workspace-panel .wb-grid.wb-f-pattern {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  align-items: start;
+}
+/* 当 wb-aside 已通过 Teleport 投射进圣杯右栏 Zone 4 时，中栏 Zone 3 保持纯粹单列主舞台 */
+.studio-layout .workspace-panel .wb-grid.wb-f-pattern.is-hg-stage {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.studio-layout .workspace-panel .overview-grid {
   display: grid;
   grid-template-columns: minmax(0, 2.18fr) minmax(280px, 1fr);
   align-items: start;
@@ -209,7 +442,7 @@
 }
 
 .studio-layout .workspace-panel .wb-aside .personal-todos :is(.el-empty, .el-empty__description) {
-  margin-top: 2px;
+  margin-top: 4px;
   padding-block: 8px;
 }
 
@@ -231,22 +464,25 @@
   padding-inline: var(--tile-pad);
 }
 
-@container (max-width: 690px) {
-  .studio-layout .workspace-panel .wb-row {
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 6px 12px;
+@container workspace-page (max-width: 1040px) {
+  .studio-layout .workspace-panel .workspace-page-body .wb-metric {
+    min-height: 86px;
+    padding: 11px 12px;
   }
-
-  .studio-layout .workspace-panel .wb-row-status {
-    grid-column: 1;
-    flex-direction: row;
-    flex-wrap: wrap;
-    align-items: center;
+  .studio-layout .workspace-panel .wb-metric strong {
+    font-size: 26px;
+    line-height: 30px;
   }
+  .studio-layout .workspace-panel .wb-bento-hero {
+    padding: 18px 18px;
+  }
+}
 
-  .studio-layout .workspace-panel .wb-row-accept { grid-column: 1; }
-  .studio-layout .workspace-panel .wb-row-time { display: none; }
-  .studio-layout .workspace-panel .wb-row-actions { grid-column: 2; grid-row: 1 / span 3; }
+@container workspace-page (max-width: 780px) {
+  .studio-layout .workspace-panel .wb-bento-hero { grid-column: 1 / -1; grid-row: auto; }
+  .studio-layout .workspace-panel .wb-bento-metrics { grid-column: 1 / -1; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .studio-layout .workspace-panel .wb-bento-ruler { grid-column: 1 / -1; }
+  .studio-layout .workspace-panel .wb-grid.wb-f-pattern { grid-template-columns: minmax(0, 1fr); }
 }
 
 @container workspace-page (max-width: 900px) {
@@ -254,14 +490,13 @@
 }
 
 @container workspace-page (max-width: 570px) {
-  .studio-layout .workspace-panel .wb-masthead { grid-template-columns: minmax(0, 1fr); }
-  .studio-layout .workspace-panel .workspace-page-body .wb-metric { min-height: 64px; padding: 10px; }
+  .studio-layout .workspace-panel .workspace-page-body .wb-metric { min-height: 68px; padding: 12px; }
   .studio-layout .workspace-panel .workspace-page-body .wb-metric .wb-metric-icon { display: none; }
-  .studio-layout .workspace-panel .workspace-page-body .hub-metrics.hub-metrics > .metric-card { min-height: 72px; padding: 10px 12px; }
+  .studio-layout .workspace-panel .workspace-page-body .hub-metrics.hub-metrics > .metric-card { min-height: 72px; padding: 12px; }
   .studio-layout .workspace-panel .task-filter-main > .el-button { width: 100%; }
 }
 
-/* Jira 列表与统计把查询工具和结果分开。日历保留整行来展示七列日期。 */
+/* Jira 列表、日历与统计统一采用「顶部单行筛选条 + 全宽结果区」架构，消除右侧挤占。 */
 .studio-layout .workspace-panel .task-board,
 .studio-layout .workspace-panel .task-main {
   min-width: 0;
@@ -270,64 +505,17 @@
 .studio-layout .workspace-panel .task-main .task-stats {
   gap: var(--tile-gap);
 }
-.studio-layout .workspace-panel .task-board { display: grid; gap: var(--tile-gap); }
+.studio-layout .workspace-panel .task-board {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--tile-gap);
+}
 
 .studio-layout .workspace-panel .task-list > .task-table .el-table__cell .cell { padding-inline: var(--tile-pad); }
 .studio-layout .workspace-panel .task-list > .table-footer {
-  padding-block: 7px;
+  padding-block: 8px;
   border-top: 1px solid var(--ui-divider);
   background: var(--ui-surface);
-}
-
-@container workspace-page (min-width: 1050px) {
-  .studio-layout .workspace-panel .task-board:not(.task-board--calendar) {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 254px;
-    grid-template-areas: "results filter";
-    align-items: start;
-    gap: var(--tile-gap);
-  }
-
-  .studio-layout .workspace-panel .task-board:not(.task-board--calendar) .task-main { grid-area: results; }
-  .studio-layout .workspace-panel .task-board:not(.task-board--calendar) .task-side { grid-area: filter; }
-
-  .studio-layout .workspace-panel .task-board:not(.task-board--calendar) .task-side .task-filter-main {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .studio-layout .workspace-panel .task-board:not(.task-board--calendar) .task-side .task-filter-main > .el-button {
-    margin: 0;
-  }
-}
-
-/* 桌面列表的列头和分页跟随卡片，任务行与展开的筛选各自在可用空间内滚动。 */
-@media (min-height: 660px) {
-  @container workspace-page (min-width: 1050px) {
-    .workspace-page-body:has(> .task-workspace .task-list) { height: 100%; }
-    .studio-layout .workspace-panel .task-workspace:has(.task-list) {
-      display: flex;
-      flex-direction: column;
-      height: 100%;
-      min-height: 0;
-    }
-    .studio-layout .workspace-panel .task-board.task-board--list {
-      flex: 1;
-      grid-template-rows: minmax(0, 1fr);
-      align-items: stretch;
-      min-height: 0;
-    }
-    .task-board--list > .task-side { overflow-y: auto; overscroll-behavior-y: contain; }
-    .task-board--list > .task-main, .task-board--list .task-list {
-      display: flex;
-      flex-direction: column;
-      min-height: 0;
-    }
-    .studio-layout .workspace-panel .task-board--list .task-list { margin-bottom: 0; }
-    .task-board--list .task-table { min-height: 0; }
-    .task-board--list .task-list > :is(.task-list-heading, .table-footer) { flex-shrink: 0; }
-    .task-board--list .task-table .el-scrollbar__wrap { overscroll-behavior-y: contain; }
-  }
 }
 
 .studio-layout .workspace-panel .task-calendar .calendar-header {
@@ -356,12 +544,19 @@
   background: var(--ui-surface);
 }
 
+.studio-layout .workspace-panel .workspace-page-body .project-inspector {
+  min-width: 0;
+  border: 1px solid var(--tile-edge);
+  border-radius: var(--ds-radius-lg);
+  background: var(--ui-raised);
+}
+
 .studio-layout .workspace-panel .workspace-page-body :is(.project-main, .port-main, .deployment-main) {
   padding: var(--tile-pad);
 }
 
 .studio-layout .workspace-panel .environment-grid {
-  gap: var(--tile-gap);
+  gap: 12px;
 }
 
 .studio-layout .workspace-panel .project-bar {
@@ -375,11 +570,30 @@
   padding: 14px 16px;
 }
 
-@container workspace-page (min-width: 1150px) {
-  .studio-layout .workspace-panel :is(.project-layout, .port-layout, .deployment-layout, .catalog-layout) {
-    grid-template-columns: 236px minmax(0, 1fr);
+@container workspace-page (min-width: 1180px) {
+  .studio-layout .workspace-panel :is(.port-layout, .deployment-layout, .catalog-layout) {
+    grid-template-columns: 240px minmax(0, 1fr);
   }
+  .studio-layout .workspace-panel .project-layout:not(.is-hg-stage) {
+    grid-template-columns: 224px minmax(0, 1fr) 324px;
+  }
+}
 
+@container workspace-page (920px <= width < 1180px) {
+  .studio-layout .workspace-panel .project-layout:not(.is-hg-stage) {
+    grid-template-columns: 220px minmax(0, 1fr);
+  }
+  .studio-layout .workspace-panel .project-layout:not(.is-hg-stage) .project-inspector {
+    grid-column: 1 / -1;
+    position: static;
+  }
+}
+
+.studio-layout .workspace-panel .project-layout.is-hg-stage {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+  width: 100%;
 }
 
 /* 需求、修复、重构与执行按准备、处理、记录分区。 */
@@ -398,7 +612,7 @@
 
 .studio-layout .workspace-panel :is(.desk-metrics button, .control-metrics article) {
   border-radius: var(--ds-radius-lg);
-  min-height: 90px;
+  min-height: 92px;
 }
 
 .studio-layout .workspace-panel :is(.desk-card, .desk-system-panel, .desk-attention-panel, .control-main, .refactor-projects, .documents-detail, .documents-import) {
@@ -407,7 +621,7 @@
 }
 
 .studio-layout .workspace-panel .control-sidebar {
-  padding: 14px;
+  padding: 16px;
   border: 1px solid var(--tile-edge);
   border-radius: var(--ds-radius-lg);
   background: var(--ui-surface);
@@ -427,55 +641,41 @@
 }
 
 .studio-layout .workspace-panel .execution-board {
-  display: grid;
-  gap: var(--tile-gap);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
   margin-bottom: var(--tile-gap);
+  padding: 10px var(--tile-pad);
+  border: 1px solid var(--tile-edge);
+  border-radius: var(--ds-radius-lg);
+  background: var(--ui-surface);
+  box-shadow: var(--tile-shadow);
 }
 
 .studio-layout .workspace-panel :is(.execution-navigation, .execution-summary) {
   min-width: 0;
-  padding: 12px var(--tile-pad);
-  border: 1px solid var(--tile-edge);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
-.studio-layout .workspace-panel .execution-board :is(.execution-context, .execution-note, .execution-tabs .el-tabs__header) {
+.studio-layout .workspace-panel .execution-navigation {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  flex: 1 1 auto;
+}
+
+.studio-layout .workspace-panel .execution-board :is(.execution-context, .execution-note, .execution-tabs .el-tabs__header, .execution-heading) {
   margin-bottom: 0;
 }
 
-@container workspace-page (min-width: 800px) {
-  .studio-layout .workspace-panel .execution-board {
-    grid-template-columns: minmax(0, 1.65fr) minmax(260px, 1fr);
-  }
-
-  .studio-layout .workspace-panel .execution-summary .execution-context {
-    display: grid;
-    gap: 8px;
-  }
-
-  .studio-layout .workspace-panel .execution-summary .execution-context > a {
-    margin-left: 0;
-  }
-}
-
-@container workspace-page (max-width: 799px) {
-  .studio-layout .workspace-panel .execution-board {
-    gap: 0;
-    border: 1px solid var(--tile-edge);
-    border-radius: var(--ds-radius-lg);
-    background: var(--ui-surface);
-    box-shadow: var(--tile-shadow);
-  }
-
-  .studio-layout .workspace-panel .workspace-page-body .execution-board :is(.execution-navigation, .execution-summary) {
-    border: 0;
-    border-radius: 0;
-    background: transparent;
-    box-shadow: none;
-  }
-
-  .studio-layout .workspace-panel .workspace-page-body .execution-board .execution-summary {
-    padding-top: 0;
-  }
+.studio-layout .workspace-panel .execution-board .execution-tabs .el-tabs__nav-wrap::after {
+  display: none;
 }
 
 @container workspace-page (min-width: 1120px) {
@@ -488,7 +688,6 @@
 
   .studio-layout .workspace-panel .desk-queue > .desk-card { margin: 0; }
   .studio-layout .workspace-panel .desk-queue > .el-empty { grid-column: 1 / -1; }
-
 }
 
 /* 设置与报告使用任务型卡片，手动消息把编辑和预览放在同一工作区。 */
@@ -497,7 +696,7 @@
 }
 
 .studio-layout .workspace-panel .settings-tabs > .el-tabs__header {
-  padding: 5px var(--tile-pad) 0;
+  padding: 6px var(--tile-pad) 0;
   border: 1px solid var(--tile-edge);
   border-radius: var(--ds-radius-lg);
   background: var(--ui-surface);
@@ -508,7 +707,7 @@
 }
 
 .studio-layout .workspace-panel .settings-tabs.el-tabs--left > .el-tabs__header {
-  width: 186px;
+  width: 188px;
   height: auto;
   align-items: stretch;
   align-self: flex-start;
@@ -523,12 +722,23 @@
 
 .studio-layout .workspace-panel .settings-tabs.el-tabs--left > .el-tabs__header .el-tabs__item {
   justify-content: flex-start;
-  padding: 10px 12px;
+  padding: 9px 12px;
+  border: 1px solid transparent;
   border-radius: var(--ds-radius-sm);
 }
 
 .studio-layout .workspace-panel .settings-tabs.el-tabs--left > .el-tabs__header .el-tabs__item.is-active {
+  border-color: var(--ui-border);
+  background: var(--ui-raised);
+  color: var(--ui-text);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+:root[data-theme='acid'] .studio-layout .workspace-panel .settings-tabs.el-tabs--left > .el-tabs__header .el-tabs__item.is-active {
   background: var(--ui-accent-soft);
+  color: var(--ui-accent);
+  box-shadow: none;
 }
 
 .studio-layout .workspace-panel .settings-tabs.el-tabs--left > .el-tabs__header .el-tabs__active-bar {
@@ -554,13 +764,13 @@
   justify-content: space-between;
   gap: 8px;
   margin-top: auto;
-  padding: 8px 0 0;
+  padding: 10px 0 0;
   border: 0;
   border-top: 1px solid var(--ui-divider);
 }
 
-.studio-layout .workspace-panel .automation-panel .automation-card-footer > :is(button, a) { min-height: 34px; }
-.studio-layout .workspace-panel .automation-panel .automation-actions { justify-content: flex-start; gap: 12px; }
+.studio-layout .workspace-panel .automation-panel .automation-card-footer > :is(button, a) { min-height: 28px; }
+.studio-layout .workspace-panel .automation-panel .automation-actions { justify-content: flex-start; gap: 8px; }
 .studio-layout .workspace-panel .automation-panel .daily-date { margin-bottom: 12px; }
 .studio-layout .workspace-panel .automation-panel :is(.daily-hint, .weekly-result, .weekly-empty) {
   margin: 0 0 12px;
@@ -579,7 +789,7 @@
 }
 
 .studio-layout .workspace-panel .messages-status {
-  padding: 10px var(--tile-pad);
+  padding: 12px var(--tile-pad);
   border: 1px solid var(--tile-edge);
   border-radius: var(--ds-radius-lg);
   background: var(--ui-surface);
@@ -600,7 +810,7 @@
 
   .studio-layout .workspace-panel .messages-compose {
     grid-template-columns: minmax(0, 1.45fr) minmax(290px, 1fr);
-    align-items: start;
+    align-items: stretch;
   }
 }
 
@@ -615,8 +825,11 @@
 
 @container workspace-page (min-width: 980px) {
   .studio-layout .workspace-panel .share-connection-grid {
-    grid-template-columns: minmax(0, 1.35fr) minmax(300px, 1fr);
+    grid-template-columns: minmax(0, 1fr);
     gap: var(--tile-gap);
+  }
+  .studio-layout .workspace-panel .share-connection-grid:has(> :nth-child(2)) {
+    grid-template-columns: minmax(0, 1.35fr) minmax(300px, 1fr);
   }
 }
 
@@ -666,7 +879,7 @@
 
     .studio-layout .workspace-panel .port-main .environment-section {
       flex: 1;
-      padding: 10px 0 0;
+      padding: 12px 0 0;
     }
 
     .studio-layout .workspace-panel .port-main :is(.port-project-heading, .port-toolbar-row, .section-heading) { flex-shrink: 0; }
@@ -687,44 +900,37 @@
 }
 
 .studio-layout .workspace-panel .workspace-section-tabs > .el-tabs__header {
-  margin-bottom: 10px;
+  margin-bottom: 12px;
 }
 
 @media (min-height: 660px) {
   @container workspace-page (min-width: 1050px) {
-    .workspace-page-body:has(> :is(.wb, .overview-grid, .project-inventory, .deployment-workspace, .requirement-development, .overseas-workspace, .jira-fix, .wecom-workspace, .automation-panel)) {
+    .workspace-page-body:has(> :is(.deployment-workspace, .requirement-development, .overseas-workspace, .jira-fix, .wecom-workspace, .automation-panel)) {
       height: 100%;
     }
 
-    .workspace-page-body:has(> .overview-grid),
-    .studio-layout .workspace-panel .workspace-page-body > :is(.wb, .project-inventory, .deployment-workspace, .requirement-development, .overseas-workspace, .jira-fix, .wecom-workspace) {
+    .studio-layout .workspace-panel .workspace-page-body > :is(.deployment-workspace, .requirement-development, .overseas-workspace, .jira-fix, .wecom-workspace) {
       display: flex;
       flex-direction: column;
       height: 100%;
       min-height: 0;
     }
 
-    .studio-layout .workspace-panel :is(.wb-grid, .overview-grid, .project-layout, .deployment-layout, .desk-layout, .requirements-layout) {
+    .studio-layout .workspace-panel :is(.deployment-layout, .desk-layout, .requirements-layout) {
       flex: 1;
       min-height: 0;
       grid-template-rows: minmax(0, 1fr);
       align-items: stretch;
     }
 
-    .studio-layout .workspace-panel :is(.wb-main, .wb-aside, .overview-main, .overview-aside, .project-main, .project-sidebar, .deployment-main, .desk-side, .requirements-main, .system-navigation) {
+    .studio-layout .workspace-panel :is(.deployment-main, .desk-side, .requirements-main, .system-navigation) {
       min-height: 0;
       overflow: auto;
       overscroll-behavior: contain;
       scroll-padding: 4px;
     }
 
-    .studio-layout .workspace-panel :is(.wb-main, .wb-aside, .overview-main, .overview-aside) {
-      grid-auto-rows: max-content;
-    }
-
-    .studio-layout .workspace-panel .wb-aside .wb-today { max-height: none; overflow: visible; }
-
-    .studio-layout .workspace-panel :is(.project-sidebar, .deployment-sidebar) {
+    .studio-layout .workspace-panel .deployment-sidebar {
       align-self: stretch;
       position: static;
       min-height: 0;
@@ -734,10 +940,6 @@
     .studio-layout .workspace-panel .deployment-projects {
       max-height: none;
       overscroll-behavior: contain;
-    }
-
-    .studio-layout .workspace-panel .project-sidebar > :is(.sidebar-heading, .sidebar-filters, .sidebar-footer) {
-      flex-shrink: 0;
     }
 
     .studio-layout .workspace-panel .desk-work {
@@ -797,7 +999,7 @@
     .studio-layout .workspace-panel-content:has(> .workspace-page-body > :is(.jira-fix, .requirement-development)) > .workspace-page-body {
       padding-bottom: 12px;
     }
-    .studio-layout .workspace-panel .wecom-workspace { gap: 10px; }
+    .studio-layout .workspace-panel .wecom-workspace { gap: 12px; }
     .studio-layout .workspace-panel .messages-compose {
       height: 100%;
       grid-template-rows: minmax(0, 1fr);
@@ -831,7 +1033,7 @@
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
       align-content: start;
-      column-gap: 14px;
+      column-gap: 16px;
       padding-block: 12px;
     }
 
@@ -839,14 +1041,14 @@
       grid-column: 1 / -1;
     }
 
-    .studio-layout .workspace-panel .messages-compose .preview-empty { padding-block: 10px; }
+    .studio-layout .workspace-panel .messages-compose .preview-empty { padding-block: 12px; }
 
     .studio-layout .workspace-panel .messages-compose :is(.surface-header, .editor-actions, .preview-destination, .preview-footer) {
       flex-shrink: 0;
     }
 
     .studio-layout .workspace-panel .messages-compose :is(.editor-actions, .preview-footer) {
-      padding: 10px var(--tile-pad);
+      padding: 12px var(--tile-pad);
       border-top: 1px solid var(--ui-divider);
     }
 
@@ -856,4 +1058,117 @@
       overscroll-behavior: contain;
     }
   }
+}
+
+/* Immersive Photo & Cinematic Video Hero: 业务页卡片统一使用半透明暗调玻璃遮罩，透出底层画幅/静音预告片 */
+:root:is([data-theme='immersive-photo'], [data-theme='cinematic-video-hero']) .studio-layout .workspace-panel {
+  background: transparent;
+}
+:root:is([data-theme='immersive-photo'], [data-theme='cinematic-video-hero']) .studio-layout .workspace-panel .wb-bento-hero {
+  display: none;
+}
+:root:is([data-theme='immersive-photo'], [data-theme='cinematic-video-hero']) .studio-layout .workspace-panel :is(.wb-bento-metrics, .wb-bento-ruler) {
+  grid-column: 1 / -1;
+}
+:root[data-theme='immersive-photo'] .studio-layout .workspace-panel .workspace-page-body :is(
+  .surface,
+  .wb-card,
+  .wb-metric,
+  .wb-bento-hero,
+  .wb-bento-ruler,
+  .wb-row,
+  .hub-metrics.hub-metrics > .metric-card,
+  .environment-card,
+  .system-card,
+  .desk-card,
+  .desk-system-panel,
+  .desk-attention-panel,
+  .jira-dev .card,
+  .execution-navigation,
+  .execution-summary,
+  .project-sidebar,
+  .project-main,
+  .project-inspector-column
+) {
+  background: rgb(20 23 30 / 0.68) !important;
+  backdrop-filter: blur(16px) saturate(125%);
+  -webkit-backdrop-filter: blur(16px) saturate(125%);
+  border-color: rgb(255 255 255 / 0.14) !important;
+}
+:root[data-theme='immersive-photo'] .studio-layout .workspace-panel .workspace-page-body .hub-metrics.hub-metrics > .metric-card:hover,
+:root[data-theme='immersive-photo'] .studio-layout .workspace-panel .workspace-page-body .wb-metric:hover,
+:root[data-theme='immersive-photo'] .studio-layout .workspace-panel .workspace-page-body .wb-row:hover {
+  border-color: rgb(232 176 75 / 0.56) !important;
+  background: rgb(28 31 40 / 0.78) !important;
+}
+
+/* Cinematic Video Hero: 卡片深底 rgba(20,24,33,0.76) + 12px 圆角 + 0 20px 50px 电影景深阴影 + 暖金 #e4c063 悬停聚光 */
+:root[data-theme='cinematic-video-hero'] .studio-layout .workspace-panel .workspace-page-body :is(
+  .surface,
+  .wb-card,
+  .wb-metric,
+  .wb-bento-hero,
+  .wb-bento-ruler,
+  .wb-row,
+  .hub-metrics.hub-metrics > .metric-card,
+  .environment-card,
+  .system-card,
+  .desk-card,
+  .desk-system-panel,
+  .desk-attention-panel,
+  .jira-dev .card,
+  .execution-navigation,
+  .execution-summary,
+  .project-sidebar,
+  .project-main,
+  .project-inspector-column
+) {
+  border-radius: 12px !important;
+  background: rgb(20 24 33 / 0.76) !important;
+  backdrop-filter: blur(16px) saturate(120%);
+  -webkit-backdrop-filter: blur(16px) saturate(120%);
+  border-color: rgb(255 255 255 / 0.12) !important;
+  box-shadow: 0 20px 50px rgb(0 0 0 / 0.45) !important;
+}
+:root[data-theme='cinematic-video-hero'] .studio-layout .workspace-panel .workspace-page-body .hub-metrics.hub-metrics > .metric-card:hover,
+:root[data-theme='cinematic-video-hero'] .studio-layout .workspace-panel .workspace-page-body .wb-metric:hover,
+:root[data-theme='cinematic-video-hero'] .studio-layout .workspace-panel .workspace-page-body .wb-row:hover {
+  border-color: rgb(228 192 99 / 0.55) !important;
+  background: rgb(27 32 44 / 0.84) !important;
+}
+
+/* Custom Wallpaper 随心配色：业务页卡片联动用户配置的透明度滑块并叠加玻璃模糊 */
+:root[data-theme='custom'][data-custom-wallpaper='1'] .studio-layout .workspace-panel {
+  background: transparent;
+}
+:root[data-theme='custom'][data-custom-wallpaper='1'] .studio-layout .workspace-panel .workspace-page-body :is(
+  .surface,
+  .wb-card,
+  .wb-metric,
+  .wb-bento-hero,
+  .wb-bento-ruler,
+  .wb-row,
+  .hub-metrics.hub-metrics > .metric-card,
+  .environment-card,
+  .system-card,
+  .desk-card,
+  .desk-system-panel,
+  .desk-attention-panel,
+  .jira-dev .card,
+  .execution-navigation,
+  .execution-summary,
+  .project-sidebar,
+  .project-main,
+  .project-inspector-column
+) {
+  background: color-mix(in srgb, var(--ui-surface) var(--agent-message-opacity, 78%), transparent) !important;
+  backdrop-filter: blur(16px) saturate(125%);
+  -webkit-backdrop-filter: blur(16px) saturate(125%);
+  border-color: rgb(255 255 255 / 0.14) !important;
+}
+:root[data-theme='custom'][data-custom-wallpaper='1'] .studio-layout .workspace-panel .workspace-page-body .hub-metrics.hub-metrics > .metric-card:hover,
+:root[data-theme='custom'][data-custom-wallpaper='1'] .studio-layout .workspace-panel .workspace-page-body .wb-metric:hover,
+:root[data-theme='custom'][data-custom-wallpaper='1'] .studio-layout .workspace-panel .workspace-page-body .wb-row:hover {
+  border-color: color-mix(in srgb, var(--ui-primary) 56%, rgb(255 255 255 / 0.2)) !important;
+  background: color-mix(in srgb, var(--ui-raised) min(96%, calc(var(--agent-message-opacity, 78%) + 8%)), transparent) !important;
 }

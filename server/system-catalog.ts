@@ -8,6 +8,10 @@ import { confluenceText } from './confluence-knowledge.js';
 import { repositoryKey, systemWebUrl, type CatalogSystem, type SystemAccount, type SystemAccountsRead, type SystemCatalog, type SystemProjectRow, type SystemProjectSave, type SystemSource } from '../shared/system-catalog.js';
 import { parseSystemProjectRows, readSystemProjectWorkbook } from './system-project-import.js';
 
+const sourcePages = [
+  { id: '1212505', region: '海外' },
+  { id: '15335517', region: '其他' },
+] as const;
 type StoredEnvironment = Omit<CatalogSystem['environments'][number], 'accounts'> & { accounts: SystemAccount[] };
 type StoredSystem = Omit<CatalogSystem, 'environments'> & { environments: StoredEnvironment[] };
 type State = { scope?: 'overseas-v1'; catalog: Omit<SystemCatalog, 'systems' | 'localSystems'> & { systems: StoredSystem[] }; overrides: Record<string, SystemAccount[]>; localSystems?: StoredSystem[]; removedSyncedSystemIds?: string[] };
@@ -137,18 +141,8 @@ export function parseSystemAccounts(content: string, sourceUrl: string) {
 }
 
 export async function createSystemCatalog(directory: string, request: (resource: string) => Promise<Response>,
-  site = process.env.CONFLUENCE_BASE_URL || '',
-  readProjects?: () => Promise<{ projects: { path: string; remoteUrl: string; webUrl: string }[] }>,
-  sourceConfig = {
-    projectsPage: process.env.DELIVERY_SYSTEM_CATALOG_PAGE_ID || '',
-    accountsPage: process.env.DELIVERY_SYSTEM_ACCOUNTS_PAGE_ID || '',
-    repository: process.env.DELIVERY_SYSTEM_CATALOG_REPOSITORY || '',
-  }) {
-  const sourcePages = ([
-    { id: sourceConfig.projectsPage, region: '海外' },
-    { id: sourceConfig.accountsPage, region: '其他' },
-  ] as const).filter(page => /^[1-9]\d*$/.test(page.id));
-  const syncConfigured = !!site && sourcePages[0]?.id === sourceConfig.projectsPage;
+  site = process.env.CONFLUENCE_BASE_URL || 'https://confluence.hahabianli.com',
+  readProjects?: () => Promise<{ projects: { path: string; remoteUrl: string; webUrl: string }[] }>) {
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
   const filename = path.join(directory, 'catalog.json');
   let state: State = { catalog: { systems: [], sources: [], syncedAt: '' }, overrides: {} };
@@ -180,8 +174,7 @@ export async function createSystemCatalog(directory: string, request: (resource:
     return env;
   }
   async function multilingualSystem() {
-    const key = repositoryKey(sourceConfig.repository);
-    if (!key) return undefined;
+    const key = 'gitlab.hahabianli.com/raytheon-project/raytheon-front-end-project/multilingual-management';
     const projects = (await readProjects?.())?.projects || [];
     for (const project of projects.filter(project => repositoryKey(project.remoteUrl) === key)) {
       let readme: string;
@@ -197,7 +190,6 @@ export async function createSystemCatalog(directory: string, request: (resource:
     return undefined;
   }
   async function sync() {
-    if (!syncConfigured) throw new Error('请先配置 Confluence 站点和项目资料页面');
     if (syncing) return syncing;
     syncing = (async () => {
       const pages = await Promise.all(sourcePages.map(async config => {
@@ -216,7 +208,7 @@ export async function createSystemCatalog(directory: string, request: (resource:
       });
       const multilingual = await multilingualSystem();
       if (multilingual) systems.push(multilingual);
-      for (const credentials of pages[1] ? parseSystemAccounts(pages[1].content, pages[1].source.url) : []) {
+      for (const credentials of parseSystemAccounts(pages[1].content, pages[1].source.url)) {
         const matches = systems.flatMap(system => system.environments).filter(env => env.url && new URL(env.url).origin === new URL(credentials.url).origin);
         if (matches.length === 1) matches[0].accounts.push(...credentials.accounts);
       }
@@ -226,7 +218,7 @@ export async function createSystemCatalog(directory: string, request: (resource:
     })().finally(() => { syncing = undefined; });
     return syncing;
   }
-  async function list() { return !syncConfigured || state.localSystems !== undefined || state.scope === 'overseas-v1' && state.catalog.systems.length ? snapshot() : sync(); }
+  async function list() { return state.localSystems !== undefined || state.scope === 'overseas-v1' && state.catalog.systems.length ? snapshot() : sync(); }
   const inputSchema = z.object({ environmentId: z.string().min(1).max(100), accounts: z.array(z.object({
     id: z.string().max(100).optional(), username: z.string().max(500), password: z.string().max(2000),
   }).strict()).max(20), expectedRevision: z.string().regex(/^[a-f0-9]{64}$/).optional() }).strict();

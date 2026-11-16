@@ -19,6 +19,18 @@ import { emptyDeliveryEvidence } from '../shared/delivery-acceptance.js';
 import type { AgentAccessMode, AgentRun, AgentProvider, AgentUsageLimits, AgentReasoningEffort } from '../shared/agent-runtime.js';
 import { localWorkflowWorkspace } from './agent-workflow.js';
 import { processIsAlive } from './agent-recovery.js';
+import {
+  analyzeUnifiedDiff,
+  discoverRepositoryGuidelines,
+  formatDiffTriageForPrompt,
+  formatRepositoryGuidelinesForPrompt,
+} from './pr-review-intelligence.js';
+import { analyzeRepoBlastRadius, formatBlastRadiusForPrompt } from './repo-blast-radius.js';
+import {
+  distillVerificationOutput,
+  formatDistilledVerificationForPrompt,
+  type VerificationDistillResult,
+} from '../shared/verification-log-distiller.js';
 
 const exec = promisify(execFile);
 type Runtime = Pick<Awaited<ReturnType<typeof createAgentRuntimeService>>, 'startTeamNode' | 'getRun' | 'teamRuns' | 'subscribe' | 'health' | 'stop'>;
@@ -189,6 +201,8 @@ export async function createAgentTeamGovernance(directory: string, runtime: Runt
         const copied = await localWorkflowWorkspace.version(copy, []);
         if (candidate.value !== copied.value || candidate.kind !== copied.kind) throw new Error('评测验证副本版本不符');
         const commands: { command: string; exitCode: number | null; log: string }[] = [];
+        const distilledChecks: VerificationDistillResult[] = [];
+        const preVerifyDiff = await localWorkflowWorkspace.diff(context.workspacePath, context.sample.baseHead).catch(() => '');
         const checkEnvironment = { ...process.env };
         // 嵌入测试运行器时，继承此标记会令子进程 node --test 跳过全部用例却返回 0。
         delete checkEnvironment.NODE_TEST_CONTEXT;
@@ -199,12 +213,18 @@ export async function createAgentTeamGovernance(directory: string, runtime: Runt
           catch (error) { const failure = error as { code?: string | number; stdout?: string; stderr?: string; message?: string }; exitCode = typeof failure.code === 'number' ? failure.code : null; output = (failure.stdout || '') + (failure.stderr || '') + (failure.message || ''); }
           const log = path.join(material, `check-${index + 1}.log`); await fs.writeFile(log, `${command}\nexitCode=${exitCode}\n${output}`);
           commands.push({ command, exitCode, log }); evidence.push(log);
+          distilledChecks.push(distillVerificationOutput(output, { diffPatch: preVerifyDiff, command, exitCode, workspacePrefix: copy }));
         }
+        if (distilledChecks.length > 0) {
+          const distilledPath = path.join(material, 'verification-distilled.json');
+          await fs.writeFile(distilledPath, JSON.stringify(distilledChecks, null, 2));
+        }
+        const distilledFailureHint = formatDistilledVerificationForPrompt(distilledChecks);
         const verifier = teamProfile(config, 'verifier');
         const verified = await runNode({ taskId, stageKey: `${prefix}:verify`, profileId: 'verifier', config, choice: verifier, workspacePath: copy,
           templateId: original.plan?.templateId, accessMode: original.accessMode,
           parentConversationId: original.parentConversationId, objective: '模型评测：固定检查与验收验证', artifactDirectories: [material],
-          context: `${baseContext}\n宿主已在本副本实际执行相同固定检查，原始日志：${JSON.stringify(commands)}。自己读取日志与相关代码逐项核对验收，不修改源码或测试。明确stage=review的验收项记录not_run并交给后续审查，不将等待正式复审视为验证阻塞。\n最终输出 delivery-report：${JSON.stringify({ version: 1, validationEvidence: emptyDeliveryEvidence(), taskResult: { role: 'verifier', status: 'succeeded | failed | blocked', acceptance, selfTests: commands.map(item => ({ command: item.command, exitCode: item.exitCode })), blockers: [] } })}` });
+          context: `${baseContext}\n宿主已在本副本实际执行相同固定检查，原始日志：${JSON.stringify(commands)}。${distilledFailureHint ? `\n${distilledFailureHint}\n` : ''}自己读取日志与相关代码逐项核对验收，不修改源码或测试。明确stage=review的验收项记录not_run并交给后续审查，不将等待正式复审视为验证阻塞。\n最终输出 delivery-report：${JSON.stringify({ version: 1, validationEvidence: emptyDeliveryEvidence(), taskResult: { role: 'verifier', status: 'succeeded | failed | blocked', acceptance, selfTests: commands.map(item => ({ command: item.command, exitCode: item.exitCode })), blockers: [] } })}` });
         runs.push(verified);
         const report = readAgentTaskReport(verified.result);
         await fs.writeFile(path.join(material, 'verification.json'), JSON.stringify({ validationEvidence: report.validationEvidence, acceptance: report.taskResult.acceptance, commands, snapshot: candidate }, null, 2));
@@ -228,6 +248,28 @@ export async function createAgentTeamGovernance(directory: string, runtime: Runt
     if (!verificationPassed) return finishResult();
     const diff = await localWorkflowWorkspace.diff(context.workspacePath, context.sample.baseHead);
     await fs.writeFile(path.join(material, 'candidate.diff'), diff);
+    const triage = analyzeUnifiedDiff(diff);
+    const { focusedPatch, ...triageSummary } = triage;
+    await fs.writeFile(path.join(material, 'diff-triage.json'), JSON.stringify(triageSummary, null, 2));
+    if (focusedPatch) await fs.writeFile(path.join(material, 'candidate-focused.diff'), focusedPatch);
+    const [guidelines, blastRadius] = await Promise.all([
+      discoverRepositoryGuidelines(context.workspacePath, triage.files.map(file => file.path)),
+      analyzeRepoBlastRadius(context.workspacePath, diff, { changedFiles: triage.files.map(file => file.path) }).catch(() => undefined),
+    ]);
+    if (guidelines.files.length > 0) await fs.writeFile(path.join(material, 'repo-guidelines.md'), guidelines.markdown);
+    if (
+      blastRadius
+      && (blastRadius.touchedExports.length > 0
+        || blastRadius.unchangedDependents.length > 0
+        || blastRadius.impactedTests.length > 0)
+    ) {
+      await fs.writeFile(path.join(material, 'blast-radius.json'), JSON.stringify(blastRadius, null, 2));
+    }
+    const triageBrief = [
+      formatRepositoryGuidelinesForPrompt(guidelines, { artifactHint: 'repo-guidelines.md' }),
+      formatDiffTriageForPrompt(triage),
+      formatBlastRadiusForPrompt(blastRadius, { role: 'reviewer', artifactHint: 'blast-radius.json' }),
+    ].filter(Boolean).join('\n\n');
     let reviewerChoice = choice;
     if (!reviewOnly) {
       const authorProvider = runs[0].provider;
@@ -237,7 +279,7 @@ export async function createAgentTeamGovernance(directory: string, runtime: Runt
     const review = await runNode({ taskId, stageKey: `${prefix}:review`, profileId: 'reviewer', config, choice: reviewerChoice, workspacePath: context.workspacePath,
       templateId: original.plan?.templateId, accessMode: original.accessMode,
       parentConversationId: original.parentConversationId, objective: '模型评测：盲审固定候选', artifactDirectories: [material], avoidModel: reviewOnly ? undefined : runs[0].model,
-      context: `${JSON.stringify(context.blindReviewMaterials)}\n盲审材料目录：${material}。读取 candidate.diff、verification.json（如存在）与当前工作区的相关代码；不读取 implementation.json，不猜测作者的执行器或模型。可按授权运行必要核验并保存检查产物，根据代码与实际证据给出 findings；候选源码或测试发生变化时不能沿用原候选的通过结论，必须明确报告并重新验证。另须逐项完成stage=review的验收要求并返回acceptance，每项passed须有独立核验的证据，不能只填approved。审查阶段验收：${JSON.stringify(context.sample.acceptanceCriteria.filter(item => item.stage === 'review'))}。\n最终输出 delivery-report：${JSON.stringify({ version: 1, taskResult: { role: 'reviewer', status: 'succeeded', verdict: 'approved | changes_requested | blocked', summary: '', findings: [], blockers: [] } })}` });
+      context: `${JSON.stringify(context.blindReviewMaterials)}\n盲审材料目录：${material}。读取 candidate.diff（可辅助参考带精确新行号的 candidate-focused.diff 与 diff-triage.json）、verification.json（如存在）与当前工作区的相关代码；不读取 implementation.json，不猜测作者的执行器或模型。${triageBrief ? `\n${triageBrief}\n` : ''}可按授权运行必要核验并保存检查产物，根据代码与实际证据给出 findings；候选源码或测试发生变化时不能沿用原候选的通过结论，必须明确报告并重新验证。另须逐项完成stage=review的验收要求并返回acceptance，每项passed须有独立核验的证据，不能只填approved。审查阶段验收：${JSON.stringify(context.sample.acceptanceCriteria.filter(item => item.stage === 'review'))}。\n最终输出 delivery-report：${JSON.stringify({ version: 1, taskResult: { role: 'reviewer', status: 'succeeded', verdict: 'approved | changes_requested | blocked', summary: '', findings: [], blockers: [] } })}` });
     runs.push(review);
     const reviewedCandidate = await localWorkflowWorkspace.version(context.workspacePath, []);
     if (reviewedCandidate.kind !== candidate.kind || reviewedCandidate.value !== candidate.value) throw new Error('审查期间评测候选版本发生变化');

@@ -3,13 +3,11 @@
  * 不再通过 5188 HTTP 服务获取。这一层只负责加载本地凭据、启停调度器与将既有
  * IncomingMessage 交给内嵌处理器；业务契约仍由 jira-backend 模块维护，避免迁移时重写状态机。
  */
+import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { parseEnv } from 'node:util';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { AutomationData, CatchupData, IssueResponse, JiraDevScanPreview, JiraIssue, PlanItem, ProjectsData } from '../shared/hub.js';
-import { managedPluginCredential } from './plugins/store.mjs';
 
 type PrepareJiraDevPreviews = (plan: PlanItem[], limit: number, mode?: 'preview' | 'start', mayStart?: () => Promise<boolean>) => Promise<JiraDevScanPreview[]>;
 
@@ -32,25 +30,25 @@ interface JiraBackendModule {
   getLocalProjects(refresh?: boolean): Promise<ProjectsData>;
 }
 
-function loadCredentialEnvironment(filename: string) {
-  let values: ReturnType<typeof parseEnv>;
-  try { values = parseEnv(readFileSync(filename, 'utf8')); }
+function unquote(value: string) {
+  if (value.length >= 2 && ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))) {
+    return value.slice(1, -1);
+  }
+  return value;
+}
+
+async function loadCredentialEnvironment(filename: string) {
+  let content: string;
+  try { content = await fs.readFile(filename, 'utf8'); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
     throw error;
   }
-  // Plugin bootstrap removes credentials for the previous site before starting the server.
-  for (const [key, value] of Object.entries(values)) {
-    if (value !== undefined && process.env[key] === undefined && !managedPluginCredential(key)) process.env[key] = value;
+  for (const line of content.split(/\r?\n/)) {
+    const match = line.match(/^\s*(?:export\s+)?([A-Z_][A-Z0-9_]*)\s*=\s*(.*)\s*$/);
+    if (!match || process.env[match[1]] !== undefined) continue;
+    process.env[match[1]] = unquote(match[2]);
   }
-}
-
-export function initializeSourceEnvironment(port: number, repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')) {
-  process.env.DELIVERY_PORT = String(port);
-  const credentials = process.env.DELIVERY_CREDENTIALS_FILE || path.join(repositoryRoot, '.env');
-  loadCredentialEnvironment(credentials);
-  process.env.DELIVERY_SOURCE_DATA_DIR ||= path.join(process.env.DELIVERY_DATA_DIR || path.join(repositoryRoot, '.data'), 'source');
-  return { credentials, dataDirectory: process.env.DELIVERY_SOURCE_DATA_DIR };
 }
 
 export interface SourceBackend {
@@ -74,7 +72,11 @@ export interface SourceBackend {
 }
 
 export async function createSourceBackend(port: number): Promise<SourceBackend> {
-  initializeSourceEnvironment(port);
+  process.env.DELIVERY_PORT = String(port);
+  const supportRoot = path.join(os.homedir(), 'Library', 'Application Support', 'DeliveryWorkspace');
+  process.env.DELIVERY_SOURCE_DATA_DIR ||= path.join(supportRoot, 'source');
+  const credentials = process.env.DELIVERY_CREDENTIALS_FILE || path.join(supportRoot, 'credentials', 'jira.env');
+  await loadCredentialEnvironment(credentials);
 
   const specifier = new URL('./jira-backend/server.mjs', import.meta.url).href;
   const backend = await import(specifier) as JiraBackendModule;

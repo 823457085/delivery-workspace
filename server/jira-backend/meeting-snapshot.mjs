@@ -1,12 +1,12 @@
 /**
- * 设计说明：例会页是多人维护的长文档，本模块只提取“当天日报”里明确归属配置负责人的条目，
+ * 设计说明：例会页是多人维护的长文档，本模块只提取“当天日报”里明确归属李子锐的条目，
  * 并将日期等于当天的任务与后续任务分栏。它不负责写回 Confluence，避免自动化误改整页内容。
  */
 
-const DEFAULT_TIME_ZONE = process.env.DELIVERY_TIME_ZONE || "Asia/Shanghai";
+const DEFAULT_TIME_ZONE = "Asia/Shanghai";
 const DEFAULT_ASSIGNEE = Object.freeze({
   name: process.env.MEETING_ASSIGNEE_NAME || "",
-  userKeys: Object.freeze((process.env.MEETING_ASSIGNEE_USER_KEYS || "").split(",").map(value => value.trim()).filter(Boolean))
+  userKeys: Object.freeze((process.env.MEETING_ASSIGNEE_USER_KEYS || "").split(",").filter(Boolean))
 });
 
 function dateParts(value = new Date(), timeZone = DEFAULT_TIME_ZONE) {
@@ -26,7 +26,7 @@ export function localDateIso(value = new Date(), timeZone = DEFAULT_TIME_ZONE) {
 
 export function expectedMeetingTitle(value = new Date(), timeZone = DEFAULT_TIME_ZONE) {
   const { year, month } = dateParts(value, timeZone);
-  return `${process.env.MEETING_TITLE_PREFIX || ""}${year.slice(-2)}年${month}月例会`;
+  return `海外-${year.slice(-2)}年${month}月例会`;
 }
 
 function decodeHtml(value) {
@@ -91,12 +91,12 @@ export function extractAssigneeTasks(storageHtml, {
   const taskMatches = [...section.matchAll(/<li\b([^>]*)>([\s\S]*?)<\/li>/gi)];
   const tasks = taskMatches.flatMap((match, index) => {
     const raw = match[2];
-    const assignedByName = Boolean(assignee.name) && htmlText(raw).includes(`@${assignee.name}`);
+    const assignedByName = !!assignee.name && htmlText(raw).includes(`@${assignee.name}`);
     const assignedByKey = assignee.userKeys.some((key) => new RegExp(`ri:userkey=["']${key}["']`, "i").test(raw));
     if (!assignedByName && !assignedByKey) return [];
 
     let text = htmlText(raw);
-    if (assignee.name && !text.includes(`@${assignee.name}`)) text = `${text} @${assignee.name}`;
+    if (!text.includes(`@${assignee.name}`)) text = `${text} @${assignee.name}`;
     const due = parentheticalDate(text, month, day);
     return [{
       id: taskId(match[1], index),
@@ -141,7 +141,7 @@ export function buildMeetingSnapshot(input, now = new Date()) {
     schemaVersion: 1,
     localDate,
     scannedAt,
-    schedule: `工作日 17:00（${DEFAULT_TIME_ZONE}）`,
+    schedule: "工作日 17:00（Asia/Shanghai）",
     expectedTitle,
     assignee,
     source: {

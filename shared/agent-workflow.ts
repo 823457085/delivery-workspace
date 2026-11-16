@@ -4,11 +4,11 @@
  * 本模块只做判定，返回下一步动作；创建副本、计算版本和启动运行由服务端执行。
  */
 import type {
-  AgentProfileId, AgentProviderFallback, AgentRun, AgentTeamTemplateId, AgentWorkflowAction, AgentWorkflowStage, AgentWorkflowState,
-  AgentWorkflowStepSummary, AgentWorkflowSummary, AgentWorkspaceVersion,
+  AgentProfileId, AgentProviderFallback, AgentRun, AgentTeamTemplateId, AgentWorkflowAction, AgentWorkflowReviewConvergence,
+  AgentWorkflowReviewStepStats, AgentWorkflowStage, AgentWorkflowState, AgentWorkflowStepSummary, AgentWorkflowSummary, AgentWorkspaceVersion,
 } from './agent-runtime.js';
 import { agentTeamTemplates } from './agent-roles.js';
-import { evaluateImplementation, evaluateReview, evaluateVerification, type AgentStepOutcome } from './agent-task-result.js';
+import { evaluateImplementation, evaluateReview, evaluateVerification, readAgentTaskReport, type AgentStepOutcome } from './agent-task-result.js';
 
 export interface AgentWorkflowDecision {
   requestId: string;
@@ -117,25 +117,65 @@ export function evaluateWorkflow(record: AgentWorkflowRecord, allRuns: AgentRun[
     const link = run.task!.workflow!;
     let outcome: AgentWorkflowStepSummary['outcome'] = 'pending';
     let reason = runStatusLabels[run.status];
+    let reviewStats: AgentWorkflowReviewStepStats | undefined;
     if (run.status === 'completed' && run.resultReady) {
       const evaluated = evaluateWorkflowStep(record, run, implementationRuns);
       outcomes.set(step, evaluated);
       outcome = evaluated.outcome;
       reason = evaluated.reason;
+      if (link.stage === 'review') {
+        try {
+          const parsed = readAgentTaskReport(run.result).taskResult;
+          if (parsed.role === 'reviewer') {
+            const findings = parsed.findings || [];
+            reviewStats = {
+              ...(parsed.verdict ? { verdict: parsed.verdict } : {}),
+              blockerCount: findings.filter(item => item.severity === 'blocker').length,
+              majorCount: findings.filter(item => item.severity === 'major').length,
+              minorCount: findings.filter(item => item.severity === 'minor').length,
+              totalFindings: findings.length,
+            };
+          }
+        } catch {
+          // Malformed review reports are already handled by evaluateWorkflowStep.
+        }
+      }
     } else if (['failed', 'interrupted', 'cancelled'].includes(run.status)) {
       outcome = 'blocked';
       reason = `${runStatusLabels[run.status]}${run.error ? `：${run.error}` : ''}`;
     }
     return { step, stage: link.stage, round: link.round, runId: run.id, conversationId: run.conversationId || run.id,
       profileId: run.task!.profileId || (link.stage === 'implement' ? implementationProfile(record) : link.stage === 'verify' ? 'verifier' : 'reviewer'),
-      provider: run.provider, model: run.model, reasoningEffort: run.reasoningEffort, status: run.status, outcome, reason };
+      provider: run.provider, model: run.model, reasoningEffort: run.reasoningEffort, status: run.status, outcome, reason,
+      ...(reviewStats ? { reviewStats } : {}) };
   });
+  const completedReviews = steps.filter(step => step.stage === 'review' && step.reviewStats);
+  let reviewConvergence: AgentWorkflowReviewConvergence | undefined;
+  if (completedReviews.length > 0) {
+    const firstStats = completedReviews[0]!.reviewStats!;
+    const lastStep = completedReviews.at(-1)!;
+    const lastStats = lastStep.reviewStats!;
+    let trend: AgentWorkflowReviewConvergence['trend'];
+    if (lastStats.totalFindings === 0 && lastStep.outcome === 'passed') trend = 'clean';
+    else if (completedReviews.length === 1) trend = 'single';
+    else if (lastStats.totalFindings < firstStats.totalFindings) trend = 'converging';
+    else if (lastStats.totalFindings > firstStats.totalFindings) trend = 'regressed';
+    else trend = 'stalled';
+    reviewConvergence = {
+      reviewRounds: completedReviews.length,
+      initialFindings: firstStats.totalFindings,
+      latestFindings: lastStats.totalFindings,
+      blockerRemaining: lastStats.blockerCount,
+      trend,
+    };
+  }
   const latestImplementation = steps.filter(step => step.stage === 'implement').at(-1);
   const base = {
     id: record.id, templateId: record.templateId, parentConversationId: record.parentConversationId, objective: record.objective,
     acceptanceCriteria: record.acceptanceCriteria, allowedPaths: record.allowedPaths, maxRounds: null, escalated: record.escalated,
     steps, implementationConversationId: latestImplementation?.conversationId || '', createdAt: record.createdAt, updatedAt: record.updatedAt,
     ...(record.providerFallback ? { providerFallback: record.providerFallback } : {}),
+    ...(reviewConvergence ? { reviewConvergence } : {}),
   };
   const current = steps.at(-1);
   const summary = (state: AgentWorkflowState, reason: string, nextStep: string, actions: AgentWorkflowAction[] = ['takeover', 'cancel'],

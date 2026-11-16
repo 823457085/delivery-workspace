@@ -18,7 +18,7 @@ const profile = (id: string): AutomationProjectProfile => ({ ...emptyProjectProf
   localPath: `/fixture/${id}`, repositoryUrl: `git@example.test:${id}.git`, runtimeCommand: `pnpm dev:${id}`,
   runtimeEnvironment: `test-${id}`, targetBranch: `feature/${id}`, jiraProjects: [`KEY-${id}`], components: ['原组件'], labels: ['原标签'] });
 const settings = (): AutomationSettings => ({ enabled: false, dailyTime: '09:00', dailyTimes: ['09:00', '19:00'], maxDispatchPerRun: 0,
-  autoCreateCodex: false, autoTransitionJira: false, autoCreateMergeRequest: false, startStatus: '开始', completedStatus: '完成',
+  autoCreateCodex: false, autoPrepareJiraDev: false, autoTransitionJira: false, autoCreateMergeRequest: false, jiraDevAutomationApproved: false, startStatus: '开始', completedStatus: '完成',
   targetBranch: 'feature/original', reviewer: 'reviewer', runtimeEnvironment: 'test', runtimeCommand: 'pnpm dev', browser: 'Chrome',
   repositoryUrl: 'git@example.test:original.git', projectProfiles: ['a', 'b', 'c'].map(profile) });
 
@@ -32,13 +32,13 @@ interface EditorState {
 function fixture() {
   const data = ref({ settings: settings() });
   const local = { displayName: '新本机项目', projectName: 'next', folderName: 'next', path: '/fixture/next', remoteUrl: 'git@example.test:next.git' } as LocalProject;
-  const writes: { key: string; payload: Record<string, unknown>; confirmation: string[] }[] = [];
-  const bindings = { computed, ref, shallowRef, watch, crypto: { randomUUID },
-    useIntegrationPlugins: () => ({ capability: () => true }),
+  const writes: { key: string; payload: Record<string, unknown>; confirmation: unknown[] }[] = [];
+  const bindings = { computed, ref, shallowRef, watch, defineAsyncComponent: () => ({}), crypto: { randomUUID },
     onMounted() {}, onBeforeUnmount() {}, useRoute: () => ({ query: {} }), useRouter: () => ({ replace() {} }),
+    useIntegrationPlugins: () => ({ jira: ref(true), gitlab: ref(true) }),
     useSource: (key: string) => ({ data: key === 'automation' ? data : ref(key === 'projects' ? { projects: [local] } : {}),
       error: ref(null), isPending: ref(false), isFetching: ref(false) }),
-    useSourceActions: () => ({ execute: async (key: string, payload: Record<string, unknown>, ...confirmation: string[]) => {
+    useSourceActions: () => ({ execute: async (key: string, payload: Record<string, unknown>, ...confirmation: unknown[]) => {
       writes.push({ key, payload: copy(payload), confirmation }); return false;
     } }), emptyProjectProfile, projectProfileError, selectProfileProject, validDeliverySettings,
   };
@@ -171,13 +171,20 @@ test('草稿编辑和应用不远端写入，最终保存仅发送原设置 payl
       startStatus: value.startStatus, completedStatus: value.completedStatus, targetBranch: value.targetBranch, reviewer: value.reviewer,
       runtimeEnvironment: value.runtimeEnvironment, runtimeCommand: value.runtimeCommand, browser: value.browser, repositoryUrl: value.repositoryUrl,
       projectProfiles: value.projectProfiles, enabled: value.enabled, autoCreateCodex: value.autoCreateCodex,
-      autoPrepareJiraDev: false, autoTransitionJira: value.autoTransitionJira, autoCreateMergeRequest: value.autoCreateMergeRequest,
-      jiraDevAutomationApproved: false,
+      autoPrepareJiraDev: value.autoPrepareJiraDev, autoTransitionJira: value.autoTransitionJira,
+      autoCreateMergeRequest: value.autoCreateMergeRequest, jiraDevAutomationApproved: value.jiraDevAutomationApproved,
     });
     assert.equal(f.writes[0].confirmation[0], '确认保存自动交付设置');
+    assert.deepEqual(f.writes[0].confirmation[2], { skipConfirm: true }, '未新开启外部自动执行时直接保存不弹窗');
     assert.equal((f.writes[0].payload.projectProfiles as AutomationProjectProfile[])[1].name, '项目 b');
     assert.equal(f.state.saving.value, false); assert.equal(f.state.dirty.value, true, '确认取消后保留未保存表单');
+    f.state.form.value.enabled = true;
+    f.state.form.value.autoCreateCodex = true;
+    f.state.form.value.jiraDevAutomationApproved = false;
+    await f.state.save();
+    assert.equal(f.writes.length, 2);
+    assert.deepEqual(f.writes[1].confirmation[2], { skipConfirm: false }, '首次开启外部自动执行时必须弹窗确认');
     f.state.form.value.dailyTimes.push('09:00'); await f.state.save();
-    assert.equal(f.writes.length, 1, '无效总表单仍由原保存校验阻止写入');
+    assert.equal(f.writes.length, 2, '无效总表单仍由原保存校验阻止写入');
   } finally { f.close(); }
 });

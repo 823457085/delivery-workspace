@@ -10,11 +10,9 @@ import { pathToFileURL } from 'node:url';
 import { reviewLabel, type ApexBffReviewState } from '../shared/apex-bff-review.js';
 import type { ExecutionProgress, RetestBaseline } from '../src/features/integration-execution/execution-plan.js';
 import { buildReviewCatalog } from '../src/features/api-integration/review-catalog.js';
-import { loadIntegrationCatalog } from '../server/integration-catalog.js';
 import { assertIssueNotCleared } from './integration-cleared-issues.js';
 
-const dataRoot = (root: string) => path.resolve(root, process.env.DELIVERY_DATA_DIR || '.data');
-const taskIds = ['merchant', 'equipment', 'finance', 'operations', 'configuration', 'monitoring'] as const;
+const taskIds = ['equipment', 'finance', 'operations', 'configuration', 'monitoring'] as const;
 type Action = 'step' | 'interface' | 'page' | 'issue' | 'retest';
 type Ledger = Omit<ExecutionProgress, 'interfaces' | 'pages' | 'retests'> & {
   interfaces: (ExecutionProgress['interfaces'][number] & { checkedAt?: string })[];
@@ -32,7 +30,7 @@ const fields: Record<Action, string[]> = {
 };
 
 function validateTask(taskId: string) {
-  if (!taskIds.includes(taskId as typeof taskIds[number])) throw new Error('未知执行批次');
+  if (!taskIds.includes(taskId as typeof taskIds[number])) throw new Error('未知执行批次；商家旧台账请沿用 merchant-integration-progress.ts');
 }
 function object(value: unknown): Update {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('台账更新必须是 JSON 对象');
@@ -67,14 +65,14 @@ function baseline(run: Ledger, value: unknown): RetestBaseline {
   const input = object(value);
   if (Object.keys(input).some(key => !['interfaceIds', 'pages', 'request', 'headers', 'requiredFields'].includes(key))) throw new Error('未知回测基线字段');
   references(run, input);
-  if (typeof input.request !== 'string' || !/^GET \/[^\s]+$/.test(input.request)
+  if (typeof input.request !== 'string' || !/^GET \/admin\/v1\/[^\s]+$/.test(input.request)
     || !Array.isArray(input.requiredFields) || input.requiredFields.some(field => typeof field !== 'string')) throw new Error('回测基线需要原 GET 请求及字段约束');
   const headers = object(input.headers);
   if (Object.values(headers).some(value => typeof value !== 'string')) throw new Error('上下文头必须为字符串');
   return input as unknown as RetestBaseline;
 }
 async function locked<T>(root: string, taskId: string, callback: () => Promise<T>) {
-  const lock = path.join(dataRoot(root), 'integration-execution-locks', `${taskId}.lock`);
+  const lock = path.join(root, '.data/integration-execution-locks', `${taskId}.lock`);
   await fs.mkdir(path.dirname(lock), { recursive: true });
   const deadline = Date.now() + 20_000;
   while (true) {
@@ -165,23 +163,12 @@ export async function updateExecutionProgress(root: string, taskId: string, acti
 /** 初始化缺失的批次并补齐新增接口，已有实测结论和正在写入的商家台账保持原值。 */
 export async function initializeExecutionProgress(root: string) {
   const { buildExecutionTasks } = await import('../src/features/integration-execution/execution-plan.js');
-  let records: ApexBffReviewState = {};
-  try { records = JSON.parse(await fs.readFile(path.join(dataRoot(root), 'apex-bff-review.json'), 'utf8')); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-  const configFile = process.env.DELIVERY_INTEGRATION_CONFIG_FILE || path.join(dataRoot(root), 'integration-execution-config.json');
-  let automation: ExecutionProgress['automation'] = { workspacePath: '', deliveryRoot: root, baseUrl: '', environment: '', assignee: '' };
-  try { automation = { ...automation, ...JSON.parse(await fs.readFile(configFile, 'utf8')) }; }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-  for (const field of ['workspacePath', 'deliveryRoot', 'baseUrl', 'environment', 'assignee'] as const) {
-    if (typeof automation[field] !== 'string') throw new Error(`联调配置 ${field} 必须为字符串`);
-  }
-  if (automation.baseUrl) {
-    const url = new URL(automation.baseUrl);
-    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('联调地址必须为无凭证的 http(s) 地址');
-  }
-  const tasks = buildExecutionTasks(buildReviewCatalog(await loadIntegrationCatalog()), records, automation.assignee);
-  assertSanitized(automation);
+  const records: ApexBffReviewState = JSON.parse(await fs.readFile(path.join(root, '.data/apex-bff-review.json'), 'utf8'));
+  const merchant: Ledger = JSON.parse(await fs.readFile(path.join(root, 'public/integration-runs/merchant-20261009.json'), 'utf8'));
+  const tasks = buildExecutionTasks(buildReviewCatalog(), records);
+  assertSanitized(merchant.automation);
   for (const task of tasks) {
+    if (task.id === 'merchant-20261009') continue;
     validateTask(task.id);
     await locked(root, task.id, async () => {
       const file = path.join(root, 'public/integration-runs', `${task.id}.json`);
@@ -189,7 +176,7 @@ export async function initializeExecutionProgress(root: string) {
       try { run = JSON.parse(await fs.readFile(file, 'utf8')); }
       catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-        run = { status: task.deferred ? '延期执行' : '待执行', current: task.deferred ? '数据监控暂不自动执行' : '等待独立会话执行', startedAt: '', updatedAt: new Date().toISOString(), environment: automation.environment, automation, interfaces: [], pages: [], issues: [], retests: [] };
+        run = { status: task.deferred ? '延期执行' : '待执行', current: task.deferred ? '数据监控暂不自动执行' : '等待独立会话执行', startedAt: '', updatedAt: new Date().toISOString(), environment: merchant.environment, automation: merchant.automation, interfaces: [], pages: [], issues: [], retests: [] };
       }
       for (const item of task.items) {
         if (!run.interfaces.some(entry => entry.id === item.id)) run.interfaces.push({ id: item.id, operationId: item.plan?.operationId || '', page: item.ui.page, request: `${item.method || '方法待确认'} ${item.path}`, status: reviewLabel(records[item.id]) === '已联调' ? '人工已确认' : !item.method ? '待契约确认' : item.method === 'GET' ? '待执行' : '需测试数据', result: reviewLabel(records[item.id]) === '已联调' ? '沿用人工审核记录；自动实测证据独立记录。' : item.method && item.method !== 'GET' ? '等待可用于写入的测试数据；未自动执行写操作。' : '' });
@@ -198,8 +185,8 @@ export async function initializeExecutionProgress(root: string) {
       await publish(root, task.id, run);
     });
   }
-  const plan = { automation, tasks: tasks.map(({ id, title, module, deferred, progressUrl }) => ({ id, title, module, deferred, progressUrl })) };
-  await locked(root, 'execution-plan', () => publish(root, 'execution-plan', plan));
+  const plan = { automation: merchant.automation, tasks: tasks.map(({ id, title, module, deferred, progressUrl }) => ({ id, title, module, deferred, progressUrl })) };
+  await locked(root, 'lizirui-plan', () => publish(root, 'lizirui-plan', plan));
   return plan;
 }
 

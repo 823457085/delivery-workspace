@@ -214,7 +214,6 @@ export async function readCatchupBoard(dataRoot) {
       { integrity: "VERIFIED" }
     );
   } catch (error) {
-    if (error.code === "ENOENT" && error.path === path.join(dataRoot, "manifest.json")) return buildCatchupBoard({}, { integrity: "UNCONFIGURED" });
     if (error.message === "INTEGRITY_CHECK_FAILED") {
       throw new Error("追平事实完整性校验失败");
     }
@@ -223,7 +222,7 @@ export async function readCatchupBoard(dataRoot) {
 }
 
 export async function readCatchupDocument(dataRoot, type, requirementId = "") {
-  const docsRoot = process.env.APEX_CATCHUP_DOCUMENTS_ROOT || path.join(dataRoot, "docs");
+  const docsRoot = path.resolve(dataRoot, "..", "..", "APEX功能追平");
   let documentPath;
 
   if (type === "portal") {

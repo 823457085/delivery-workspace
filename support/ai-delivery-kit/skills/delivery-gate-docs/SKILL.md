@@ -16,7 +16,7 @@ description: AI Delivery Kit workflow and artifact entrypoint. Use when Codex wo
 3. 当前仓库根目录存在 `kit.yaml`
 4. 当前仓库下 `ai-delivery-kit`
 5. 当前仓库同级 `../ai-delivery-kit`
-6. 本机常见路径 `${AI_DELIVERY_KIT_ROOT:-$HOME/WorkSpace/ai-delivery-kit}`
+6. 本机常见路径 `$HOME/WorkSpace/raytheon/ai-delivery-kit`
 
 后续所有 `core/`、`artifacts/templates/`、`prompts/`、`guides/` 路径都相对这个包根目录。找不到时先说明缺少 AI Delivery Kit 规范源，不要凭记忆编造模板。
 
@@ -47,6 +47,8 @@ description: AI Delivery Kit workflow and artifact entrypoint. Use when Codex wo
 | self-test-coverage-check | G3 |
 | codex-cursor-handoff | 开发便利，可选 |
 
+前端技术方案的生成和修订（含 S2a/G2a）一律交给 `frontend-tech-solution`，按该技能确定版式。当前技能仅补充适用的覆盖和签审要求。
+
 ## 阶段 → 模板 → 提示词
 
 | 阶段 | 模板 | 提示词 |
@@ -55,7 +57,8 @@ description: AI Delivery Kit workflow and artifact entrypoint. Use when Codex wo
 | R0 自检 | prd-self-check.md | prompts/R0-prd-self-check.md |
 | R1a/R1b | dev/qa-prd-review.md | R1a/R1b + prd-prototype-challenge |
 | S1 | review-minutes.md | S1-review-minutes.md |
-| S2a | tech-design.md | S2a-tech-design.md |
+| S2a 后端/全栈主方案 | tech-design.md | S2a-tech-design.md |
+| S2a 前端技术方案 | 按 frontend-tech-solution 选择 | frontend-tech-solution |
 | S2b | test-plan.md | S2b-test-plan.md |
 | 编码执行 / G3 | implementation-plan.md | prompts/G3-implementation-plan.md |
 | 编码执行 / G3 | self-test-report.md | S3-self-test-report.md |

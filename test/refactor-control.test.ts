@@ -5,8 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createRefactorControl } from '../server/refactor-control';
-import { integrationCatalogFixture } from './fixtures/integration-catalog';
 import { buildReviewCatalog } from '../src/features/api-integration/review-catalog';
+import { integrationCatalogFixture } from './fixtures/integration-catalog';
 import { refactorJobLabel, type RefactorLaunch, type RefactorResult } from '../shared/refactor-control';
 import type { AgentRun, AgentRuntimeDashboard, StartAgentRunInput } from '../shared/agent-runtime';
 import { createAgentRuntimeService, type AgentRuntimeAdapter } from '../server/agent-runtime';
@@ -24,14 +24,14 @@ async function fixture(t: TestContext) {
   await fs.mkdir(path.join(root, 'public/integration-runs'), { recursive: true });
   const data = path.join(root, '.data/refactor-control');
   const catalog = buildReviewCatalog(integrationCatalogFixture);
-  const merchant = catalog.find(item => item.id === 'fixture-merchant')!;
+  const merchant = catalog.find(item => item.path === '/admin/v1/merchants/detail')!;
   const equipment = catalog.find(item => item.method === 'GET' && item.ui.route.includes('EquipmentMonitoring'))!;
   const records = Object.fromEntries([merchant, equipment].map(item => [item.id,
-    { assignee: { name: 'demo-user', displayName: '测试人员' }, evidence: '', blocker: '', confirmedAt: '', updatedAt: '' }]));
+    { assignee: { name: 'lizirui', displayName: '测试人员' }, evidence: '', blocker: '', confirmedAt: '', updatedAt: '' }]));
   await fs.writeFile(path.join(root, '.data/apex-bff-review.json'), JSON.stringify(records));
-  const automation = { workspacePath: root, deliveryRoot: root, baseUrl: 'http://127.0.0.1:6791', environment: 'DEV', assignee: 'demo-user' };
-  await fs.writeFile(path.join(root, 'public/integration-runs/execution-plan.json'), JSON.stringify({ automation, tasks: [] }));
-  for (const [moduleId, item] of [['merchant', merchant], ['equipment', equipment]] as const) {
+  const automation = { workspacePath: root, deliveryRoot: root, baseUrl: 'http://127.0.0.1:6791', environment: 'DEV', assignee: 'lizirui' };
+  await fs.writeFile(path.join(root, 'public/integration-runs/lizirui-plan.json'), JSON.stringify({ automation, tasks: [] }));
+  for (const [moduleId, item] of [['merchant-20261009', merchant], ['equipment', equipment]] as const) {
     const issues = [1, 2].map(index => ({ id: `${moduleId}-ISSUE-${index}`, summary: `真实问题 ${index}`, kind: '后端问题', status: '待后端修复',
       interfaceIds: [item.id], pages: [item.ui.page], report: '/integration-runs/original.html',
       retest: { interfaceIds: [item.id], pages: [item.ui.page], request: `GET ${item.path}?id=fixture-${index}`, headers: { 'X-Region': 'NA' }, requiredFields: ['name'] } }));
@@ -55,10 +55,10 @@ async function fixture(t: TestContext) {
     },
     async stop(id: string) { const run = [...runs.values()].find(run => run.id === id)!; run.status = 'cancelled'; return run; },
   };
-  const service = await createRefactorControl(root, data, runtime, { catalog: integrationCatalogFixture, autoDispatch: false });
+  const service = await createRefactorControl(root, data, runtime, { autoDispatch: false, catalog: integrationCatalogFixture });
   t.after(() => service.close());
   const dashboard = await service.dashboard();
-  const launch = (overrides: Partial<RefactorLaunch> = {}): RefactorLaunch => ({ action: 'integrate', moduleIds: ['merchant', 'equipment'], issueIds: [], version: '', notes: '', provider: 'codex', model: 'fixture-model', reasoningEffort: 'high', revision: dashboard.revision, ...overrides });
+  const launch = (overrides: Partial<RefactorLaunch> = {}): RefactorLaunch => ({ action: 'integrate', moduleIds: ['merchant-20261009', 'equipment'], issueIds: [], version: '', notes: '', provider: 'codex', model: 'fixture-model', reasoningEffort: 'high', revision: dashboard.revision, ...overrides });
   async function start(input = launch(), requestId = randomUUID()) {
     const preview = await service.preview(input);
     const body = { launch: input, scopeHash: preview.scopeHash, requestId };
@@ -79,9 +79,9 @@ test('本地分支复测经预览和队列启动真实独立服务；自动记�
   await git('add', 'marker.txt'); await git('commit', '-m', '测试复测分支');
   const head = await git('rev-parse', 'HEAD'); await git('switch', 'main');
   await fs.writeFile(path.join(f.root, 'marker.txt'), 'dirty-main');
-  const sources = await f.service.branches({ moduleIds: ['merchant', 'equipment'] });
+  const sources = await f.service.branches({ moduleIds: ['merchant-20261009', 'equipment'] });
   assert.equal(sources.length, 1); assert.equal(sources[0].moduleIds.length, 2);
-  const input = f.launch({ action: 'retest', retestMode: 'local', moduleIds: ['merchant'], issueIds: ['merchant-ISSUE-1'],
+  const input = f.launch({ action: 'retest', retestMode: 'local', moduleIds: ['merchant-20261009'], issueIds: ['merchant-20261009-ISSUE-1'],
     branches: [{ workspacePath: sources[0].workspacePath, ref: 'refs/heads/feature/retest' }] });
   await assert.rejects(f.service.preview({ ...input, branches: [] }), /每个执行项目选择/);
   await assert.rejects(f.service.preview({ ...input, branches: [{ workspacePath: path.dirname(f.root), ref: 'refs/heads/main' }] }), /每个执行项目选择/);
@@ -103,7 +103,7 @@ test('本地分支复测经预览和队列启动真实独立服务；自动记�
   assert.equal(f.service.isIdle(false), true);
   await f.service.close(true);
   assert.equal(await (await fetch(job.localRuntime.baseUrl)).text(), 'chosen');
-  const reopened = await createRefactorControl(f.root, f.data, f.runtime, { catalog: integrationCatalogFixture, autoDispatch: false });
+  const reopened = await createRefactorControl(f.root, f.data, f.runtime, { autoDispatch: false });
   t.after(() => reopened.close());
   await reopened.pump();
   assert.equal(f.launches.length, 1, '重启沿用原任务和本地服务');
@@ -123,7 +123,7 @@ test('串行执行模块、重复请求不重复派发，重启保留待办和�
   assert.equal(f.launches.length, 1);
   const first = f.runs.get(result.jobIds[0])!;
   await f.service.close();
-  const reopened = await createRefactorControl(f.root, f.data, f.runtime, { catalog: integrationCatalogFixture, autoDispatch: false });
+  const reopened = await createRefactorControl(f.root, f.data, f.runtime, { autoDispatch: false });
   t.after(() => reopened.close());
   await reopened.pump(); assert.equal(f.launches.length, 1);
   first.status = 'completed'; await reopened.pump();
@@ -182,7 +182,7 @@ test('重构任务通过真实团队服务按保存岗位派发；负责人结�
     } }));
   const runtime = await createAgentRuntimeService(data, { adapters });
   const teams = await createAgentTeamService(data, runtime);
-  let service = await createRefactorControl(f.root, f.data, runtime, { teams, catalog: integrationCatalogFixture, autoDispatch: false });
+  let service = await createRefactorControl(f.root, f.data, runtime, { teams, autoDispatch: false });
   t.after(async () => { release(); await service.close(); await teams.close(); await runtime.close(); await fs.rm(data, { recursive: true, force: true }); });
   const draft = teams.profiles.read();
   Object.assign(draft.profiles.find(profile => profile.id === 'frontend')!, { provider: 'cursor', model: 'composer-2.5', reasoningEffort: '' });
@@ -201,7 +201,7 @@ test('重构任务通过真实团队服务按保存岗位派发；负责人结�
   assert.equal(refactorJobLabel(job), '团队执行中');
   assert.equal(calls.find(run => run.team?.profileId === 'frontend')?.provider, profile.profiles.find(p => p.id === 'frontend')?.provider);
   await service.pump(); assert.equal(teams.list().length, 1);
-  await service.close(); service = await createRefactorControl(f.root, f.data, runtime, { teams, catalog: integrationCatalogFixture, autoDispatch: false });
+  await service.close(); service = await createRefactorControl(f.root, f.data, runtime, { teams, autoDispatch: false });
   await service.pump(); assert.equal(teams.list().length, 1);
   assert.equal((await service.start(batch)).reused, true);
   await assert.rejects(service.start({ ...batch, requestId: randomUUID() }), /已有任务/);
@@ -219,10 +219,10 @@ test('重构任务通过真实团队服务按保存岗位派发；负责人结�
 
 test('批量复测准确绑定所选问题、环境与版本；失效范围和重复占用被拒绝', async t => {
   const f = await fixture(t);
-  await assert.rejects(f.service.preview(f.launch({ action: 'retest', issueIds: ['merchant-ISSUE-1'] })), /已部署版本/);
+  await assert.rejects(f.service.preview(f.launch({ action: 'retest', issueIds: ['merchant-20261009-ISSUE-1'] })), /已部署版本/);
   await assert.rejects(f.service.preview(f.launch({ action: 'retest', version: 'bff-v2', issueIds: ['unknown'] })), /不在本轮范围/);
   await assert.rejects(f.service.preview(f.launch({ moduleIds: ['monitoring'] })), /当前执行范围/);
-  const input = f.launch({ action: 'retest', moduleIds: ['merchant'], issueIds: ['merchant-ISSUE-1', 'merchant-ISSUE-2'], version: 'bff-v2' });
+  const input = f.launch({ action: 'retest', moduleIds: ['merchant-20261009'], issueIds: ['merchant-20261009-ISSUE-1', 'merchant-20261009-ISSUE-2'], version: 'bff-v2' });
   const { result, preview } = await f.start(input);
   assert.equal(preview.jobs.length, 1); assert.equal(preview.jobs[0].targetIds.length, 2);
   const job = (await f.service.dashboard()).jobs[0];
@@ -248,17 +248,17 @@ test('派发结果不明时恢复既有运行，不重发或并发启动下一�
 
 test('报告需匹配本轮范围、环境和版本，不能以部分项目或自引用证据冒充整批通过', async t => {
   const f = await fixture(t);
-  const { result } = await f.start(f.launch({ moduleIds: ['merchant'], action: 'retest', issueIds: ['merchant-ISSUE-1', 'merchant-ISSUE-2'], version: 'deployed-sha' }));
+  const { result } = await f.start(f.launch({ moduleIds: ['merchant-20261009'], action: 'retest', issueIds: ['merchant-20261009-ISSUE-1', 'merchant-20261009-ISSUE-2'], version: 'deployed-sha' }));
   await f.service.pump(); const id = result.jobIds[0]; f.runs.get(id)!.status = 'completed';
   const directory = path.join(f.data, 'artifacts', id);
   const report: RefactorResult = { jobId: id, environment: 'DEV', version: 'deployed-sha', status: 'passed', summary: '本轮现场通过',
-    items: [{ targetId: 'merchant-ISSUE-1', status: 'passed', actual: '真实响应字段存在', evidence: ['network.json'] }],
+    items: [{ targetId: 'merchant-20261009-ISSUE-1', status: 'passed', actual: '真实响应字段存在', evidence: ['network.json'] }],
     checks: [{ name: '原请求与页面核验', status: 'passed', detail: '新请求、新页面现场' }], changedFiles: [] };
   await fs.writeFile(path.join(directory, 'network.json'), JSON.stringify({ url: '/test', status: 200, response: { name: 'fixture' } }));
   const write = async () => fs.writeFile(path.join(directory, 'result.json'), JSON.stringify(report));
   await write(); let job = (await f.service.dashboard()).jobs[0];
   assert.equal(job.report, undefined); assert.match(job.reportError!, /部分通过/);
-  report.items.push({ ...report.items[0], targetId: 'merchant-ISSUE-2' });
+  report.items.push({ ...report.items[0], targetId: 'merchant-20261009-ISSUE-2' });
   report.version = 'other-version'; await write(); assert.match((await f.service.dashboard()).jobs[0].reportError!, /版本不匹配/);
   report.version = 'deployed-sha'; report.items[0].evidence = ['result.json']; await write(); assert.match((await f.service.dashboard()).jobs[0].reportError!, /独立证据/);
   report.items[0].evidence = ['network.json']; report.checks[0].status = 'not_run'; await write(); assert.match((await f.service.dashboard()).jobs[0].reportError!, /未执行检查/);
@@ -273,13 +273,13 @@ test('报告需匹配本轮范围、环境和版本，不能以部分项目或�
     assert.match((await f.service.dashboard()).jobs[0].reportError!, /未脱敏/, actual);
   }
   report.items[0].actual = '真实响应字段存在'; await write();
-  const markdown = await f.service.export('md', ['merchant']);
+  const markdown = await f.service.export('md', ['merchant-20261009']);
   assert.match(markdown, /deployed-sha/); assert.match(markdown, /本轮现场通过/); assert.match(markdown, /人工验收分别记录/);
   await assert.rejects(f.service.stop(id), /已经结束/);
 });
 
 test('证据读取拒绝穿越、符号链接和未关联的来源文件，配置修改须回读版本', async t => {
-  const f = await fixture(t); const { result } = await f.start(f.launch({ moduleIds: ['merchant'] })); await f.service.pump();
+  const f = await fixture(t); const { result } = await f.start(f.launch({ moduleIds: ['merchant-20261009'] })); await f.service.pump();
   const directory = path.join(f.data, 'artifacts', result.jobIds[0]);
   await fs.writeFile(path.join(f.root, 'private.txt'), '不应暴露'); await fs.symlink(path.join(f.root, 'private.txt'), path.join(directory, 'outside.txt'));
   await assert.rejects(f.service.artifact(result.jobIds[0], '../private.txt'), /路径无效/);
@@ -318,9 +318,9 @@ test('重构新任务沿用群聊团队配置并进入自动编排；待建团�
   };
   const runtime = { ...f.runtime, health: async () => ({ ...(await f.runtime.dashboard()).runtimes[0], modes: ['ask', 'agent'],
     models: [{ id: 'fixture-model', label: 'Fixture', efforts: ['high', 'max', 'ultra'] }] }) as any };
-  let service = await createRefactorControl(f.root, f.data, runtime, { groups, catalog: integrationCatalogFixture, autoDispatch: false });
+  let service = await createRefactorControl(f.root, f.data, runtime, { groups, autoDispatch: false });
   t.after(() => service.close());
-  const launch = f.launch({ moduleIds: ['merchant'], collaborationMode: 'automatic', teamRevision: config.revision, revision: (await service.dashboard()).revision });
+  const launch = f.launch({ moduleIds: ['merchant-20261009'], collaborationMode: 'automatic', teamRevision: config.revision, revision: (await service.dashboard()).revision });
   const preview = await service.preview(launch);
   for (const effort of ['max', 'ultra'] as const) {
     config.members[0].binding!.reasoningEffort = effort;
@@ -340,7 +340,7 @@ test('重构新任务沿用群聊团队配置并进入自动编排；待建团�
   assert.ok(sent[0].text.startsWith(`[重构管理任务:${job.id}]\n`), '业务标题不替换完整任务指令或任务编号');
   assert.ok(job.groupRoomId); assert.equal(job.teamName, config.name); assert.equal(job.teamSource, 'group');
   assert.equal(job.runStatus, 'queued'); assert.equal(sent.length, 1); assert.equal(f.launches.length, 0);
-  await service.close(); service = await createRefactorControl(f.root, f.data, runtime, { groups, catalog: integrationCatalogFixture, autoDispatch: false });
+  await service.close(); service = await createRefactorControl(f.root, f.data, runtime, { groups, autoDispatch: false });
   await service.pump(); assert.equal(sent.length, 1); assert.equal((await service.start(batch)).reused, true);
   await service.stop(started.jobIds[0]);
   job = (await service.dashboard()).jobs[0]; assert.equal(job.status, 'cancelled');
@@ -369,8 +369,8 @@ test('重构新任务沿用群聊团队配置并进入自动编排；待建团�
   assert.equal(failed.status, 'failed'); assert.match(failed.error, /排队期间 AI 团队配置已变化/);
 
   for (const [action, label] of [['develop', '开发实现'], ['style-check', '检查样式'], ['style-fix', '修改样式'], ['retest', '复测']] as const) {
-    const input = f.launch({ action, moduleIds: ['merchant'], collaborationMode: 'automatic', teamRevision: config.revision,
-      revision: (await service.dashboard()).revision, version: 'fixture-release', issueIds: action === 'retest' ? ['merchant-ISSUE-1', 'merchant-ISSUE-2'] : [] });
+    const input = f.launch({ action, moduleIds: ['merchant-20261009'], collaborationMode: 'automatic', teamRevision: config.revision,
+      revision: (await service.dashboard()).revision, version: 'fixture-release', issueIds: action === 'retest' ? ['merchant-20261009-ISSUE-1', 'merchant-20261009-ISSUE-2'] : [] });
     const plan = await service.preview(input);
     const result = await service.start({ launch: input, scopeHash: plan.scopeHash, requestId: randomUUID() }); await service.pump();
     const generated = (await service.dashboard()).jobs.find(item => item.id === result.jobIds[0])!;
@@ -386,8 +386,8 @@ test('重构新任务沿用群聊团队配置并进入自动编排；待建团�
   await fs.writeFile(path.join(f.root, 'package.json'), JSON.stringify({ scripts: { dev: 'node server.cjs' } }));
   await fs.writeFile(path.join(f.root, 'server.cjs'), "require('http').createServer((req,res)=>res.end('fixture')).listen(Number(process.env.PORT),process.env.HOST);");
   await git('add', 'package.json', 'server.cjs'); await git('commit', '-m', '本地复测标题夹具');
-  const [source] = await service.branches({ moduleIds: ['merchant'] });
-  const local = f.launch({ action: 'retest', retestMode: 'local', moduleIds: ['merchant'], issueIds: ['merchant-ISSUE-1'],
+  const [source] = await service.branches({ moduleIds: ['merchant-20261009'] });
+  const local = f.launch({ action: 'retest', retestMode: 'local', moduleIds: ['merchant-20261009'], issueIds: ['merchant-20261009-ISSUE-1'],
     branches: [{ workspacePath: source.workspacePath, ref: 'refs/heads/main' }], collaborationMode: 'automatic', teamRevision: config.revision,
     revision: (await service.dashboard()).revision });
   const localPlan = await service.preview(local);

@@ -52,46 +52,56 @@ const latestReceipt = computed(() => query.data.value?.history[0]);
           <div><h2 ref="settingsHeading" tabindex="-1">自动汇报</h2><p>完整 Markdown · 全部任务明细 · Jira 可点击跳转</p></div>
           <el-button :disabled="busy" @click="query.refetch()">刷新状态</el-button>
         </div>
-        <div class="surface-body">
-          <div class="reports-destination">
-            <div class="reports-bot-state"><span>接收群</span><strong>{{ bot?.groupName || '尚未设置' }}</strong><el-tag size="small" :type="confirmed ? 'success' : 'info'">{{ confirmed ? '已确认' : '待配置确认' }}</el-tag></div>
-            <details class="reports-options reports-bot-options">
-              <summary>接收群设置</summary>
-              <el-form label-position="top" :disabled="busy" @submit.prevent>
-                <el-form-item label="接收群来源"><el-radio-group v-model="settings.botTarget" aria-label="汇报机器人"><el-radio-button value="dedicated">单独设置汇报群</el-radio-button><el-radio-button value="integration">共用手动消息群</el-radio-button></el-radio-group></el-form-item>
-                <el-button v-if="settings.botTarget === 'dedicated'" :disabled="busy" @click="botOpen = true">更换汇报接收群</el-button><router-link v-else to="/messages">查看手动消息群</router-link>
-              </el-form>
-            </details>
+        <div class="surface-body reports-body-grid">
+          <div class="reports-main-col">
+            <div class="reports-destination">
+              <div class="reports-bot-state"><span>接收群</span><strong>{{ bot?.groupName || '尚未设置' }}</strong><el-tag size="small" :type="confirmed ? 'success' : 'info'">{{ confirmed ? '已确认' : '待配置确认' }}</el-tag></div>
+              <details class="reports-options reports-bot-options">
+                <summary>接收群设置</summary>
+                <el-form label-position="top" :disabled="busy" @submit.prevent>
+                  <el-form-item label="接收群来源"><el-radio-group v-model="settings.botTarget" aria-label="汇报机器人"><el-radio-button value="dedicated">单独设置汇报群</el-radio-button><el-radio-button value="integration">共用手动消息群</el-radio-button></el-radio-group></el-form-item>
+                  <el-button v-if="settings.botTarget === 'dedicated'" :disabled="busy" @click="botOpen = true">更换汇报接收群</el-button><router-link v-else to="/messages">查看手动消息群</router-link>
+                </el-form>
+              </details>
+            </div>
+            <el-checkbox v-if="!confirmed" v-model="confirmed" :disabled="!bot?.hasWebhook || busy">确认“{{ bot?.groupName || '当前群' }}”为任务汇报接收群</el-checkbox>
+            <el-form v-if="selected" label-position="top" :disabled="busy" @submit.prevent>
+              <el-form-item v-if="settings.policies.length > 1" label="汇报计划"><el-select v-model="selectedId" aria-label="选择汇报计划"><el-option v-for="policy in settings.policies" :key="policy.id" :value="policy.id" :label="`${policy.name || '未命名计划'} · ${policy.enabled ? '已启用' : '已暂停'}`" /></el-select></el-form-item>
+              <div class="reports-schedule-heading"><h3>{{ selected.name || '汇报计划' }}</h3><div><span>定时提醒</span><el-switch v-model="selected.enabled" :disabled="busy || !confirmed" aria-label="启用此汇报策略" /></div></div>
+              <el-form-item label="发送时间">
+                <div class="reports-times">
+                  <div v-for="(_, index) in selected.times" :key="index" class="reports-time"><el-time-picker v-model="selected.times[index]" format="HH:mm" value-format="HH:mm" :clearable="false" :aria-label="`汇报时间 ${index + 1}`" /><el-button v-if="selected.times.length > 1" :disabled="busy" :aria-label="`移除汇报时间 ${index + 1}`" @click="selected.times.splice(index, 1)">移除</el-button></div>
+                  <el-button :disabled="busy || selected.times.length >= 12" @click="manager.addTime">添加时间</el-button><span class="reports-note">{{ selected.timeZone === 'Asia/Singapore' ? '新加坡 / 北京时间（UTC+8）' : selected.timeZone }}</span>
+                </div>
+              </el-form-item>
+              <el-form-item label="发送日期"><el-checkbox-group v-model="selected.weekdays" aria-label="推送星期"><el-checkbox v-for="(day, index) in weekdays" :key="day" :value="index + 1">{{ day }}</el-checkbox></el-checkbox-group></el-form-item>
+              <details class="reports-options reports-advanced">
+                <summary>更多设置</summary>
+                <div class="reports-fields">
+                  <el-form-item label="计划名称"><el-input v-model="selected.name" maxlength="100" aria-label="策略名称" /></el-form-item>
+                  <el-form-item label="汇报类型"><el-select v-model="selected.kind" aria-label="汇报类型"><el-option label="综合进度汇报" value="summary" /><el-option label="逾期待办提醒" value="overdue" /></el-select></el-form-item>
+                  <el-form-item label="时区"><el-select v-model="selected.timeZone" filterable allow-create default-first-option aria-label="汇报时区"><el-option label="新加坡 / 北京（UTC+8）" value="Asia/Singapore" /><el-option label="UTC" value="UTC" /></el-select></el-form-item>
+                </div>
+                <el-form-item label="任务来源"><el-checkbox-group v-model="selected.sources" aria-label="汇报任务来源"><el-checkbox v-for="(label, source) in reportSourceLabels" :key="source" :value="source">{{ label }}</el-checkbox></el-checkbox-group></el-form-item>
+                <el-form-item label="汇报栏目"><el-checkbox-group v-model="selected.sections" aria-label="汇报栏目"><el-checkbox v-for="(label, section) in reportSectionLabels" :key="section" :value="section">{{ label }}</el-checkbox></el-checkbox-group></el-form-item>
+                <el-form-item label="项目筛选"><el-input v-model="selected.projectFilter" maxlength="200" clearable placeholder="留空汇总所有项目；填写项目关键字" aria-label="汇报项目筛选" /></el-form-item>
+                <el-form-item label="自定义汇报模板"><el-input v-model="selected.template" type="textarea" :rows="4" maxlength="12000" placeholder="留空使用标准汇报格式；可自行填写标题、说明与栏目占位符" aria-label="自定义汇报模板" /><p class="reports-note">可用占位符：{{ placeholders }}</p></el-form-item>
+                <div class="reports-policy-actions"><el-button :disabled="busy || settings.policies.length >= 30" @click="manager.addPolicy('summary')">添加汇报计划</el-button><el-button :disabled="busy || settings.policies.length >= 30" @click="manager.addPolicy('overdue')">添加逾期提醒</el-button><el-button link type="danger" :disabled="busy" @click="manager.removePolicy">移除此计划</el-button></div>
+              </details>
+              <div class="reports-actions"><el-button type="primary" :disabled="!policyValid || busy" :loading="pending === 'preview'" @click="prepare">预览完整汇报</el-button><el-button v-if="preview" :disabled="busy" @click="openPreview">查看已有预览</el-button><el-button :disabled="!valid || !dirty || busy" :loading="pending === 'save'" @click="manager.save">保存设置</el-button><el-button v-if="dirty" :disabled="busy" @click="manager.reset">取消修改</el-button><span v-if="dirty" class="reports-note">有未保存修改</span></div>
+            </el-form>
+            <div v-else class="reports-actions"><el-button :disabled="busy" @click="manager.addPolicy('summary')">添加汇报计划</el-button><el-button :disabled="!valid || !dirty || busy" :loading="pending === 'save'" @click="manager.save">保存设置</el-button><el-button v-if="dirty" :disabled="busy" @click="manager.reset">取消修改</el-button></div>
           </div>
-          <el-checkbox v-if="!confirmed" v-model="confirmed" :disabled="!bot?.hasWebhook || busy">确认“{{ bot?.groupName || '当前群' }}”为任务汇报接收群</el-checkbox>
-          <el-form v-if="selected" label-position="top" :disabled="busy" @submit.prevent>
-            <el-form-item v-if="settings.policies.length > 1" label="汇报计划"><el-select v-model="selectedId" aria-label="选择汇报计划"><el-option v-for="policy in settings.policies" :key="policy.id" :value="policy.id" :label="`${policy.name || '未命名计划'} · ${policy.enabled ? '已启用' : '已暂停'}`" /></el-select></el-form-item>
-            <div class="reports-schedule-heading"><h3>{{ selected.name || '汇报计划' }}</h3><div><span>定时提醒</span><el-switch v-model="selected.enabled" :disabled="busy || !confirmed" aria-label="启用此汇报策略" /></div></div>
-            <el-form-item label="发送时间">
-              <div class="reports-times">
-                <div v-for="(_, index) in selected.times" :key="index" class="reports-time"><el-time-picker v-model="selected.times[index]" format="HH:mm" value-format="HH:mm" :clearable="false" :aria-label="`汇报时间 ${index + 1}`" /><el-button v-if="selected.times.length > 1" :disabled="busy" :aria-label="`移除汇报时间 ${index + 1}`" @click="selected.times.splice(index, 1)">移除</el-button></div>
-                <el-button :disabled="busy || selected.times.length >= 12" @click="manager.addTime">添加时间</el-button><span class="reports-note">{{ selected.timeZone === 'Asia/Singapore' ? '新加坡 / 北京时间（UTC+8）' : selected.timeZone }}</span>
-              </div>
-            </el-form-item>
-            <el-form-item label="发送日期"><el-checkbox-group v-model="selected.weekdays" aria-label="推送星期"><el-checkbox v-for="(day, index) in weekdays" :key="day" :value="index + 1">{{ day }}</el-checkbox></el-checkbox-group></el-form-item>
-            <details class="reports-options reports-advanced">
-              <summary>更多设置</summary>
-              <div class="reports-fields">
-                <el-form-item label="计划名称"><el-input v-model="selected.name" maxlength="100" aria-label="策略名称" /></el-form-item>
-                <el-form-item label="汇报类型"><el-select v-model="selected.kind" aria-label="汇报类型"><el-option label="综合进度汇报" value="summary" /><el-option label="逾期待办提醒" value="overdue" /></el-select></el-form-item>
-                <el-form-item label="时区"><el-select v-model="selected.timeZone" filterable allow-create default-first-option aria-label="汇报时区"><el-option label="新加坡 / 北京（UTC+8）" value="Asia/Singapore" /><el-option label="UTC" value="UTC" /></el-select></el-form-item>
-              </div>
-              <el-form-item label="任务来源"><el-checkbox-group v-model="selected.sources" aria-label="汇报任务来源"><el-checkbox v-for="(label, source) in reportSourceLabels" :key="source" :value="source">{{ label }}</el-checkbox></el-checkbox-group></el-form-item>
-              <el-form-item label="汇报栏目"><el-checkbox-group v-model="selected.sections" aria-label="汇报栏目"><el-checkbox v-for="(label, section) in reportSectionLabels" :key="section" :value="section">{{ label }}</el-checkbox></el-checkbox-group></el-form-item>
-              <el-form-item label="项目筛选"><el-input v-model="selected.projectFilter" maxlength="200" clearable placeholder="留空汇总所有项目；填写项目关键字" aria-label="汇报项目筛选" /></el-form-item>
-              <el-form-item label="自定义汇报模板"><el-input v-model="selected.template" type="textarea" :rows="4" maxlength="12000" placeholder="留空使用标准汇报格式；可自行填写标题、说明与栏目占位符" aria-label="自定义汇报模板" /><p class="reports-note">可用占位符：{{ placeholders }}</p></el-form-item>
-              <div class="reports-policy-actions"><el-button :disabled="busy || settings.policies.length >= 30" @click="manager.addPolicy('summary')">添加汇报计划</el-button><el-button :disabled="busy || settings.policies.length >= 30" @click="manager.addPolicy('overdue')">添加逾期提醒</el-button><el-button link type="danger" :disabled="busy" @click="manager.removePolicy">移除此计划</el-button></div>
-            </details>
-            <div class="reports-actions"><el-button type="primary" :disabled="!policyValid || busy" :loading="pending === 'preview'" @click="prepare">预览完整汇报</el-button><el-button v-if="preview" :disabled="busy" @click="openPreview">查看已有预览</el-button><el-button :disabled="!valid || !dirty || busy" :loading="pending === 'save'" @click="manager.save">保存设置</el-button><el-button v-if="dirty" :disabled="busy" @click="manager.reset">取消修改</el-button><span v-if="dirty" class="reports-note">有未保存修改</span></div>
-          </el-form>
-          <div v-else class="reports-actions"><el-button :disabled="busy" @click="manager.addPolicy('summary')">添加汇报计划</el-button><el-button :disabled="!valid || !dirty || busy" :loading="pending === 'save'" @click="manager.save">保存设置</el-button><el-button v-if="dirty" :disabled="busy" @click="manager.reset">取消修改</el-button></div>
-          <p class="reports-note">电脑和工作台服务保持运行时，按设定时间自动发送。长消息自动分段。</p>
-          <p v-if="latestReceipt" class="reports-note">最近发送：{{ dateTime(latestReceipt.attemptedAt) }} · {{ latestReceipt.groupName }} · {{ receiptLabels[latestReceipt.status] }}<template v-if="latestReceipt.partCount"> · {{ latestReceipt.sentParts || 0 }}/{{ latestReceipt.partCount }} 条</template><template v-if="latestReceipt.status !== 'sent'"> · {{ latestReceipt.message }}</template></p>
+          <aside class="reports-summary-aside" aria-label="当前策略与投递状态">
+            <h3>当前策略摘要</h3>
+            <dl class="reports-summary-dl">
+              <div><dt>接收目标</dt><dd>{{ bot?.groupName || '尚未设置' }}（{{ confirmed ? '已确认' : '待确认' }}）</dd></div>
+              <div v-if="selected"><dt>推送频次</dt><dd>{{ selected.enabled ? '定时开启' : '未启用' }} · {{ selected.times.join('、') || '未设时间' }}（每周 {{ selected.weekdays.length }} 天）</dd></div>
+              <div v-if="selected"><dt>汇总范围</dt><dd>{{ selected.sources.length }} 类来源 · {{ selected.sections.length }} 个栏目{{ selected.projectFilter ? ` · 筛选「${selected.projectFilter}」` : '' }}</dd></div>
+              <div><dt>最近回执</dt><dd v-if="latestReceipt">{{ dateTime(latestReceipt.attemptedAt) }} · {{ receiptLabels[latestReceipt.status] }}<template v-if="latestReceipt.partCount">（{{ latestReceipt.sentParts || 0 }}/{{ latestReceipt.partCount }} 条）</template><span v-if="latestReceipt.status !== 'sent' && latestReceipt.message" class="reports-receipt-err">{{ latestReceipt.message }}</span></dd><dd v-else>暂无发送记录</dd></div>
+            </dl>
+            <p class="reports-note">电脑和工作台服务保持运行时，按设定时间自动发送。超出机器人单条上限的长消息会自动按段落拆分投递。</p>
+          </aside>
         </div>
       </section>
       <section v-if="preview && showingPreview" class="surface reports-preview" aria-labelledby="reports-preview-heading">
@@ -140,9 +150,19 @@ const latestReceipt = computed(() => query.data.value?.history[0]);
 </template>
 
 <style scoped>
-.reports-workspace{display:flex;flex-direction:column;gap:20px;min-width:0}
+.reports-workspace{display:flex;flex-direction:column;gap:14px;min-width:0}
 .reports-workspace .surface{margin-bottom:0;min-width:0}
-.reports-destination{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:22px}
+.reports-body-grid{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(280px,0.9fr);gap:20px;align-items:start}
+.reports-main-col{min-width:0}
+.reports-summary-aside{padding:14px 16px;border:1px solid var(--ui-border);border-radius:10px;background:color-mix(in srgb,var(--ui-raised) 56%,var(--ui-surface));min-width:0}
+.reports-summary-aside h3{margin:0 0 10px;font-size:13px;font-weight:600;color:var(--ui-text)}
+.reports-summary-dl{display:grid;gap:8px;margin:0;padding:0}
+.reports-summary-dl>div{display:grid;grid-template-columns:68px minmax(0,1fr);gap:8px;align-items:baseline;padding-bottom:8px;border-bottom:1px solid var(--ui-divider);font-size:12.5px;line-height:1.55}
+.reports-summary-dl>div:last-child{padding-bottom:0;border-bottom:0}
+.reports-summary-dl dt{color:var(--ui-muted);font-size:12px}
+.reports-summary-dl dd{margin:0;color:var(--ui-text);overflow-wrap:anywhere}
+.reports-receipt-err{display:block;margin-top:2px;color:var(--ui-danger);font-size:11.5px}
+.reports-destination{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:16px}
 .reports-bot-state{display:flex;flex-wrap:wrap;gap:10px;align-items:center;font-size:13px;color:var(--ui-muted)}
 .reports-bot-state strong{color:var(--ui-text);font-weight:600;overflow-wrap:anywhere}
 .reports-options summary{cursor:pointer;color:var(--ui-secondary);font-size:13px;line-height:1.8}
@@ -178,12 +198,13 @@ const latestReceipt = computed(() => query.data.value?.history[0]);
 .reports-part-nav .reports-note { margin: 0; }
 .reports-reader { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 18px clamp(14px, 3vw, 32px) 28px; }
 .reports-reader:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: -2px; }
-.reports-content { max-width: 880px; margin-inline: auto; color: var(--ui-text); font-size: 13px; line-height: 1.85; }
+.reports-content { max-width: none; width: 100%; color: var(--ui-text); font-size: 13px; line-height: 1.85; }
 .reports-content :deep(.markdown-heading:not(:first-child)) { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--ui-divider); }
 .reports-history>summary{cursor:pointer;list-style:none}
 .reports-history>summary::-webkit-details-marker{display:none}
 .reports-history>summary h2::before{content:'▸';display:inline-block;margin-right:9px}
 .reports-history[open]>summary h2::before{content:'▾'}
 .reports-history-trigger{display:block;font-size:12px;color:var(--ui-muted)}
+@media(max-width:980px){.reports-body-grid{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:600px){.reports-destination{flex-direction:column;gap:10px}.reports-bot-options>summary{text-align:left}.reports-fields{grid-template-columns:minmax(0,1fr)}.reports-workspace :deep(.surface-header){align-items:flex-start;flex-wrap:wrap}.reports-schedule-heading{align-items:flex-start;flex-wrap:wrap}.reports-workspace :deep(.el-radio-group){display:flex;flex-wrap:wrap;gap:4px}.reports-workspace :deep(.el-radio-button__inner){border-radius:4px;border:1px solid var(--ui-border)}}
 </style>

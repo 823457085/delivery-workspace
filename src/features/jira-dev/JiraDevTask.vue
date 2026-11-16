@@ -3,7 +3,7 @@
  * Jira 修复 / 需求开发表单：依次填写 Jira 来源、任务设置、工作区，再使用底部操作栏。
  * 确认后在工作台按所选执行器与模型新建会话；不再新建 Codex 聊天。
  */
-import { computed, onBeforeUnmount, onMounted, shallowRef, useTemplateRef, watch } from 'vue';
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, shallowRef, useTemplateRef, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { JiraDevScanPreview } from '../../../shared/hub';
 import { groupProgressText } from '../../../shared/agent-group-chat';
@@ -12,13 +12,14 @@ import { jiraDevRequest, useJiraDevTask } from './useJiraDevTask';
 import { useJiraDevRuntime } from './useJiraDevRuntime';
 import { useJiraDevProject } from './useJiraDevProject';
 import { useWorkspacePicker } from '../../shared/useWorkspacePicker';
-import WorkspaceBrowserDialog from '../../shared/ui/WorkspaceBrowserDialog.vue';
 import JiraDevRuntimePicker from './JiraDevRuntimePicker.vue';
-import JiraDevPreviewDialog from './JiraDevPreviewDialog.vue';
 import JiraDevProjectFields from './JiraDevProjectFields.vue';
-import JiraDevProjectPicker from './JiraDevProjectPicker.vue';
-import JiraDescription from '../jira-issue/JiraDescription.vue';
 import { safeUrl } from '../../shared/format';
+
+const WorkspaceBrowserDialog = defineAsyncComponent(() => import('../../shared/ui/WorkspaceBrowserDialog.vue'));
+const JiraDevPreviewDialog = defineAsyncComponent(() => import('./JiraDevPreviewDialog.vue'));
+const JiraDevProjectPicker = defineAsyncComponent(() => import('./JiraDevProjectPicker.vue'));
+const JiraDescription = defineAsyncComponent(() => import('../jira-issue/JiraDescription.vue'));
 
 const props = defineProps<{ workflow: JiraDevWorkflow; requirementContext?: JiraDevRequirementContext }>();
 const emit = defineEmits<{ openRun: [id: string]; task: [task: JiraDevTaskView]; next: [] }>();
@@ -50,6 +51,35 @@ async function refreshDelivery() {
   } catch (error) { ElMessage.error(error instanceof Error ? error.message : '读取自动交付结果失败'); }
   finally { checkingDelivery.value = false; }
 }
+async function reconcileDeliveryStep(stepKey: string, outcome: 'applied' | 'not_applied') {
+  const id = task.value?.taskId;
+  if (!id || checkingDelivery.value || !['start', 'mergeRequest', 'complete'].includes(stepKey)) return;
+  try {
+    const promptText = outcome === 'applied'
+      ? '确认已在 Jira / 代码托管平台核实该步骤实际已生效？系统将更新本地交付状态，不会重发写请求。'
+      : '确认已在远端核实该步骤并未生效？系统将解除“不确定”锁定，不会自动重放远端写请求。';
+    await ElMessageBox.confirm(promptText, '人工核对自动交付状态', {
+      type: 'warning',
+      confirmButtonText: '确认核对',
+      cancelButtonText: '取消',
+    });
+  } catch { return; }
+  checkingDelivery.value = true;
+  try {
+    const result = await jiraDevRequest<JiraDevTaskView>('automation-reconcile', {
+      taskId: id,
+      step: stepKey,
+      outcome,
+      confirmed: true,
+    });
+    if (task.value?.taskId === id && result?.taskId) task.value = result;
+    ElMessage.success('已更新自动交付核对状态');
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '核对自动交付状态失败');
+  } finally {
+    checkingDelivery.value = false;
+  }
+}
 async function showScanPreviews() {
   scanOpen.value = true;
   scanLoading.value = true;
@@ -63,10 +93,6 @@ async function showScanPreviews() {
 }
 async function openScanPreview(preview: JiraDevScanPreview) {
   if (!preview.taskId) return;
-  if (state.taskId.value !== preview.taskId && (form.source || form.details)) {
-    try { await ElMessageBox.confirm('打开巡检预览会替换当前表单内容。', '打开巡检预览', { confirmButtonText: '打开预览', cancelButtonText: '取消' }); }
-    catch { return; }
-  }
   if (await state.openScanPreview(preview.taskId, preview.issueKey)) scanOpen.value = false;
 }
 const frozen = computed(() => locked.value || state.busy.value || state.reading.value);
@@ -130,19 +156,25 @@ onBeforeUnmount(() => actionsObserver?.disconnect());
     <div class="jira-dev-fields" role="region" :aria-label="repair ? '修复任务表单' : '开发任务表单'" tabindex="0">
       <el-form label-position="top" class="task-layout" :disabled="frozen" @submit.prevent>
         <section class="card task-source" aria-label="任务来源">
-          <label for="jira-dev-source" class="source-label">{{ repair ? '缺陷 Jira Key / 链接' : form.sourceKind === 'frontend' ? 'Jira 主任务或子任务' : '需求 Jira Key / 链接（可选）' }}</label>
-          <el-input id="jira-dev-source" :model-value="form.source" maxlength="1000" :placeholder="repair ? '填写缺陷主任务或缺陷链接' : form.sourceKind === 'frontend' ? '填写已有开发主任务、子任务或关联的产品需求编号' : 'Jira Key 或链接；也可只填写下方需求正文'"
-            @update:model-value="state.edit('source', $event)" @keydown.enter.prevent="state.readIssue()" />
-          <div class="task-source-actions">
-            <el-button :loading="state.reading.value" :disabled="!form.source.trim()" @click="state.readIssue()">读取 Jira</el-button>
-            <el-button v-if="!props.requirementContext" @click="showScanPreviews">巡检预览</el-button>
+          <div class="source-head">
+            <span class="step-num">01</span>
+            <label for="jira-dev-source" class="source-label">{{ repair ? '缺陷 Jira Key / 链接' : form.sourceKind === 'frontend' ? 'Jira 主任务或子任务' : '需求 Jira Key / 链接（可选）' }}</label>
+            <span class="step-state-pill" :class="{ ready: !!issue }">{{ issue ? `已读取 ${issue.key}` : form.source.trim() ? '待读取核对' : repair ? '必填项' : '可仅填需求正文' }}</span>
+          </div>
+          <div class="source-controls">
+            <el-input id="jira-dev-source" :model-value="form.source" maxlength="1000" :placeholder="repair ? '填写缺陷主任务或缺陷链接' : form.sourceKind === 'frontend' ? '填写已有开发主任务、子任务或关联的产品需求编号' : 'Jira Key 或链接；也可只填写下方需求正文'"
+              @update:model-value="state.edit('source', $event)" @keydown.enter.prevent="state.readIssue()" />
+            <div class="task-source-actions">
+              <el-button :loading="state.reading.value" :disabled="!form.source.trim()" @click="state.readIssue()">读取 Jira</el-button>
+              <el-button v-if="!props.requirementContext" @click="showScanPreviews">巡检预览</el-button>
+            </div>
           </div>
           <details v-if="issue" class="issue-material"><summary><strong>{{ issue.key }}</strong> {{ issue.summary }}</summary>
             <div class="issue-body"><a v-if="issue.url" :href="issue.url" target="_blank" rel="noreferrer">打开 Jira</a><JiraDescription class="issue-description" :text="description" :base-url="issue.url" /></div></details>
         </section>
 
         <section class="card task-settings" :class="{ 'requirement-settings': !repair }" aria-label="任务设置">
-          <header class="card-head"><h3>任务设置</h3></header>
+          <header class="card-head"><div class="card-head-title"><span class="step-num">02</span><h3>任务与排期设置</h3></div><span class="step-state-pill ready">{{ form.useI18n ? '多语言开启' : '多语言关闭' }}</span></header>
           <div class="option-box">
             <el-checkbox :model-value="form.useI18n" :disabled="frozen || !!task?.launch" @update:model-value="state.edit('useI18n', !!$event)">使用多语言位置编码</el-checkbox>
             <p class="hint">勾选后，本次新增或修改的前端文案使用多语言位置编码。</p>
@@ -156,7 +188,7 @@ onBeforeUnmount(() => actionsObserver?.disconnect());
                 <el-form-item label="目标 Jira 项目 Key（可选）"><el-input :model-value="form.repairProject" maxlength="100" placeholder="如 APEX；留空沿用原项目" @update:model-value="state.edit('repairProject', $event.toUpperCase())" @change="state.loadVersions()" /></el-form-item>
                 <el-form-item label="版本名称（可选）"><el-autocomplete :model-value="form.repairVersion" :fetch-suggestions="versionSuggestions" maxlength="200" :placeholder="inheritedVersions.length > 1 ? `留空沿用原缺陷的全部 ${inheritedVersions.length} 个版本` : '填写目标项目中的准确版本名称'" @update:model-value="state.edit('repairVersion', $event)" /></el-form-item>
               </div>
-              <div class="label-row"><p class="hint">{{ state.versionStatus.value }}</p><el-button link type="primary" @click="state.loadVersions()">读取可用版本</el-button></div>
+              <div class="label-row"><p class="hint">{{ state.versionStatus.value }}</p><el-button link @click="state.loadVersions()">读取可用版本</el-button></div>
               <div class="two-columns">
                 <el-form-item label="计划开始日期（可选）"><el-date-picker :model-value="form.repairStartDate" type="date" value-format="YYYY-MM-DD" placeholder="年 / 月 / 日" @update:model-value="state.edit('repairStartDate', $event || '')" /></el-form-item>
                 <el-form-item label="计划结束日期（可选）"><el-date-picker :model-value="form.repairEndDate" type="date" value-format="YYYY-MM-DD" placeholder="年 / 月 / 日" @update:model-value="state.edit('repairEndDate', $event || '')" /></el-form-item>
@@ -227,7 +259,7 @@ onBeforeUnmount(() => actionsObserver?.disconnect());
         </section>
 
         <section class="card task-workspace" aria-label="工作区">
-          <header class="card-head"><h3>工作区</h3><div class="tools">
+          <header class="card-head"><div class="card-head-title"><span class="step-num">03</span><h3>本地工作区与分支</h3><span class="step-state-pill" :class="{ ready: !!(repair ? form.projectPath : state.selectedProjects.value.length) }">{{ repair ? (form.projectPath ? '已选 1 个项目' : '待选项目') : (state.selectedProjects.value.length ? `已选 ${state.selectedProjects.value.length} 个项目` : '待选项目') }}</span></div><div class="tools">
             <el-popover trigger="click" width="360" placement="bottom-end"><template #reference><el-button link>扫描范围</el-button></template>
               <el-input v-model="project.roots.value" type="textarea" :rows="3" placeholder="每行一个绝对路径；留空使用默认目录" /><el-button class="scan-button" size="small" @click="project.rescan()">扫描这些目录</el-button></el-popover>
             <el-button link :loading="project.scan.isFetching.value" @click="project.rescan()">重新扫描</el-button></div></header>
@@ -255,25 +287,39 @@ onBeforeUnmount(() => actionsObserver?.disconnect());
         </section>
       </el-form>
 
-      <section v-if="task?.launch" class="card continuation" aria-label="本次任务">
-        <div><strong>本次任务</strong><p class="hint">{{ task.title }} · {{ { preparing: '正在准备工作区', starting: '正在启动会话', started: '已在工作台启动', failed: '启动失败', uncertain: '启动结果待核对' }[task.launch.status] }}{{ task.launch.workspacePath ? ` · ${task.launch.workspacePath}` : '' }}</p>
-          <p v-if="task.launch.groupProgress" class="hint">{{ groupProgressText(task.launch.groupProgress) }}</p><p v-if="task.launch.error" class="danger">{{ task.launch.error }}</p></div>
+      <section v-if="task?.launch" class="card continuation" :class="{ 'is-failed': task.launch.status === 'failed' }" aria-label="本次任务">
+        <div class="continuation-body">
+          <div class="continuation-head">
+            <span class="continuation-badge">{{ { preparing: '正在准备工作区', starting: '正在启动会话', started: '已在工作台启动', failed: '启动失败', uncertain: '启动结果待核对' }[task.launch.status] }}</span>
+            <strong>{{ task.title }}</strong>
+          </div>
+          <p v-if="task.launch.workspacePath" class="hint continuation-path">独立工作区：<code>{{ task.launch.workspacePath }}</code></p>
+          <p v-if="task.launch.groupProgress" class="continuation-progress">{{ groupProgressText(task.launch.groupProgress) }}</p>
+          <p v-if="task.launch.error" class="danger">{{ task.launch.error }}</p>
+        </div>
         <span v-if="task.launch.conversationMissing" class="hint">关联会话已不存在</span>
-        <el-button v-else-if="task.launch.groupRoomId || task.launch.runId || task.launch.conversationId" type="primary" plain @click="emit('openRun', task.launch.groupRoomId ? `group:${task.launch.groupRoomId}` : task.launch.conversationId || task.launch.runId)">{{ task.launch.groupRoomId ? '打开团队群聊' : '打开会话' }}</el-button>
+        <el-button v-else-if="task.launch.groupRoomId || task.launch.runId || task.launch.conversationId" type="primary" @click="emit('openRun', task.launch.groupRoomId ? `group:${task.launch.groupRoomId}` : task.launch.conversationId || task.launch.runId)">{{ task.launch.groupRoomId ? '进入团队群聊直播' : '进入执行会话' }}</el-button>
       </section>
-      <section v-if="task?.launch && task.automationDelivery" class="card" aria-label="自动交付">
-        <header class="section-head"><strong>自动交付</strong><el-button link :loading="checkingDelivery" @click="refreshDelivery">刷新结果</el-button></header>
+      <section v-if="task?.launch && task.automationDelivery" class="card automation-delivery-card" aria-label="自动交付">
+        <header class="section-head"><strong>自动交付流水线</strong><el-button link type="primary" :loading="checkingDelivery" @click="refreshDelivery">刷新结果</el-button></header>
         <p v-if="!deliverySteps.length" class="hint">等待任务状态或验证结果。</p>
-        <p v-for="step in deliverySteps" :key="step.key" class="hint">
-          {{ step.label }} · {{ step.message }}
-          <a v-if="step.url" :href="safeUrl(step.url)" target="_blank" rel="noopener noreferrer">打开 MR</a>
-        </p>
+        <div v-else class="delivery-step-grid">
+          <div v-for="step in deliverySteps" :key="step.key" class="delivery-step-item" :data-delivery-status="step.status">
+            <strong>{{ step.label }}</strong>
+            <p>{{ step.message }}</p>
+            <a v-if="step.url" :href="safeUrl(step.url)" target="_blank" rel="noopener noreferrer">打开 MR</a>
+            <div v-if="step.status === 'uncertain' && ['start', 'mergeRequest', 'complete'].includes(step.key)" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">
+              <el-button size="small" type="primary" plain :loading="checkingDelivery" @click="reconcileDeliveryStep(step.key, 'applied')">已在远端确认生效</el-button>
+              <el-button size="small" :loading="checkingDelivery" @click="reconcileDeliveryStep(step.key, 'not_applied')">确认未生效并解锁</el-button>
+            </div>
+          </div>
+        </div>
       </section>
       <p v-if="locked && !task?.launch" class="hint lock-hint">该任务的 Jira 计划已确认或待核对，表单已锁定；可查看任务预览继续，或点“开始下一项”。</p>
 
     </div>
 
-    <el-dialog v-model="scanOpen" title="巡检预览" append-to-body width="min(560px, calc(100vw - 32px))">
+    <el-dialog v-if="scanOpen" v-model="scanOpen" title="巡检预览" append-to-body width="min(560px, calc(100vw - 32px))">
       <div v-loading="scanLoading" class="scan-preview-list">
         <el-empty v-if="!scanLoading && !scanPreviews.length" description="暂无巡检预览" :image-size="56" />
         <article v-for="item in scanPreviews" :key="item.issueKey">
@@ -289,18 +335,19 @@ onBeforeUnmount(() => actionsObserver?.disconnect());
       <div class="buttons">
         <el-button :disabled="state.busy.value || state.reading.value" @click="nextTask()">开始下一项</el-button>
         <el-button v-if="task" @click="state.previewOpen.value = true">查看任务预览</el-button>
-        <el-button type="primary" :loading="state.busy.value" :disabled="locked || state.reading.value" @click="state.prepare()">生成任务预览</el-button>
+        <el-button v-else :disabled="locked || state.busy.value || state.reading.value" @click="state.prepare()">预览核对</el-button>
+        <el-button type="primary" :loading="state.busy.value" :disabled="state.launched.value || state.reading.value || !!runtime.problem.value || (!task && locked)" @click="state.quickStart({ ...runtime.selection })">{{ task ? startLabel : '直接启动会话' }}</el-button>
       </div>
     </footer>
   </section>
-  <JiraDevPreviewDialog v-model="state.previewOpen.value" :task="task" :busy="state.busy.value" :status="state.status.value" :start-label="startLabel" :requirement-group="requirementGroup" :can-review="!!runtime.selection.groupConfigRevision"
+  <JiraDevPreviewDialog v-if="state.previewOpen.value" v-model="state.previewOpen.value" :task="task" :busy="state.busy.value" :status="state.status.value" :start-label="startLabel" :requirement-group="requirementGroup" :can-review="!!runtime.selection.groupConfigRevision"
     :can-start="canStart" :runtime-summary="runtime.summary.value" @start="canStart && state.start({ ...runtime.selection })" @check="state.check($event)" @review="state.prepareReview({ ...runtime.selection })" @open-run="emit('openRun', $event)">
     <template v-if="!state.launched.value" #runtime>
       <JiraDevRuntimePicker :runtime="runtime" :disabled="state.busy.value" />
     </template>
   </JiraDevPreviewDialog>
-  <WorkspaceBrowserDialog :open="picker.browserOpen.value" :initial-path="picker.browserPath.value" @select="picker.completeBrowser" @cancel="picker.completeBrowser(null)" />
-  <JiraDevProjectPicker v-if="!repair" :open="projectPickerOpen" :selected="state.selectedProjects.value.map(item => item.path)" :candidates="project.candidates.value"
+  <WorkspaceBrowserDialog v-if="picker.browserOpen.value" :open="picker.browserOpen.value" :initial-path="picker.browserPath.value" @select="picker.completeBrowser" @cancel="picker.completeBrowser(null)" />
+  <JiraDevProjectPicker v-if="!repair && projectPickerOpen" :open="projectPickerOpen" :selected="state.selectedProjects.value.map(item => item.path)" :candidates="project.candidates.value"
     @select="state.selectProjects($event)" @close="projectPickerOpen = false" />
 </template>
 
@@ -318,8 +365,8 @@ onBeforeUnmount(() => actionsObserver?.disconnect());
   .child-schedule-list li { grid-template-columns: minmax(0, 1fr); }
   .child-schedule-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
 }
-.jira-dev{display:flex;flex-direction:column;gap:12px;max-width:1320px;margin:0 auto;color:var(--ui-text)}
-.card{padding:18px 20px;border:1px solid var(--ds-rule,var(--ui-border));border-radius:var(--ds-radius-lg,12px);background:var(--ui-surface);box-shadow:var(--ds-shadow,none);min-width:0}
+.jira-dev{display:flex;flex-direction:column;gap:12px;max-width:none;margin:0;color:var(--ui-text)}
+.card{padding:14px 16px;border:1px solid var(--ds-rule,var(--ui-border));border-radius:var(--ds-radius,8px);background:var(--ui-surface);box-shadow:var(--ds-shadow,none);min-width:0}
 .jira-dev-fields{display:flex;flex-direction:column;gap:12px;min-width:0}
 .task-layout{display:grid;grid-template-columns:minmax(0,1fr);gap:12px}
 .task-layout :deep(:is(.el-select__input,.el-input__inner):focus-visible){outline:none}
@@ -329,9 +376,15 @@ onBeforeUnmount(() => actionsObserver?.disconnect());
 .scan-preview-list article{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 0;border-bottom:1px solid var(--ui-border)}
 .scan-preview-list article>div{min-width:0;overflow-wrap:anywhere}
 .scan-preview-list small{display:block;margin-top:4px;color:var(--ui-secondary)}
-.task-source{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:12px;padding-block:14px}
+.task-source{display:grid;gap:10px;padding-block:16px}
+.source-head,.card-head-title{display:flex;align-items:center;flex-wrap:wrap;gap:8px;min-width:0}
+.source-head .step-state-pill{margin-left:auto}
+.source-controls{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:10px}
+.step-num{display:inline-grid;place-items:center;width:22px;height:22px;flex-shrink:0;border:1px solid var(--ui-border);border-radius:6px;background:var(--ui-raised);color:var(--ui-secondary);font:600 11px/1 var(--mono)}
+.step-state-pill{padding:2px 8px;border:1px solid var(--ui-border);border-radius:999px;background:var(--ui-raised);color:var(--ui-muted);font-size:11px;line-height:16px;white-space:nowrap}
+.step-state-pill.ready{border-color:color-mix(in srgb,var(--ui-success,#16a34a) 35%,var(--ui-border));background:color-mix(in srgb,var(--ui-success,#16a34a) 10%,var(--ui-surface));color:var(--ui-success,#16a34a);font-weight:500}
 .source-label{font-size:14px;font-weight:600}
-.issue-material{grid-column:1/-1;padding-top:10px;border-top:1px solid var(--ui-divider,var(--ui-border))}.issue-material summary{cursor:pointer;font-size:13px}.issue-body{margin-top:8px}.issue-description{max-height:280px;overflow:auto;margin:8px 0 0}
+.issue-material{padding-top:10px;border-top:1px solid var(--ui-divider,var(--ui-border))}.issue-material summary{cursor:pointer;font-size:13px;color:var(--ui-accent);font-weight:500}.issue-body{margin-top:8px}.issue-description{max-height:280px;overflow:auto;margin:8px 0 0}
 .task-settings{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:start;column-gap:16px}
 .task-settings.requirement-settings{grid-template-columns:repeat(3,minmax(0,1fr))}
 .task-settings>:is(.card-head,.option-box,.schedule-group,.two-columns,.label-row,.hint:not(.direct-repair-note)){grid-column:1/-1}
@@ -340,25 +393,26 @@ onBeforeUnmount(() => actionsObserver?.disconnect());
 /* 卡片标题：左右两卡同一层级，工具按钮放在标题行右侧。 */
 .card-head{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:24px;margin:0 0 16px;padding-bottom:12px;border-bottom:1px solid var(--ui-divider,var(--ui-border))}
 .card-head h3{margin:0;font-size:14px;font-weight:600;letter-spacing:.02em}
-.option-box{display:flex;align-items:center;flex-wrap:wrap;gap:2px 12px;margin-bottom:18px;padding:6px 12px;border-radius:var(--ds-radius-sm,8px);background:var(--ds-canvas,var(--ui-raised))}
+.option-box{display:flex;align-items:center;flex-wrap:wrap;gap:2px 12px;margin-bottom:14px;padding:6px 12px;border:1px solid var(--ui-divider);border-radius:var(--ds-radius-sm,8px);background:var(--ds-canvas,var(--ui-raised))}
+.option-box :deep(.el-checkbox__input.is-checked + .el-checkbox__label){color:var(--ui-text);font-weight:500}
 .option-box .hint{margin:0}
-.field-label{margin-bottom:8px;font-size:var(--el-form-label-font-size,14px);line-height:22px;color:var(--el-text-color-regular,var(--ui-text))}
+.field-label{margin-bottom:6px;font-size:12.5px;line-height:18px;color:var(--el-text-color-regular,var(--ui-secondary))}
 .source-kind-hint{margin-inline-start:6px;color:var(--ui-muted);font-size:11px}
 .source-kind-options{
   --el-segmented-color:var(--ui-secondary);
   --el-segmented-bg-color:var(--ui-raised);
-  --el-segmented-item-selected-color:var(--ui-accent);
-  --el-segmented-item-selected-bg-color:var(--ui-accent-soft);
+  --el-segmented-item-selected-color:var(--ui-text);
+  --el-segmented-item-selected-bg-color:var(--ui-surface);
   --el-segmented-item-selected-disabled-bg-color:var(--ui-hover);
-  width:min(100%,320px);min-height:var(--ds-control-height,36px);border:1px solid var(--ui-border);font-size:12px;
+  width:min(100%,320px);min-height:var(--ds-control-height,30px);border:1px solid var(--ui-border);font-size:12px;
 }
 .source-kind-options :deep(.el-segmented__item){flex:1 1 0;padding-inline:6px}
 .source-kind-options :deep(.el-segmented__item.is-selected){font-weight:600}
 .source-kind-options :deep(.el-segmented__item-selected.is-focus-visible::before){outline-color:var(--ui-accent)}
 .two-columns{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 12px}.two-columns :deep(.el-date-editor),.task-layout :deep(.el-select),.task-layout :deep(.el-autocomplete){width:100%}
-.label-row{display:flex;align-items:center;justify-content:space-between;gap:12px}.label-row label{font-size:13px;font-weight:600}.tools{display:flex;align-items:center;gap:12px}.tools .el-button+.el-button{margin-left:0}
+.label-row{display:flex;align-items:center;justify-content:space-between;gap:12px}.label-row label{font-size:12.5px;font-weight:600}.tools{display:flex;align-items:center;gap:12px}.tools .el-button+.el-button{margin-left:0}
 .input-row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:8px}
-.input-row>.el-button,.input-row :deep(.el-select__wrapper){min-height:var(--ds-control-height,36px)}
+.input-row>.el-button,.input-row :deep(.el-select__wrapper){min-height:var(--ds-control-height,30px)}
 .input-row>.el-button{padding-inline:14px}
 .input-row :deep(.el-select__wrapper){padding:4px 8px}
 .input-row :deep(.el-select__selection){gap:4px}
@@ -385,8 +439,22 @@ onBeforeUnmount(() => actionsObserver?.disconnect());
 .advanced[open]>summary::before{transform:rotate(45deg)}.advanced summary:hover{color:var(--ui-text)}
 .scan-button{margin-top:8px}
 .task-layout .notes{margin-bottom:0}
-.continuation{display:flex;align-items:center;justify-content:space-between;gap:16px}.continuation p{margin:4px 0 0}.lock-hint{margin:0}
-.task-actions{position:sticky;bottom:0;display:flex;align-items:center;flex-wrap:wrap;gap:12px;padding:12px 0;border-top:1px solid var(--ui-border);background:var(--ui-bg)}
+.continuation{display:flex;align-items:center;justify-content:space-between;gap:16px;border-color:color-mix(in srgb,var(--ui-accent) 38%,var(--ui-border));background:color-mix(in srgb,var(--ui-accent-soft) 45%,var(--ui-surface))}
+.continuation.is-failed{border-color:color-mix(in srgb,var(--ui-danger) 42%,var(--ui-border));background:color-mix(in srgb,var(--ui-danger-bg) 45%,var(--ui-surface))}
+.continuation-body{display:grid;gap:4px;min-width:0}
+.continuation-head{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+.continuation-badge{padding:2px 8px;border-radius:999px;background:var(--ui-accent);color:var(--ui-on-primary,#fff);font-size:11px;font-weight:600}
+.continuation.is-failed .continuation-badge{background:var(--ui-danger)}
+.continuation-path{margin:0}.continuation-path code{font:11px var(--mono);color:var(--ui-text)}
+.continuation-progress{margin:0;color:var(--ui-accent);font-size:12px;font-weight:500}
+.section-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}
+.delivery-step-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px}
+.delivery-step-item{display:grid;gap:4px;padding:10px 12px;border:1px solid var(--ui-border);border-radius:9px;background:var(--ui-raised);font-size:12px}
+.delivery-step-item strong{color:var(--ui-text);font-size:12px;font-weight:600}
+.delivery-step-item p{margin:0;color:var(--ui-secondary);line-height:18px}
+.delivery-step-item a{color:var(--ui-accent);font-weight:500;text-decoration:none}
+.lock-hint{margin:0}
+.task-actions{position:sticky;bottom:0;z-index:4;display:flex;align-items:center;flex-wrap:wrap;gap:12px;padding:12px 16px;border:1px solid var(--ui-border);border-radius:12px;background:color-mix(in srgb,var(--ui-surface) 92%,transparent);backdrop-filter:blur(12px);box-shadow:var(--ds-shadow,0 4px 16px -8px rgb(15 23 42 / 0.12))}
 .task-actions .status{flex:1 1 160px;min-width:0;margin:0;font-size:12px;color:var(--ui-accent);white-space:pre-wrap;overflow-wrap:anywhere}.task-actions .status.pending{color:var(--ui-muted)}
 .buttons{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px;margin-left:auto}.buttons .el-button+.el-button{margin-left:0}
 /* 会话侧栏会改变可用空间，按面板宽度换列。 */
@@ -395,17 +463,17 @@ onBeforeUnmount(() => actionsObserver?.disconnect());
   .requirement-settings>.design-source{grid-column:1/-1}
 }
 @container workspace-page (max-width: 740px){
-  .task-source{grid-template-columns:minmax(0,1fr) auto}
-  .source-label{grid-column:1/-1}
+  .source-controls{grid-template-columns:minmax(0,1fr)}
   .schedule-row{grid-template-columns:minmax(0,1fr)}
 }
 @container workspace-page (max-width: 560px){
-  :is(.task-settings,.task-settings.requirement-settings,.task-source,.two-columns,.input-row){grid-template-columns:minmax(0,1fr)}
+  :is(.task-settings,.task-settings.requirement-settings,.source-controls,.two-columns,.input-row){grid-template-columns:minmax(0,1fr)}
   .task-source{gap:8px}
   .schedule-row .two-columns{row-gap:8px}
   .option-box{display:block;padding-block:8px}
   .option-box .hint{margin-left:22px}
   .input-row>.el-button{justify-self:start}
+  .continuation{flex-direction:column;align-items:flex-start}
   .task-actions{position:static}
   .task-actions .status,.buttons{flex-basis:100%}
 }

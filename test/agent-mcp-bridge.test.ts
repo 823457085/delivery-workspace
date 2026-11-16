@@ -12,7 +12,8 @@ import { privateRunFile } from '../server/agent-tool-journal.js';
 import type { AgentRun } from '../shared/agent-runtime.js';
 
 async function fixture(t: any, options: { mode?: string; execute?: (name: string, args: any, signal: AbortSignal) => Promise<any> } = {}) {
-  const directory = await fs.mkdtemp(path.join('/tmp', 'dw-mcp-'));
+  await fs.mkdir('.local', { recursive: true });
+  const directory = await fs.mkdtemp(path.resolve('.local/m-'));
   const root = path.join(directory, 'workspace'); await fs.mkdir(root);
   const controller = new AbortController();
   const calls: any[] = [];

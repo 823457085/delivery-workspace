@@ -63,7 +63,7 @@ export const FALLBACK_DAYS: (GoDaySummary & { cardMarkdown: string; tutorialMark
 2. **变量怎么声明？** 函数外用 \`var name string\`，函数内直接写 \`name := "买牛奶"\`（自动推导类型）。未赋初值的变量会自动获得安全的**零值**（\`0\` / \`""\` / \`false\`）。
 3. **为什么没有 \`while\`？** Go 所有循环统一用 \`for\`：\`for i := 0; i < 3; i++\`、\`for count < 3\`、\`for {}\`。
 4. **函数多返回值**：支持 \`pending, comment := calcProgress(3, 2)\`，一次返回计算结果与状态说明。`,
-    tutorialMarkdown: '按本日速懂卡片和检查清单完成练习。',
+    tutorialMarkdown: '完整精排教程文档已生成在工作区 `work/go-learning-docs/docs/Day1-环境与基本语法.md`。重启工作台后端服务后可在此直接加载完整章节原文。',
     answerCode: '```go\nfunc priorityLabel(level int) string {\n\tswitch level {\n\tcase 1:\n\t\treturn "【高优】"\n\tcase 2:\n\t\treturn "【普通】"\n\tdefault:\n\t\treturn "【低优】"\n\t}\n}\n```',
     checklist: [
       { id: 'd1-c1', text: '终端执行 go version 能看到 Go 版本号（建议 Go 1.22～1.27+）' },
@@ -92,7 +92,7 @@ export const FALLBACK_DAYS: (GoDaySummary & { cardMarkdown: string; tutorialMark
 - **切片（Slice）vs 数组**：切片是贴在数组车厢上的“可变取景框”，追加元素必须写 **\`s = append(s, x)\`**。
 - **字典（\`map\`）**：声明后必须先 **\`make(map[int]string)\`** 才能写入，否则触发 \`panic\`。
 - **结构体与指针（\`*\` / \`&\`）**：Go 默认传参是**“给复印件（值传递）”**，要修改原结构体必须传指针 **\`*Task\`**！`,
-    tutorialMarkdown: '按本日速懂卡片和检查清单完成练习。',
+    tutorialMarkdown: '完整教程已生成在 `work/go-learning-docs/docs/Day2-组织和处理数据.md`。',
     answerCode: '```go\nfunc resetTask(t *Task) {\n\tif t == nil {\n\t\treturn\n\t}\n\tt.Done = false\n\tt.Title = "[重置] " + t.Title\n}\n```',
     checklist: [
       { id: 'd2-c1', text: '能用自己的话解释为什么 append 必须写成 s = append(s, x)' },
@@ -121,7 +121,7 @@ export const FALLBACK_DAYS: (GoDaySummary & { cardMarkdown: string; tutorialMark
 - **首字母大小写决定可见性**：**大写 = Public 公开**，**小写 = Private 私有**。
 - **显式 \`error\` 处理**：Go 不用 \`try/catch\`，而是把 \`error\` 作为最后一个返回值当场检查 \`if err != nil\`。
 - **接口（Interface）**：不看出身只看能力（鸭子类型），只要实现了 \`Load()\` 和 \`Save()\` 就是 \`Storage\`。`,
-    tutorialMarkdown: '按本日速懂卡片和检查清单完成练习。',
+    tutorialMarkdown: '完整教程已生成在 `work/go-learning-docs/docs/Day3-组织行为与处理错误.md`。',
     answerCode: '```go\nfunc (t Task) Format() string {\n\tbox := "[ ]"\n\tif t.Done {\n\t\tbox = "[x]"\n\t}\n\treturn fmt.Sprintf("#%d %s %s", t.ID, box, t.Title)\n}\n```',
     checklist: [
       { id: 'd3-c1', text: '项目已拆分为 main.go 和 task/task.go，且包名与导出大小写正确' },
@@ -150,7 +150,7 @@ export const FALLBACK_DAYS: (GoDaySummary & { cardMarkdown: string; tutorialMark
 - **Struct Tag**：\`json:"title"\` 是给公开字段贴的 JSON 翻译名片。
 - **区分文件不存在与文件损坏**：首次运行 \`os.ErrNotExist\` 返回空切片；内容乱码必须报错阻止覆盖。
 - **原子写文件**：先写 \`tasks.json.tmp\` -> \`Sync()\` -> \`Close()\` -> \`os.Rename\` 覆盖，断电也不坏账！`,
-    tutorialMarkdown: '按本日速懂卡片和检查清单完成练习。',
+    tutorialMarkdown: '完整教程已生成在 `work/go-learning-docs/docs/Day4-JSON与文件.md`。',
     answerCode: '```go\ntype Task struct {\n\tID        int    `json:"id"`\n\tTitle     string `json:"title"`\n\tDone      bool   `json:"done"`\n\tCreatedAt string `json:"created_at,omitempty"`\n}\n```',
     checklist: [
       { id: 'd4-c1', text: '理解为什么结构体字段必须首字母大写才能被 encoding/json 序列化' },
@@ -178,7 +178,7 @@ export const FALLBACK_DAYS: (GoDaySummary & { cardMarkdown: string; tutorialMark
 
 - **\`r *http.Request\` 是客人点单的菜单**：用 \`r.PathValue("id")\` 拿路径参数，用 \`json.NewDecoder(r.Body)\` 读 JSON。
 - **\`w http.ResponseWriter\` 是端出去的托盘**：先设 Header，再调 \`w.WriteHeader(状态码)\`，最后写响应 JSON。`,
-    tutorialMarkdown: '按本日速懂卡片和检查清单完成练习。',
+    tutorialMarkdown: '完整教程已生成在 `work/go-learning-docs/docs/Day5-HTTP服务.md`。',
     answerCode: '```go\ns.mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {\n\twriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})\n})\n```',
     checklist: [
       { id: 'd5-c1', text: '理解 http.ResponseWriter（写响应托盘）与 *http.Request（读请求菜单）的职责' },
@@ -207,7 +207,7 @@ export const FALLBACK_DAYS: (GoDaySummary & { cardMarkdown: string; tutorialMark
 - **HTTP 天然并发**：\`net/http\` 每收到一个请求都会开启独立的 **Goroutine（兼职快递员）**。
 - **\`sync.Mutex\`（单人洗手间门锁）**：保护共享内存 \`m.tasks\` 和文件写入，进门 \`Lock()\`，出门 \`defer Unlock()\`。
 - **\`List()\` 必须返回拷贝副本**：防止锁释放后外部序列化与内部修改撞车。`,
-    tutorialMarkdown: '按本日速懂卡片和检查清单完成练习。',
+    tutorialMarkdown: '完整教程已生成在 `work/go-learning-docs/docs/Day6-测试与并发基础.md`。',
     answerCode: '```go\nm.mu.Lock()\ndefer m.mu.Unlock()\nresult := make([]Task, len(m.tasks))\ncopy(result, m.tasks)\nreturn result\n```',
     checklist: [
       { id: 'd6-c1', text: '能清楚说明为什么 HTTP 服务的每个请求在独立 Goroutine 中运行会导致数据竞争' },
@@ -235,7 +235,7 @@ export const FALLBACK_DAYS: (GoDaySummary & { cardMarkdown: string; tutorialMark
 
 - **三层清晰架构**：\`task/\` 管业务与文件落盘，\`server/\` 管 HTTP 路由与状态码，\`main.go\` 负责插电组装。
 - **结业独立挑战**：为 \`GET /tasks\` 增加 \`?done=true|false\` 查询参数筛选，并为非法参数返回 \`400 Bad Request\`。`,
-    tutorialMarkdown: '按本日速懂卡片和检查清单完成练习。',
+    tutorialMarkdown: '完整教程已生成在 `work/go-learning-docs/docs/Day7-整合与独立练习.md`。',
     answerCode: '```go\nfunc (m *Manager) ListByStatus(done bool) []Task {\n\tm.mu.Lock()\n\tdefer m.mu.Unlock()\n\tresult := make([]Task, 0)\n\tfor _, t := range m.tasks {\n\t\tif t.Done == done {\n\t\t\tresult = append(result, t)\n\t\t}\n\t}\n\treturn result\n}\n```',
     checklist: [
       { id: 'd7-c1', text: '完成结业验收 1~3：启动服务完成增删改查、重启后恢复数据、无效输入返回 400/404' },
@@ -283,19 +283,19 @@ export function loadLocalFallbackOverview(day = 1): GoLearningOverview {
       installed: false,
       version: '前端离线演练模式（重启工作台后端后自动连接本地沙盒）',
       goBinaryPath: '',
-      goproxy: '未检测',
+      goproxy: 'https://goproxy.cn,direct',
       cgoEnabled: '1',
       installHint: '重启工作台服务后即可解锁完整本地沙盒文件读写。',
       port8080Listening: false,
     },
-    sandboxPath: '',
-    docsPath: '',
+    sandboxPath: 'workspaces/go-taskmgr-lab',
+    docsPath: 'workspaces/go-learning-docs',
     progress,
     days: FALLBACK_DAYS.map(({ cardMarkdown: _c, tutorialMarkdown: _t, answerCode: _a, expectedRunOutput: _e, ...s }) => s),
     currentDayDetail,
     sandboxFiles: files,
     tasksJsonContent: null,
-    guideMarkdown: '# 《7 天上手 Go》通俗图解导读\n\n沿左侧路线依次学习七个章节，再按每章清单练习和自测。',
+    guideMarkdown: '# 《7 天上手 Go》通俗图解导读\n\n完整导读已保存在 `work/go-learning-docs/README.md`。',
     cheatSheetMarkdown: '# Go 核心语法与命令速查表\n\n- `go mod init <module>`：初始化模块\n- `go run .`：直接编译并运行\n- `go test -v -cover ./...`：运行全部单元测试并统计覆盖率\n- `go test -race ./...`：开启并发数据竞争检测\n- `gofmt -s -w .`：按官方标准格式化代码',
   };
 }

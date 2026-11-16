@@ -1,14 +1,18 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
+import { computed, defineAsyncComponent, inject, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { ChevronRight, Folder, Layers, Plus, RefreshCw, Search } from '@lucide/vue';
 import type { ApiCatalog, ApiOperation, ApiOperationDetail, ApiProject, ApiProjectDetail } from '../../../shared/interface-center';
+import { agentWorkspaceContext } from '../../shared/agent-workspace-context';
 import PageHeading from '../../shared/ui/PageHeading.vue';
 import { dateTime } from '../../shared/format';
 import { errorMessage, interfaceApi, projectPath } from './api';
-import ImportDialog from './ImportDialog.vue';
-import OperationDetail from './OperationDetail.vue';
-import ApifoxConnectionDialog from './ApifoxConnectionDialog.vue';
+const ImportDialog = defineAsyncComponent(() => import('./ImportDialog.vue'));
+const OperationDetail = defineAsyncComponent(() => import('./OperationDetail.vue'));
+const ApifoxConnectionDialog = defineAsyncComponent(() => import('./ApifoxConnectionDialog.vue'));
+
+const agentWorkspace = inject(agentWorkspaceContext, undefined);
+const searchInputRef = ref<{ focus?: () => void }>();
 
 const projects = shallowRef<ApiProject[]>([]), operations = shallowRef<ApiOperation[]>([]);
 const activeId = ref(''), loading = ref(true), projectLoading = ref(false);
@@ -16,7 +20,7 @@ const group = ref(''), directorySearch = ref(''), search = ref(''), method = ref
 const project = computed(() => projects.value.find(item => item.id === activeId.value));
 const sourceGroups = computed(() => [
   { label: 'Apifox', projects: projects.value.filter(item => item.source.kind === 'apifox') },
-  { label: 'BFF 仓库', projects: projects.value.filter(item => item.source.kind === 'repository') },
+  { label: '代码仓库', projects: projects.value.filter(item => item.source.kind === 'repository') },
   { label: '本地项目', projects: projects.value.filter(item => item.source.kind === 'file' || item.source.kind === 'manual') },
 ].filter(item => item.projects.length));
 const sourceGroup = computed(() => sourceGroups.value.find(item => item.projects.some(entry => entry.id === activeId.value))?.label);
@@ -28,8 +32,17 @@ const canRefreshSource = computed(() => {
 const total = computed(() => projects.value.reduce((count, item) => count + item.operationCount, 0));
 const directory = computed(() => (project.value?.groups || []).filter(item => item.name.toLocaleLowerCase().includes(directorySearch.value.trim().toLocaleLowerCase())));
 const methods = computed(() => [...new Set(operations.value.map(item => item.method))].sort());
-const filtered = computed(() => operations.value.filter(item => (!group.value || item.tags.includes(group.value) || (!item.tags.length && group.value === '未分类'))
-  && (!method.value || item.method === method.value)
+const groupScopedOperations = computed(() =>
+  operations.value.filter(item => !group.value || item.tags.includes(group.value) || (!item.tags.length && group.value === '未分类')),
+);
+const methodCounts = computed(() => {
+  const counts: Record<string, number> = {};
+  for (const op of groupScopedOperations.value) {
+    counts[op.method] = (counts[op.method] || 0) + 1;
+  }
+  return counts;
+});
+const filtered = computed(() => groupScopedOperations.value.filter(item => (!method.value || item.method === method.value)
   && `${item.summary} ${item.path} ${item.method}`.toLocaleLowerCase().includes(search.value.trim().toLocaleLowerCase())));
 const rows = computed(() => filtered.value.slice((page.value - 1) * 25, page.value * 25));
 watch([group, search, method], () => { page.value = 1; });
@@ -66,8 +79,22 @@ async function loadProject(id: string) {
   finally { if (request === projectRequest) projectLoading.value = false; }
 }
 watch(activeId, id => { group.value = ''; directorySearch.value = ''; search.value = ''; method.value = ''; page.value = 1; detailOpen.value = false; remember(id); void loadProject(id); });
-onMounted(() => { void loadCatalog(); });
-onBeforeUnmount(() => { catalogRequest++; projectRequest++; detailRequest++; });
+function onQuickSlashKey(event: KeyboardEvent) {
+  if (event.key !== '/' || event.metaKey || event.ctrlKey || event.altKey) return;
+  const target = event.target as HTMLElement | null;
+  if (target && (['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) || target.isContentEditable)) return;
+  if (detailOpen.value || newProjectOpen.value || importOpen.value || apifoxOpen.value) return;
+  event.preventDefault();
+  searchInputRef.value?.focus?.();
+}
+onMounted(() => {
+  void loadCatalog();
+  window.addEventListener('keydown', onQuickSlashKey);
+});
+onBeforeUnmount(() => {
+  catalogRequest++; projectRequest++; detailRequest++;
+  window.removeEventListener('keydown', onQuickSlashKey);
+});
 
 const newProjectOpen = ref(false), projectName = ref(''), projectDescription = ref(''), creating = ref(false);
 function newProject() { projectName.value = ''; projectDescription.value = ''; newProjectOpen.value = true; }
@@ -101,47 +128,77 @@ async function openDetail(operation: ApiOperation) {
   finally { if (request === detailRequest) detailLoading.value = false; }
 }
 watch(detailOpen, value => { if (!value) { detailRequest++; detail.value = undefined; detailLoading.value = false; } });
+function onAskAi(prompt: string) {
+  detailOpen.value = false;
+  agentWorkspace?.compose(prompt);
+}
 </script>
 
 <template>
   <section class="interface-center" aria-label="接口联调中心">
-    <PageHeading title="接口联调中心" description="集中管理 Apifox、BFF 仓库与本地接口" :loading="loading || projectLoading" @refresh="loadCatalog()" />
-    <header class="center-heading">
+    <PageHeading title="接口联调中心" description="集中管理 Apifox、代码仓库与本地接口" :loading="loading || projectLoading" @refresh="loadCatalog()">
+      <el-button @click="apifoxOpen = true">Apifox 连接</el-button>
+      <el-button @click="newProject"><Plus :size="15" />新建本地项目</el-button>
+      <el-button type="primary" @click="openImport()"><RefreshCw :size="15" />同步来源</el-button>
+    </PageHeading>
+    <header v-if="!agentWorkspace" class="center-heading">
       <div class="center-heading-title"><h1>接口联调中心</h1><div class="catalog-totals"><strong>{{ projects.length }}</strong> 个项目<span>·</span><strong>{{ total }}</strong> 个接口</div></div>
-      <div class="center-heading-actions">
-        <el-button @click="apifoxOpen = true">Apifox 连接</el-button>
-        <el-button @click="newProject"><Plus :size="15" />新建本地项目</el-button>
-        <el-button type="primary" @click="openImport()"><RefreshCw :size="15" />同步来源</el-button>
-      </div>
     </header>
     <div class="project-bar">
       <div class="project-picker"><label for="interface-project-picker">当前项目</label><el-select id="interface-project-picker" v-model="activeId" filterable placeholder="选择项目" aria-label="选择接口项目" :disabled="loading && !projects.length"><el-option-group v-for="entry in sourceGroups" :key="entry.label" :label="entry.label"><el-option v-for="item in entry.projects" :key="item.id" :value="item.id" :label="item.name"><span class="project-option-name">{{ item.name }}</span><span class="project-option-count">{{ item.operationCount }}</span></el-option></el-option-group></el-select></div>
-      <div v-if="project" class="project-meta"><div class="project-meta-title"><el-tag v-if="sourceGroup" size="small">{{ sourceGroup }}</el-tag><el-tag v-if="project.version" type="info" size="small">{{ project.version }}</el-tag><span>{{ project.operationCount }} 个接口 · {{ project.groups.length }} 个分类</span></div><div class="project-source"><span>{{ project.source.label }}</span><code v-if="project.source.commit">{{ project.source.ref }} · {{ project.source.commit.slice(0, 12) }}</code><span>更新于 {{ dateTime(project.updatedAt) }}</span></div></div>
+      <div v-if="project" class="project-meta"><div class="project-meta-title"><el-tag v-if="sourceGroup" type="info" effect="plain" size="small">{{ sourceGroup }}</el-tag><el-tag v-if="project.version" type="info" effect="plain" size="small">{{ project.version }}</el-tag><span>{{ project.operationCount }} 个接口 · {{ project.groups.length }} 个分类 · 共 {{ projects.length }} 项契约库</span></div><div class="project-source"><span>{{ project.source.label }}</span><code v-if="project.source.commit">{{ project.source.ref }} · {{ project.source.commit.slice(0, 12) }}</code><span>更新于 {{ dateTime(project.updatedAt) }}</span></div></div>
       <el-button v-if="canRefreshSource" size="small" @click="openImport(false, true)"><RefreshCw :size="13" />更新来源</el-button>
       <details v-if="project?.description" :key="project.id" class="project-description-toggle"><summary>项目说明</summary><p class="project-description">{{ project.description }}</p></details>
     </div>
     <div v-if="loading && !projects.length" class="catalog-skeleton"><el-skeleton :rows="8" animated /></div>
-    <el-empty v-else-if="!project" description="同步 Apifox 项目或 BFF 仓库到这里" :image-size="100"><el-button @click="newProject">新建项目</el-button><el-button type="primary" @click="openImport()">同步来源</el-button></el-empty>
+    <el-empty v-else-if="!project" description="同步 Apifox 项目或代码仓库到这里" :image-size="100"><el-button @click="newProject">新建项目</el-button><el-button type="primary" @click="openImport()">同步来源</el-button></el-empty>
     <template v-else>
       <div class="catalog-layout">
-        <aside class="module-sidebar" aria-label="接口模块目录"><header><Layers :size="15" /><strong>模块目录</strong></header><el-input v-model="directorySearch" size="small" clearable placeholder="搜索分类" aria-label="搜索接口分类"><template #prefix><Search :size="13" /></template></el-input><nav><button type="button" :class="{ selected: !group }" :aria-current="!group ? 'page' : undefined" @click="group = ''"><Folder :size="14" /><span>全部接口</span><small>{{ project.operationCount }}</small></button><button v-for="item in directory" :key="item.name" type="button" :class="{ selected: group === item.name }" :aria-current="group === item.name ? 'page' : undefined" :title="item.name" @click="group = item.name"><Folder :size="14" /><span>{{ item.name }}</span><small>{{ item.count }}</small></button><el-empty v-if="directorySearch && !directory.length" description="没有匹配分类" :image-size="45" /></nav></aside>
+        <aside class="module-sidebar" aria-label="接口模块目录"><header><Layers :size="15" /><strong>模块目录</strong></header><el-input v-model="directorySearch" size="small" clearable placeholder="搜索分类" aria-label="搜索接口分类" @keydown.esc="directorySearch = ''"><template #prefix><Search :size="13" /></template></el-input><nav><button type="button" :class="{ selected: !group }" :aria-current="!group ? 'page' : undefined" @click="group = ''"><Folder :size="14" /><span>全部接口</span><small>{{ project.operationCount }}</small></button><button v-for="item in directory" :key="item.name" type="button" :class="{ selected: group === item.name }" :aria-current="group === item.name ? 'page' : undefined" :title="item.name" @click="group = item.name"><Folder :size="14" /><span>{{ item.name }}</span><small>{{ item.count }}</small></button><el-empty v-if="directorySearch && !directory.length" description="没有匹配分类" :image-size="45" /></nav></aside>
         <main class="interface-list" aria-label="当前项目接口列表">
-          <header class="list-header"><div><h2>{{ group || '全部接口' }}</h2><span>{{ filtered.length }} 个接口</span></div><div class="list-filters"><el-input v-model="search" clearable placeholder="搜索接口名称、路径" aria-label="搜索接口名称或路径"><template #prefix><Search :size="14" /></template></el-input><el-select v-model="method" clearable placeholder="全部方法" aria-label="筛选请求方法"><el-option v-for="value in methods" :key="value" :label="value" :value="value" /></el-select></div></header>
+          <header class="list-header">
+            <div class="list-title-block">
+              <h2>{{ group || '全部接口' }}</h2>
+              <span>{{ filtered.length }} 个接口</span>
+            </div>
+            <div v-if="methods.length > 1" class="method-pill-strip" role="tablist" aria-label="按 HTTP 方法快速筛选">
+              <button type="button" role="tab" :aria-selected="!method" :class="{ active: !method }" @click="method = ''">
+                全部 <em>{{ groupScopedOperations.length }}</em>
+              </button>
+              <button
+                v-for="m in methods"
+                :key="m"
+                type="button"
+                role="tab"
+                :aria-selected="method === m"
+                :class="['method-filter-pill', m.toLowerCase(), { active: method === m }]"
+                @click="method = method === m ? '' : m"
+              >
+                {{ m }} <em>{{ methodCounts[m] || 0 }}</em>
+              </button>
+            </div>
+            <div class="list-filters">
+              <el-input ref="searchInputRef" v-model="search" clearable placeholder="搜索接口名称、路径（按 / 聚焦）" aria-label="搜索接口名称或路径" @keydown.esc="search = ''">
+                <template #prefix><Search :size="14" /></template>
+                <template v-if="!search" #suffix><kbd class="slash-kbd">/</kbd></template>
+              </el-input>
+            </div>
+          </header>
           <div class="table-viewport"><el-table v-loading="projectLoading" :data="rows" row-key="key" height="100%" class="interface-table" empty-text="当前项目下没有匹配的接口" @row-click="openDetail">
-            <el-table-column label="方法" width="86"><template #default="{ row }"><span :class="['http-method', row.method.toLowerCase()]">{{ row.method }}</span></template></el-table-column>
+            <el-table-column label="方法" width="88"><template #default="{ row }"><span :class="['http-method', row.method.toLowerCase()]">{{ row.method }}</span></template></el-table-column>
             <el-table-column label="接口 / 路径" min-width="250"><template #default="{ row }"><button type="button" class="operation-name" @click.stop="openDetail(row)">{{ row.summary || row.path }}</button><code class="operation-path">{{ row.path }}</code></template></el-table-column>
             <el-table-column label="分类" min-width="150"><template #default="{ row }"><span class="operation-tags">{{ row.tags.join(' / ') || '未分类' }}</span><el-tag v-if="row.deprecated" size="small" type="info" class="deprecated-tag">已废弃</el-tag></template></el-table-column>
-            <el-table-column width="44"><template #default><ChevronRight :size="14" class="row-chevron" /></template></el-table-column>
+            <el-table-column width="48" align="center" class-name="chevron-column"><template #default><ChevronRight :size="14" class="row-chevron" /></template></el-table-column>
           </el-table></div>
           <div v-if="!project.operationCount && !projectLoading" class="empty-import"><el-button @click="openImport(true)">导入此项目的接口</el-button></div>
           <footer class="list-footer"><span>显示 {{ filtered.length ? (page - 1) * 25 + 1 : 0 }}–{{ Math.min(page * 25, filtered.length) }} / {{ filtered.length }}</span><el-pagination v-model:current-page="page" :page-size="25" :total="filtered.length" layout="prev, pager, next" :pager-count="5" size="small" hide-on-single-page /></footer>
         </main>
       </div>
     </template>
-    <el-dialog v-model="newProjectOpen" title="新建接口项目" width="460px" class="interface-new-dialog" :close-on-click-modal="!creating" :close-on-press-escape="!creating" :show-close="!creating"><el-form label-position="top" :disabled="creating" @submit.prevent="createProject"><el-form-item label="项目名称" required><el-input v-model="projectName" maxlength="100" aria-label="接口项目名称" placeholder="例如：商家 PC BFF" /></el-form-item><el-form-item label="项目说明"><el-input v-model="projectDescription" aria-label="接口项目说明" type="textarea" :rows="3" maxlength="1000" placeholder="项目负责的业务范围" /></el-form-item></el-form><template #footer><el-button :disabled="creating" @click="newProjectOpen = false">取消</el-button><el-button type="primary" :loading="creating" :disabled="!projectName.trim()" @click="createProject">创建项目</el-button></template></el-dialog>
-    <ImportDialog v-model="importOpen" :project="project" :projects="projects" :current="importCurrent" :refresh="refreshingSource" :initial-mode="importMode" @imported="imported" @connect="apifoxOpen = true" />
-    <ApifoxConnectionDialog v-model="apifoxOpen" />
-    <el-drawer v-model="detailOpen" title="接口文档" size="min(1040px, 96vw)" append-to-body class="interface-detail-drawer" destroy-on-close><OperationDetail :detail="detail" :project="project" :loading="detailLoading" /></el-drawer>
+    <el-dialog v-if="newProjectOpen" v-model="newProjectOpen" title="新建接口项目" width="460px" class="interface-new-dialog" :close-on-click-modal="!creating" :close-on-press-escape="!creating" :show-close="!creating"><el-form label-position="top" :disabled="creating" @submit.prevent="createProject"><el-form-item label="项目名称" required><el-input v-model="projectName" maxlength="100" aria-label="接口项目名称" placeholder="例如：商家 PC BFF" /></el-form-item><el-form-item label="项目说明"><el-input v-model="projectDescription" aria-label="接口项目说明" type="textarea" :rows="3" maxlength="1000" placeholder="项目负责的业务范围" /></el-form-item></el-form><template #footer><el-button :disabled="creating" @click="newProjectOpen = false">取消</el-button><el-button type="primary" :loading="creating" :disabled="!projectName.trim()" @click="createProject">创建项目</el-button></template></el-dialog>
+    <ImportDialog v-if="importOpen" v-model="importOpen" :project="project" :projects="projects" :current="importCurrent" :refresh="refreshingSource" :initial-mode="importMode" @imported="imported" @connect="apifoxOpen = true" />
+    <ApifoxConnectionDialog v-if="apifoxOpen" v-model="apifoxOpen" />
+    <el-drawer v-if="detailOpen" v-model="detailOpen" title="接口文档与联调" size="min(1040px, 96vw)" append-to-body class="interface-detail-drawer" destroy-on-close><OperationDetail :detail="detail" :project="project" :loading="detailLoading" :can-ask-ai="!!agentWorkspace" @ask-ai="onAskAi" /></el-drawer>
   </section>
 </template>
 
@@ -179,31 +236,42 @@ watch(detailOpen, value => { if (!value) { detailRequest++; detail.value = undef
 .module-sidebar>header>svg{color:var(--ui-muted)}
 .module-sidebar>.el-input{margin-bottom:8px;flex-shrink:0}
 .module-sidebar nav{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin}
-.module-sidebar nav>button{display:flex;align-items:center;gap:8px;width:100%;padding:9px 8px;border:0;border-radius:5px;background:transparent;color:var(--ui-secondary);font:inherit;font-size:11px;text-align:left;cursor:pointer}
-.module-sidebar nav>button:hover{background:var(--ui-hover)}
-.module-sidebar nav>button.selected{color:var(--ui-accent);background:var(--ui-accent-soft);font-weight:600}
+.module-sidebar nav>button{display:flex;align-items:center;gap:8px;width:100%;padding:8px 8px;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--ui-secondary);font:inherit;font-size:11.5px;text-align:left;cursor:pointer;transition:background-color 140ms ease,border-color 140ms ease,color 140ms ease}
+.module-sidebar nav>button:hover{background:var(--ui-hover);color:var(--ui-text)}
+.module-sidebar nav>button.selected{color:var(--ui-text);background:var(--ui-raised);border-color:var(--ui-border);font-weight:600}
 .module-sidebar nav>button>svg{flex-shrink:0}
 .module-sidebar nav>button>span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .module-sidebar nav>button>small{color:var(--ui-muted);font:10px var(--ds-code,monospace)}
 .interface-list{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden}
-.list-header{display:flex;align-items:center;justify-content:space-between;gap:10px 16px;flex-wrap:wrap;flex-shrink:0;padding:12px 16px;border-bottom:1px solid var(--ui-divider)}
-.list-header>div:first-child{display:flex;gap:10px;align-items:baseline;min-width:0;flex:1 1 120px}
+.list-header{display:flex;align-items:center;justify-content:space-between;gap:10px 14px;flex-wrap:wrap;flex-shrink:0;padding:10px 16px;border-bottom:1px solid var(--ui-divider)}
+.list-title-block{display:flex;gap:8px;align-items:baseline;min-width:0;flex:0 1 auto}
 .list-header h2{font-size:13px;margin:0;font-weight:600;overflow-wrap:anywhere}
-.list-header>div>span{color:var(--ui-muted);font-size:11px;white-space:nowrap}
-.list-filters{display:flex;gap:8px;flex:1 1 320px;min-width:0;max-width:440px}
+.list-title-block>span{color:var(--ui-muted);font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.method-pill-strip{display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap;padding:2px;border:1px solid var(--ui-border);border-radius:7px;background:var(--ui-raised)}
+.method-pill-strip>button{display:inline-flex;align-items:center;gap:4px;height:23px;padding:0 8px;border:1px solid transparent;border-radius:5px;background:transparent;color:var(--ui-secondary);font:600 10.5px/1 var(--ds-code,var(--mono));cursor:pointer;transition:background-color 120ms ease,color 120ms ease,border-color 120ms ease}
+.method-pill-strip>button:hover{color:var(--ui-text)}
+.method-pill-strip>button.active{background:var(--ui-surface);border-color:var(--ui-border);color:var(--ui-text);box-shadow:0 1px 2px rgba(0,0,0,0.06)}
+.method-pill-strip>button.get.active{color:var(--ui-success);border-color:color-mix(in srgb,var(--ui-success) 35%,var(--ui-border))}
+.method-pill-strip>button.post.active{color:var(--ui-accent);border-color:color-mix(in srgb,var(--ui-accent) 35%,var(--ui-border))}
+.method-pill-strip>button.put.active,.method-pill-strip>button.patch.active{color:var(--ui-warning);border-color:color-mix(in srgb,var(--ui-warning) 35%,var(--ui-border))}
+.method-pill-strip>button.delete.active{color:var(--ui-danger);border-color:color-mix(in srgb,var(--ui-danger) 35%,var(--ui-border))}
+.method-pill-strip em{font-style:normal;font-weight:500;opacity:0.72;font-variant-numeric:tabular-nums}
+.list-filters{display:flex;gap:8px;flex:1 1 220px;min-width:0;max-width:300px;margin-left:auto}
 .list-filters>.el-input{flex:1;min-width:0}
-.list-filters>.el-select{width:112px;flex-shrink:0}
+.slash-kbd{display:inline-grid;place-items:center;min-width:17px;height:17px;padding:0 4px;border:1px solid var(--ui-border);border-radius:4px;background:var(--ui-raised);color:var(--ui-muted);font:600 10px/1 var(--mono)}
 .table-viewport{flex:1;min-height:0;min-width:0;overflow:hidden}
 .interface-table{width:100%}
 .interface-table :deep(.el-table__body-wrapper .el-scrollbar__wrap){overscroll-behavior:contain}
 .interface-table :deep(.el-table__row){cursor:pointer}
 .interface-table :deep(.el-table__cell){padding:10px 0}
 .interface-table :deep(th.el-table__cell){padding:8px 0;font-size:11px}
-.interface-table :deep(.cell){padding-left:14px;padding-right:12px}
-.http-method{display:inline-flex;font:600 10px/1.5 var(--ds-code,monospace);color:var(--el-color-primary);padding:3px 6px;border-radius:4px;background:var(--el-color-primary-light-9)}
-.http-method.get{color:var(--el-color-success);background:var(--el-color-success-light-9)}
-.http-method.post{color:var(--el-color-warning);background:var(--el-color-warning-light-9)}
-.http-method.delete{color:var(--el-color-danger);background:var(--el-color-danger-light-9)}
+.interface-table :deep(.cell){padding-left:12px;padding-right:10px}
+.interface-table :deep(.chevron-column .cell){padding-inline:4px;text-overflow:clip;overflow:visible}
+.http-method{display:inline-flex;align-items:center;justify-content:center;min-width:44px;font:700 10px/1.4 var(--ds-code,var(--mono));color:var(--ui-accent);padding:3px 7px;border:1px solid color-mix(in srgb,var(--ui-accent) 32%,var(--ui-border));border-radius:5px;background:var(--ui-accent-soft)}
+.http-method.get{color:var(--ui-success);border-color:color-mix(in srgb,var(--ui-success) 34%,var(--ui-border));background:var(--ui-success-bg)}
+.http-method.post{color:var(--ui-accent);border-color:color-mix(in srgb,var(--ui-accent) 36%,var(--ui-border));background:var(--ui-accent-soft)}
+.http-method.put,.http-method.patch{color:var(--ui-warning);border-color:color-mix(in srgb,var(--ui-warning) 36%,var(--ui-border));background:color-mix(in srgb,var(--ui-warning) 12%,var(--ui-surface))}
+.http-method.delete{color:var(--ui-danger);border-color:color-mix(in srgb,var(--ui-danger) 36%,var(--ui-border));background:var(--ui-danger-bg)}
 .operation-name{display:block;padding:0;border:0;background:transparent;color:var(--ui-text);font:inherit;font-size:12px;line-height:1.7;text-align:left;cursor:pointer;overflow-wrap:anywhere;max-width:100%}
 .operation-name:hover{color:var(--ui-accent)}
 .operation-path{display:block;color:var(--ui-muted);font:10px/1.7 var(--ds-code,monospace);margin-top:2px;overflow-wrap:anywhere}

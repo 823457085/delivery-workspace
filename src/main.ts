@@ -1,10 +1,11 @@
 import { createApp } from 'vue';
 import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query';
 import App from './App.vue';
-import ElementPlus, { ElMessageBox } from 'element-plus';
-import zhCn from 'element-plus/es/locale/lang/zh-cn';
+import { ElMessageBox } from 'element-plus';
+import { installElementPlus } from './app/element-plus';
 import { router } from './app/router';
 import { initializeTheme } from './shared/theme/useTheme';
+import { installSharedEventSourceHub } from './shared/sse/sharedEventSource';
 import 'element-plus/dist/index.css';
 import 'element-plus/theme-chalk/dark/css-vars.css';
 import './style.css';
@@ -12,6 +13,8 @@ import './app/hub.css';
 import './app/themes.css';
 import './app/delivery-confirm.css';
 import './app/bento-controls.css';
+import './app/overlay-refinement.css';
+installSharedEventSourceHub();
 const disposeTheme = initializeTheme();
 if (import.meta.hot) import.meta.hot.dispose(disposeTheme);
 
@@ -26,4 +29,6 @@ window.addEventListener('vite:preloadError', event => {
   }).then(() => window.location.reload()).catch(() => {}).finally(() => { assetRecoveryPending = false; });
 });
 
-createApp(App).use(ElementPlus, { locale: zhCn }).use(router).use(VueQueryPlugin, { queryClient: new QueryClient({ defaultOptions: { queries: { retry: 1 } } }) }).mount('#app');
+const app = createApp(App);
+installElementPlus(app);
+app.use(router).use(VueQueryPlugin, { queryClient: new QueryClient({ defaultOptions: { queries: { retry: 1, staleTime: 3_000 } } }) }).mount('#app');

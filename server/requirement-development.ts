@@ -7,6 +7,7 @@ import { requirementDevelopmentStartSchema, requirementDevelopmentPrompt, requir
   readRequirementProgressReport, type RequirementDevelopmentRecord, type RequirementDevelopmentInput, type RequirementProgressData } from '../shared/requirement-development.js';
 import type { AgentRun, StartAgentRunInput } from '../shared/agent-runtime.js';
 import { createGeneratedWorkspace, resolveRenamedWorkspace } from './generated-workspace.js';
+import { frontendTechSolutionPrompt } from './frontend-tech-solution.mjs';
 import { groupRunStatus, type GroupJiraExecution } from '../shared/agent-group-chat.js';
 
 const exec = promisify(execFile);
@@ -91,7 +92,7 @@ export async function createRequirementDevelopmentService(directory: string, run
       const run = await runtime.startRequirementDevelopment({
         provider: 'codex', mode: 'agent', accessMode: 'full', model: 'gpt-6-astra', reasoningEffort: 'xhigh',
         workspacePath: record.workspacePath, branch: record.input.branch,
-        objective: requirementDevelopmentPrompt(record.input, record.workspacePath, record.headSha),
+        objective: requirementDevelopmentPrompt(record.input, record.workspacePath, record.headSha, frontendTechSolutionPrompt),
       }, record.id, record.input.title);
       record.runId = run.id; record.status = 'started';
     } catch (error) {

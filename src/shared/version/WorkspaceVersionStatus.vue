@@ -19,6 +19,6 @@ function dateTime(value?: string) { return value ? new Date(value).toLocaleStrin
     <el-button size="small" :loading="query.isFetching.value" @click="query.refetch()">检查版本</el-button>
     <WorkspaceRestartButton v-if="state.restartRequired || state.buildRequired" />
     <p v-if="state.buildRequired && query.data.value?.buildError">{{ query.data.value.buildError }}</p>
-    <el-button v-if="state.status === 'refresh-required'" size="small" type="primary" @click="reloadWorkspacePage">保存草稿后刷新</el-button>
+    <el-button v-if="state.status === 'refresh-required'" size="small" type="primary" @click="reloadWorkspacePage">立即刷新页面</el-button>
   </el-popover>
 </template>

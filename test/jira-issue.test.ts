@@ -6,7 +6,7 @@ import {createJiraIssueService,createJiraIssueRoute} from '../server/jira-issue'
 import {jiraWikiMarkdown} from '../src/features/jira-issue/jira-description';
 function fixture() {
  const calls:{path:string;method:string;body:any}[]=[],key='OPAY-720';let revision=0,deny='',uncertain=false;
- const f:any={summary:'L1001 原始标题',description:'h2. 目标\n原始描述',updated:'2026-11-02T08:00:00.000Z',created:'2026-10-01T08:00:00.000Z',status:{id:'1',name:'测试中',statusCategory:{key:'indeterminate'}},project:{id:'100',key:'OPAY',name:'支付平台'},issuetype:{id:'3',name:'子任务'},priority:{id:'2',name:'L2001'},assignee:{name:'lzr',displayName:'示例用户'},reporter:{name:'r',displayName:'报告人'},fixVersions:[],components:[],labels:[],attachment:[],subtasks:[],issuelinks:[]};
+ const f:any={summary:'L1001 原始标题',description:'h2. 目标\n原始描述',updated:'2026-11-02T08:00:00.000Z',created:'2026-10-01T08:00:00.000Z',status:{id:'1',name:'测试中',statusCategory:{key:'indeterminate'}},project:{id:'100',key:'OPAY',name:'支付平台'},issuetype:{id:'3',name:'子任务'},priority:{id:'2',name:'L2001'},assignee:{name:'lzr',displayName:'李子锐'},reporter:{name:'r',displayName:'报告人'},fixVersions:[],components:[],labels:[],attachment:[],subtasks:[],issuelinks:[]};
  const discussion:any[]=[],logs:any[]=[],watchers={isWatching:false};
  const metadata:any={summary:{name:'标题',required:true,schema:{type:'string'}},description:{name:'描述',schema:{type:'string'}},priority:{name:'优先级',schema:{type:'priority'},allowedValues:[{id:'2',name:'L2001'},{id:'3',name:'低'}]},labels:{name:'标签',schema:{type:'array',items:'string'}}};
  const workflow=[{id:'31',name:'完成测试',to:{id:'2',name:'已完成'},fields:{customfield_10110:{name:'结束日期',required:true,schema:{type:'date'}}}}];
@@ -22,7 +22,7 @@ function fixture() {
    if(/\/comment\/\d+$/.test(url.pathname))return response(discussion.find(x=>x.id===path.split('/').at(-1)));
    if(url.pathname.endsWith('/watchers'))return response(watchers);
    if(path==='myself')return response({name:'lzr'});
-   if(path.startsWith('user/assignable/search?'))return response([{name:'lzr',displayName:'示例用户',active:true},{name:'next',displayName:'下一位',active:true}]);
+   if(path.startsWith('user/assignable/search?'))return response([{name:'lzr',displayName:'李子锐',active:true},{name:'next',displayName:'下一位',active:true}]);
    if(path==='issueLinkType')return response({issueLinkTypes:[{id:'100',name:'阻塞',inward:'被阻塞',outward:'阻塞'}]});
    if(url.pathname==='/issue/createmeta/OPAY/issuetypes')return response({issueTypes:[{id:'3',name:'子任务',subtask:true}],isLast:true});
    if(url.pathname==='/issue/createmeta/OPAY/issuetypes/3')return response({fields:Object.entries(metadata).map(([fieldId,field])=>({fieldId,...field as object})),isLast:true});
@@ -38,7 +38,7 @@ function fixture() {
   if(method==='PUT'&&url.pathname==='/issue/'+key){Object.assign(f,body.fields);return response(null,204);}
   if(path.endsWith('/transitions')){assert.equal(body.transition.id,'31');Object.assign(f,body.fields);f.status={id:'2',name:'已完成'};return response(null,204);}
   if(path.endsWith('/assignee')){f.assignee=body.name?{name:body.name}:null;return response(null,204);}
-  if(path.endsWith('/comment')){const item={id:String(discussion.length+1),body:body.body,author:{displayName:'示例用户'}};discussion.push(item);return response(item);}
+  if(path.endsWith('/comment')){const item={id:String(discussion.length+1),body:body.body,author:{displayName:'李子锐'}};discussion.push(item);return response(item);}
   if(url.pathname.endsWith('/watchers')){watchers.isWatching=method==='POST';return response(null,204);}
   if(path==='issueLink'){f.issuelinks.push({id:'7',type:{id:body.type.id,outward:'阻塞'},outwardIssue:{key:body.outwardIssue.key,fields:{summary:'related'}}});return response(null,204);}
   if(path==='issue'){f.subtasks.push({key:'OPAY-721',fields:{summary:body.fields.summary}});return response({key:'OPAY-721'});}

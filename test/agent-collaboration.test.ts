@@ -209,17 +209,29 @@ test('账本写入失败不会发布未落盘的消息或预算', async () => {
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
-test('仅归档已结束且保留超过30天的消息，预算和fencing不清零', async () => {
+test('仅归档已结束且保留超过30天的消息，未到期不触发重写，预算和fencing不清零', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'delivery-ledger-archive-'));
   let current = '2026-01-01T00:00:00.000Z';
+  let writes = 0;
   try {
-    const store = await createAgentCollaborationStore(root, { now: () => current });
+    const store = await createAgentCollaborationStore(root, {
+      now: () => current,
+      writeJson: async (_relative, value) => {
+        writes += 1;
+        await fs.writeFile(path.join(root, 'collaboration-state.json'), JSON.stringify(value, null, 2));
+      },
+    });
     await store.send(ask('archive', { to: user }));
     const intent = await store.reserveDispatch({ workflowId: 'flow', stageKey: 'old', attempt: 1, limit: 2 });
     await store.linkIntent(intent.id, 'old-run'); await store.settleIntent(intent.id);
+    const revisionBefore = store.snapshot().revision;
+    const writesBefore = writes;
     assert.deepEqual(await store.archiveCompleted(['flow']), []);
+    assert.equal(store.snapshot().revision, revisionBefore, '未到期归档不应递增 revision');
+    assert.equal(writes, writesBefore, '未到期归档不应重写磁盘账本');
     current = '2026-02-02T00:00:00.000Z';
     assert.deepEqual(await store.archiveCompleted(['flow']), ['flow']);
+    assert.equal(writes, writesBefore + 1);
     assert.deepEqual(store.messages('flow'), []);
     assert.deepEqual(store.snapshot().budgets.flow, { reservedRuns: 0, usedRuns: 1, limit: null });
     const archives = await fs.readdir(path.join(root, 'collaboration-archive'));

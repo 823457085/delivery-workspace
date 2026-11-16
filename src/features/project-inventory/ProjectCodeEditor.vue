@@ -32,11 +32,20 @@ let model: EditorTypes.ITextModel | undefined;
 let conflictDecorations: EditorTypes.IEditorDecorationsCollection | undefined;
 let changeDecorations: EditorTypes.IEditorDecorationsCollection | undefined;
 let themeObserver: MutationObserver | undefined;
+let syncTimer: ReturnType<typeof setTimeout> | undefined;
 let disposed = false;
 const subscriptions: IDisposable[] = [];
 const dirty = computed(() => content.value !== original.value);
 const markersRemain = computed(() => hasConflictMarkers(content.value));
 const blocks = computed(() => markersRemain.value ? parseConflictBlocks(content.value) : []);
+
+function syncEditorContent() {
+  if (syncTimer) { clearTimeout(syncTimer); syncTimer = undefined; }
+  if (!model) return;
+  content.value = model.getValue(monaco.editor.EndOfLinePreference.TextDefined, true);
+  updateConflicts();
+  updateStatus();
+}
 
 function blockRange(block: ConflictBlock) {
   if (!model) return;
@@ -145,9 +154,9 @@ function createEditor() {
   });
   subscriptions.push(
     editor.onDidChangeModelContent(() => {
-      content.value = model!.getValue(monaco.editor.EndOfLinePreference.TextDefined, true);
-      updateConflicts();
-      updateStatus();
+      if (conflict.value || blocks.value.length) { syncEditorContent(); return; }
+      if (syncTimer) clearTimeout(syncTimer);
+      syncTimer = setTimeout(syncEditorContent, 160);
     }),
     editor.onDidChangeCursorPosition(event => {
       cursor.value = event.position;
@@ -180,12 +189,14 @@ function createEditor() {
 
 function choose(block: ConflictBlock, choice: 'ours' | 'theirs' | 'both') {
   if (!editor || !model) return;
+  syncEditorContent();
   const index = blocks.value.indexOf(block);
   const range = blockRange(block)!;
   const text = choice === 'both' ? block.ours + block.theirs : block[choice];
   editor.pushUndoStop();
   editor.executeEdits('resolve-conflict', [{ range, text }]);
   editor.pushUndoStop();
+  syncEditorContent();
   if (blocks.value.length) jumpToConflict(Math.min(index, blocks.value.length - 1));
   else editor.revealLineInCenter(Math.min(range.startLineNumber, model.getLineCount()));
   editor.focus();
@@ -205,6 +216,7 @@ async function formatDocument() {
 
 async function save(resolve = false) {
   if (!ready.value || !editable.value || saving.value) return;
+  syncEditorContent();
   saving.value = true;
   try {
     const response = await fetch('/api/projects/git/code', {
@@ -230,6 +242,7 @@ async function save(resolve = false) {
 
 async function beforeClose(done: () => void) {
   if (saving.value) return;
+  syncEditorContent();
   if (dirty.value) {
     try {
       await ElMessageBox.confirm('编辑内容尚未保存，确认放弃本次编辑？', '未保存的修改', {
@@ -241,6 +254,7 @@ async function beforeClose(done: () => void) {
 }
 
 function beforeUnload(event: BeforeUnloadEvent) {
+  if (syncTimer) syncEditorContent();
   if (dirty.value || saving.value) { event.preventDefault(); event.returnValue = ''; }
 }
 onMounted(() => { window.addEventListener('beforeunload', beforeUnload); void load(); });
@@ -248,6 +262,7 @@ watch([saving, editable], () => editor?.updateOptions({ readOnly: saving.value |
 watch(wordWrap, value => editor?.updateOptions({ wordWrap: value ? 'on' : 'off' }));
 onBeforeUnmount(() => {
   disposed = true;
+  if (syncTimer) { clearTimeout(syncTimer); syncTimer = undefined; }
   window.removeEventListener('beforeunload', beforeUnload);
   themeObserver?.disconnect();
   subscriptions.forEach(subscription => subscription.dispose());

@@ -1,7 +1,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import net from 'node:net';
 import os from 'node:os';
-import { execFile, spawn } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type {
   GoCommandAction,
@@ -21,9 +22,6 @@ import {
 } from './go-learning-curriculum.js';
 
 const execFileAsync = promisify(execFile);
-const goPath = [...new Set([...(process.env.PATH || '').split(path.delimiter), '/opt/homebrew/bin',
-  '/usr/local/go/bin', '/usr/local/bin', path.join(os.homedir(), 'go', 'bin')].filter(directory => path.isAbsolute(directory)))];
-const taskManagerOrigin = 'http://127.0.0.1:8080';
 
 const CANDIDATE_GO_PATHS = [
   '/opt/homebrew/bin/go',
@@ -34,9 +32,13 @@ const CANDIDATE_GO_PATHS = [
 ];
 
 async function findGoBinary(): Promise<string | null> {
+  const pathEnv = process.env.PATH || '';
+  const extraDirs = ['/opt/homebrew/bin', '/usr/local/go/bin', '/usr/local/bin', path.join(os.homedir(), 'go', 'bin')];
+  const mergedPath = [...new Set([...pathEnv.split(path.delimiter), ...extraDirs])].join(path.delimiter);
+
   try {
     const { stdout } = await execFileAsync('which', ['go'], {
-      env: { PATH: goPath.join(path.delimiter) },
+      env: { ...process.env, PATH: mergedPath },
       timeout: 3000,
     });
     const resolved = stdout.trim();
@@ -56,50 +58,22 @@ async function findGoBinary(): Promise<string | null> {
   return null;
 }
 
-async function isTaskManagerListening() {
-  try {
-    const response = await fetch(`${taskManagerOrigin}/__go-learning/health`, {
-      redirect: 'error', signal: AbortSignal.timeout(600),
+function checkPortListening(port: number, host = '127.0.0.1'): Promise<boolean> {
+  return new Promise(resolve => {
+    const socket = net.createConnection({ port, host });
+    const timer = setTimeout(() => {
+      socket.destroy();
+      resolve(false);
+    }, 600);
+    socket.once('connect', () => {
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(true);
     });
-    await response.body?.cancel();
-    return response.status === 204 && response.headers.get('x-delivery-go-learning') === 'taskmgr';
-  } catch {
-    return false;
-  }
-}
-
-function runGoProcess(binary: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv; httpPreview: boolean }) {
-  return new Promise<{ exitCode: number; stdout: string; stderr: string; httpStarted: boolean }>(resolve => {
-    const child = spawn(binary, args, { cwd: options.cwd, env: options.env, shell: false,
-      detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
-    let stdout = '', stderr = '', failure = '', httpStarted = false;
-    let preview: ReturnType<typeof setTimeout> | undefined;
-    const stop = () => {
-      if (!child.pid) return;
-      try {
-        if (process.platform === 'win32') child.kill('SIGKILL');
-        else process.kill(-child.pid, 'SIGKILL');
-      } catch { /* The process already exited. */ }
-    };
-    const timeout = setTimeout(() => { failure = 'Go 命令运行超时'; stop(); }, 45_000);
-    child.stdout.setEncoding('utf8').on('data', (text: string) => {
-      stdout += text;
-      if (stdout.length > 1_048_576) { stdout = stdout.slice(0, 1_048_576); failure = 'Go 命令输出超过限制'; stop(); }
-      if (options.httpPreview && !preview && stdout.includes('TaskMgr HTTP 服务已启动')) {
-        preview = setTimeout(() => { httpStarted = true; stop(); }, 1000);
-      }
-    });
-    child.stderr.setEncoding('utf8').on('data', (text: string) => {
-      stderr += text;
-      if (stderr.length > 1_048_576) { stderr = stderr.slice(0, 1_048_576); failure = 'Go 命令输出超过限制'; stop(); }
-    });
-    child.on('error', error => { failure = error.message; });
-    child.on('exit', stop);
-    child.on('close', code => {
-      clearTimeout(timeout);
-      clearTimeout(preview);
-      resolve({ exitCode: failure ? 1 : httpStarted ? 0 : code ?? 1, stdout: stdout.trimEnd(),
-        stderr: [stderr.trimEnd(), failure].filter(Boolean).join('\n'), httpStarted });
+    socket.once('error', () => {
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(false);
     });
   });
 }
@@ -110,21 +84,8 @@ export async function createGoLearningService(
 ) {
   await fs.mkdir(stateDir, { recursive: true });
   const progressFile = path.join(stateDir, 'progress.json');
-  const root = await fs.realpath(options.rootDir);
-  const sandboxParent = path.join(root, 'work');
-  const sandboxPath = path.join(sandboxParent, 'go-taskmgr-lab');
+  const sandboxPath = path.join(options.rootDir, 'work', 'go-taskmgr-lab');
   const docsPath = path.join(options.rootDir, 'work', 'go-learning-docs');
-  const toolchainHome = path.join(await fs.realpath(stateDir), 'toolchain');
-  await fs.mkdir(toolchainHome, { recursive: true, mode: 0o700 });
-  const toolchainEnv = (goBinary: string): NodeJS.ProcessEnv => ({
-    PATH: [...new Set([path.dirname(goBinary), ...goPath])].join(path.delimiter),
-    HOME: toolchainHome,
-    USERPROFILE: toolchainHome,
-    GOCACHE: path.join(toolchainHome, 'cache'),
-    GOMODCACHE: path.join(toolchainHome, 'modules'),
-    GOENV: 'off', GOWORK: 'off', GOTOOLCHAIN: 'local', GOPROXY: 'off',
-    ...(process.platform === 'win32' ? { SystemRoot: process.env.SystemRoot } : {}),
-  });
 
   let progress: GoLearningProgress = {
     currentDay: 1,
@@ -151,50 +112,21 @@ export async function createGoLearningService(
     // Initialize default progress on first run
   }
 
-  async function sandboxDirectory(subdirectory = '') {
-    const directories = [sandboxParent, sandboxPath];
-    if (subdirectory) directories.push(path.join(sandboxPath, subdirectory));
-    for (const directory of directories) {
-      await fs.mkdir(directory).catch(error => {
-        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      });
-      if (!(await fs.lstat(directory)).isDirectory()) throw new Error('沙盒路径必须是普通目录');
-    }
-    return directories.at(-1)!;
-  }
-
-  async function sandboxFile(relativePath: string) {
-    const folder = path.posix.dirname(relativePath);
-    const directory = await sandboxDirectory(folder === '.' ? '' : folder);
-    const file = path.join(directory, path.posix.basename(relativePath));
-    const stat = await fs.lstat(file).catch(error => {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      return undefined;
-    });
-    if (stat && !stat.isFile()) throw new Error('沙盒只允许访问普通文件');
-    return file;
-  }
-
-  let progressWrite = Promise.resolve();
-  function saveProgress() {
+  async function saveProgress() {
     progress.updatedAt = new Date().toISOString();
-    const contents = JSON.stringify(progress, null, 2);
-    progressWrite = progressWrite.catch(() => {}).then(async () => {
-      const tmpFile = `${progressFile}.tmp`;
-      await fs.writeFile(tmpFile, contents, 'utf8');
-      await fs.rename(tmpFile, progressFile);
-    });
-    return progressWrite;
+    const tmpFile = `${progressFile}.tmp`;
+    await fs.writeFile(tmpFile, JSON.stringify(progress, null, 2), 'utf8');
+    await fs.rename(tmpFile, progressFile);
   }
 
   async function applySnapshot(snapshotKey: string) {
     const files = GO_SANDBOX_SNAPSHOTS[snapshotKey] || GO_SANDBOX_SNAPSHOTS.day1!;
-    await sandboxDirectory();
+    await fs.mkdir(sandboxPath, { recursive: true });
 
     // Clean existing .go files in root, task/, server/ so switching from Day 6 back to Day 1 doesn't leave stale packages
     for (const sub of ['', 'task', 'server']) {
+      const targetDir = sub ? path.join(sandboxPath, sub) : sandboxPath;
       try {
-        const targetDir = await sandboxDirectory(sub);
         const entries = await fs.readdir(targetDir, { withFileTypes: true });
         for (const entry of entries) {
           if (entry.isFile() && (entry.name.endsWith('.go') || entry.name === 'go.mod')) {
@@ -207,11 +139,12 @@ export async function createGoLearningService(
     }
 
     for (const [relPath, content] of Object.entries(files)) {
-      const absPath = await sandboxFile(relPath);
+      const absPath = path.join(sandboxPath, relPath);
+      await fs.mkdir(path.dirname(absPath), { recursive: true });
       await fs.writeFile(absPath, content, 'utf8');
     }
 
-    const pkgJsonPath = await sandboxFile('package.json');
+    const pkgJsonPath = path.join(sandboxPath, 'package.json');
     await fs.writeFile(
       pkgJsonPath,
       JSON.stringify(
@@ -246,7 +179,7 @@ export async function createGoLearningService(
   }
 
   async function readSandboxFiles(): Promise<{ files: GoSandboxFile[]; tasksJsonContent: string | null }> {
-    await sandboxDirectory();
+    await fs.mkdir(sandboxPath, { recursive: true });
     const result: GoSandboxFile[] = [];
 
     async function walk(relDir: string) {
@@ -294,7 +227,7 @@ export async function createGoLearningService(
   async function detectEnvironment(): Promise<GoEnvironmentStatus> {
     const [goBinary, port8080Listening] = await Promise.all([
       findGoBinary(),
-      isTaskManagerListening(),
+      checkPortListening(8080),
     ]);
 
     if (!goBinary) {
@@ -302,14 +235,18 @@ export async function createGoLearningService(
         installed: false,
         version: '未检测到本机 Go 工具链',
         goBinaryPath: '',
-        goproxy: '未检测',
+        goproxy: 'https://goproxy.cn,direct (推荐)',
         cgoEnabled: '未检测',
         installHint: 'macOS 推荐在终端执行 `brew install go`，或前往 https://go.dev/dl/ 下载安装包。未安装前本工坊已为您开启「预期输出模拟与沙盒演练模式」！',
         port8080Listening,
       };
     }
 
-    const env = toolchainEnv(goBinary);
+    const extraDirs = [path.dirname(goBinary), '/opt/homebrew/bin', '/usr/local/go/bin', '/usr/local/bin'];
+    const env = {
+      ...process.env,
+      PATH: [...new Set([...(process.env.PATH || '').split(path.delimiter), ...extraDirs])].join(path.delimiter),
+    };
 
     try {
       const [verRes, envRes] = await Promise.all([
@@ -340,11 +277,14 @@ export async function createGoLearningService(
   }
 
   async function overview(dayOverride?: number): Promise<GoLearningOverview> {
-    const currentDay = dayOverride && dayOverride >= 1 && dayOverride <= 7 ? dayOverride : progress.currentDay;
+    if (dayOverride && dayOverride >= 1 && dayOverride <= 7 && dayOverride !== progress.currentDay) {
+      progress.currentDay = dayOverride;
+      await saveProgress();
+    }
 
     const [environment, currentDayDetail, sandbox, guideAndCheat] = await Promise.all([
       detectEnvironment(),
-      readGoDayDetail(docsPath, currentDay),
+      readGoDayDetail(docsPath, progress.currentDay),
       readSandboxFiles(),
       readGoGuideAndCheatSheet(docsPath),
     ]);
@@ -355,7 +295,7 @@ export async function createGoLearningService(
       environment,
       sandboxPath,
       docsPath,
-      progress: structuredClone({ ...progress, currentDay }),
+      progress,
       days,
       currentDayDetail,
       sandboxFiles: sandbox.files,
@@ -370,8 +310,10 @@ export async function createGoLearningService(
     progress: GoLearningProgress;
   }> {
     const clamped = Math.max(1, Math.min(7, dayNumber));
+    progress.currentDay = clamped;
+    await saveProgress();
     const dayDetail = await readGoDayDetail(docsPath, clamped);
-    return { dayDetail, progress: structuredClone({ ...progress, currentDay: clamped }) };
+    return { dayDetail, progress };
   }
 
   async function updateProgress(input: {
@@ -399,7 +341,7 @@ export async function createGoLearningService(
       progress.notes[String(input.note.day)] = input.note.content;
     }
     await saveProgress();
-    return structuredClone(progress);
+    return progress;
   }
 
   async function saveSandboxFile(relFilePath: string, content: string) {
@@ -407,10 +349,11 @@ export async function createGoLearningService(
     if (normalized.startsWith('..') || normalized.includes('/../')) {
       throw new Error('不允许访问沙盒目录之外的文件');
     }
-    if (!/^(?:go\.mod|tasks\.json|(?:(?:task|server)\/)?[A-Za-z0-9_-]+\.go)$/.test(normalized)) {
-      throw new Error('只可保存课程沙盒中的 Go 文件、go.mod 或 tasks.json');
+    const absPath = path.resolve(sandboxPath, normalized);
+    if (!absPath.startsWith(sandboxPath + path.sep)) {
+      throw new Error('文件路径超出沙盒范围');
     }
-    const absPath = await sandboxFile(normalized);
+    await fs.mkdir(path.dirname(absPath), { recursive: true });
     await fs.writeFile(absPath, content, 'utf8');
     return readSandboxFiles();
   }
@@ -440,7 +383,7 @@ export async function createGoLearningService(
         simulatedStdout = dayMeta.expectedRunOutput;
         // If running Day 4+ in simulation mode and tasks.json doesn't exist yet, create a sample tasks.json so learner can inspect it
         if (progress.currentDay >= 4) {
-          const tasksFile = await sandboxFile('tasks.json');
+          const tasksFile = path.join(sandboxPath, 'tasks.json');
           try {
             await fs.access(tasksFile);
           } catch {
@@ -476,18 +419,59 @@ export async function createGoLearningService(
 
     const binDir = path.dirname(goBinary);
     const executable = spec.cmd === 'gofmt' ? path.join(binDir, 'gofmt') : goBinary;
-    const cwd = await sandboxDirectory();
-    const entries = await fs.readdir(cwd, { withFileTypes: true, recursive: true });
-    if (entries.some(entry => entry.isSymbolicLink())) throw new Error('运行前请移除沙盒中的符号链接');
-    const result = await runGoProcess(executable, spec.args, { cwd, env: toolchainEnv(goBinary),
-      httpPreview: action === 'run' && ['day5', 'day6', 'day7', 'day7-graduation'].includes(progress.activeSnapshot) });
-    const { httpStarted, ...output } = result;
-    return {
-      action, command: spec.display, ...output,
-      stdout: output.stdout || (output.exitCode === 0 && (action === 'vet' || action === 'fmt') ? `[${spec.display} 执行成功，无报错输出]` : ''),
-      durationMs: Date.now() - startTime, ranAt: new Date().toISOString(), simulated: false,
-      ...(httpStarted ? { notice: '单次启动演示已结束。可用 HTTP 调试面板模拟请求，也可在终端启动课程服务后调试实际接口。' } : {}),
+    const env = {
+      ...process.env,
+      PATH: [...new Set([binDir, '/opt/homebrew/bin', '/usr/local/go/bin', '/usr/local/bin', ...(process.env.PATH || '').split(path.delimiter)])].join(path.delimiter),
     };
+
+    try {
+      const { stdout, stderr } = await execFileAsync(executable, spec.args, {
+        cwd: sandboxPath,
+        env,
+        timeout: action === 'run' ? 4500 : 20_000,
+        maxBuffer: 1024 * 1024,
+      });
+      return {
+        action,
+        command: spec.display,
+        exitCode: 0,
+        stdout: stdout.trimEnd() || (action === 'vet' || action === 'fmt' ? `[${spec.display} 执行成功，无报错输出]` : ''),
+        stderr: stderr.trimEnd(),
+        durationMs: Date.now() - startTime,
+        ranAt: new Date().toISOString(),
+        simulated: false,
+      };
+    } catch (error) {
+      const errObj = error as { code?: number | string; killed?: boolean; stdout?: string; stderr?: string; message?: string };
+      // If `go run .` on Day 5~7 started the HTTP server and timed out after 4.5s (or port 8080 is already listening), treat as HTTP server startup preview!
+      if (
+        action === 'run' &&
+        (errObj.killed || errObj.stderr?.includes('address already in use')) &&
+        (errObj.stdout?.includes('TaskMgr HTTP') || ['day5', 'day6', 'day7', 'day7-graduation'].includes(progress.activeSnapshot))
+      ) {
+        return {
+          action,
+          command: spec.display,
+          exitCode: 0,
+          stdout: (errObj.stdout || 'TaskMgr HTTP 服务已启动，监听地址 http://localhost:8080 (数据文件: tasks.json)').trimEnd(),
+          stderr: '',
+          durationMs: Date.now() - startTime,
+          ranAt: new Date().toISOString(),
+          simulated: false,
+          notice: 'HTTP 服务启动验证成功（单次命令运行在 4.5 秒后自动结束，可使用右侧「🌐 HTTP 接口调试」面板直接测试接口）。',
+        };
+      }
+      return {
+        action,
+        command: spec.display,
+        exitCode: typeof errObj.code === 'number' ? errObj.code : 1,
+        stdout: (errObj.stdout || '').trimEnd(),
+        stderr: (errObj.stderr || errObj.message || '命令执行失败').trimEnd(),
+        durationMs: Date.now() - startTime,
+        ranAt: new Date().toISOString(),
+        simulated: false,
+      };
+    }
   }
 
   async function debugHttpEndpoint(input: {
@@ -496,18 +480,12 @@ export async function createGoLearningService(
     body?: string;
   }): Promise<GoHttpDebugResult> {
     const startTime = Date.now();
-    const requestUrl = new URL(input.path, taskManagerOrigin);
-    if (requestUrl.origin !== taskManagerOrigin || !/^\/tasks(?:\/|$)/.test(requestUrl.pathname)) {
-      throw new Error('HTTP 调试仅支持 TaskMgr 的 /tasks 接口');
-    }
-    const isListening = await isTaskManagerListening();
+    const isListening = await checkPortListening(8080);
 
     if (isListening) {
       try {
-        const res = await fetch(requestUrl, {
+        const res = await fetch(`http://127.0.0.1:8080${input.path}`, {
           method: input.method,
-          redirect: 'manual',
-          signal: AbortSignal.timeout(3000),
           headers: input.body ? { 'Content-Type': 'application/json' } : undefined,
           body: input.method === 'POST' ? input.body : undefined,
         });
@@ -524,12 +502,12 @@ export async function createGoLearningService(
           tasksJsonContent,
         };
       } catch {
-        throw new Error('TaskMgr 服务未返回完整响应，请核对运行状态');
+        // Fall through to sandbox simulator if connection dropped
       }
     }
 
     // Sandbox simulator: executes exact same CRUD + tasks.json persistence logic so learner can debug HTTP requests anytime
-    const tasksFile = await sandboxFile('tasks.json');
+    const tasksFile = path.join(sandboxPath, 'tasks.json');
     let tasks: { id: number; title: string; done: boolean }[] = [];
     try {
       const raw = await fs.readFile(tasksFile, 'utf8');
@@ -558,7 +536,7 @@ export async function createGoLearningService(
       return content;
     };
 
-    const parsedUrl = requestUrl;
+    const parsedUrl = new URL(input.path, 'http://localhost:8080');
     const pathname = parsedUrl.pathname;
 
     // 1. GET /tasks (with optional ?done=true|false)

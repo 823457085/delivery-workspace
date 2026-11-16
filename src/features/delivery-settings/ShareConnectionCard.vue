@@ -17,6 +17,12 @@ const addingRoot = shallowRef(false);
 
 const projectRoots = ref<string[]>([]);
 const manualRootPath = shallowRef('');
+const shareMeta = ref<Pick<ShareConfigData, 'jiraBaseUrl' | 'jiraUsername' | 'hasJiraToken' | 'credentialsFile'>>({
+  jiraBaseUrl: '',
+  jiraUsername: '',
+  hasJiraToken: false,
+  credentialsFile: '',
+});
 
 async function loadConfig() {
   loading.value = true;
@@ -25,6 +31,12 @@ async function loadConfig() {
     const data = (await res.json()) as ShareConfigData;
     if (!res.ok) throw new Error('读取连接配置失败');
     projectRoots.value = Array.isArray(data.projectRoots) ? data.projectRoots : [];
+    shareMeta.value = {
+      jiraBaseUrl: data.jiraBaseUrl || '',
+      jiraUsername: data.jiraUsername || '',
+      hasJiraToken: Boolean(data.hasJiraToken),
+      credentialsFile: data.credentialsFile || '',
+    };
   } catch (err) {
     ElMessage.error(err instanceof Error ? err.message : '读取配置失败');
   } finally {
@@ -109,7 +121,7 @@ onMounted(() => {
           <h2>本地项目扫描目录 (LOCAL_PROJECT_ROOTS)</h2>
           <p>工作台会自动递归扫描以下目录中的 Git 仓库与多工作区</p>
         </div>
-        <el-button size="small" type="primary" plain :loading="addingRoot" @click="pickProjectRoot">
+        <el-button size="small" :loading="addingRoot" @click="pickProjectRoot">
           选择文件夹添加
         </el-button>
       </div>
@@ -119,8 +131,8 @@ onMounted(() => {
             <span class="row-mono">{{ dir }}</span>
             <el-button
               link
-              type="danger"
               size="small"
+              class="root-remove-btn"
               :disabled="projectRoots.length <= 1"
               @click="removeRoot(dir)"
             >
@@ -138,15 +150,84 @@ onMounted(() => {
         </div>
       </div>
     </div>
+
+    <div class="surface">
+      <div class="surface-header">
+        <div>
+          <h2>本机凭据与服务接入概览</h2>
+          <p>外部服务凭据保存在本机工作台目录，可在左侧「接入插件」分栏更新站点与 Token</p>
+        </div>
+        <el-tag size="small" :type="shareMeta.hasJiraToken ? 'success' : 'info'">
+          {{ shareMeta.hasJiraToken ? 'Jira 凭据已就绪' : '待配置凭据' }}
+        </el-tag>
+      </div>
+      <div class="surface-body">
+        <dl class="share-meta-strip">
+          <div class="share-meta-tile">
+            <dt>Jira 服务地址</dt>
+            <dd class="row-mono">{{ shareMeta.jiraBaseUrl || '尚未配置' }}</dd>
+          </div>
+          <div class="share-meta-tile">
+            <dt>当前绑定账号</dt>
+            <dd>{{ shareMeta.jiraUsername || (shareMeta.hasJiraToken ? 'Bearer Token 模式' : '尚未填写') }}</dd>
+          </div>
+          <div class="share-meta-tile">
+            <dt>本机凭据文件</dt>
+            <dd class="row-mono">{{ shareMeta.credentialsFile || '.local/credentials.json' }}</dd>
+          </div>
+        </dl>
+      </div>
+    </div>
   </section>
 </template>
 
 <style scoped>
 .share-connection-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
-  gap: 22px;
-  margin-bottom: 22px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+  margin-bottom: 14px;
+}
+.root-remove-btn {
+  color: var(--ui-muted);
+}
+.root-remove-btn:hover:not(:disabled) {
+  color: var(--ui-danger);
+}
+.share-meta-strip {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+.share-meta-tile:last-child {
+  grid-column: 1 / -1;
+}
+.share-meta-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--ui-border);
+  border-radius: 6px;
+  background: var(--ui-raised);
+}
+.share-meta-tile dt {
+  font-size: 11.5px;
+  color: var(--ui-muted);
+}
+.share-meta-tile dd {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ui-text);
+  overflow-wrap: anywhere;
+}
+@media (max-width: 860px) {
+  .share-meta-strip {
+    grid-template-columns: 1fr;
+  }
 }
 .share-fields {
   display: grid;

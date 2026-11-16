@@ -17,7 +17,7 @@ test('研发 MR 只使用已验证并推送的任务提交，回读审核人且�
   const workspacePath = path.join(root, 'task');
   const remote = path.join(root, 'remote.git');
   const branchName = 'feature/ABC-22';
-  const repositoryPath = '0123456789abcdef01234567/team/project';
+  const repositoryPath = '64ad9c6e702c0cacad9a2168/team/project';
   const repositoryUrl = `https://codeup.aliyun.com/${repositoryPath}`;
   await fs.mkdir(sourceProjectPath);
   await git(sourceProjectPath, 'init', '-qb', 'main');

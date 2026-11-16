@@ -44,7 +44,10 @@ const rounds = computed(() => groupChatSummaries(props.room, props.runs, props.t
       <details v-for="(item, index) in rounds" :key="item.round.id" class="group-delivery-round" :open="index === 0">
         <summary><strong>第 {{ item.number }} 轮</strong><StatusPill v-bind="labels[item.status]" /><time>{{ dateTime(item.updatedAt) }}</time></summary>
         <div class="group-delivery-body">
-          <p class="group-delivery-count">成员汇报 · {{ item.completed }} / {{ item.total }}</p>
+          <div class="group-delivery-progress">
+            <p class="group-delivery-count">成员汇报 · <strong>{{ item.completed }} / {{ item.total }}</strong></p>
+            <div v-if="item.total" class="group-delivery-bar" aria-hidden="true"><span :style="{ width: `${Math.min(100, Math.round((item.completed / item.total) * 100))}%` }"></span></div>
+          </div>
           <AgentGroupSummary :summary="item" :delivery-text="item.delivery?.text" @inspect="emit('inspect', $event)" />
           <details v-if="item.files.length" class="group-delivery-files">
             <summary>文件记录 · {{ item.fileCount }}</summary>
@@ -68,7 +71,7 @@ const rounds = computed(() => groupChatSummaries(props.room, props.runs, props.t
 .group-delivery-rounds,.group-delivery-round,.group-delivery-body{min-width:0;max-width:100%}
 .group-delivery-round{margin-bottom:12px;border:1px solid var(--agent-border);border-radius:8px;background:var(--agent-panel-strong)}
 .group-delivery-round>summary{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:12px;cursor:pointer;list-style:none;font-size:13px}.group-delivery-round>summary::-webkit-details-marker{display:none}.group-delivery-round>summary::before{content:'›';font-size:18px;line-height:1;transition:transform .15s}.group-delivery-round[open]>summary::before{transform:rotate(90deg)}.group-delivery-round>summary time{margin-left:auto;color:var(--agent-muted);font-size:11px}.group-delivery-round>summary :deep(.status-pill){padding:3px 6px;font-size:11px}
-.group-delivery-body{padding:0 12px 12px;color:var(--agent-secondary);font-size:12px;line-height:1.8}.group-delivery-headline{margin:0 0 4px;font-weight:600;color:var(--agent-text)}.group-delivery-count{margin:0 0 14px;color:var(--agent-muted);font-size:11px}
+.group-delivery-body{padding:0 12px 12px;color:var(--agent-secondary);font-size:12px;line-height:1.8}.group-delivery-headline{margin:0 0 4px;font-weight:600;color:var(--agent-text)}.group-delivery-progress{display:flex;align-items:center;gap:10px;margin:0 0 12px}.group-delivery-count{margin:0;color:var(--agent-muted);font-size:11px;white-space:nowrap}.group-delivery-count strong{color:var(--agent-text);font-weight:600}.group-delivery-bar{flex:1;height:5px;border-radius:999px;background:var(--agent-raised);overflow:hidden}.group-delivery-bar>span{display:block;height:100%;border-radius:inherit;background:var(--agent-accent);transition:width .25s ease}
 .coordinator-delivery>header,.record-delivery>header{display:grid;gap:3px;margin-bottom:10px}.coordinator-delivery>header strong,.record-delivery>header strong{color:var(--agent-text);font-size:12px}.coordinator-delivery>header small,.record-delivery>header small{color:var(--agent-muted);font-size:11px}
 .group-delivery-original>summary,.group-delivery-files>summary{color:var(--agent-accent);font-size:12px;cursor:pointer}.group-delivery-original[open]>summary{margin-bottom:10px}.group-delivery-files{margin-top:14px;padding-top:12px;border-top:1px solid var(--agent-border)}
 .group-delivery-blockers{margin-top:14px}.group-delivery-blockers h3{margin:0 0 8px;color:var(--agent-text);font-size:12px;font-weight:600}.group-delivery-blockers ul{margin:0;padding:0;list-style:none}.group-delivery-blockers li{margin:10px 0}.group-delivery-blockers li header,.member-file-record>header{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px}.group-delivery-blockers li p{margin:5px 0 0;white-space:pre-wrap}

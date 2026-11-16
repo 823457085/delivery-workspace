@@ -3,9 +3,8 @@
  * 设计说明：这是 AI Agent 会话控制面的容器，只负责编排运行时状态、当前会话、新建会话和后端动作。
  * 会话列表与消息窗口分别作为纯展示/事件组件，避免容器同时承担大段界面；现有抽屉继续承载诊断详情。
  */
-import { computed, nextTick, onBeforeUnmount, reactive, shallowRef, useTemplateRef, watch } from 'vue';
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, reactive, shallowRef, useTemplateRef, watch } from 'vue';
 import { useQuery } from '@tanstack/vue-query';
-import { ElMessageBox } from 'element-plus';
 import { GitFork, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Plus, X } from '@lucide/vue';
 import type { AgentAccessMode, AgentApiProvider, AgentAttachment, AgentProvider, AgentQueuePlacement, AgentReasoningEffort, AgentRun, AgentRunMode, AgentServiceTier, SpawnAgentTaskInput, StartAgentRunInput, StartAgentTaskWorkflowInput, AgentWorkflowAction } from '../../../shared/agent-runtime';
 import type { AgentTeamRequest } from './AgentTeamDialog.vue';
@@ -13,21 +12,21 @@ import { codexWorkbenchDefaults, workbenchRuntime } from '../../../shared/agent-
 import type { DeliveryAcceptanceRecord } from '../../../shared/delivery-acceptance';
 import { agentModelDefaults } from '../../shared/agent-model-defaults';
 import { useWorkspacePicker } from '../../shared/useWorkspacePicker';
-import WorkspaceBrowserDialog from '../../shared/ui/WorkspaceBrowserDialog.vue';
-import AgentGroupChat from './AgentGroupChat.vue';
 import AgentConversation from './AgentConversation.vue';
-import AgentForkDialog from './AgentForkDialog.vue';
-import AgentEditMessageDialog from './AgentEditMessageDialog.vue';
 import AgentInitialLoading from './AgentInitialLoading.vue';
-import AgentRunDetails from './AgentRunDetails.vue';
-import AgentModelSettings from './AgentModelSettings.vue';
-import AgentRecoveryDialog from './AgentRecoveryDialog.vue';
 import AgentConnectionStatus from './AgentConnectionStatus.vue';
 import AgentNewConversation, { type AgentWorkspaceOption } from './AgentNewConversation.vue';
+const WorkspaceBrowserDialog = defineAsyncComponent(() => import('../../shared/ui/WorkspaceBrowserDialog.vue'));
+const AgentGroupChat = defineAsyncComponent(() => import('./AgentGroupChat.vue'));
+const AgentForkDialog = defineAsyncComponent(() => import('./AgentForkDialog.vue'));
+const AgentEditMessageDialog = defineAsyncComponent(() => import('./AgentEditMessageDialog.vue'));
+const AgentRunDetails = defineAsyncComponent(() => import('./AgentRunDetails.vue'));
+const AgentModelSettings = defineAsyncComponent(() => import('./AgentModelSettings.vue'));
+const AgentRecoveryDialog = defineAsyncComponent(() => import('./AgentRecoveryDialog.vue'));
 import { buildWorkspaceCatalog } from './workspace-catalog';
 import AgentSessionList from './AgentSessionList.vue';
-import AgentSidePanel from './AgentSidePanel.vue';
-import AgentProjectLaunch from './AgentProjectLaunch.vue';
+const AgentSidePanel = defineAsyncComponent(() => import('./AgentSidePanel.vue'));
+const AgentProjectLaunch = defineAsyncComponent(() => import('./AgentProjectLaunch.vue'));
 import AgentPanelResize from './AgentPanelResize.vue';
 import AgentResponsivePanel from './AgentResponsivePanel.vue';
 import { useAgentViewport } from './useAgentViewport';
@@ -49,17 +48,27 @@ import { codexServiceTier } from './model-speed';
 import { deliveryAcceptanceQueryKey, readDeliveryAcceptances } from '../workbench/acceptance-api';
 import { reconcileDeliveryRecords } from '../workbench/domain';
 import { jiraDevTasksQueryKey, jiraDevTaskWorkspacePaths, matchConversationJiraDevTask, readJiraDevTasks } from './jira-dev-context';
+import {
+  detectAgentTransitionNotifications,
+  dispatchAgentTransitionNotice,
+  setWorkspaceLiveActivityCounts,
+  type AgentTransitionSnapshotItem,
+} from './useAgentCompletionNotify';
 
 const props = defineProps<{ workbenchOpen?: boolean }>();
-const emit = defineEmits<{ chat: []; ready: [hasSession: boolean]; group: [id: string] }>();
+const emit = defineEmits<{ chat: []; ready: [hasSession: boolean]; group: [id: string]; session: [id: string] }>();
 
 const { query, refreshStatus, refreshing, changing, streamStatus, codexDetails, start, spawn, orchestrate, decideWorkflow, stop, pauseForEdit, revise, steer, deleteQueuedRun, retry, resume, resumeCodexSession, fork, syncCodexSessions, loadCodexSession,
   removeConversation, removeConversations, updateConversationTitle, addCustomModel, removeCustomModel } = useAgentRuntimes();
 const { data, dataUpdatedAt, error, isPending } = query;
 const acceptanceQuery = useQuery({ queryKey: deliveryAcceptanceQueryKey, retry: false,
-  queryFn: ({ signal }) => readDeliveryAcceptances(signal), refetchInterval: 15_000 });
+  queryFn: ({ signal }) => readDeliveryAcceptances(signal),
+  refetchInterval: () => props.workbenchOpen ? false : 15_000,
+  refetchIntervalInBackground: false });
 const jiraTasksQuery = useQuery({ queryKey: jiraDevTasksQueryKey, retry: false,
-  queryFn: ({ signal }) => readJiraDevTasks(signal), refetchInterval: 10_000 });
+  queryFn: ({ signal }) => readJiraDevTasks(signal),
+  refetchInterval: () => props.workbenchOpen ? false : 10_000,
+  refetchIntervalInBackground: false });
 const jiraTasks = computed(() => jiraTasksQuery.data.value || []);
 const acceptanceByConversationId = computed<Map<string, DeliveryAcceptanceRecord>>(() => new Map<string, DeliveryAcceptanceRecord>((acceptanceQuery.data.value || [])
   .filter((record: DeliveryAcceptanceRecord) => record.recordId.startsWith('agent:'))
@@ -82,7 +91,7 @@ const forkAttachments = shallowRef<AgentAttachment[]>([]);
 const forkAttachmentDraft = shallowRef(new AgentAttachmentDraft(forkAttachments));
 const detail = shallowRef<AgentRun>();
 const selectedConversationId = shallowRef('');
-const rememberedConversationId = readLastAgentSessionId(window.localStorage);
+const rememberedConversationId = new URLSearchParams(window.location.search).get('session') || readLastAgentSessionId(window.localStorage);
 const selectionInitialized = shallowRef(false);
 const pendingConversationId = shallowRef('');
 let selectionRevision = 0;
@@ -103,8 +112,8 @@ const { mobile, keyboardOpen, viewportStyle } = useAgentViewport();
 const mobilePanel = shallowRef<'sessions' | 'details' | ''>('');
 watch(mobile, () => { mobilePanel.value = ''; });
 // 布局和栏宽独立于配色，切换主题时保留用户当前的面板状态。
-const leftWidth = shallowRef(232);
-const rightWidth = shallowRef(320);
+const leftWidth = shallowRef(240);
+const rightWidth = shallowRef(280);
 const executionColumnWidth = computed(() => `min(${rightWidth.value}px, 28vw)`);
 function toggleSessions() {
   if (mobile.value) mobilePanel.value = mobilePanel.value === 'sessions' ? '' : 'sessions';
@@ -148,7 +157,26 @@ const workflows = computed(() => data.value?.workflows || []);
 const dailyReportStarting = shallowRef(false);
 const dailyReportRuntime = computed(() => runtimes.value.find((runtime) => runtime.provider === 'codex'));
 const dailyReportAvailable = computed(() => !!createDailyReportInput(dailyReportDate(), sideWorkspacePath.value, dailyReportRuntime.value, new Date(), agentModelDefaults.value));
-const runs = computed(() => data.value?.runs || []);
+const optimisticRuns = shallowRef<AgentRun[]>([]);
+const trackOptimisticRun = (action: 'add' | 'remove', runOrId: AgentRun | string, openNow = false) => {
+  if (action === 'add' && typeof runOrId !== 'string') {
+    optimisticRuns.value = [...optimisticRuns.value, runOrId];
+    if (openNow) {
+      selectedConversationId.value = runOrId.id;
+      creating.value = false;
+    }
+    return;
+  }
+  if (typeof runOrId === 'string') {
+    optimisticRuns.value = optimisticRuns.value.filter(item => item.id !== runOrId);
+  }
+};
+const runs = computed(() => {
+  const actual = data.value?.runs || [];
+  if (!optimisticRuns.value.length) return actual;
+  const actualIds = new Set(actual.map(item => item.id));
+  return [...actual, ...optimisticRuns.value.filter(item => !actualIds.has(item.id))];
+});
 const conversations = computed(() => {
   const groupTaskIds = new Set(teamChat.allTasks.value.filter(task => task.groupRoomId).map(task => task.id));
   const groupRuns = runs.value.filter(run => run.team?.interactionMode === 'group' || run.team && groupTaskIds.has(run.team.taskId));
@@ -228,7 +256,7 @@ const launchWorkspacePaths = computed(() => {
   }
   return path ? [path] : [];
 });
-const desktopDetailsAvailable = computed(() => !props.workbenchOpen && !sideChatVisible.value && (!creating.value || launchWorkspacePaths.value.length > 0));
+const desktopDetailsAvailable = computed(() => !props.workbenchOpen && !sideChatVisible.value);
 const desktopDetailsOpen = computed(() => desktopDetailsAvailable.value && !rightCollapsed.value);
 const desktopSideControls = computed(() => !mobile.value && !props.workbenchOpen);
 const detailsPanelOpen = computed(() => mobile.value ? mobilePanel.value === 'details' && !props.workbenchOpen : desktopDetailsOpen.value);
@@ -243,7 +271,7 @@ const usageCards = computed(() => [
 const connectionStatusTarget = computed(() => groupMode.value && !props.workbenchOpen ? '#group-connection-status' : mobile.value ? '#mobile-connection-status'
   : props.workbenchOpen ? '#workspace-connection-status' : creating.value ? '#new-connection-status' : '#conversation-connection-status');
 const { context: businessContext, mentions: businessMentions, loading: businessLoading, projectsData }
-  = useAgentBusinessContext(() => creating.value ? undefined : selectedConversation.value);
+  = useAgentBusinessContext(() => creating.value ? undefined : selectedConversation.value, () => !props.workbenchOpen);
 const conversationChanging = computed(() => changing.value || teamChat.changing.value || pendingConversationId.value);
 const selectedCodexHistoryId = computed(() => selectedConversation.value?.runs.find((run) => run.originSessionId)?.originSessionId
   || (selectedConversation.value?.source === 'codex' ? selectedConversation.value.id : ''));
@@ -287,10 +315,14 @@ watch(conversations, (items) => {
 
 watch([conversations, isPending, error, pendingConversationId], ([items, pending, loadError], [previousItems = []]) => {
   if (pending || loadError) return;
-  // SSE 可能先于发送响应到达。先迁移同一会话的草稿，再更新选中项，避免窗口截断后丢失输入。
-  for (const previous of previousItems) {
-    const current = reconcileAgentConversation(items, previous.id, previousItems);
-    if (current && current.id !== previous.id) moveConversationDraft(previous.id, current.id);
+  // 会话 ID 消失时才需要沿运行记录查找新 ID 并迁移草稿。
+  if (items !== previousItems) {
+    const currentIds = new Set(items.map(item => item.id));
+    for (const previous of previousItems) {
+      if (currentIds.has(previous.id)) continue;
+      const current = findAgentConversation(items, previous.latest.id);
+      if (current) moveConversationDraft(previous.id, current.id);
+    }
   }
   if (!selectionInitialized.value) {
     selectionInitialized.value = true;
@@ -320,8 +352,11 @@ watch([conversations, isPending, error, pendingConversationId], ([items, pending
 }, { immediate: true });
 
 watch(selectionInitialized, initialized => { if (initialized) emit('ready', !!selectedConversation.value || !!form.objective.trim()); }, { immediate: true });
-watch([selectedConversation, creating], ([conversation, isCreating]) => {
-  saveLastAgentSessionId(window.localStorage, isCreating ? '' : conversation?.id || '');
+watch(() => creating.value ? '' : selectedConversation.value?.id || '', id => {
+  if (!id.startsWith('optimistic-new:')) {
+    saveLastAgentSessionId(window.localStorage, id);
+    if (!groupMode.value) emit('session', id);
+  }
 });
 
 watch(() => [selectedCodexHistoryId.value, dataUpdatedAt.value] as const, async ([id]) => {
@@ -381,14 +416,21 @@ function openSession(id: string) {
 }
 async function openRun(id: string) {
   const requestSelectionRevision = ++selectionRevision;
-  await Promise.all([query.refetch(), teamChat.refetch()]);
-  if (selectionRevision !== requestSelectionRevision) return false;
-  const run = data.value?.runs.find(run => run.id === id);
-  const groupRoomId = run?.team?.interactionMode === 'group' ? run.team.taskId
-    : teamChat.allTasks.value.find(task => task.groupRoomId && (task.id === run?.team?.taskId
-      || task.id === id || task.parentConversationId === id))?.groupRoomId;
+  function groupForRun() {
+    const run = data.value?.runs.find(run => run.id === id);
+    return run?.team?.interactionMode === 'group' ? run.team.taskId
+      : teamChat.allTasks.value.find(task => task.groupRoomId && (task.id === run?.team?.taskId
+        || task.id === id || task.parentConversationId === id))?.groupRoomId;
+  }
+  let groupRoomId = groupForRun();
+  let conversation = groupRoomId ? undefined : findAgentConversation(conversations.value, id);
+  if (!groupRoomId && !conversation) {
+    await Promise.all([query.refetch({ cancelRefetch: false }), teamChat.refetch()]);
+    if (selectionRevision !== requestSelectionRevision) return false;
+    groupRoomId = groupForRun();
+    conversation = findAgentConversation(conversations.value, id);
+  }
   if (groupRoomId) { openGroup(groupRoomId); emit('group', groupRoomId); return true; }
-  const conversation = findAgentConversation(conversations.value, id);
   if (!conversation) return false;
   selectConversation(conversation.id);
   return true;
@@ -403,8 +445,15 @@ async function generateDailyReport(date: string) {
   if (status === 'queued' || status === 'running') return;
   const input = createDailyReportInput(date, sideWorkspacePath.value, dailyReportRuntime.value, new Date(), agentModelDefaults.value);
   if (!input) return;
+  const requestSelectionRevision = selectionRevision;
   dailyReportStarting.value = true;
-  try { await start(input); }
+  try {
+    const run = await start(input);
+    if (run && !panelDisposed && selectionRevision === requestSelectionRevision) {
+      selectedConversationId.value = run.id;
+      creating.value = false;
+    }
+  }
   finally { dailyReportStarting.value = false; }
 }
 async function chooseWorkspace() {
@@ -420,14 +469,52 @@ async function submit() {
   if (!canStart.value || submittingNew.value || newAttachmentDraft.value.pending) return;
   const requestSelectionRevision = selectionRevision;
   submittingNew.value = true;
+  const optimisticId = `optimistic-new:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+  let openedOptimistically = false;
   try {
     const extraPaths = workspacePaths.value;
     const multiWorkspaceNote = extraPaths.length > 1
       ? `\n\n[关联项目工作区]\n${extraPaths.map((p, i) => `- ${i === 0 ? '主工作区' : '关联工作区'}：${p}`).join('\n')}`
       : '';
-    const run = await start({ ...form, ...(multiWorkspaceNote ? { objective: `${form.objective.trim()}${multiWorkspaceNote}`.trim() } : {}), serviceTier: form.provider === 'codex' ? codexServiceTier(selectedRuntime.value, form.model, form.serviceTier) : undefined,
-      isolateWorkspace: true, attachmentIds: newAttachments.value.map((item) => item.id) });
-    if (!run) return;
+    const finalObjective = multiWorkspaceNote ? `${form.objective.trim()}${multiWorkspaceNote}`.trim() : form.objective;
+    const snapshotAttachments = [...newAttachments.value];
+    const startPayload = { ...form, ...(multiWorkspaceNote ? { objective: finalObjective } : {}), serviceTier: form.provider === 'codex' ? codexServiceTier(selectedRuntime.value, form.model, form.serviceTier) : undefined,
+      isolateWorkspace: true, attachmentIds: snapshotAttachments.map((item) => item.id) };
+    if (typeof trackOptimisticRun === 'function') {
+      const now = new Date().toISOString();
+      openedOptimistically = true;
+      trackOptimisticRun('add', {
+        id: optimisticId,
+        conversationId: optimisticId,
+        parentRunId: '',
+        provider: form.provider,
+        mode: form.mode || 'agent',
+        accessMode: form.accessMode,
+        model: form.model || '',
+        reasoningEffort: form.reasoningEffort || '',
+        objective: finalObjective,
+        attachments: snapshotAttachments,
+        workspacePath: form.workspacePath || '',
+        branch: form.branch || '',
+        headSha: '',
+        status: 'running',
+        sessionId: '',
+        pid: null,
+        result: '',
+        error: '',
+        events: [{ id: `${optimisticId}:ack`, type: 'lifecycle', createdAt: now, message: '会话已创建，正在准备工作区并启动执行器…' }],
+        createdAt: now,
+        updatedAt: now,
+      }, true);
+    }
+    const run = await start(startPayload);
+    if (!run) {
+      if (openedOptimistically && !panelDisposed && selectionRevision === requestSelectionRevision && selectedConversationId.value === optimisticId) {
+        creating.value = true;
+        selectedConversationId.value = '';
+      }
+      return;
+    }
     newAttachments.value = [];
     if (panelDisposed) return;
     resetForm();
@@ -436,6 +523,7 @@ async function submit() {
       creating.value = false;
     }
   } finally {
+    if (openedOptimistically && typeof trackOptimisticRun === 'function') trackOptimisticRun('remove', optimisticId);
     submittingNew.value = false;
   }
 }
@@ -487,9 +575,36 @@ async function sendMessage(selection: ConversationSendSelection, side?: {
   const sentDraft = clearConversationDraft(conversationId)!;
   const attachmentIds = sentDraft.attachments.map((item) => item.id);
   const requestSelectionRevision = selectionRevision;
+  const optimisticId = `optimistic:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
   if (!side) {
     pendingSelectionRevision = requestSelectionRevision;
     pendingConversationId.value = conversation.id;
+  }
+  if (typeof trackOptimisticRun === 'function' && conversation.source !== 'codex') {
+    const now = new Date().toISOString();
+    trackOptimisticRun('add', {
+      id: optimisticId,
+      conversationId: conversation.id,
+      parentRunId: continuation.id,
+      provider: targetProvider,
+      mode: selection.mode || continuation.mode,
+      accessMode: selection.accessMode || continuation.accessMode,
+      model: selection.model || continuation.model,
+      reasoningEffort: selection.reasoningEffort || continuation.reasoningEffort,
+      objective,
+      attachments: sentDraft.attachments,
+      workspacePath: continuation.workspacePath,
+      branch: continuation.branch,
+      headSha: '',
+      status: nativeBusy ? 'queued' : 'running',
+      sessionId: continuation.sessionId,
+      pid: null,
+      result: '',
+      error: '',
+      events: [{ id: `${optimisticId}:ack`, type: 'lifecycle', createdAt: now, message: nativeBusy ? '消息已送达，已加入会话执行队列…' : '消息已送达，正在唤醒执行器…' }],
+      createdAt: now,
+      updatedAt: now,
+    });
   }
   let accepted = false;
   try {
@@ -506,12 +621,16 @@ async function sendMessage(selection: ConversationSendSelection, side?: {
     accepted = true;
     const targetId = resumedConversationId(conversation, run);
     if (!side) pendingConversationId.value = targetId;
-    await query.refetch();
+    // 新服务在受理响应内返回已保存的运行，旧服务仍由快照补齐。
+    if (!findAgentConversation(conversations.value, run.id)?.runs.some(item => item.id === run.id)) {
+      await query.refetch({ cancelRefetch: false });
+    }
     const target = findAgentConversation(conversations.value, targetId);
     if (target) moveConversationDraft(conversationId, target.id);
     if (side) side.accepted(target?.id || targetId);
     else if (target && selectionRevision === requestSelectionRevision) selectedConversationId.value = target.id;
   } finally {
+    if (typeof trackOptimisticRun === 'function') trackOptimisticRun('remove', optimisticId);
     if (!accepted) restoreConversationDraft(
       reconcileAgentConversation(conversations.value, conversationId, [conversation])?.id || conversationId, sentDraft);
     if (!side) pendingConversationId.value = '';
@@ -655,16 +774,6 @@ async function removeAgentConversations(conversations: AgentConversationModel[])
     if (removedDraft?.attachments.length) void removePendingAgentAttachments(removedDraft.attachments);
   }
 }
-async function renameAgentConversation(conversation: AgentConversationModel) {
-  try {
-    const { value } = await ElMessageBox.prompt('请输入新的会话标题', '修改会话标题', {
-      inputValue: conversation.title,
-      inputValidator: (input) => !input.trim() ? '请输入会话标题' : input.trim().length > 120 ? '会话标题不能超过 120 个字符' : true,
-      confirmButtonText: '保存', cancelButtonText: '取消', closeOnClickModal: false,
-    });
-    await updateConversationTitle(conversation.id, value);
-  } catch { /* 取消修改时保留原标题 */ }
-}
 function togglePinnedConversation(conversation: AgentConversationModel) {
   const next = togglePinnedAgentSession(pinnedConversationIds.value, conversation);
   pinnedConversationIds.value = next;
@@ -717,8 +826,49 @@ async function startAgentWorkflow(input: StartAgentTaskWorkflowInput) {
     if (!accepted) restoreConversationDraft(conversation.id, sentDraft);
   }
 }
-function providerLabel(provider: AgentProvider) { return provider === 'api' ? '模型 API' : provider === 'codex' ? 'GPT / Codex' : provider === 'claude' ? 'Claude Code' : provider === 'kiro' ? 'Kiro CLI' : provider === 'antigravity' ? 'Antigravity CLI' : 'Cursor Agent'; }
+function providerLabel(provider: AgentProvider) { return provider === 'api' ? '模型 API' : provider === 'codex' ? 'GPT / Codex' : provider === 'claude' ? 'Claude Code' : provider === 'kiro' ? 'Kiro CLI' : provider === 'antigravity' ? 'Antigravity CLI' : provider === 'deepseek' ? 'DeepSeek（官方 API）' : provider === 'workbuddy' ? '腾讯 WorkBuddy' : provider === 'grok' ? 'Grok（xAI）' : 'Cursor Agent'; }
+const previousTransitionStates = new Map<string, string>();
+let transitionNotifyReady = false;
+const transitionSnapshot = computed<AgentTransitionSnapshotItem[]>(() => {
+  const convItems: AgentTransitionSnapshotItem[] = conversations.value.map(conversation => ({
+    id: conversation.id,
+    title: conversation.title,
+    status: conversation.teamChat?.state
+      || (conversation.latest.recovery?.state === 'needs-review' ? 'needs-review' : conversation.latest.status),
+    changedFileCount: conversation.latest.changedFiles?.length || 0,
+  }));
+  const groupItems: AgentTransitionSnapshotItem[] = teamChat.allTasks.value
+    .filter(task => !!task.groupRoomId)
+    .map(task => ({
+      id: task.groupRoomId!,
+      title: task.objective,
+      status: task.state,
+      isGroup: true,
+    }));
+  return [...convItems, ...groupItems];
+});
+watch([transitionSnapshot, isPending], ([items, pending]) => {
+  if (pending) return;
+  const runningCount = items.filter(item => ['queued', 'running', 'planning', 'saving'].includes(item.status)).length;
+  const attentionCount = items.filter(item => ['waiting_input', 'needs_decision', 'waiting_login', 'needs-review'].includes(item.status)).length;
+  setWorkspaceLiveActivityCounts(runningCount, attentionCount);
+  const notices = detectAgentTransitionNotifications(previousTransitionStates, items, transitionNotifyReady);
+  transitionNotifyReady = true;
+  for (const notice of notices) {
+    dispatchAgentTransitionNotice(notice, target => {
+      if (target.isGroup) {
+        openGroup(target.targetId);
+        emit('group', target.targetId);
+      } else {
+        selectConversation(target.targetId);
+        emit('chat');
+      }
+    });
+  }
+}, { immediate: true });
+
 onBeforeUnmount(() => {
+  setWorkspaceLiveActivityCounts(0, 0);
   panelDisposed = true;
   newAttachmentDraft.value.discard();
   forkAttachmentDraft.value.discard();
@@ -761,7 +911,7 @@ onBeforeUnmount(() => {
         <AgentResponsivePanel id="studio-session-sidebar" class="session-column" :mobile="mobile" :open="mobile ? mobilePanel === 'sessions' : !sessionsCollapsed" side="left" title="会话列表" @close="mobilePanel = ''">
         <AgentSessionList :conversations="conversations" :selected-id="selectedConversationId"
           :changing="changing" :pinned-ids="pinnedConversationIds" @select="mobilePanel = ''; selectConversation($event); emit('chat')" @create="mobilePanel = ''; openCreate(); emit('chat')"
-          @groups="openGroups" @sync="syncCodexSessions" @remove="removeAgentConversations">
+          @groups="openGroups" @sync="syncCodexSessions" @remove="removeAgentConversations" @rename="(id, title) => updateConversationTitle(id, title)">
           <template #navigation><slot name="navigation" placement="sidebar" :close-navigation="() => { mobilePanel = ''; }" :toggle-sessions="toggleSessions" :sessions-collapsed="false" /></template>
           <template #tools><AgentRecoveryDialog :changing="changing" @retry="retryRun" @inspect="detail = $event" /></template>
           <template #navigation-footer><slot name="navigation" placement="footer" :close-navigation="() => { mobilePanel = ''; }" :toggle-sessions="toggleSessions" :sessions-collapsed="false" /></template>
@@ -779,7 +929,7 @@ onBeforeUnmount(() => {
           :attachment-draft="conversationAttachmentDraft" :team-tasks="teamChat.tasks.value" :team-room="teamChat.room.value" :team-attachments="teamChat.attachments.value" :jira-task="matchedJiraTask"
           :side-fork-available="!mobile && !!sideForkSource" :projectless-fork="projectlessFork" @fork-side="openForkConversation($event, true)"
           :business-options="businessMentions" @send="sendMessage" @access-change="automaticAccessMode = $event" @stop="stopConversation" @team-decision="teamChat.decide" @team-command="teamChat.command" @choose-team-workspace="chooseChatWorkspace" @steer="steer" @remove-queued="deleteQueuedRun" @retry="retryRun" @fork="openForkConversation"
-          @edit="openEditMessage" @pin="togglePinnedConversation" @rename="renameAgentConversation" @remove="removeAgentConversation" @inspect="detail = $event" @configure-models="openModelSettings()"
+          @edit="openEditMessage" @pin="togglePinnedConversation" @rename-title="(conversation, title) => updateConversationTitle(conversation.id, title)" @remove="removeAgentConversation" @inspect="detail = $event" @configure-models="openModelSettings()"
           @open-group="openGroup($event); emit('group', $event)">
           <template #header-actions>
             <span id="conversation-connection-status"></span>
@@ -821,7 +971,7 @@ onBeforeUnmount(() => {
             :pinned="isPinnedAgentSession(pinnedConversationIds, sideConversation)" :jira-task="matchConversationJiraDevTask(sideConversation, jiraTasks)" :projectless-fork="projectlessFork"
             @send="sendSideMessage" @stop="stop" @steer="steer" @remove-queued="deleteQueuedRun" @retry="(run, selection) => retryRun(run, selection, true)"
             @fork="openForkConversation($event, true)" @edit="openEditMessage($event, true)" @pin="togglePinnedConversation"
-            @rename="renameAgentConversation" @remove="removeAgentConversation" @inspect="detail = $event" @configure-models="openModelSettings()"
+            @rename-title="(conversation, title) => updateConversationTitle(conversation.id, title)" @remove="removeAgentConversation" @inspect="detail = $event" @configure-models="openModelSettings()"
             @open-group="openGroup($event); emit('group', $event)" />
         </section>
         <button v-if="desktopSideControls && desktopDetailsAvailable" type="button" class="studio-side-toggle right"
@@ -848,19 +998,19 @@ onBeforeUnmount(() => {
     </div>
   </section>
 
-  <el-drawer v-model="detailDrawer" :title="detail ? `执行记录 · ${detailTask.role || providerLabel(detail.provider)}${detailRoundNumber ? ` · 第 ${detailRoundNumber} 轮` : ''}` : '执行记录'" size="min(760px, 94vw)" class="hub-drawer" destroy-on-close>
+  <el-drawer v-model="detailDrawer" :title="detail ? `执行记录 · ${detailTask.role || providerLabel(detail.provider)}${detailRoundNumber ? ` · 第 ${detailRoundNumber} 轮` : ''}` : '执行记录'" size="min(760px, 94vw)" class="hub-drawer" append-to-body destroy-on-close>
     <AgentRunDetails v-if="detail" :run="detail" :runtimes="runtimes" />
     <template #footer><el-button @click="detail = undefined">关闭</el-button></template>
   </el-drawer>
   <Teleport v-if="!isPending" defer :to="connectionStatusTarget">
     <AgentConnectionStatus :runtimes="runtimes" :usage-cards="usageCards" :antigravity-usage="data?.antigravityUsage" :refreshing="refreshing" @refresh="refreshStatus" @configure-models="openModelSettings" />
   </Teleport>
-  <WorkspaceBrowserDialog :open="picker.browserOpen.value" :initial-path="picker.browserPath.value" @select="picker.completeBrowser" @cancel="picker.completeBrowser(null)" />
-  <AgentModelSettings v-model="modelDialog" :runtimes="runtimes" :changing="changing" :initial-provider="modelDialogProvider" @add="addCustomModel" @remove="removeCustomModel" />
-  <AgentForkDialog :open="!!forkSource" v-model:objective="forkObjective" v-model:attachments="forkAttachments" :source="forkSource" :in-side="forkInSide"
+  <WorkspaceBrowserDialog v-if="picker.browserOpen.value" :open="picker.browserOpen.value" :initial-path="picker.browserPath.value" @select="picker.completeBrowser" @cancel="picker.completeBrowser(null)" />
+  <AgentModelSettings v-if="modelDialog" v-model="modelDialog" :runtimes="runtimes" :changing="changing" :initial-provider="modelDialogProvider" @add="addCustomModel" @remove="removeCustomModel" />
+  <AgentForkDialog v-if="forkSource" :open="!!forkSource" v-model:objective="forkObjective" v-model:attachments="forkAttachments" :source="forkSource" :in-side="forkInSide"
     :attachment-draft="forkAttachmentDraft"
     :submitting="!!forkSource && changing === `fork:${forkSource.id}`" @submit="forkConversation(forkInSide)" @cancel="closeForkDialog" />
-  <AgentEditMessageDialog v-model="editObjective" :open="editDialogOpen" :source="editSource"
+  <AgentEditMessageDialog v-if="editDialogOpen" v-model="editObjective" :open="editDialogOpen" :source="editSource"
     :submitting="!!changing" @submit="saveEditedMessage" @close="editDialogOpen = false" />
 </template>
 
@@ -944,10 +1094,10 @@ onBeforeUnmount(() => {
   outline-offset: -2px;
 }
 .agent-panel{display:flex;flex-direction:column}.agent-body{flex:1;height:auto!important}.workbench-column{grid-column:2 / -1;grid-row:1;min-width:0;min-height:0;overflow:hidden}.session-column,.conversation-column,.execution-column{grid-row:1}
-.agent-panel{--agent-bg:color-mix(in srgb,var(--ui-nav) 82%,#05070c);--agent-panel:color-mix(in srgb,var(--ui-nav-raised) 58%,#11151d);--agent-panel-strong:color-mix(in srgb,var(--ui-nav-raised) 72%,#1a202b);--agent-raised:color-mix(in srgb,var(--ui-nav-border) 48%,#222936);--agent-border:color-mix(in srgb,var(--ui-nav-border) 70%,#273041);--agent-text:var(--ui-nav-text);--agent-secondary:color-mix(in srgb,var(--ui-nav-text) 82%,var(--ui-nav-muted));--agent-muted:var(--ui-nav-muted);--agent-accent:var(--ui-accent);--agent-cyan:color-mix(in srgb,var(--ui-accent) 42%,#37c8f6);--session-column-width:360px;--execution-column-width:420px;position:fixed;inset:0;z-index:60;min-width:1080px;overflow:hidden;background:radial-gradient(circle at 48% -18%,color-mix(in srgb,var(--agent-accent) 18%,transparent) 0,transparent 42%),var(--agent-bg);color:var(--agent-text);font-family:var(--sans)}
-.agent-body,.session-shell{height:100%;min-width:0;min-height:0;overflow:hidden}.agent-body>.el-alert{position:absolute;z-index:4;left:calc(var(--session-column-width) + 12px);right:calc(var(--execution-column-width) + 6px);top:12px}.session-shell{display:grid;grid-template-columns:var(--visible-session-width,var(--session-column-width)) minmax(0,1fr) var(--visible-execution-width,var(--execution-column-width));grid-template-rows:minmax(0,1fr)}.session-column{grid-column:1}.conversation-column{grid-column:2}.execution-column{grid-column:3}.session-shell.left-collapsed{--visible-session-width:0px}.session-shell.right-collapsed{--visible-execution-width:0px}.detail-facts dd{word-break:break-all}.drawer-summary{display:grid;gap:8px}.drawer-summary article{padding:11px 13px;border:1px solid var(--el-border-color-lighter);border-radius:8px;background:var(--el-fill-color-light)}.drawer-summary strong{font-size:13px;color:var(--el-text-color-primary)}.drawer-summary p{margin:4px 0 0;color:var(--el-text-color-secondary);font-size:12px;line-height:1.6}.drawer-summary article.warning{border-color:var(--el-color-warning-light-7)}.drawer-summary article.danger{border-color:var(--el-color-danger-light-7)}.raw-events{margin-top:14px}.raw-events summary{padding:8px 0;color:var(--el-text-color-secondary);font-size:12px;cursor:pointer}.raw-events:deep(.el-timeline){margin-top:10px;padding-left:4px}.routine-events{margin:2px 0 12px;padding:0 12px;border:1px solid var(--el-border-color-lighter);border-radius:8px;background:var(--el-fill-color-light)}.routine-events>summary{color:var(--el-text-color-regular)}
-:global(.agent-model-popper.el-popper),:global(.agent-workspace-popper.el-popper){--el-bg-color-overlay:#202129;--el-text-color-regular:#c7c7d2;--el-fill-color-light:#302f43;border-color:#414250;background:#202129}:global(.agent-model-popper .el-select-dropdown__item){color:#c7c7d2}:global(.agent-model-popper .el-select-dropdown__item.is-hovering),:global(.agent-model-popper .el-select-dropdown__item:hover){background:#302f43}:global(.agent-model-popper .el-select-dropdown__item.is-selected){color:#aaa3ff}
-:global(.agent-panel *::-webkit-scrollbar){width:7px;height:7px}:global(.agent-panel *::-webkit-scrollbar-track){background:transparent}:global(.agent-panel *::-webkit-scrollbar-thumb){border:2px solid transparent;border-radius:8px;background:#4a5366;background-clip:padding-box}:global(.agent-panel *::-webkit-scrollbar-thumb:hover){background:#626d84;background-clip:padding-box}
+.agent-panel{--agent-bg:var(--ui-bg);--agent-panel:var(--ui-surface);--agent-panel-strong:var(--ui-surface);--agent-raised:var(--ui-raised);--agent-border:var(--ui-border);--agent-text:var(--ui-text);--agent-secondary:var(--ui-secondary);--agent-muted:var(--ui-muted);--agent-accent:var(--ui-accent);--agent-cyan:var(--ui-accent);--session-column-width:340px;--execution-column-width:400px;position:fixed;inset:0;z-index:60;min-width:1080px;overflow:hidden;background:var(--agent-bg);color:var(--agent-text);font-family:var(--sans)}
+.agent-body,.session-shell{height:100%;min-width:0;min-height:0;overflow:hidden}.agent-body>.el-alert{position:absolute;z-index:4;left:calc(var(--session-column-width) + 12px);right:calc(var(--execution-column-width) + 6px);top:12px}.session-shell{display:grid;grid-template-columns:var(--visible-session-width,var(--session-column-width)) minmax(0,1fr) var(--visible-execution-width,var(--execution-column-width));grid-template-rows:minmax(0,1fr)}.session-column{grid-column:1}.conversation-column{grid-column:2}.execution-column{grid-column:3}.session-shell.left-collapsed{--visible-session-width:0px}.session-shell.right-collapsed{--visible-execution-width:0px}.detail-facts dd{word-break:break-all}.drawer-summary{display:grid;gap:8px}.drawer-summary article{padding:12px 14px;border:1px solid var(--el-border-color-lighter);border-radius:8px;background:var(--el-fill-color-light)}.drawer-summary strong{font-size:14px;line-height:20px;color:var(--el-text-color-primary)}.drawer-summary p{margin:4px 0 0;color:var(--el-text-color-secondary);font-size:12px;line-height:18px}.drawer-summary article.warning{border-color:var(--el-color-warning-light-7)}.drawer-summary article.danger{border-color:var(--el-color-danger-light-7)}.raw-events{margin-top:16px}.raw-events summary{padding:8px 0;color:var(--el-text-color-secondary);font-size:12px;line-height:16px;cursor:pointer}.raw-events:deep(.el-timeline){margin-top:10px;padding-left:4px}.routine-events{margin:2px 0 12px;padding:0 12px;border:1px solid var(--el-border-color-lighter);border-radius:8px;background:var(--el-fill-color-light)}.routine-events>summary{color:var(--el-text-color-regular)}
+:global(.agent-model-popper.el-popper),:global(.agent-workspace-popper.el-popper){--el-bg-color-overlay:var(--ui-surface);--el-text-color-regular:var(--ui-text);--el-fill-color-light:var(--ui-raised);border-color:var(--ui-border);border-radius:12px;background:var(--ui-surface);box-shadow:var(--ui-shadow)}:global(.agent-model-popper .el-select-dropdown__item){color:var(--ui-secondary);border-radius:8px}:global(.agent-model-popper .el-select-dropdown__item.is-hovering),:global(.agent-model-popper .el-select-dropdown__item:hover){background:var(--ui-raised);color:var(--ui-text)}:global(.agent-model-popper .el-select-dropdown__item.is-selected){color:var(--ui-accent);font-weight:600}
+:global(.agent-panel *::-webkit-scrollbar){width:7px;height:7px}:global(.agent-panel *::-webkit-scrollbar-track){background:transparent}:global(.agent-panel *::-webkit-scrollbar-thumb){border:2px solid transparent;border-radius:8px;background:color-mix(in srgb,var(--ui-muted) 42%,transparent);background-clip:padding-box}:global(.agent-panel *::-webkit-scrollbar-thumb:hover){background:color-mix(in srgb,var(--ui-muted) 68%,transparent);background-clip:padding-box}
 @media(max-width:1440px){.agent-panel{--session-column-width:320px;--execution-column-width:380px}}
 </style>
 
@@ -956,5 +1106,5 @@ onBeforeUnmount(() => {
 <style src="./agent-studio.css"></style>
 
 <style scoped>
-.execution-overview{display:flex;align-items:center;gap:10px;flex-wrap:wrap;color:var(--ui-secondary);font-size:12px}.execution-task-title{font-weight:600;font-size:14px}.execution-task p{margin:8px 0;line-height:1.75;overflow-wrap:anywhere}.execution-task-text{white-space:pre-wrap}.execution-original{margin-top:16px;border-top:1px solid var(--ui-divider,var(--ui-border));padding-top:10px}.execution-original>summary{cursor:pointer;color:var(--ui-secondary);font-size:12px}.execution-original>pre,.execution-original :deep(.el-timeline),.readable-events pre{max-height:420px;overflow:auto}.execution-original pre,.readable-events pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.7 var(--mono);color:var(--ui-secondary)}.execution-original :deep(.el-timeline){margin:14px 0 0;padding-left:16px}.readable-events{list-style:none;margin:0;padding:0}.readable-events>li{padding:10px 0;border-top:1px solid var(--ui-divider,var(--ui-border))}.readable-events time{color:var(--ui-muted);font-size:11px}.readable-events summary{cursor:pointer;line-height:1.75;overflow-wrap:anywhere}.readable-events summary small{margin-right:8px;color:var(--ui-muted);font-size:11px}.readable-events summary span{font-size:12px}
+.execution-overview{display:flex;align-items:center;gap:10px;flex-wrap:wrap;color:var(--ui-secondary);font-size:12px;line-height:16px}.execution-task-title{font-weight:600;font-size:14px;line-height:20px}.execution-task p{margin:8px 0;font-size:14px;line-height:20px;overflow-wrap:anywhere}.execution-task-text{white-space:pre-wrap}.execution-original{margin-top:16px;border-top:1px solid var(--ui-divider,var(--ui-border));padding-top:12px}.execution-original>summary{cursor:pointer;color:var(--ui-secondary);font-size:12px;line-height:16px}.execution-original>pre,.execution-original :deep(.el-timeline),.readable-events pre{max-height:420px;overflow:auto}.execution-original pre,.readable-events pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/18px var(--mono);color:var(--ui-secondary)}.execution-original :deep(.el-timeline){margin:14px 0 0;padding-left:16px}.readable-events{list-style:none;margin:0;padding:0}.readable-events>li{padding:10px 0;border-top:1px solid var(--ui-divider,var(--ui-border))}.readable-events time{color:var(--ui-muted);font-size:12px;line-height:16px;font-variant-numeric:tabular-nums}.readable-events summary{cursor:pointer;line-height:20px;overflow-wrap:anywhere}.readable-events summary small{margin-right:8px;color:var(--ui-muted);font-size:12px;line-height:16px}.readable-events summary span{font-size:12px;line-height:18px}
 </style>

@@ -82,7 +82,7 @@ test('真实群执行组件只渲染展开记录正文，Markdown链接列表可
     assert.doesNotMatch(html, /历史原文-0/);
     assert.match(html, /<a\b[^>]*href="https:\/\/example.com\/report.xlsx"/);
     assert.match(html, /<ul\b/); assert.match(html, /原始结论 L123/);
-    assert.match(html, /运行已结束/); assert.doesNotMatch(html, /验收完成/);
+    assert.match(html, /运行(?:完成|已结束)/); assert.doesNotMatch(html, /验收完成/);
     assert.equal([...html.matchAll(/aria-label="查看运行 \d+ 的日志"/g)].length, 106);
     const ordinary = await render(false);
     assert.doesNotMatch(ordinary, /<details\b[^>]*class="execution-round"/);

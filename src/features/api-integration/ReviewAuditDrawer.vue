@@ -9,7 +9,7 @@ const emit = defineEmits<{ close: []; confirm: []; reopen: [] }>();
 </script>
 
 <template>
-  <el-drawer :model-value="!!item" :title="item ? `接口联调审核 · ${item.name}` : '接口联调审核'" size="min(660px, 96vw)" :close-on-click-modal="!saving" :close-on-press-escape="!saving" :show-close="!saving" @close="emit('close')">
+  <el-drawer :model-value="!!item" :title="item ? `接口联调审核 · ${item.name}` : '接口联调审核'" size="min(660px, 96vw)" append-to-body :close-on-click-modal="!saving" :close-on-press-escape="!saving" :show-close="!saving" @close="emit('close')">
     <template v-if="item">
       <div class="drawer-context">
         <code>{{ item.method || '方法待确认' }} {{ item.path }}</code>

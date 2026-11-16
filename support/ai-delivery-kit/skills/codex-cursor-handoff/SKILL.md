@@ -58,22 +58,24 @@ Keep handoff files short, but make them concrete enough that Cursor can work wit
 
 `current-task.md` should include:
 
+- Baseline fingerprint: current `git rev-parse --short HEAD` (or SHA-256 of in-scope files if not a git repo) so Cursor verifies the code has not drifted before editing.
 - Goal: one or two sentences describing the user-visible outcome.
-- Scope: repos, modules, pages, packages, or APIs in play.
-- Non-goals: explicit things Cursor must not touch.
+- Scope: repos, modules, pages, packages, or APIs in play (exact in-scope file paths).
+- Non-goals (Out of scope): explicit files/contracts Cursor must NOT touch even if they look related.
 - Compatibility posture: whether to preserve legacy contracts or remove old names/branches because the project is still in testing.
-- Current observations: facts Codex learned from reading the code, not speculation.
-- Implementation steps: a small ordered list, preferably one batch only.
-- Expected files: likely files or directories to inspect first.
-- Verification hints: commands Cursor should try before writing the result.
+- Current observations & code excerpts: exact `file:line` snippets Codex read from the repo (never copy live secret values) plus an exemplar file path in the repo whose conventions Cursor should mirror.
+- Implementation steps: a small ordered list, preferably one batch only, with a per-step verification command.
+- STOP conditions: explicit triggers where Cursor must immediately stop and write `cursor-result.md` as `STOPPED` instead of improvising (e.g., current code does not match excerpts, a step check fails twice, or fixing requires touching out-of-scope files).
+- Verification hints: commands Cursor should run before writing the result.
 
 `acceptance-checklist.md` should include:
 
 - Behavior checks that must be true after the change.
 - Compatibility checks, including API contracts, data migrations, or UI states when relevant.
-- Verification commands Codex will rerun.
+- Verification commands Codex will rerun (with expected exit codes/output).
+- Test assertion audit: Codex will read new/updated test assertions to reject empty assertions or mock-only tests ("gaming criteria").
 - Manual or visual checks that cannot be fully automated.
-- Residual risks Cursor must report rather than hide.
+- Residual risks Cursor must report rather than hide (plus any by-design tradeoffs intentionally left unchanged).
 
 Cursor's CLI prompt should tell it to read both files, implement only the batch, avoid commits/pushes, and write `cursor-result.md` with changed files, checks run, skipped checks, and residual risks.
 

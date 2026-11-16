@@ -5,9 +5,17 @@
 import http from 'node:http';
 import os from 'node:os';
 import { isIPv4 } from 'node:net';
+import { applySecurityResponseHeaders, resolveWorkspaceServicePort, verifyGatewayWriteToken } from './http-security.js';
 import { createWorkspaceBrowserRoute } from './workspace-browser.js';
 
 type LanInterface = { address: string; netmask: string };
+
+export interface LanGatewayOptions {
+  /** 开启后仅放行 GET / HEAD 只读访问，阻断同网段或隧道设备触发任何写操作（P0-2） */
+  readOnly?: boolean;
+  /** 配置后所有非 GET / HEAD 写操作必须携带匹配的 X-Delivery-Gateway-Token 请求头（P0-2） */
+  writeToken?: string;
+}
 
 export function lanInterfaces(interfaces = os.networkInterfaces()): LanInterface[] {
   return Object.entries(interfaces).flatMap(([name, entries]) => {
@@ -36,12 +44,20 @@ function cleanHeaders(original: http.IncomingHttpHeaders): http.OutgoingHttpHead
   return headers;
 }
 
-export function createLanGateway(network: LanInterface, upstreamPort = 5199, allowedClients?: readonly string[]) {
+export function createLanGateway(
+  network: LanInterface,
+  upstreamPort = resolveWorkspaceServicePort(),
+  allowedClients?: readonly string[],
+  options: LanGatewayOptions = {},
+) {
   if (allowedClients?.some((address) => !isIPv4(address))) throw new Error('设备白名单必须为独立 IPv4 地址');
   // VPN 不继承整个网段的信任；空白名单拒绝所有设备，且不读取可伪造的代理头。
   const clients = allowedClients === undefined ? undefined : new Set(allowedClients);
+  const readOnly = options.readOnly === true;
+  const writeToken = typeof options.writeToken === 'string' ? options.writeToken.trim() : '';
   const workspaceBrowser = createWorkspaceBrowserRoute();
   return http.createServer((request, response) => {
+    applySecurityResponseHeaders(response);
     const reject = (status: number, message: string) => {
       response.writeHead(status, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
       response.end(message);
@@ -59,6 +75,12 @@ export function createLanGateway(network: LanInterface, upstreamPort = 5199, all
       (fetchSite && fetchSite !== 'same-origin' && fetchSite !== 'none')) {
       reject(403, '请求来源不匹配'); return;
     }
+    if (!safe && readOnly) {
+      reject(403, '当前网络入口处于只读保护模式，不允许发起写操作'); return;
+    }
+    if (!safe && writeToken && !verifyGatewayWriteToken(request.headers['x-delivery-gateway-token'], writeToken)) {
+      reject(403, '缺少或无效的网关配对写令牌（X-Delivery-Gateway-Token）'); return;
+    }
     if (!request.url?.startsWith('/') || request.url.startsWith('//')) { reject(400, '请求路径不正确'); return; }
     const pathname = new URL(request.url, origin).pathname;
     if (pathname === '/api/workspace/browse' || pathname === '/api/workspace/select-directory') {
@@ -68,7 +90,7 @@ export function createLanGateway(network: LanInterface, upstreamPort = 5199, all
 
     const headers = cleanHeaders(request.headers);
     for (const name of Object.keys(headers)) {
-      if (name === 'authorization' || name === 'forwarded' || name === 'x-real-ip' || name.startsWith('x-forwarded-')) delete headers[name];
+      if (name === 'authorization' || name === 'x-delivery-gateway-token' || name === 'forwarded' || name === 'x-real-ip' || name.startsWith('x-forwarded-')) delete headers[name];
     }
     headers.host = `127.0.0.1:${upstreamPort}`;
     if (request.headers.origin) headers.origin = `http://${headers.host}`;
@@ -93,7 +115,12 @@ export function createLanGateway(network: LanInterface, upstreamPort = 5199, all
 export async function startLanGateway() {
   const networks = lanInterfaces();
   if (!networks.length) throw new Error('没有可用的有线或 Wi-Fi 私有 IPv4 地址');
-  const servers = networks.map((network) => createLanGateway(network));
+  const servicePort = resolveWorkspaceServicePort();
+  const gatewayOptions: LanGatewayOptions = {
+    readOnly: process.env.DELIVERY_GATEWAY_READ_ONLY === '1',
+    writeToken: process.env.DELIVERY_GATEWAY_WRITE_TOKEN || '',
+  };
+  const servers = networks.map((network) => createLanGateway(network, servicePort, undefined, gatewayOptions));
   const stop = () => {
     for (const server of servers) { server.closeAllConnections(); server.close(); }
   };
@@ -101,9 +128,9 @@ export async function startLanGateway() {
     for (const [index, server] of servers.entries()) {
       await new Promise<void>((resolve, reject) => {
         server.once('error', reject);
-        server.listen(5199, networks[index].address, () => { server.off('error', reject); resolve(); });
+        server.listen(servicePort, networks[index].address, () => { server.off('error', reject); resolve(); });
       });
-      console.log(`Delivery LAN: http://${networks[index].address}:5199/agent`);
+      console.log(`Delivery LAN: http://${networks[index].address}:${servicePort}/agent`);
     }
   } catch (error) { stop(); throw error; }
   console.log('局域网入口免登录，仅供可信同网段设备使用，请勿配置公网端口转发。');

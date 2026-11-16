@@ -7,10 +7,10 @@ import type { GroupRoom } from '../../../shared/agent-group-chat';
 import type { RemoteDeliveryKind, RemoteDeliveryPreview, RemoteDeliverySubmit } from '../../../shared/agent-remote-delivery';
 import { dateTime, safeUrl, shortPath } from '../../shared/format';
 import { createRequestId } from '../requirement-development/request-id';
-import { readRemoteDelivery, submitRemoteDelivery } from './group-chat-api';
+import { readRemoteDelivery, reconcileRemoteDelivery, submitRemoteDelivery } from './group-chat-api';
 import AgentCodeArtifact from './AgentCodeArtifact.vue';
 import { useIntegrationPlugins } from '../../plugins/runtime';
-const integrations = useIntegrationPlugins();
+const integrations = typeof useIntegrationPlugins === 'function' ? useIntegrationPlugins() : { capability: () => true };
 
 const props = defineProps<{ room?: Pick<GroupRoom, 'id'>; targetId?: string; active?: boolean }>();
 const deliveryId = computed(() => props.targetId || props.room?.id || '');
@@ -18,7 +18,7 @@ const preview = shallowRef<RemoteDeliveryPreview>();
 const loading = shallowRef(false), submitting = shallowRef(false), opened = shallowRef(false);
 type ArtifactDeliveryKind = Exclude<RemoteDeliveryKind, 'jira'>;
 const selected = shallowRef<{ kind: ArtifactDeliveryKind; projectId?: string }>();
-const selectedFiles = ref<string[]>([]), message = shallowRef('');
+const selectedFiles = ref<string[]>([]), message = shallowRef(''), hygieneConfirmed = shallowRef(false);
 const names = { design: '技术方案', jira: '历史 Jira 评论', git: '代码' };
 const tasksOpen = shallowRef(false);
 const lastChecked = shallowRef('');
@@ -27,9 +27,24 @@ const jiraRoles: Record<string, string> = { parent: '开发主任务', design: '
 const statusLabels = { submitting: '执行中', completed: '已完成并回读', failed: '未完成', uncertain: '结果待核对' };
 const project = computed(() => preview.value?.projects.find(item => item.id === selected.value?.projectId));
 const target = computed(() => selected.value?.kind === 'design' ? preview.value?.design : project.value);
-const canSubmit = computed(() => !!preview.value && !!selected.value && target.value?.available && !loading.value && !submitting.value
+const currentUncertainAttempt = computed(() => preview.value?.attempts.find(item => item.status === 'uncertain'
+  && item.kind === selected.value?.kind && item.projectId === selected.value?.projectId));
+const reconcilingId = shallowRef('');
+const selectedHygieneWarnings = computed(() => {
+  const chosen = new Set(selectedFiles.value);
+  return (project.value?.hygieneWarnings || []).filter(item => chosen.has(item.file));
+});
+const hasSelectedConflictMarkers = computed(() => selectedHygieneWarnings.value.some(item => item.category === 'conflict-markers'));
+const hasSelectedBlockers = computed(() => selectedHygieneWarnings.value.some(item => item.severity === 'blocker'));
+function fileWarningBadge(filePath: string): 'blocker' | 'warning' | '' {
+  const hits = (project.value?.hygieneWarnings || []).filter(item => item.file === filePath);
+  if (hits.some(item => item.severity === 'blocker')) return 'blocker';
+  return hits.length > 0 ? 'warning' : '';
+}
+watch(selectedFiles, () => { hygieneConfirmed.value = false; });
+const canSubmit = computed(() => !!preview.value && !!selected.value && target.value?.available && !currentUncertainAttempt.value && !loading.value && !submitting.value
   && (selected.value.kind !== 'design' || integrations.capability('pages.write'))
-  && (selected.value.kind !== 'git' || !!message.value.trim()));
+  && (selected.value.kind !== 'git' || (!!message.value.trim() && !hasSelectedConflictMarkers.value && (!hasSelectedBlockers.value || hygieneConfirmed.value))));
 const requestIds = new Map<string, string>();
 function beforeClose(done: () => void) { if (!submitting.value) done(); }
 let generation = 0;
@@ -70,13 +85,18 @@ async function open(kind: ArtifactDeliveryKind, projectId?: string) {
   selected.value = { kind, projectId };
   const current = preview.value.projects.find(item => item.id === projectId);
   selectedFiles.value = current?.files.filter(file => file.recommended).map(file => file.path) || [];
+  hygieneConfirmed.value = false;
   message.value = current?.message || '';
   opened.value = true;
 }
 async function submit() {
   if (!canSubmit.value || !preview.value || !selected.value || !deliveryId.value) return;
   const input = { ...selected.value, fingerprint: preview.value.fingerprint,
-    ...(selected.value.kind === 'git' ? { files: [...selectedFiles.value], message: message.value.trim() } : {}) };
+    ...(selected.value.kind === 'git' ? {
+      files: [...selectedFiles.value],
+      message: message.value.trim(),
+      ...(hasSelectedBlockers.value && hygieneConfirmed.value ? { confirmHygiene: true } : {}),
+    } : {}) };
   const key = JSON.stringify(input), requestId = requestIds.get(key) || createRequestId();
   requestIds.set(key, requestId);
   submitting.value = true;
@@ -90,6 +110,19 @@ async function submit() {
     await refresh();
   } catch (error) { opened.value = false; ElMessage.error(error instanceof Error ? error.message : '远端交付失败，请刷新核对'); await refresh(); }
   finally { submitting.value = false; }
+}
+async function reconcileAttempt(attemptId: string, resolution: 'retry' | 'completed') {
+  if (!deliveryId.value || submitting.value || reconcilingId.value) return;
+  reconcilingId.value = attemptId;
+  try {
+    const result = await reconcileRemoteDelivery(deliveryId.value, { attemptId, resolution });
+    ElMessage.success(result.detail);
+    await refresh();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '解除待核对锁定失败');
+  } finally {
+    reconcilingId.value = '';
+  }
 }
 </script>
 
@@ -127,7 +160,7 @@ async function submit() {
         </article>
         <article class="delivery-artifact" aria-label="多语言 XLSX 产物"><header><strong>多语言 XLSX</strong></header><template v-if="preview.i18nArtifacts?.length"><div v-for="file in preview.i18nArtifacts" :key="file.id" class="i18n-artifact"><p :title="file.path">{{ shortPath(file.path) }}</p><a :href="file.downloadUrl" :download="file.name" class="artifact-download">下载 XLSX</a></div></template><p v-else>暂无可下载的多语言 XLSX</p></article>
       </div>
-      <details v-if="preview.attempts.length" class="delivery-history"><summary>远端操作记录 · {{ preview.attempts.length }}</summary><ul><li v-for="attempt in [...preview.attempts].reverse()" :key="attempt.id"><strong>{{ names[attempt.kind] }} · {{ statusLabels[attempt.status] }}</strong><time>{{ dateTime(attempt.updatedAt) }}</time><p>{{ attempt.detail }}</p><p v-if="attempt.revision">{{ attempt.kind === 'git' ? '提交' : '版本' }}：<code>{{ attempt.revision }}</code></p><a v-if="safeUrl(attempt.url)" :href="safeUrl(attempt.url)" target="_blank" rel="noopener noreferrer">查看远端结果 <ExternalLink :size="12" /></a></li></ul></details>
+      <details v-if="preview.attempts.length" class="delivery-history"><summary>远端操作记录 · {{ preview.attempts.length }}</summary><ul><li v-for="attempt in [...preview.attempts].reverse()" :key="attempt.id"><strong>{{ names[attempt.kind] }} · {{ statusLabels[attempt.status] }}</strong><time>{{ dateTime(attempt.updatedAt) }}</time><p>{{ attempt.detail }}</p><p v-if="attempt.revision">{{ attempt.kind === 'git' ? '提交' : '版本' }}：<code>{{ attempt.revision }}</code></p><div v-if="attempt.status === 'uncertain'" class="delivery-reconcile-actions"><el-button size="small" :loading="reconcilingId === attempt.id" :disabled="submitting || !!reconcilingId" @click="reconcileAttempt(attempt.id, 'retry')">已核对未生效，允许重发</el-button><el-button size="small" :loading="reconcilingId === attempt.id" :disabled="submitting || !!reconcilingId" @click="reconcileAttempt(attempt.id, 'completed')">已核对已生效</el-button></div><a v-if="safeUrl(attempt.url)" :href="safeUrl(attempt.url)" target="_blank" rel="noopener noreferrer">查看远端结果 <ExternalLink :size="12" /></a></li></ul></details>
     </template>
     <el-button v-else-if="!loading" size="small" @click="refresh()">检测交付产物</el-button>
   </section>
@@ -151,11 +184,28 @@ async function submit() {
         <p>工作区：{{ project.path }}</p><p>推送目标：{{ project.remote }} / {{ project.branch }}</p><p>推送地址：{{ project.pushUrl }}</p>
         <p v-if="project.url"><a v-if="safeUrl(project.url)" :href="safeUrl(project.url)" target="_blank" rel="noopener noreferrer">{{ project.url }}</a><span v-else>{{ project.url }}</span></p>
         <p>选择本次提交的文件（{{ selectedFiles.length }}/{{ project.files.length }}）</p>
-        <el-checkbox-group v-model="selectedFiles" :disabled="submitting" class="remote-files" aria-label="本次提交文件"><el-checkbox v-for="file in project.files" :key="file.path" :value="file.path"><code>{{ file.status }}</code> {{ file.path }}</el-checkbox></el-checkbox-group>
+        <el-checkbox-group v-model="selectedFiles" :disabled="submitting" class="remote-files" aria-label="本次提交文件"><el-checkbox v-for="file in project.files" :key="file.path" :value="file.path"><code>{{ file.status }}</code> {{ file.path }} <span v-if="fileWarningBadge(file.path)" class="remote-file-badge" :class="`is-${fileWarningBadge(file.path)}`">{{ fileWarningBadge(file.path) === 'blocker' ? '高危提示' : '注意' }}</span></el-checkbox></el-checkbox-group>
+        <div v-if="selectedHygieneWarnings.length" class="remote-hygiene-alert" :class="{ 'is-blocker': hasSelectedBlockers }">
+          <strong>推送前安全与质量体检（命中 {{ selectedHygieneWarnings.length }} 项）</strong>
+          <ul>
+            <li v-for="(warn, idx) in selectedHygieneWarnings" :key="`${warn.category}-${warn.file}-${idx}`">
+              <code>{{ warn.file }}<template v-if="warn.line">:{{ warn.line }}</template></code> — <strong>{{ warn.label }}</strong>：{{ warn.reason }}
+            </li>
+          </ul>
+          <p v-if="hasSelectedConflictMarkers" class="remote-hygiene-block">检测到未解决的 Git 冲突标记，请先返回工作区解决冲突后再推送。</p>
+          <el-checkbox v-else-if="hasSelectedBlockers" v-model="hygieneConfirmed" :disabled="submitting">我已核对所选高风险文件，确认不包含真实密钥或私密环境配置</el-checkbox>
+        </div>
         <p v-if="!project.files.length">工作区没有待提交文件，将核对并推送当前任务分支。</p>
         <label class="remote-commit-label" for="remote-commit-message">提交说明</label><el-input id="remote-commit-message" v-model="message" :disabled="submitting" maxlength="2000" type="textarea" :rows="2" aria-label="Git 中文提交说明" />
       </template>
       <p v-if="target && !target.available" class="remote-reason">{{ target.reason }}</p>
+      <div v-if="currentUncertainAttempt" class="remote-reason">
+        <p>{{ currentUncertainAttempt.detail }}</p>
+        <div class="delivery-reconcile-actions">
+          <el-button size="small" :loading="reconcilingId === currentUncertainAttempt.id" :disabled="submitting || !!reconcilingId" @click="reconcileAttempt(currentUncertainAttempt.id, 'retry')">已核对远端未生效，解除锁定</el-button>
+          <el-button size="small" :loading="reconcilingId === currentUncertainAttempt.id" :disabled="submitting || !!reconcilingId" @click="reconcileAttempt(currentUncertainAttempt.id, 'completed')">已核对远端已生效</el-button>
+        </div>
+      </div>
     </template>
     <template #footer><el-button :disabled="submitting" @click="opened = false">取消</el-button><el-button type="primary" :loading="submitting" :disabled="!canSubmit" @click="submit">{{ selected?.kind === 'design' ? preview?.design.url ? '确认更新原方案' : '确认发布技术方案' : '确认提交并推送' }}</el-button></template>
   </el-dialog>
@@ -163,7 +213,13 @@ async function submit() {
 
 <style scoped>
 .remote-delivery{margin:0;padding:14px 0;color:var(--agent-secondary);font-size:12px;line-height:1.7;min-width:0}.remote-delivery>header{display:flex;align-items:center;flex-wrap:wrap;justify-content:space-between;gap:6px}.remote-delivery>header small{margin-left:auto;color:var(--agent-muted);font-size:10px}.remote-delivery>header strong{font-size:13px;color:var(--agent-text)}.delivery-issue{display:flex;align-items:baseline;flex-wrap:wrap;gap:8px}.remote-delivery a{display:inline-flex;align-items:center;gap:4px;color:var(--agent-accent);text-decoration:none}.delivery-links{margin:10px 0}.delivery-links>div{display:grid;grid-template-columns:68px minmax(0,1fr);gap:12px;margin:12px 0}.delivery-links dt{color:var(--agent-muted)}.delivery-links dd{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0;overflow-wrap:anywhere}.delivery-links dd>span{min-width:0;overflow-wrap:anywhere}.delivery-history>summary{cursor:pointer;color:var(--agent-muted)}.delivery-history ul{list-style:none;padding:0}.delivery-history li{padding:8px 0}.delivery-history time{margin-left:12px;color:var(--agent-muted);font-size:11px}.delivery-history p{margin:4px 0;white-space:pre-wrap;overflow-wrap:anywhere}.remote-files{display:flex;flex-direction:column;max-height:240px;overflow:auto;margin:8px 0 14px}.remote-files :deep(.el-checkbox){height:auto;min-height:28px;align-items:baseline;white-space:normal;margin-right:0}.remote-files :deep(.el-checkbox__label){white-space:normal;overflow-wrap:anywhere}.remote-files code{margin-right:6px}.remote-commit-label{display:block;margin:14px 0 6px}.remote-reason{margin-top:12px}.remote-delivery-dialog p{overflow-wrap:anywhere}.remote-delivery-dialog a{color:var(--ui-accent)}
-.delivery-artifacts{display:grid;grid-template-columns:minmax(0,1fr);gap:10px;margin:12px 0}.delivery-artifact{min-width:0;padding:12px;border:1px solid var(--agent-border);border-radius:8px}.delivery-artifact>header{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}.delivery-artifact>header strong{color:var(--agent-text);font-size:12px}.delivery-artifact p{margin:8px 0;overflow-wrap:anywhere}.i18n-artifact+.i18n-artifact{margin-top:12px}.artifact-download{font-size:12px}.delivery-jira-tasks{list-style:none;margin:0;padding:0}.delivery-jira-tasks li{padding:12px 0;border-bottom:1px solid var(--ui-border)}.delivery-jira-tasks p{margin:6px 0 0;white-space:pre-wrap;overflow-wrap:anywhere}.delivery-jira-tasks a{display:inline-flex;align-items:center;gap:5px;color:var(--ui-accent);text-decoration:none}
+.delivery-artifacts{display:grid;grid-template-columns:minmax(0,1fr);gap:10px;margin:12px 0}.delivery-reconcile-actions{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-top:6px}.delivery-artifact{min-width:0;padding:12px;border:1px solid var(--agent-border);border-radius:8px}.delivery-artifact>header{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}.delivery-artifact>header strong{color:var(--agent-text);font-size:12px}.delivery-artifact p{margin:8px 0;overflow-wrap:anywhere}.i18n-artifact+.i18n-artifact{margin-top:12px}.artifact-download{font-size:12px}.delivery-jira-tasks{list-style:none;margin:0;padding:0}.delivery-jira-tasks li{padding:12px 0;border-bottom:1px solid var(--ui-border)}.delivery-jira-tasks p{margin:6px 0 0;white-space:pre-wrap;overflow-wrap:anywhere}.delivery-jira-tasks a{display:inline-flex;align-items:center;gap:5px;color:var(--ui-accent);text-decoration:none}
 :global(.remote-delivery-dialog .el-dialog__body){max-height:calc(90vh - 120px);overflow:auto}
+.remote-file-badge{display:inline-block;margin-left:6px;padding:1px 5px;border-radius:4px;font-size:10px;line-height:1.4;background:color-mix(in srgb,var(--el-color-warning) 16%,transparent);color:var(--el-color-warning-dark-2)}
+.remote-file-badge.is-blocker{background:color-mix(in srgb,var(--el-color-danger) 16%,transparent);color:var(--el-color-danger)}
+.remote-hygiene-alert{margin:8px 0 12px;padding:10px 12px;border:1px solid color-mix(in srgb,var(--el-color-warning) 48%,var(--ui-border));border-radius:8px;background:color-mix(in srgb,var(--el-color-warning) 8%,var(--ui-surface));font-size:12px;line-height:1.6}
+.remote-hygiene-alert.is-blocker{border-color:color-mix(in srgb,var(--el-color-danger) 55%,var(--ui-border));background:color-mix(in srgb,var(--el-color-danger) 8%,var(--ui-surface))}
+.remote-hygiene-alert ul{margin:6px 0;padding-left:18px}
+.remote-hygiene-block{margin:6px 0 0;color:var(--el-color-danger);font-weight:500}
 @media(max-width:700px){.remote-delivery{margin-left:0}.delivery-artifacts{grid-template-columns:1fr}.delivery-links>div{grid-template-columns:1fr;gap:3px}}
 </style>

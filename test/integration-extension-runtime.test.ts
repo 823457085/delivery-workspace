@@ -9,8 +9,6 @@ import { assertIntegrationRequest, assertIntegrationCapability } from '../server
 import { integrationAvailable, integrationCatalog } from '../shared/integration-plugins.js';
 import { registeredWorkspaceSections, workspaceView, workspaceLocation, workspaceSections } from '../src/pages/agent/workspace-navigation.js';
 import { createIntegrationRuntime } from '../server/plugins/integration-runtime.js';
-import { createWecomIntegration } from '../server/wecom-integration.js';
-import { integrationCatalogFixture } from './fixtures/integration-catalog.js';
 
 test('legacy credentials survive immediate disable, remove, restart and restore without re-entry or copying secrets', async t => {
  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'extension-state-')); t.after(() => fs.rm(root, {recursive: true, force: true}));
@@ -44,7 +42,7 @@ test('legacy credentials survive immediate disable, remove, restart and restore 
 });
 
 test('core navigation has no vendor pages; registration restores every legacy view exactly once', () => {
- assert.equal(workspaceSections.flatMap(section => section.items).some(view => ['tasks','calendar','stats','jira-fix'].includes(view.id)), false);
+ assert.equal(workspaceSections.flatMap(section => section.items).some(view => integrationCatalog.some(plugin => plugin.views.some(item => item.id === view.id))), false);
  const disabled = registeredWorkspaceSections([]).flatMap(section => section.items);
  for (const manifest of integrationCatalog) for (const view of manifest.views) {
   assert.equal(disabled.some(item => item.id === view.id), false);
@@ -52,8 +50,8 @@ test('core navigation has no vendor pages; registration restores every legacy vi
   assert.equal(workspaceLocation(view.path, {task: 'DEMO-1'})?.query.task, 'DEMO-1');
  }
  for (let i = 0; i < 3; i++) {
-  const active = registeredWorkspaceSections(['jira','confluence']).flatMap(section => section.items);
-  for (const view of integrationCatalog[0].views) assert.equal(active.filter(item => item.id === view.id).length, 1);
+  const active = registeredWorkspaceSections(integrationCatalog.map(plugin => plugin.id)).flatMap(section => section.items);
+  for (const view of integrationCatalog.flatMap(plugin => plugin.views)) assert.equal(active.filter(item => item.id === view.id).length, 1);
   assert.equal(registeredWorkspaceSections([]).some(section => section.id === 'tasks'), false);
  }
  assert.equal(workspaceView('calendar')?.mode, 'calendar');
@@ -105,36 +103,39 @@ test('integration gateway preserves multipart upload protocol and confirmation g
  assert.equal(code,403); assert.equal(calls,1);
 });
 
-test('WeCom plugin status gates sending from the configured integration catalog', async t => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'wecom-plugin-catalog-'));
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
-  const { DELIVERY_PLUGIN_WECOM_ENABLED: enabled, DELIVERY_PLUGIN_WECOM_INSTALLED: installed } = process.env;
-  t.after(() => {
-    if (enabled === undefined) delete process.env.DELIVERY_PLUGIN_WECOM_ENABLED;
-    else process.env.DELIVERY_PLUGIN_WECOM_ENABLED = enabled;
-    if (installed === undefined) delete process.env.DELIVERY_PLUGIN_WECOM_INSTALLED;
-    else process.env.DELIVERY_PLUGIN_WECOM_INSTALLED = installed;
-  });
-  process.env.DELIVERY_PLUGIN_WECOM_INSTALLED = 'true';
-  process.env.DELIVERY_PLUGIN_WECOM_ENABLED = 'true';
-  let sends = 0;
-  const service = await createWecomIntegration(directory, {
-    configFile: path.join(directory, 'credentials', 'wecom.json'),
-    catalog: integrationCatalogFixture,
-    fetch: async () => { sends++; return Response.json({ errcode: 0 }); },
-  });
-  await service.configure({ groupName: '测试群', webhook: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=fixture-only' });
-  const input = {
-    interfaceId: 'fixture-merchant', summary: '接口反馈', environment: 'fixture',
-    parameters: '{}', actual: '缺少字段', expected: '返回字段', contractReference: '测试契约', traceId: '',
-  };
-  const preview = service.preview(input);
-  assert.equal(preview.canSend, true);
-  process.env.DELIVERY_PLUGIN_WECOM_ENABLED = 'false';
-  assert.equal(service.preview(input).canSend, false);
-  await assert.rejects(service.send({ input: preview.input, hash: preview.hash }), /停用/);
-  assert.equal(sends, 0);
-  process.env.DELIVERY_PLUGIN_WECOM_ENABLED = 'true';
-  assert.equal((await service.send({ input: preview.input, hash: preview.hash })).record.status, 'sent');
-  assert.equal(sends, 1);
+test('本机插件可启停与移除，旧 Go 接口遵守插件状态及同源门禁', async t => {
+ const root = await fs.mkdtemp(path.join(os.tmpdir(), 'local-plugin-'));
+ t.after(() => fs.rm(root, {recursive:true,force:true}));
+ const env = { ...process.env }, file = path.join(root, 'plugins.json');
+ const store = await createPluginStore({file, port:5288});
+ const get = async (id: string) => (await store.list()).find(item => item.id === id)!;
+ const key = 'DELIVERY_PLUGIN_GO_LEARNING';
+ t.after(() => { for (const suffix of ['_ENABLED', '_INSTALLED']) {
+  const name = key + suffix;
+  if (env[name] === undefined) delete process.env[name]; else process.env[name] = env[name];
+ } });
+ assert.equal((await get('go-learning')).runningConfigured, true);
+ assert.equal((await get('sign-hub')).runningConfigured, true);
+ assert.equal((await (await createPluginStore({file, port:5199})).list()).find(item => item.id === 'sign-hub')?.runningConfigured, false);
+ await assert.rejects(store.save('go-learning', {enabled:true, baseUrl:'https://wrong.test'}), /本机插件/);
+
+ let status = 0;
+ const runtime = createIntegrationRuntime({
+  root, directory:root, port:5288,
+  source:{jiraIssueRequest:async () => Response.json({}),confluenceReadRequest:async () => Response.json({})},
+  json: (_res, code) => { status = code; }, body: async () => ({}),
+ });
+ const request = {method:'GET',socket:{remoteAddress:'127.0.0.1'},headers:{host:'localhost:5288'}} as unknown as http.IncomingMessage;
+ const call = (pathname: string) => runtime.route(request, {} as http.ServerResponse, new URL(pathname,'http://localhost:5288'));
+ assert.equal(await call('/api/go-learning/overview'), true); assert.equal(status, 200);
+ await store.state('go-learning', {installed:false});
+ assert.equal(integrationAvailable(await get('go-learning')), false);
+ assert.throws(() => assertIntegrationRequest('/api/go-learning/overview'), /移除/);
+ await call('/api/go-learning/overview'); assert.equal(status, 400);
+ await store.state('go-learning', {installed:true, enabled:true});
+ await call('/api/go-learning/overview'); assert.equal(status, 200);
+ request.method = 'POST';
+ request.headers.origin = 'http://other.test';
+ await call('/api/go-learning/progress'); assert.equal(status, 403);
+ await runtime.close();
 });

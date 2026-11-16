@@ -56,12 +56,12 @@ test('CSV按UTF8字节、逻辑数据行和字段长度限制，带引号换行�
 });
 
 test('Web IM和V2按完整origin精确隔离，只匹配海外，不跨协议、子域、端口', () => {
-  const systems = [system('Web IM', '海外', [['old-test', '测试', 'https://web-im-test.example.test/']]),
-    system('Web IM 2.0', '海外', [['v2-test', '测试', 'https://web-im-v2-test.example.test/'], ['v2-pre', '预发布', 'https://web-im-v2-pre.example.test/']]),
+  const systems = [system('Web IM', '海外', [['old-test', '测试', 'https://web-im-test.hahabianli.com/']]),
+    system('Web IM 2.0', '海外', [['v2-test', '测试', 'https://web-im-v2-test.hahabianli.com/'], ['v2-pre', '预发布', 'https://web-im-v2-pre.hahabianli.com/']]),
     system('国内系统', '国内', [['domestic', '测试', 'https://domestic.example.test/']])];
-  const accounts = [login('https://web-im-test.example.test/login'), login('https://web-im-v2-test.example.test/login'),
-    login('https://web-im-v2-pre.example.test/'), login('http://web-im-v2-test.example.test/'),
-    login('https://web-im-v2-test.example.test:8443/'), login('https://child.web-im-v2-test.example.test/'),
+  const accounts = [login('https://web-im-test.hahabianli.com/login'), login('https://web-im-v2-test.hahabianli.com/login'),
+    login('https://web-im-v2-pre.hahabianli.com/'), login('http://web-im-v2-test.hahabianli.com/'),
+    login('https://web-im-v2-test.hahabianli.com:8443/'), login('https://child.web-im-v2-test.hahabianli.com/'),
     login('https://domestic.example.test/')];
   const before = JSON.stringify({ systems, accounts });
   const result = matchBrowserAccounts(accounts, systems);

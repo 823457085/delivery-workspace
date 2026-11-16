@@ -363,6 +363,22 @@ export type AgentWorkflowState = 'implementing' | 'verifying' | 'reviewing' | 'r
   | 'needs_decision' | 'blocked' | 'cancelled' | 'taken_over';
 export type AgentWorkflowAction = 'extend' | 'escalate' | 'retry' | 'takeover' | 'cancel';
 
+export interface AgentWorkflowReviewStepStats {
+  verdict?: 'approved' | 'changes_requested' | 'blocked';
+  blockerCount: number;
+  majorCount: number;
+  minorCount: number;
+  totalFindings: number;
+}
+
+export interface AgentWorkflowReviewConvergence {
+  reviewRounds: number;
+  initialFindings: number;
+  latestFindings: number;
+  blockerRemaining: number;
+  trend: 'clean' | 'converging' | 'stalled' | 'regressed' | 'single';
+}
+
 export interface AgentWorkflowStepSummary {
   step: number;
   stage: AgentWorkflowStage;
@@ -376,6 +392,7 @@ export interface AgentWorkflowStepSummary {
   status: AgentRunStatus;
   outcome: 'pending' | 'passed' | 'failed' | 'blocked';
   reason: string;
+  reviewStats?: AgentWorkflowReviewStepStats;
 }
 
 export interface AgentWorkflowSummary {
@@ -398,6 +415,8 @@ export interface AgentWorkflowSummary {
   snapshot?: AgentWorkspaceVersion;
   /** Claude 不可用时流程已改用 Codex 继续；之后的 Claude 岗位都由 Codex 承担。 */
   providerFallback?: AgentProviderFallback;
+  /** 多轮审查问题收敛趋势与剩余问题统计。 */
+  reviewConvergence?: AgentWorkflowReviewConvergence;
   createdAt: string;
   updatedAt: string;
 }

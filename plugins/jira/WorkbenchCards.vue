@@ -28,5 +28,26 @@ const emit = defineEmits<{openIssue: [key: string]}>();
         </section>
 </template>
 <style scoped>
-.wb-card{border:1px solid var(--ui-border);border-radius:12px;background:var(--ui-surface);margin-bottom:16px;padding:16px}.wb-card-head{display:flex;justify-content:space-between;gap:10px}h2{margin:0;font-size:15px}p,small,dt{color:var(--ui-muted);font-size:12px}.wb-today{list-style:none;padding:0}.wb-today button{display:flex;justify-content:space-between;gap:10px;width:100%;text-align:left;border:0;background:transparent;color:var(--ui-text);padding:8px 0;cursor:pointer}.wb-today small,.wb-today strong{display:block}dl{display:flex;gap:16px;flex-wrap:wrap}dd{margin:4px 0}a{color:var(--ui-accent)}
+.wb-card{border:1px solid var(--ui-border);border-radius:var(--ds-radius,12px);background:var(--ui-surface);margin-bottom:16px;padding:16px}
+.wb-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:8px}
+h2{display:flex;align-items:center;gap:6px;margin:0;font-size:14px;font-weight:600;line-height:20px;color:var(--ui-text)}
+.wb-card-head p{margin:3px 0 0;color:var(--ui-muted);font-size:12px;line-height:16px}
+.wb-link{flex-shrink:0;color:var(--ui-accent);font-size:12px;font-weight:500;text-decoration:none}
+.wb-link:hover{text-decoration:underline;text-underline-offset:3px}
+p,small,dt{color:var(--ui-muted);font-size:12px}
+.wb-today{list-style:none;margin:0;padding:4px 0}
+.wb-today button{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;text-align:left;border:0;border-radius:var(--ds-radius-xs,8px);background:transparent;color:var(--ui-text);padding:8px 10px;cursor:pointer;transition:background-color 160ms ease}
+.wb-today button:hover{background:var(--ui-hover)}
+.wb-today button>span:first-child{min-width:0;flex:1}
+.wb-today small{display:block;font:500 11px/15px var(--mono);color:var(--ui-muted)}
+.wb-today strong{display:block;margin-top:2px;font-size:12.5px;font-weight:500;line-height:18px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wb-more{padding:6px 10px 2px;font-size:12px}
+.wb-empty{margin:0;padding:16px 12px;text-align:center;font-size:12.5px;color:var(--ui-muted)}
+dl{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:10px 0}
+dl>div{min-width:0;padding:9px 11px;border:1px solid var(--ui-divider);border-radius:var(--ds-radius-xs,8px);background:var(--ui-raised)}
+dt{font-size:11.5px;line-height:16px;color:var(--ui-muted)}
+dd{margin:3px 0 0;font:600 13.5px/18px var(--mono);font-variant-numeric:tabular-nums;color:var(--ui-text)}
+dd.warn{color:var(--ui-warning)}
+.wb-note{margin:10px 0 0;font-size:12px;line-height:1.65;color:var(--ui-muted)}
+a{color:var(--ui-accent);text-decoration:none}
 </style>

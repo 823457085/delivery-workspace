@@ -1,0 +1,935 @@
+/* ==========================================================================
+   awesome-design-md（https://github.com/voltagent/awesome-design-md）壳层与全页面组件规范
+   - 色板：src/app/themes.css（全部通过 WCAG 2.x AA >= 4.5:1 对比度校验）
+   - 每个 DESIGN.md 预设对应一套独立的空间壳层结构与全页面组件形态：
+       linear        → Inset Canvas    #010102 画布侧栏 + #08090a 内嵌圆角舞台 + 四阶表面阶梯
+       vercel        → Top Tabs        白色下划线顶栏 + #fafafa 舞台 + 0 0 0 1px 发丝阴影描边卡片
+       raycast       → Floating Panels 五区全部悬浮为 12px 指令面板（严格 8px 对称间隙）+ 顶缘内高光 + 纯白主 CTA
+       cursor        → Paper Sheets    #f7f7f4 暖奶油纸底 + #ffffff 纸页分区 + 400 字重编辑部排版 + 墨黑焦点卡
+       supabase(-dark) → Console       紧凑控制台 + Source Code Pro 大写表头 + 2px 翠绿指示条 + 绿底深字主 CTA
+   - 由 pages/agent/index.vue 最后加载，覆盖 design-system.css 与 workspace-layout.css。
+   ========================================================================== */
+
+/* ---------- 0. 品牌几何、字体与节奏令牌 ---------- */
+:root[data-theme='linear'] {
+  --ds-display: 'Inter', 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+  --ds-numeral: 'Inter', 'SF Pro Display', -apple-system, sans-serif;
+  --ds-code: 'JetBrains Mono', 'Geist Mono', ui-monospace, 'SF Mono', SFMono-Regular, Menlo, monospace;
+  --ds-radius-lg: 12px;
+  --ds-radius: 8px;
+  --ds-radius-sm: 6px;
+  --ds-radius-xs: 4px;
+  --ds-shadow: inset 0 1px 0 0 rgb(255 255 255 / 0.04);
+  --ds-shadow-hover: inset 0 1px 0 0 rgb(255 255 255 / 0.07), 0 0 0 1px #34343a;
+  --ds-ease: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  --ds-duration-color: 120ms;
+  --ds-control-height: 32px;
+  --hg-header-height: 48px;
+  --hg-left-width: 224px;
+  --hg-right-width: 280px;
+  --hg-footer-height: 32px;
+  --dm-session-width: 236px;
+  --dm-execution-width: 284px;
+  --dm-btn-radius: 8px;
+  --dm-input-radius: 8px;
+  --dm-pill-radius: 9999px;
+  --dm-card-radius: 12px;
+  --dm-stage: #08090a;
+  --dm-hairline-strong: #34343a;
+  --dm-display-weight: 600;
+  --dm-display-tracking: -0.03em;
+  --dm-title-weight: 600;
+}
+
+:root[data-theme='vercel'] {
+  --ds-display: 'Geist', 'Inter', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+  --ds-numeral: 'Geist', 'Inter', -apple-system, sans-serif;
+  --ds-code: 'Geist Mono', 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  --ds-radius-lg: 8px;
+  --ds-radius: 8px;
+  --ds-radius-sm: 6px;
+  --ds-radius-xs: 4px;
+  --ds-shadow: 0 0 0 1px rgb(0 0 0 / 0.08), 0 1px 1px rgb(0 0 0 / 0.02), 0 2px 2px rgb(0 0 0 / 0.04);
+  --ds-shadow-hover: 0 0 0 1px rgb(0 0 0 / 0.14), 0 2px 4px rgb(0 0 0 / 0.04), 0 8px 16px -4px rgb(0 0 0 / 0.06);
+  --ds-ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --ds-duration-color: 150ms;
+  --ds-control-height: 32px;
+  --hg-header-height: 54px;
+  --hg-left-width: 236px;
+  --hg-right-width: 292px;
+  --hg-footer-height: 36px;
+  --dm-session-width: 244px;
+  --dm-execution-width: 296px;
+  --dm-btn-radius: 6px;
+  --dm-input-radius: 6px;
+  --dm-pill-radius: 9999px;
+  --dm-card-radius: 8px;
+  --dm-stage: #fafafa;
+  --dm-hairline-strong: #a1a1a1;
+  --dm-display-weight: 600;
+  --dm-display-tracking: -0.04em;
+  --dm-title-weight: 600;
+}
+
+:root[data-theme='raycast'] {
+  --ds-display: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+  --ds-numeral: 'Inter', -apple-system, system-ui, sans-serif;
+  --ds-code: 'JetBrains Mono', 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  --ds-radius-lg: 10px;
+  --ds-radius: 8px;
+  --ds-radius-sm: 6px;
+  --ds-radius-xs: 4px;
+  --ds-shadow: inset 0 1px 0 0 rgb(255 255 255 / 0.05);
+  --ds-shadow-hover: inset 0 1px 0 0 rgb(255 255 255 / 0.09), 0 0 0 1px rgb(255 255 255 / 0.16);
+  --ds-ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --ds-duration-color: 150ms;
+  --ds-control-height: 34px;
+  --hg-header-height: 60px;
+  --hg-left-width: 232px;
+  --hg-right-width: 288px;
+  --hg-footer-height: 40px;
+  --dm-session-width: 240px;
+  --dm-execution-width: 288px;
+  --dm-btn-radius: 8px;
+  --dm-input-radius: 8px;
+  --dm-pill-radius: 5px;
+  --dm-card-radius: 10px;
+  --dm-stage: #0d0d0d;
+  --dm-hairline-strong: rgb(255 255 255 / 0.18);
+  --dm-display-weight: 600;
+  --dm-display-tracking: 0;
+  --dm-title-weight: 500;
+  --dm-float-gap: 8px;
+  --dm-float-radius: 12px;
+}
+
+:root[data-theme='cursor'] {
+  --ds-display: 'Inter', 'CursorGothic', system-ui, 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+  --ds-numeral: 'Inter', 'CursorGothic', system-ui, sans-serif;
+  --ds-code: 'JetBrains Mono', 'Fira Code', ui-monospace, 'SF Mono', Menlo, monospace;
+  --ds-radius-lg: 12px;
+  --ds-radius: 8px;
+  --ds-radius-sm: 6px;
+  --ds-radius-xs: 4px;
+  --ds-shadow: none;
+  --ds-shadow-hover: 0 0 0 1px #cfcdc4;
+  --ds-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --ds-duration-color: 180ms;
+  --ds-control-height: 34px;
+  --hg-header-height: 54px;
+  --hg-left-width: 244px;
+  --hg-right-width: 308px;
+  --hg-footer-height: 34px;
+  --dm-session-width: 252px;
+  --dm-execution-width: 300px;
+  --dm-btn-radius: 8px;
+  --dm-input-radius: 8px;
+  --dm-pill-radius: 9999px;
+  --dm-card-radius: 12px;
+  --dm-stage: #f7f7f4;
+  --dm-hairline-strong: #cfcdc4;
+  --dm-display-weight: 400;
+  --dm-display-tracking: -0.025em;
+  --dm-title-weight: 500;
+  --dm-float-gap: 10px;
+  --dm-float-radius: 12px;
+}
+
+:root:is([data-theme='supabase'], [data-theme='supabase-dark']) {
+  --ds-display: 'Inter', 'Circular', 'Geist', 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+  --ds-numeral: 'Inter', 'Circular', 'Geist', sans-serif;
+  --ds-code: 'Source Code Pro', 'JetBrains Mono', ui-monospace, Menlo, Monaco, Consolas, monospace;
+  --ds-radius-lg: 10px;
+  --ds-radius: 8px;
+  --ds-radius-sm: 6px;
+  --ds-radius-xs: 4px;
+  --ds-ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --ds-duration-color: 150ms;
+  --ds-control-height: 32px;
+  --hg-header-height: 48px;
+  --hg-left-width: 232px;
+  --hg-right-width: 292px;
+  --hg-footer-height: 32px;
+  --dm-session-width: 240px;
+  --dm-execution-width: 292px;
+  --dm-btn-radius: 6px;
+  --dm-input-radius: 6px;
+  --dm-pill-radius: 9999px;
+  --dm-card-radius: 10px;
+  --dm-display-weight: 500;
+  --dm-display-tracking: -0.02em;
+  --dm-title-weight: 500;
+}
+:root[data-theme='supabase'] {
+  --ds-shadow: 0 1px 2px rgb(0 0 0 / 0.04);
+  --ds-shadow-hover: 0 6px 18px rgb(0 0 0 / 0.07);
+  --dm-stage: #fafafa;
+  --dm-hairline-strong: #c7c7c7;
+}
+:root[data-theme='supabase-dark'] {
+  --ds-shadow: none;
+  --ds-shadow-hover: 0 8px 24px rgb(0 0 0 / 0.38);
+  --dm-stage: #171717;
+  --dm-hairline-strong: #3e3e3e;
+}
+
+:root[data-theme='raycast'] body {
+  font-feature-settings: 'calt', 'kern', 'liga', 'ss03';
+}
+:root:is([data-theme='linear'], [data-theme='vercel'], [data-theme='raycast'], [data-theme='cursor'], [data-theme='supabase'], [data-theme='supabase-dark']) body {
+  font-family: var(--ds-display);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- 1. 六套预设共享：收敛酸性装饰、统一全页面卡片/表单/表格/会话语义 ---------- */
+:root:is([data-theme='linear'], [data-theme='vercel'], [data-theme='raycast'], [data-theme='cursor'], [data-theme='supabase'], [data-theme='supabase-dark']) {
+  & .acid-tick-rail { display: none; }
+  & .acid-chrome { text-shadow: none; }
+
+  & .workspace-brand-symbol {
+    border-color: transparent;
+    border-radius: var(--ds-radius-sm);
+    background: var(--ui-primary);
+    color: var(--ui-on-primary);
+    box-shadow: none;
+  }
+  & .workspace-brand-name strong { letter-spacing: -0.015em; font-weight: 600; }
+  & .workspace-brand-name small { font: 500 10.5px/14px var(--ds-code); letter-spacing: 0.02em; color: var(--ui-muted); }
+
+  & :is(.hg-zone-tag, .hg-rail-heading, .hg-meter-row, .hg-live-dot) { letter-spacing: 0.04em; }
+  & .hg-rail-heading { font-weight: 500; }
+  & .workspace-page-identity p { font-weight: 500; letter-spacing: 0.04em; }
+  & .workspace-page-identity p::after { content: '/'; color: var(--ui-muted); }
+  & .workspace-page-identity h1 { font-weight: var(--dm-title-weight); letter-spacing: -0.015em; }
+  & .studio-layout .workspace-panel .wb-hero h1 { font-weight: var(--dm-display-weight); letter-spacing: var(--dm-display-tracking); background: none; color: var(--ui-text); }
+  & .workspace-console.is-chat .studio-layout :is(.studio-conversation-header h1, .group-header h1, .new-empty h1, .group-empty h2) {
+    font-weight: var(--dm-display-weight);
+    letter-spacing: var(--dm-display-tracking);
+  }
+
+  /* 主按钮与控件几何（DESIGN.md：单一主 CTA，无硬边色散阴影） */
+  & .hg-acid-cta {
+    border-radius: var(--dm-btn-radius);
+    font: 500 13px/16px var(--ds-display);
+    letter-spacing: 0;
+    text-transform: none;
+    box-shadow: none;
+  }
+  & .hg-acid-cta:active { transform: scale(0.98); }
+  & :is(.btn, .el-button:not(.is-round, .is-circle, .is-link, .is-text), .theme-trigger, .workspace-back, .workspace-rail-toggle) {
+    border-radius: var(--dm-btn-radius);
+    font-weight: 500;
+  }
+  & :is(.el-input__wrapper, .el-select__wrapper, .el-textarea__inner, .session-search, .project-filter, .group-search, .message-search) {
+    border-radius: var(--dm-input-radius);
+  }
+  & :is(.el-tag, .status-pill, .run-badge) {
+    align-self: center;
+    height: fit-content;
+    border-radius: var(--dm-pill-radius);
+    font-weight: 500;
+  }
+  & .theme-option { border-radius: var(--ds-radius); }
+
+  /* 导航与页签选中态：使用表面抬升而非大块主色填充（五大 DESIGN.md 共同铁律） */
+  & .hg-header-nav button:hover { border-color: transparent; }
+  & .hg-header-nav button[aria-current='page'] {
+    background: var(--ui-nav-selected);
+    border-color: transparent;
+    color: var(--ui-text);
+    font-weight: 500;
+  }
+  & .hg-rail-item { font-weight: 500; }
+  & .hg-rail-item:hover { border-color: transparent; }
+  & .hg-rail-item[aria-current='page'] {
+    background: var(--ui-nav-selected);
+    border-color: transparent;
+    color: var(--ui-text);
+    font-weight: 500;
+    box-shadow: none;
+  }
+  & .hg-rail-item[aria-current='page'] svg { color: var(--ui-accent); }
+  & .hg-rail-subitems button[aria-current='page'] { background: var(--ui-hover); color: var(--ui-text); font-weight: 500; }
+  & .workspace-view-tabs button[aria-current='page'] {
+    background: var(--ui-surface);
+    border-color: transparent;
+    color: var(--ui-text);
+    font-weight: 500;
+    box-shadow: 0 0 0 1px var(--ui-border);
+  }
+  & .studio-layout .workspace-panel .wb-tabs button.active {
+    background: var(--ui-surface) !important;
+    color: var(--ui-text) !important;
+    border-color: var(--ui-border) !important;
+    border-radius: var(--ds-radius-xs);
+    box-shadow: 0 1px 2px rgb(0 0 0 / 0.06);
+  }
+  & .studio-layout .workspace-panel .wb-tabs button.active span {
+    background: var(--ui-raised) !important;
+    color: var(--ui-secondary) !important;
+  }
+  & :is(.hg-studio-btn, .hg-studio-group) { border-radius: var(--dm-btn-radius); font-weight: 500; }
+  & :is(.hg-studio-btn, .hg-studio-group):hover { color: var(--ui-text); border-color: var(--dm-hairline-strong); }
+  & :is(.hg-aside-card > header, .hg-aside-links em) { font-weight: 500; }
+  & .hg-aside-card { border-radius: var(--dm-card-radius); box-shadow: var(--ds-shadow); }
+  & .hg-aside-links button:is(:hover, .active) { border-color: var(--dm-hairline-strong); }
+  & .hg-aside-pills button:is(.active, :hover) { border-color: var(--dm-hairline-strong); color: var(--ui-text); background: var(--ui-hover); }
+
+  /* 今日工作台焦点卡（.wb-bento-hero）与选中指标卡（.wb-metric.active）：严禁整块涂满主 CTA 色 */
+  & .studio-layout .workspace-panel .wb-bento-hero {
+    border: 1px solid var(--ui-border);
+    border-radius: var(--dm-card-radius);
+    background: var(--ui-surface);
+    color: var(--ui-text);
+    box-shadow: var(--ds-shadow);
+  }
+  & .studio-layout .workspace-panel .wb-bento-hero .wb-eyebrow {
+    color: var(--ui-muted);
+    font-weight: 500;
+    letter-spacing: 0.05em;
+  }
+  & .studio-layout .workspace-panel .wb-bento-hero .wb-live-clock {
+    border-color: var(--ui-border);
+    border-radius: var(--dm-pill-radius);
+    background: var(--ui-raised);
+    color: var(--ui-secondary);
+    font-weight: 500;
+  }
+  & .studio-layout .workspace-panel .wb-bento-hero h1 {
+    color: var(--ui-text);
+    font-weight: var(--dm-display-weight);
+    letter-spacing: var(--dm-display-tracking);
+    transform: none;
+  }
+  & .studio-layout .workspace-panel .wb-bento-hero .wb-summary {
+    border-top-color: var(--ui-divider);
+    color: var(--ui-secondary);
+  }
+  & .studio-layout .workspace-panel .workspace-page-body .wb-metric.active {
+    border-color: var(--dm-hairline-strong);
+    background: var(--ui-raised);
+    color: var(--ui-text);
+    box-shadow: var(--ds-shadow-hover);
+  }
+  & .studio-layout .workspace-panel .workspace-page-body .wb-metric.active .wb-metric-text > span,
+  & .studio-layout .workspace-panel .workspace-page-body .wb-metric.active strong {
+    color: var(--ui-text);
+  }
+  & .studio-layout .workspace-panel .workspace-page-body .wb-metric.active .wb-metric-text small {
+    color: var(--ui-muted);
+  }
+  & .studio-layout .workspace-panel .workspace-page-body .wb-metric.active .wb-metric-icon {
+    border-color: var(--ui-border);
+    background: var(--ui-accent-soft);
+    color: var(--ui-accent);
+  }
+
+  /* 全业务页面卡片与分区容器（覆盖今日、总览、Jira、项目、需求、AI 队列、联调、端口、部署、自动化、设置） */
+  & .studio-layout .workspace-panel .workspace-page-body :is(
+    .surface,
+    .wb-card,
+    .wb-metric,
+    .wb-bento-ruler,
+    .hub-metrics.hub-metrics > .metric-card,
+    .project-sidebar,
+    .project-main,
+    .project-inspector,
+    .project-bar,
+    .port-sidebar,
+    .port-main,
+    .deployment-sidebar,
+    .deployment-main,
+    .module-sidebar,
+    .interface-list,
+    .desk-card,
+    .desk-system-panel,
+    .desk-attention-panel,
+    .desk-metrics button,
+    .control-metrics article,
+    .control-sidebar,
+    .control-main,
+    .jira-dev .card,
+    .jira-dev > .task-actions,
+    .development-records,
+    .execution-navigation,
+    .execution-summary,
+    .settings-tabs > .el-tabs__header,
+    .automation-panel > .daily-report,
+    .automation-panel > .automation-card,
+    .automation-panel > .weekly-card,
+    .automation-panel > .automation-job,
+    .messages-status,
+    .system-card,
+    .environment-card
+  ) {
+    border-radius: var(--dm-card-radius);
+    box-shadow: var(--ds-shadow);
+  }
+  & .studio-layout .workspace-panel .workspace-page-body :is(
+    .wb-row,
+    .wb-metric,
+    .hub-metrics.hub-metrics > .metric-card,
+    .environment-card,
+    .system-card,
+    .desk-card
+  ):hover {
+    border-color: var(--dm-hairline-strong);
+    box-shadow: var(--ds-shadow-hover);
+  }
+  & .studio-layout .workspace-panel .el-table {
+    border-radius: var(--dm-card-radius);
+    box-shadow: var(--ds-shadow);
+  }
+
+  /* 会话与群聊（新会话、单会话线程、团队群聊大厅与接力室） */
+  & .workspace-console.is-chat .studio-layout :is(.composer-inner, .group-composer, .new-composer, .new-starter-card, .group-starter-card, .group-relay-bar) {
+    border-radius: var(--dm-card-radius);
+    box-shadow: var(--ds-shadow);
+  }
+  & .workspace-console.is-chat .studio-layout :is(.new-starter-card, .group-starter-card):hover:not(:disabled) {
+    border-color: var(--dm-hairline-strong);
+    box-shadow: var(--ds-shadow-hover);
+  }
+  & .workspace-console.is-chat .studio-layout :is(.composer-inner, .group-composer, .new-composer):focus-within {
+    border-color: var(--dm-hairline-strong);
+    box-shadow: 0 0 0 3px var(--ui-focus-ring);
+  }
+  & .workspace-console.is-chat .studio-layout :is(.agent-message.team-chat-message > div, .group-message:not(.user) > div) {
+    border-radius: var(--dm-card-radius);
+    box-shadow: none;
+  }
+  & .workspace-console.is-chat .studio-layout .agent-message:not(.team-chat-message) > div {
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  & .workspace-console.is-chat .studio-layout :is(.user-message .user-card, .user-message.team-chat-message > div, .group-message.user .user-text) {
+    border-radius: 18px;
+    box-shadow: none;
+  }
+  & .workspace-console.is-chat .studio-layout .sidebar-modes { border-radius: var(--ds-radius-xs, 7px); }
+  & .workspace-console.is-chat .studio-layout .sidebar-modes button[aria-pressed='true'] { box-shadow: 0 0 0 1px var(--ui-border); }
+  & .workspace-console.is-chat .studio-layout :is(.session-filter-deck, .group-filter-deck) {
+    border-radius: 0;
+    box-shadow: none;
+  }
+  & .workspace-console.is-chat .studio-layout :is(.session-item, .group-room-row) {
+    border-radius: var(--ds-radius-xs, 7px);
+  }
+  & .workspace-console.is-chat .studio-layout :is(.session-item.selected, .group-room-row.selected) {
+    border-radius: var(--ds-radius-xs, 7px);
+    border-color: transparent;
+    background: var(--ui-nav-selected);
+    box-shadow: none;
+  }
+  & .agent-panel.studio-layout .create-session,
+  & .sidebar-create {
+    border-radius: var(--dm-btn-radius);
+    box-shadow: none;
+    font-weight: 500;
+  }
+
+  /* 弹层与下拉菜单：1px hairline + 受控圆角 */
+  & :is(.el-dialog, .el-message-box, .el-popover, .el-select__popper, .el-picker__popper, .el-dropdown__popper) {
+    border-color: var(--ui-border);
+    border-radius: var(--dm-card-radius);
+  }
+}
+
+/* ---------- 2. 桌面会话列宽：各品牌独立黄金比例 ---------- */
+@media (min-width: 1080px) {
+  :root:is([data-theme='linear'], [data-theme='vercel'], [data-theme='raycast'], [data-theme='cursor'], [data-theme='supabase'], [data-theme='supabase-dark']) .workspace-console.holy-grail-shell .agent-panel.studio-layout:not(.mobile-layout) {
+    --session-column-width: var(--dm-session-width);
+    --execution-column-width: var(--dm-execution-width);
+  }
+}
+
+/* ==========================================================================
+   3. Linear — Inset Canvas：#010102 画布侧栏 + #08090a 内嵌圆角舞台 + 四阶表面阶梯
+   ========================================================================== */
+@media (min-width: 1080px) {
+  :root[data-theme='linear'] {
+    & .workspace-topbar.hg-header,
+    & .hg-footer {
+      background: var(--ui-bg);
+      border-color: transparent;
+    }
+    & :is(.hg-header-brand, .hg-header-actions) { border-color: transparent; }
+    & .hg-header-nav button { height: 28px; font-size: 13px; color: var(--ui-muted); }
+    & .hg-header-nav button:hover { background: var(--ui-hover); color: var(--ui-text); }
+    & :is(.hg-left-rail, .hg-right-aside) { background: var(--ui-bg); border-color: transparent; }
+    & .hg-rail-item { min-height: 30px; padding-block: 5px; font-size: 13px; color: var(--ui-muted); }
+    & .hg-rail-item[aria-current='page'] { color: var(--ui-text); }
+    & .hg-body-grid { background: var(--ui-bg); }
+    & .hg-main-column {
+      height: auto;
+      align-self: stretch;
+      margin: 0 0 6px;
+      border: 1px solid var(--ui-border);
+      border-radius: 12px;
+      background: var(--dm-stage);
+      box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.04);
+    }
+    & .hg-body-grid.is-embedded .hg-main-column { margin-right: 8px; }
+    & .hg-main-column .workspace-page-head { background: transparent; border-bottom-color: var(--ui-divider); }
+    & .hg-main-column .workspace-panel,
+    & .hg-main-column .workspace-panel-content { background: transparent; }
+    & .hg-aside-card { background: var(--ui-surface); }
+
+    /* 会话与群聊：左右侧栏贴纯黑画布，中栏对话舞台内嵌为 #08090a 圆角面板 */
+    & .workspace-console.holy-grail-shell.is-chat .studio-layout :is(.session-shell, .group-workspace) {
+      background: var(--ui-bg);
+    }
+    & .workspace-console.holy-grail-shell.is-chat .studio-layout :is(.session-column, .group-sidebar, .execution-column, .group-details-panel) {
+      background: var(--ui-bg);
+      border-color: transparent;
+    }
+    & .workspace-console.holy-grail-shell.is-chat .studio-layout :is(.session-sidebar, .side-panel, .execution-panel) {
+      background: var(--ui-bg);
+    }
+    & .workspace-console.holy-grail-shell.is-chat .studio-layout :is(.conversation-column, .group-main) {
+      height: auto;
+      align-self: stretch;
+      margin: 0 0 6px;
+      overflow: hidden;
+      border: 1px solid var(--ui-border);
+      border-radius: 12px;
+      background: var(--dm-stage);
+      box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.04);
+    }
+    & .workspace-console.holy-grail-shell.is-chat .studio-layout .session-shell.right-collapsed:not(.has-right-rail) .conversation-column {
+      margin-right: 8px;
+    }
+    & .workspace-console.holy-grail-shell.is-chat .studio-layout :is(.conversation-masthead, .group-masthead, .new-stage-topbar) {
+      background: transparent;
+      border-bottom-color: var(--ui-divider);
+    }
+    & .workspace-console.holy-grail-shell.is-chat .studio-layout :is(.new-conversation, .message-viewport, .studio-main-execution, .studio-main-delivery, .conversation-reading, .group-reading, .group-messages, .studio-conversation-header, .conversation-context) {
+      background-color: transparent;
+    }
+  }
+}
+:root[data-theme='linear'] {
+  & .studio-layout .workspace-panel .wb-bento-hero {
+    background: #141516;
+    border-color: #23252a;
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.06);
+  }
+  & .studio-layout .workspace-panel .wb-bento-hero .wb-live-clock > i {
+    background: #5e6ad2;
+  }
+  & .studio-layout .workspace-panel .workspace-page-body .wb-metric.active {
+    background: #141516;
+    border-color: #5e6ad2;
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.06), 0 0 0 1px rgb(94 106 210 / 0.28);
+  }
+}
+
+/* ==========================================================================
+   4. Vercel — Top Tabs：白色下划线顶栏 + #fafafa 舞台 + 0 0 0 1px 发丝阴影描边卡片
+   ========================================================================== */
+@media (min-width: 1080px) {
+  :root[data-theme='vercel'] {
+    & .workspace-topbar.hg-header {
+      background: #ffffff;
+      border-bottom-color: #ebebeb;
+    }
+    & :is(.hg-header-brand, .hg-header-actions) { border-color: transparent; }
+    & .hg-header-nav { gap: 2px; align-items: stretch; }
+    & .hg-header-nav button {
+      height: 100%;
+      padding: 0 12px;
+      border: 0;
+      border-bottom: 2px solid transparent;
+      border-radius: 0;
+      background: transparent;
+      color: #666666;
+      font-weight: 400;
+      letter-spacing: -0.01em;
+    }
+    & .hg-header-nav button:hover { background: transparent; color: #171717; }
+    & .hg-header-nav button[aria-current='page'] {
+      background: transparent;
+      border-bottom-color: #171717;
+      color: #171717;
+      font-weight: 500;
+    }
+    & .hg-header .theme-trigger {
+      background: #ffffff;
+      box-shadow: 0 0 0 1px #ebebeb;
+      border-color: transparent;
+    }
+    & .hg-footer { background: #ffffff; border-top-color: #ebebeb; }
+    & :is(.hg-left-rail, .hg-right-aside) { background: #ffffff; border-color: #ebebeb; }
+    & .hg-rail-item[aria-current='page'] { box-shadow: inset 2px 0 0 #171717; }
+    & .hg-main-column { background: var(--dm-stage); }
+
+    /* 页面内二级视图切换与列表页签全部统一为 Vercel 2px 墨黑下划线 */
+    & .workspace-page-head { background: #ffffff; border-bottom-color: #ebebeb; }
+    & .workspace-view-tabs { padding: 0; gap: 4px; border: 0; background: transparent; align-self: stretch; }
+    & .workspace-view-tabs button {
+      min-height: 36px;
+      padding: 0 10px;
+      border: 0;
+      border-bottom: 2px solid transparent;
+      border-radius: 0;
+      color: #666666;
+      font-weight: 400;
+    }
+    & .workspace-view-tabs button:hover { background: transparent; color: #171717; }
+    & .workspace-view-tabs button[aria-current='page'] {
+      background: transparent;
+      box-shadow: none;
+      border-bottom-color: #171717;
+      color: #171717;
+      font-weight: 500;
+    }
+
+    & .workspace-console.holy-grail-shell.is-chat .studio-layout :is(.session-column, .group-sidebar, .execution-column, .group-details-panel, .session-sidebar, .side-panel, .execution-panel) {
+      background: #ffffff;
+    }
+    & .workspace-console.holy-grail-shell.is-chat .studio-layout :is(.conversation-masthead, .group-masthead, .new-stage-topbar, .studio-conversation-header, .conversation-context) {
+      background: #ffffff;
+    }
+    & .workspace-console.holy-grail-shell.is-chat .studio-layout :is(.new-conversation, .message-viewport, .conversation-reading, .group-reading, .group-messages, .group-main) {
+      background-color: var(--dm-stage);
+    }
+  }
+}
+:root[data-theme='vercel'] {
+  --ds-rule: transparent;
+  & .studio-layout .workspace-panel {
+    --tile-edge: transparent;
+    background: var(--dm-stage);
+  }
+  & .workspace-page-identity p,
+  & .hg-rail-heading {
+    font-family: var(--ds-code);
+    font-weight: 400;
+  }
+  & .studio-layout .workspace-panel .wb-bento-hero,
+  & .hg-aside-card,
+  & .workspace-console.is-chat .studio-layout :is(.agent-message.team-chat-message > div, .group-message:not(.user) > div, .composer-inner, .new-composer, .group-composer, .new-starter-card, .group-starter-card, .group-relay-bar) {
+    border-color: transparent;
+    background: #ffffff;
+    box-shadow: var(--ds-shadow);
+  }
+  & .studio-layout .workspace-panel .el-table th.el-table__cell {
+    border-bottom-color: #ebebeb;
+    background: #fafafa;
+  }
+  & .studio-layout .workspace-panel .workspace-page-body .wb-metric.active {
+    border-color: transparent;
+    background: #ffffff;
+    box-shadow: 0 0 0 1.5px #171717, 0 2px 6px rgb(0 0 0 / 0.05);
+  }
+}
+
+/* ==========================================================================
+   5. Raycast — Floating Panels：页头 / 三栏 / 页脚全部悬浮为 12px 指令面板（对称 8px 间隙）
+   ========================================================================== */
+@media (min-width: 1080px) {
+  :root[data-theme='raycast'] {
+    & .workspace-console.holy-grail-shell { background: var(--ui-bg); }
+    & .workspace-topbar.hg-header {
+      inset: var(--dm-float-gap) var(--dm-float-gap) auto var(--dm-float-gap);
+      height: calc(var(--hg-header-height) - var(--dm-float-gap));
+      border: 1px solid var(--ui-border);
+      border-radius: var(--dm-float-radius);
+      background: var(--ui-surface);
+      box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.05);
+      overflow: hidden;
+    }
+    & .hg-footer {
+      inset: auto var(--dm-float-gap) var(--dm-float-gap) var(--dm-float-gap);
+      height: calc(var(--hg-footer-height) - var(--dm-float-gap));
+      border: 1px solid var(--ui-border);
+      border-radius: var(--dm-float-radius);
+      background: var(--ui-surface);
+      box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.05);
+    }
+    & :is(.hg-header-brand, .hg-header-actions) { border-color: var(--ui-divider); }
+    & .hg-header-nav button { color: var(--ui-secondary); }
+    & .hg-header-nav button[aria-current='page'] {
+      background: var(--ui-raised);
+      box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.06), 0 0 0 1px var(--ui-border);
+    }
+    & .hg-acid-cta { height: 30px; letter-spacing: 0.2px; }
+
+    & .hg-body-grid {
+      box-sizing: border-box;
+      gap: var(--dm-float-gap);
+      padding: var(--dm-float-gap);
+      background: var(--ui-bg);
+    }
+    & :is(.hg-left-rail, .hg-right-aside, .hg-main-column) {
+      border: 1px solid var(--ui-border);
+      border-radius: var(--dm-float-radius);
+      box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.05);
+    }
+    & :is(.hg-left-rail, .hg-right-aside) { background: var(--ui-surface); }
+    & .hg-main-column { background: var(--dm-stage); }
+    & .hg-main-column .workspace-page-head { background: transparent; border-bottom-color: var(--ui-divider); }
+    & .hg-main-column .workspace-panel,
+    & .hg-main-column .workspace-panel-content { background: transparent; }
+    & .hg-rail-item[aria-current='page'] { background: var(--ui-hover); }
+    & .hg-aside-card { background: var(--ui-raised); }
+
+    /* 会话与群聊：同样恢复 8px 悬浮指令面板矩阵 */
+    & .workspace-console.holy-grail-shell.is-chat .studio-layout {
+      --chat-gap: var(--dm-float-gap);
+      --chat-radius: var(--dm-float-radius);
+    }
+    & .workspace-console.holy-grail-shell.is-chat .studio-layout :is(.session-shell, .group-workspace) {
+      gap: var(--dm-float-gap);
+      padding: var(--dm-float-gap);
+      background: var(--ui-bg);
+    }
+    & .workspace-console.holy-grail-shell.is-chat .studio-layout :is(.session-column, .group-sidebar, .execution-column, .group-details-panel) {
+      border: 1px solid var(--ui-border);
+      border-radius: var(--dm-float-radius);
+      background: var(--ui-surface);
+      box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.05);
+    }
+    & .workspace-console.holy-grail-shell.is-chat .studio-layout :is(.conversation-column, .group-main) {
+      overflow: hidden;
+      border: 1px solid var(--ui-border);
+      border-radius: var(--dm-float-radius);
+      background: var(--dm-stage);
+      box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.05);
+    }
+    & .workspace-console.holy-grail-shell.is-chat .studio-layout :is(.session-sidebar, .side-panel, .execution-panel) { background: transparent; }
+    & .workspace-console.holy-grail-shell.is-chat .studio-layout :is(.conversation-masthead, .group-masthead, .new-stage-topbar) {
+      background: transparent;
+      border-bottom-color: var(--ui-divider);
+    }
+    & .workspace-console.holy-grail-shell.is-chat .studio-layout :is(.new-conversation, .message-viewport, .studio-main-execution, .studio-main-delivery, .conversation-reading, .group-reading, .group-messages, .studio-conversation-header, .conversation-context) {
+      background-color: transparent;
+    }
+    & .workspace-console.holy-grail-shell.is-chat .studio-layout .side-chat-column { border-left-color: var(--ui-divider); }
+  }
+}
+:root[data-theme='raycast'] {
+  & .hg-acid-cta:hover { background: #e8e8e8; border-color: #e8e8e8; }
+  & :is(.el-tag, .status-pill, .run-badge) { letter-spacing: 0.02em; }
+  & .studio-layout .workspace-panel .wb-bento-hero {
+    background: #101111;
+    border-color: #242728;
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.06);
+  }
+  & .studio-layout .workspace-panel .workspace-page-body .wb-metric.active {
+    background: #18191a;
+    border-color: rgb(255 255 255 / 0.24);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.08);
+  }
+  & .workspace-console.is-chat .studio-layout :is(.composer-inner, .group-composer, .new-composer):focus-within {
+    border-color: rgb(255 255 255 / 0.2);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.07);
+  }
+}
+
+/* ==========================================================================
+   6. Cursor — Paper Sheets：#f7f7f4 暖奶油纸底 + #ffffff 纸页分区 + 400 字重编辑部排版
+   ========================================================================== */
+@media (min-width: 1080px) {
+  :root[data-theme='cursor'] {
+    & .workspace-topbar.hg-header,
+    & .hg-footer {
+      background: var(--ui-bg);
+      border-color: var(--ui-border);
+    }
+    & :is(.hg-header-brand, .hg-header-actions) { border-color: transparent; }
+    & .hg-header-nav button { color: var(--ui-secondary); font-weight: 400; }
+    & .hg-header-nav button[aria-current='page'] { background: var(--ui-nav-selected); font-weight: 500; }
+    & :is(.hg-left-rail, .hg-right-aside) { background: var(--ui-bg); border-color: transparent; }
+    & .hg-rail-item { color: var(--ui-secondary); font-weight: 400; }
+    & .hg-rail-item[aria-current='page'] { font-weight: 500; }
+    & .hg-body-grid { background: var(--ui-bg); }
+    & .hg-main-column {
+      --ds-card: var(--ui-raised);
+      height: auto;
+      align-self: stretch;
+      margin: var(--dm-float-gap) 0;
+      border: 1px solid var(--ui-border);
+      border-radius: var(--dm-float-radius);
+      background: var(--ui-surface);
+    }
+    & .hg-body-grid.is-embedded .hg-main-column { margin-right: var(--dm-float-gap); }
+    & .hg-main-column .workspace-page-head {
+      background: transparent;
+      border-bottom-color: var(--ui-divider);
+      padding-block: 10px;
+    }
+    & .hg-main-column .workspace-page-identity h1 {
+      font-size: 20px;
+      line-height: 28px;
+      font-weight: 400;
+      letter-spacing: -0.02em;
+    }
+    & .hg-main-column .workspace-panel,
+    & .hg-main-column .workspace-panel-content { background: transparent; }
+    & .hg-aside-card { background: var(--ui-surface); }
+
+    /* 会话与群聊：三张独立白纸页承载侧栏、阅读区与检查器，间隙露出奶油纸底 */
+    & .workspace-console.holy-grail-shell.is-chat .studio-layout {
+      --chat-gap: var(--dm-float-gap);
+      --chat-radius: var(--dm-float-radius);
+    }
+    & .workspace-console.holy-grail-shell.is-chat .studio-layout :is(.session-shell, .group-workspace) {
+      gap: var(--dm-float-gap);
+      padding: var(--dm-float-gap);
+      background: var(--ui-bg);
+    }
+    & .workspace-console.holy-grail-shell.is-chat .studio-layout :is(.session-column, .group-sidebar, .execution-column, .group-details-panel) {
+      border: 1px solid var(--ui-border);
+      border-radius: var(--dm-float-radius);
+      background: var(--ui-surface);
+    }
+    & .workspace-console.holy-grail-shell.is-chat .studio-layout :is(.conversation-column, .group-main) {
+      overflow: hidden;
+      border: 1px solid var(--ui-border);
+      border-radius: var(--dm-float-radius);
+      background: var(--ui-surface);
+    }
+    & .workspace-console.holy-grail-shell.is-chat .studio-layout :is(.session-sidebar, .side-panel, .execution-panel) { background: transparent; }
+    & .workspace-console.holy-grail-shell.is-chat .studio-layout :is(.conversation-masthead, .group-masthead, .new-stage-topbar) {
+      background: transparent;
+      border-bottom-color: var(--ui-divider);
+    }
+    & .workspace-console.holy-grail-shell.is-chat .studio-layout :is(.new-conversation, .message-viewport, .studio-main-execution, .studio-main-delivery, .conversation-reading, .group-reading, .group-messages, .studio-conversation-header, .conversation-context) {
+      background-color: transparent;
+    }
+  }
+}
+:root[data-theme='cursor'] {
+  /* Cursor 暖纸焦点卡保持与其他页面一致的温润浅纸卡片，避免突兀整块纯黑色块 */
+  & .studio-layout .workspace-panel .wb-bento-hero {
+    background: #ffffff;
+    border-color: #e6e5e0;
+    color: #26251e;
+    box-shadow: var(--ds-shadow);
+  }
+  & .studio-layout .workspace-panel .wb-bento-hero .wb-eyebrow { color: #6f6d65; }
+  & .studio-layout .workspace-panel .wb-bento-hero .wb-live-clock {
+    background: #f2f1ed;
+    border-color: #e6e5e0;
+    color: #53514a;
+  }
+  & .studio-layout .workspace-panel .wb-bento-hero .wb-live-clock > i { background: #f54e00; }
+  & .studio-layout .workspace-panel .wb-bento-hero h1 {
+    color: #26251e;
+    font-weight: 600;
+    letter-spacing: -0.025em;
+  }
+  & .studio-layout .workspace-panel .wb-bento-hero .wb-summary {
+    border-top-color: #ecebe6;
+    color: #5c5a52;
+  }
+  & .studio-layout .workspace-panel .workspace-page-body .wb-metric.active {
+    background: #ffffff;
+    border-color: #cfcdc4;
+    box-shadow: inset 0 2px 0 #f54e00;
+  }
+  & :is(.el-tag, .status-pill, .run-badge) { font-size: 11px; letter-spacing: 0.05em; }
+  & .workspace-console.is-chat .studio-layout :is(.new-protocol, .new-runtime-pill, .context-block) {
+    border-radius: 9999px;
+    background: #f2f1ed;
+    border-color: #e6e5e0;
+  }
+  & .workspace-console.is-chat .studio-layout .branch-context {
+    background: #ebeaf8;
+    border-color: #d7d5ee;
+  }
+  & .workspace-console.is-chat .studio-layout :is(.agent-message.team-chat-message > div, .group-message:not(.user) > div) {
+    background: #f7f7f4;
+    border-color: #e6e5e0;
+  }
+  & .agent-markdown .markdown-code {
+    background: #f2f1ed;
+    border-color: #e6e5e0;
+  }
+}
+
+/* ==========================================================================
+   7. Supabase / Supabase Dark — Console：紧凑控制台 + 翠绿指示条 + 深字绿主 CTA
+   ========================================================================== */
+@media (min-width: 1080px) {
+  :root:is([data-theme='supabase'], [data-theme='supabase-dark']) {
+    & .workspace-topbar.hg-header { background: var(--ui-nav); }
+    & .hg-header-nav button { height: 30px; font-weight: 400; color: var(--ui-secondary); }
+    & .hg-header-nav button[aria-current='page'] {
+      font-weight: 500;
+      box-shadow: inset 0 -2px 0 var(--ui-primary);
+      border-radius: var(--ds-radius-sm) var(--ds-radius-sm) 0 0;
+    }
+    & .hg-left-rail,
+    & .hg-right-aside { background: var(--ui-nav); }
+    & .hg-rail-item { min-height: 32px; padding-block: 5px; font-weight: 400; color: var(--ui-secondary); }
+    & .hg-rail-item[aria-current='page'] {
+      color: var(--ui-text);
+      font-weight: 500;
+      box-shadow: inset 2px 0 0 var(--ui-primary);
+    }
+    & .hg-rail-item[aria-current='page'] svg { color: var(--ui-primary); }
+    & .hg-main-column { background: var(--dm-stage); }
+    & .workspace-page-head { min-height: 44px; padding-block: 6px; }
+    & .hg-live-dot { color: var(--ui-primary); }
+
+    & .workspace-console.holy-grail-shell.is-chat .studio-layout :is(.session-column, .group-sidebar, .session-sidebar, .side-panel, .execution-column, .group-details-panel, .execution-panel) {
+      background: var(--ui-nav);
+    }
+    & .workspace-console.holy-grail-shell.is-chat .studio-layout :is(.session-item.selected, .group-room-row.selected) {
+      box-shadow: inset 2px 0 0 var(--ui-primary);
+    }
+  }
+}
+:root:is([data-theme='supabase'], [data-theme='supabase-dark']) {
+  & .hg-acid-cta,
+  & .studio-layout .workspace-panel .el-button--primary:not(.is-link):not(.is-plain):not(.is-text),
+  & .workspace-console.is-chat .studio-layout :is(.create-session, .sidebar-create, .send-button) {
+    color: var(--ui-on-primary);
+  }
+  & .workspace-page-identity p,
+  & .studio-layout .workspace-panel .el-table th.el-table__cell {
+    font-family: var(--ds-code);
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  & .hg-footer-dot { background: var(--ui-primary); }
+  & .studio-layout .workspace-panel .workspace-page-body .wb-metric.active {
+    border-color: #3ecf8e;
+    box-shadow: inset 0 2px 0 #3ecf8e;
+  }
+}
+/* Supabase Light Featured Card：保持浅色控制台统一表面 + 翠绿侧边指示条 */
+:root[data-theme='supabase'] {
+  & .studio-layout .workspace-panel .wb-bento-hero {
+    background: #ffffff;
+    border-color: #e5e7eb;
+    color: #171717;
+    box-shadow: inset 3px 0 0 #3ecf8e;
+  }
+  & .studio-layout .workspace-panel .wb-bento-hero .wb-eyebrow { color: #097c4f; }
+  & .studio-layout .workspace-panel .wb-bento-hero .wb-live-clock {
+    background: #f3f4f6;
+    border-color: #e5e7eb;
+    color: #374151;
+  }
+  & .studio-layout .workspace-panel .wb-bento-hero .wb-live-clock > i { background: #3ecf8e; }
+  & .studio-layout .workspace-panel .wb-bento-hero h1 { color: #171717; }
+  & .studio-layout .workspace-panel .wb-bento-hero .wb-summary {
+    border-top-color: #f0f1f3;
+    color: #4b5563;
+  }
+}
+:root[data-theme='supabase-dark'] {
+  & .studio-layout .workspace-panel .wb-bento-hero {
+    background: #1f1f1f;
+    border-color: #2e2e2e;
+    box-shadow: inset 2px 0 0 #3ecf8e;
+  }
+  & .studio-layout .workspace-panel .wb-bento-hero .wb-eyebrow { color: #3ecf8e; }
+  & .studio-layout .workspace-panel .wb-bento-hero .wb-live-clock > i { background: #3ecf8e; }
+}

@@ -5,7 +5,7 @@
 import AgentRuntimePanel from './AgentRuntimePanel.vue';
 import { ref } from 'vue';
 defineProps<{ workbenchOpen?: boolean }>();
-const emit = defineEmits<{ chat: []; ready: [hasSession: boolean]; group: [id: string] }>();
+const emit = defineEmits<{ chat: []; ready: [hasSession: boolean]; group: [id: string]; session: [id: string] }>();
 const runtime = ref<InstanceType<typeof AgentRuntimePanel>>();
 defineExpose({ openSession: (id: string) => runtime.value?.openSession(id) || false,
   openGroup: (id?: string) => runtime.value?.openGroup(id),
@@ -14,7 +14,7 @@ defineExpose({ openSession: (id: string) => runtime.value?.openSession(id) || fa
 </script>
 
 <template>
-  <AgentRuntimePanel ref="runtime" :workbench-open="workbenchOpen" @chat="emit('chat')" @group="emit('group', $event)" @ready="emit('ready', $event)">
+  <AgentRuntimePanel ref="runtime" :workbench-open="workbenchOpen" @chat="emit('chat')" @group="emit('group', $event)" @session="emit('session', $event)" @ready="emit('ready', $event)">
     <template #navigation="context"><slot name="navigation" v-bind="context" /></template>
     <template #workbench="context"><slot name="workbench" v-bind="context" /></template>
   </AgentRuntimePanel>

@@ -34,14 +34,20 @@ export function createCustomPluginRoutes(runtime: CustomPluginRuntime, jira: Plu
       } else {
         const input = await io.body(request, 100_000);
         if (id === 'navigation' && action === 'settings') return send(200, await runtime.saveNavigation(input));
-        if (id === 'inspect') return send(200, await runtime.inspect(z.object({ directory: z.string() }).strict().parse(input).directory));
-        if (id === 'install') return send(200, await runtime.install(input));
+        if (id === 'inspect' && !action) return send(200, await runtime.inspect(z.object({ directory: z.string() }).strict().parse(input).directory));
+        if (id === 'install' && !action) return send(200, await runtime.install(input));
+        if (id === 'upgrade-preview' && !action) {
+          const parsed = z.object({ id: z.string(), directory: z.string().optional() }).strict().parse(input);
+          return send(200, await runtime.inspectUpgrade(parsed.id, parsed.directory));
+        }
+        if (id === 'upgrade' && !action) return send(200, await runtime.upgrade(input));
         if (action === 'change') return send(200, await runtime.change(id, input));
         if (action === 'save') return send(200, await runtime.saveRecord(id, input));
         if (action === 'delete') return send(200, await runtime.removeRecord(id, input));
         if (action === 'jira-link') return send(200, await jira.link(id, input));
         if (action === 'jira-prepare') return send(200, await jira.prepare(id, input));
         if (action === 'jira-commit') return send(200, await jira.commit(id, input));
+        if (action === 'jira-reconcile') return send(200, await jira.reconcile(id, input));
         if (action === 'context') {
           runtime.assertCommand(id, 'conversation.context');
           const { recordId } = z.object({ recordId: z.uuid() }).strict().parse(input);

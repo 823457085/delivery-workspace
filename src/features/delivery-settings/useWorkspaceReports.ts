@@ -17,7 +17,7 @@ const fingerprint = (value: unknown) => JSON.stringify(value);
 
 export function useWorkspaceReports() {
   const client = useQueryClient(), queryKey = ['workspace-reports'];
-  const query = useQuery({ queryKey, queryFn: () => request<WorkspaceReportsDashboard>(), retry: false, refetchInterval: 30_000 });
+  const query = useQuery({ queryKey, queryFn: () => request<WorkspaceReportsDashboard>(), retry: false, refetchInterval: 30_000, refetchIntervalInBackground: false });
   const settings = ref<WorkspaceReportSettings>(), selectedId = shallowRef(''), saved = shallowRef(''), pending = shallowRef('');
   const preview = shallowRef<ReportPreview>(), previewFingerprint = shallowRef('');
   const botForm = ref({ groupName: '', webhook: '' });

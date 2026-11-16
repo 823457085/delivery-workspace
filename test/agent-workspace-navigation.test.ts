@@ -113,3 +113,30 @@ test('menu editor uses the actual built-in icon registry rather than approximate
   assert.equal(workspaceMenuIcons.plugins, LayoutGrid);
   for (const [id, component] of Object.entries(menuIcons)) assert.equal(workspaceMenuIcons[id], component);
 });
+
+test('拆分为插件的外围模块与内附自定义台账插件可按需启停挂载', async () => {
+  const { inspectCustomPlugin } = await import('../server/plugins/custom-runtime');
+  const path = await import('node:path');
+  const leanIds = registeredWorkspaceSections([]).flatMap(section => section.items.map(item => item.id));
+  for (const extracted of ['interfaces', 'systems', 'ports', 'deployments', 'integration-execution', 'messages', 'requirements']) {
+    assert.equal(leanIds.includes(extracted), false, `${extracted} 已从核心底座解耦`);
+  }
+  const mountedIds = registeredWorkspaceSections(['interface-center', 'system-catalog', 'port-monitor', 'deployments', 'refactor-control', 'wecom', 'overseas-requirements'])
+    .flatMap(section => section.items.map(item => item.id));
+  for (const extracted of ['interfaces', 'systems', 'ports', 'deployments', 'integration-execution', 'messages', 'requirements']) {
+    assert.equal(mountedIds.includes(extracted), true, `${extracted} 启用插件后挂载回原分组`);
+  }
+  for (const dir of ['plugins/requirement-ledger', 'plugins/release-checklist', 'plugins/bug-retrospective']) {
+    const inspected = await inspectCustomPlugin(path.resolve(dir));
+    assert.ok(inspected.manifest.id);
+    assert.ok(inspected.digest);
+  }
+});
+
+test('对话入口查询参数按最近会话或群聊模式恢复当前房间', async () => {
+  const { workspaceChatQuery } = await import('../src/pages/agent/workspace-navigation');
+  assert.deepEqual(workspaceChatQuery('session', '', 'room-9'), {});
+  assert.deepEqual(workspaceChatQuery('session', 'sess-12', 'room-9'), { session: 'sess-12' });
+  assert.deepEqual(workspaceChatQuery('group', 'sess-12', ''), { group: '1' });
+  assert.deepEqual(workspaceChatQuery('group', 'sess-12', 'room-9'), { group: '1', room: 'room-9' });
+});

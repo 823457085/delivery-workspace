@@ -5,11 +5,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { listProjectMergeRequests, prepareProjectMergeRequest, createProjectMergeRequest, updateProjectMergeRequestTitle } from '../server/project-merge-request.js';
+import { listProjectMergeRequests, prepareProjectMergeRequest, reconcileProjectMergeRequest, createProjectMergeRequest, updateProjectMergeRequestTitle } from '../server/project-merge-request.js';
 
 const exec = promisify(execFile);
 const git = async (directory: string, ...args: string[]) => (await exec('git', ['-C', directory, ...args])).stdout.trim();
-const organization = '0123456789abcdef01234567';
+const organization = '64ad9c6e702c0cacad9a2168';
 const repositoryPath = `${organization}/team/project`;
 const repositoryUrl = `https://codeup.aliyun.com/${repositoryPath}`;
 
@@ -243,3 +243,18 @@ for (const pageSize of [100, 20]) {
     assert.equal(result.existing?.id, 12); assert.deepEqual(pages, [1, 2]); assert.equal(f.postCount, 0);
   });
 }
+
+test('人工显式核对 Codeup 未创建请求后解除锁定，已存在请求则直接恢复而不重发', async t => {
+  const f = await fixture(t);
+  f.setMode('timeout');
+  await assert.rejects(f.create(), /创建结果尚未确认/);
+  assert.equal((await f.prepare()).canCreate, false);
+  f.setMode('ok');
+  f.setRequests([]);
+  const unlocked = await reconcileProjectMergeRequest(f.input, f.options);
+  assert.equal(unlocked.canCreate, true);
+  assert.equal(f.postCount, 1);
+  const created = await f.create(unlocked);
+  assert.equal(created.created, true);
+  assert.equal(f.postCount, 2);
+});

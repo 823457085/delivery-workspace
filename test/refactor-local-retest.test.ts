@@ -118,6 +118,9 @@ for (const ownWorkspace of [false, true]) test(`生产工作台内的${ownWorksp
     assert.equal(await (await fetch(runtime.baseUrl)).text(), 'own-dev-dependency:development');
     assert.equal(await fs.readFile(path.join(host, 'pnpm-lock.yaml'), 'utf8'), hostLock);
     assert.equal(await fs.access(path.join(runtime.workspacePath, 'node_modules/local-retest-helper')).then(() => true, () => false), true);
+    await service.stop(id);
+    assert.equal(await fs.access(path.join(runtime.workspacePath, 'node_modules')).then(() => true, () => false), false);
+    await service.verify(runtime);
   } catch (error) {
     t.diagnostic(await fs.readFile(path.join(host, '.local/runs', id, 'startup.log'), 'utf8')); throw error;
   } finally {

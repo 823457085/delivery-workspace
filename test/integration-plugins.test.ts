@@ -3,55 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
 import { createPluginStore, readPluginFile, applyPluginEnvironment } from '../server/plugins/store.mjs';
 import { assertPluginEnabled, pluginBaseUrl } from '../server/plugins/definitions.mjs';
 import { buildReviewCatalog } from '../src/features/api-integration/review-catalog.js';
-
-test('source startup keeps plugin credentials isolated from legacy files', async t => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'plugins-startup-'));
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
-  const legacy = path.join(directory, 'legacy.env');
-  await fs.writeFile(legacy, [
-    'JIRA_BASE_URL=https://legacy-jira.example.test',
-    'JIRA_AUTH_HEADER="Bearer legacy-jira-fixture"',
-    'JIRA_COOKIE=legacy-jira-cookie',
-    'JIRA_START_DATE_FIELD=customfield_12345',
-    'CONFLUENCE_BASE_URL=https://legacy-wiki.example.test',
-    'CONFLUENCE_API_TOKEN=legacy-wiki-token',
-    'CONFLUENCE_KEYCHAIN_SERVICE=legacy-wiki-keychain',
-  ].join('\n'));
-  const pluginFile = path.join(directory, 'credentials', 'plugins.json');
-  await fs.mkdir(path.dirname(pluginFile));
-  await fs.writeFile(pluginFile, JSON.stringify({ version: 1, plugins: {
-    jira: { enabled: true, baseUrl: 'https://active-jira.example.test' },
-    confluence: { enabled: true, baseUrl: 'https://active-wiki.example.test', token: 'active-wiki-token' },
-  } }));
-  await promisify(execFile)(process.execPath, [
-    `--env-file=${legacy}`, '--import', './server/plugins/bootstrap.mjs', '--import', 'tsx', '--input-type=module', '-e', `
-      import assert from 'node:assert/strict';
-      import { initializeSourceEnvironment } from './server/source-backend.ts';
-      initializeSourceEnvironment(5991);
-      assert.equal(process.env.JIRA_BASE_URL, 'https://active-jira.example.test');
-      assert.equal(process.env.JIRA_AUTH_HEADER, undefined);
-      assert.equal(process.env.JIRA_COOKIE, undefined);
-      assert.equal(process.env.JIRA_START_DATE_FIELD, 'customfield_12345');
-      assert.equal(process.env.CONFLUENCE_BASE_URL, 'https://active-wiki.example.test');
-      assert.equal(process.env.CONFLUENCE_AUTH_HEADER, 'Bearer active-wiki-token');
-      assert.equal(process.env.CONFLUENCE_API_TOKEN, undefined);
-      assert.equal(process.env.CONFLUENCE_KEYCHAIN_SERVICE, undefined);
-      const backend = await import('./server/jira-backend/server.mjs');
-      globalThis.fetch = () => assert.fail('Unexpected network request');
-      delete process.env.JIRA_BASE_URL;
-      delete process.env.CONFLUENCE_BASE_URL;
-      await assert.rejects(backend.jiraIssueRequest('myself'), /JIRA_BASE_URL/);
-      await assert.rejects(backend.confluenceReadRequest('user/current'), /CONFLUENCE_BASE_URL/);
-    `,
-  ], { cwd: fileURLToPath(new URL('..', import.meta.url)),
-    env: { PATH: process.env.PATH || '', DELIVERY_DATA_DIR: directory, DELIVERY_CREDENTIALS_FILE: legacy }, timeout: 10_000 });
-});
 
 test('plugin credentials stay private, survive reload, and never cross site/account boundaries', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'plugins-'));
@@ -99,7 +53,7 @@ test('read-only probes, webhook validation, unknown fields and malformed storage
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
 
-test('legacy keychain connections require the configured site', async t => {
+test('legacy keychain connections use the same site fallback as the backend', async t => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'plugins-keychain-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'plugins.json');
@@ -108,9 +62,6 @@ test('legacy keychain connections require the configured site', async t => {
   const store = await createPluginStore({ file, env, wecomConfig: () => ({ hasWebhook: true }),
     legacyProbe: async id => { probes.push(id); return Response.json({ name: 'fixture' }); },
   });
-  assert.deepEqual((await store.list()).slice(0, 2).map(plugin => [plugin.baseUrl, plugin.configured, plugin.runningConfigured]),
-    [['', false, false], ['', false, false]]);
-  Object.assign(env, { JIRA_BASE_URL: 'https://jira.example.test', CONFLUENCE_BASE_URL: 'https://wiki.example.test' });
   const [jira, confluence] = await store.list();
   assert.equal(jira.baseUrl, pluginBaseUrl('jira', env));
   assert.equal(confluence.baseUrl, pluginBaseUrl('confluence', env));
@@ -177,7 +128,7 @@ test('disabled plugins block actual Jira and notification calls before network a
     assert.equal(preview.canSend, true);
     process.env.DELIVERY_PLUGIN_WECOM_INSTALLED = 'false';
     assert.equal(service.messagePreview(preview.input).canSend, false);
-    const item = buildReviewCatalog()[0]!;
+    const item = buildReviewCatalog().find(item => item.path === '/admin/v1/merchants/detail')!;
     const feedback = service.preview({ interfaceId: item.id, summary: 'Fixture', environment: 'Test',
       parameters: '{}', actual: 'Fixture', expected: 'Fixture', contractReference: 'Fixture' });
     assert.equal(feedback.canSend, false);

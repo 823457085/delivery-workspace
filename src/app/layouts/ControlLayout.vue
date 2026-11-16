@@ -31,10 +31,10 @@ watch(() => route.path, () => { document.title = route.path === '/agent' ? 'Agen
       <nav class="hub-navigation" aria-label="全部业务导航"><div v-for="group in navigation" :key="group.group" class="nav-group"><p>{{ group.group }}</p><RouterLink v-for="item in group.items" :key="item.path" :to="item.path" :title="item.title" :aria-label="item.title" :class="{ selected: current?.path === item.path }"><component :is="icons[item.icon as keyof typeof icons]" :size="17" /><span>{{ item.title }}</span><i v-if="current?.path === item.path"></i></RouterLink></div></nav>
       <div class="hub-sidebar-bottom"><div class="sidebar-user"><span>DW</span><div><strong>本机用户</strong><small>独立本地工作台</small></div></div></div>
     </aside>
-    <div class="hub-main"><header class="hub-topbar"><div class="hub-breadcrumb"><button :aria-label="collapsed ? '展开导航' : '收起导航'" @click="collapsed = !collapsed"><PanelLeftOpen v-if="collapsed" :size="18" /><PanelLeftClose v-else :size="18" /></button><span>{{ currentGroup }}</span><ChevronRight :size="13" /><strong>{{ current?.title }}</strong></div><div class="hub-topbar-actions"><span class="connection-boundary"><i></i>LOCAL :{{ localPort }} <b>/</b> SHARE EDITION</span><WorkspaceVersionStatus /><ThemePicker /></div></header>
+    <div class="hub-main"><header class="hub-topbar"><div class="hub-breadcrumb"><button :aria-label="collapsed ? '展开导航' : '收起导航'" @click="collapsed = !collapsed"><PanelLeftOpen v-if="collapsed" :size="18" /><PanelLeftClose v-else :size="18" /></button><span>{{ currentGroup }}</span><ChevronRight :size="13" /><strong>{{ current?.title }}</strong></div><div class="hub-topbar-actions"><span class="connection-boundary"><i></i>本机 :{{ localPort }}</span><WorkspaceVersionStatus /><ThemePicker /></div></header>
       <div v-if="tabs.length" class="hub-page-tabs" role="tablist" aria-label="业务子视图"><RouterLink v-for="tab in tabs" :key="tab.path" :to="tab.path" role="tab" :aria-selected="route.path === tab.path" :class="{ active: route.path === tab.path }">{{ tab.title }}</RouterLink></div>
       <div class="hub-content"><RouterView /></div>
-      <footer class="hub-footer"><span>DELIVERY WORKSPACE <i> / </i> SHARE EDITION</span><span>本地 Git + Jira 自动化 + 多 Agent 协作工作台</span></footer>
+      <footer class="hub-footer"><span>研发交付工作台</span><span>本地 Git · Jira 协作 · AI 对话助手</span></footer>
     </div>
   </div>
 </template>

@@ -8,8 +8,8 @@ const report = computed(() => readableDeliveryReport(props.source));
 </script>
 
 <template>
-  <section class="delivery-report" :class="{ 'delivery-report-compact': compact }" aria-label="本轮交付报告">
-    <header v-if="!compact"><strong>本轮工作结果</strong><small>由成员汇总，待核对</small></header>
+  <section class="delivery-report" :class="{ 'delivery-report-compact': compact || !report }" aria-label="本轮交付报告">
+    <header v-if="!compact && report"><strong>本轮工作结果</strong><small>由成员汇总，待核对</small></header>
     <template v-if="report">
       <p class="report-headline">{{ report.headline }}</p>
       <p v-if="report.summary" class="report-summary">{{ report.summary }}</p>
@@ -30,10 +30,7 @@ const report = computed(() => readableDeliveryReport(props.source));
         <details class="report-raw"><summary>原始报告 JSON</summary><pre><code>{{ source }}</code></pre></details>
       </details>
     </template>
-    <template v-else>
-      <p class="report-note">报告内容未解析，请展开查看原文。</p>
-      <details class="report-raw"><summary>原始报告 JSON</summary><pre><code>{{ source }}</code></pre></details>
-    </template>
+    <details v-else class="report-raw"><summary>查看原始报告</summary><pre><code>{{ source }}</code></pre></details>
   </section>
 </template>
 

@@ -8,7 +8,7 @@ import { createWorkspaceTodos } from '../server/workspace-todos.js';
 import { createCustomPluginRuntime, fingerprint, inspectCustomPlugin, privateJson } from '../server/plugins/custom-runtime.js';
 import { createPluginJira } from '../server/plugins/host-jira.js';
 import { createCustomPluginRoutes } from '../server/plugins/custom-routes.js';
-import { pluginReferences, pluginReference } from '../shared/custom-plugins.js';
+import { pluginReferences, pluginReference, parsePluginRecordProposal } from '../shared/custom-plugins.js';
 const todoPackage = path.resolve('plugins/todos'), notePackage = path.resolve('plugins/example-notes');
 async function fixture(t: TestContext) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'custom-plugin-test-'));
@@ -241,4 +241,197 @@ test('menu order and built-in icons persist atomically without changing plugin d
   assert.deepEqual(restarted.list().navigation, navigation);
   await restarted.saveNavigation({ order: [], icons: {} });
   assert.deepEqual(restarted.list().navigation, { order: [], icons: {} });
+});
+
+test('rich field types (number, url, checkbox, tags) validate strictly and normalize cleanly', async t => {
+  const f = await fixture(t), dir = path.join(f.root, 'rich-ledger'); await fs.mkdir(dir);
+  const manifest = {
+    apiVersion: 1, hostApi: 1, id: 'rich-ledger', name: '富字段台账', version: '1.0.0', description: '验证多类型字段',
+    permissions: ['storage.read', 'storage.write', 'conversation.context'],
+    page: { title: '富字段台账', kind: 'records' },
+    records: {
+      storage: 'private', resourceType: 'item',
+      fields: [
+        { key: 'title', label: '标题', type: 'text', required: true },
+        { key: 'estimate', label: '工时', type: 'number', default: '1.5' },
+        { key: 'link', label: '链接', type: 'url' },
+        { key: 'verified', label: '已核验', type: 'checkbox', default: 'false' },
+        { key: 'tags', label: '标签', type: 'tags' },
+      ],
+    },
+    commands: [{ id: 'cite', label: '引用', action: 'conversation.context' }],
+  };
+  await fs.writeFile(path.join(dir, 'plugin.json'), JSON.stringify(manifest));
+  await f.install(dir);
+
+  const saved = await f.runtime.saveRecord('rich-ledger', {
+    values: {
+      title: '支持富字段',
+      estimate: 3.25,
+      link: 'https://example.com/docs/spec',
+      verified: true,
+      tags: ['后端', '性能，后端', 'SSE'],
+    },
+  });
+  assert.equal(saved.values.estimate, '3.25');
+  assert.equal(saved.values.verified, 'true');
+  assert.equal(saved.values.tags, '后端, 性能, SSE');
+
+  const res = await f.runtime.resource('rich-ledger', saved.id, true);
+  assert.equal(JSON.parse(res.content!).已核验, '是');
+
+  const snapshot = await f.runtime.resolveReferences(`请检查 @${res.reference}`);
+  const marker = '<!-- delivery-plugin-context:v1 -->\n';
+  const markerIdx = snapshot.lastIndexOf(marker);
+  assert.ok(markerIdx > 0);
+  assert.match(snapshot.slice(0, markerIdx), /plugin-record/);
+  assert.equal(JSON.parse(snapshot.slice(markerIdx + marker.length))[0].id, saved.id);
+
+  await assert.rejects(f.runtime.saveRecord('rich-ledger', { values: { title: '坏数字', estimate: '12abc' } }), /数字无效/);
+  await assert.rejects(f.runtime.saveRecord('rich-ledger', { values: { title: '坏协议', link: 'javascript:alert(1)' } }), /链接无效/);
+  await assert.rejects(f.runtime.saveRecord('rich-ledger', { values: { title: '含凭据链接', link: 'https://user:pass@example.com' } }), /链接无效/);
+  await assert.rejects(f.runtime.saveRecord('rich-ledger', { values: { title: '坏布尔', verified: 'maybe' } }), /布尔值无效/);
+});
+
+test('in-place upgrade migrates compatible records, blocks incompatible schema changes, and guards removed field data', async t => {
+  const f = await fixture(t), dir = path.join(f.root, 'upgradable-notes'); await fs.mkdir(dir);
+  const v1 = JSON.parse(await fs.readFile(path.join(notePackage, 'plugin.json'), 'utf8'));
+  await fs.writeFile(path.join(dir, 'plugin.json'), JSON.stringify(v1));
+  await f.install(dir);
+  const created = await f.runtime.saveRecord('example-notes', { values: { title: '历史事项', details: '重要复盘内容' } });
+
+  const v2Incompatible = {
+    ...v1,
+    version: '1.1.0',
+    records: {
+      ...v1.records,
+      fields: [
+        ...v1.records.fields,
+        { key: 'mandatoryLink', label: '必填链接', type: 'url', required: true },
+      ],
+    },
+  };
+  await fs.writeFile(path.join(dir, 'plugin.json'), JSON.stringify(v2Incompatible));
+  const badPreview = await f.runtime.inspectUpgrade('example-notes', dir);
+  assert.equal(badPreview.compatible, false);
+  assert.equal(badPreview.incompatibleRecords.length, 1);
+  await assert.rejects(f.runtime.upgrade({
+    id: 'example-notes', directory: dir, digest: badPreview.digest, grants: badPreview.manifest.permissions, confirmed: true,
+  }), /不兼容/);
+
+  const v2CompatibleDrop = {
+    ...v1,
+    version: '1.2.0',
+    records: {
+      ...v1.records,
+      fields: [
+        { key: 'title', label: '标题', type: 'text', required: true, maxLength: 200 },
+        { key: 'tags', label: '分类标签', type: 'tags', default: 'legacy, migrated' },
+        { key: 'reviewed', label: '已复核', type: 'checkbox', default: 'false' },
+      ],
+    },
+  };
+  await fs.writeFile(path.join(dir, 'plugin.json'), JSON.stringify(v2CompatibleDrop));
+  const dropPreview = await f.runtime.inspectUpgrade('example-notes', dir);
+  assert.equal(dropPreview.compatible, true);
+  assert.equal(dropPreview.affectedRemovedFieldCount, 1);
+  assert.equal(dropPreview.removedFields[0].key, 'details');
+  await assert.rejects(f.runtime.upgrade({
+    id: 'example-notes', directory: dir, digest: dropPreview.digest, grants: dropPreview.manifest.permissions, confirmed: true,
+  }), /清理移除字段/);
+
+  await f.runtime.upgrade({
+    id: 'example-notes', directory: dir, digest: dropPreview.digest, grants: dropPreview.manifest.permissions, confirmed: true, dropRemovedFields: true,
+  });
+  const migrated = (await f.runtime.records('example-notes'))[0];
+  assert.equal(migrated.id, created.id);
+  assert.equal(migrated.createdAt, created.createdAt);
+  assert.equal(migrated.values.tags, 'legacy, migrated');
+  assert.equal(migrated.values.reviewed, 'false');
+  assert.equal('details' in migrated.values, false);
+
+  await f.runtime.change('example-notes', { remove: true });
+  assert.equal(f.runtime.list().removedPlugins.length, 1);
+  const v3Restore = { ...v2CompatibleDrop, version: '1.3.0' };
+  await fs.writeFile(path.join(dir, 'plugin.json'), JSON.stringify(v3Restore));
+  const restorePreview = await f.runtime.inspectUpgrade('example-notes', dir);
+  assert.equal(restorePreview.wasRemoved, true);
+  await f.runtime.upgrade({
+    id: 'example-notes', directory: dir, digest: restorePreview.digest, grants: restorePreview.manifest.permissions, confirmed: true,
+  });
+  assert.equal(f.runtime.list().plugins[0].manifest.version, '1.3.0');
+  assert.equal((await f.runtime.records('example-notes'))[0].id, created.id);
+});
+
+test('parsePluginRecordProposal safely normalizes Agent JSON proposals and strips dangerous keys', () => {
+  const proposal = parsePluginRecordProposal(JSON.stringify({
+    pluginId: 'bug-retrospective',
+    values: {
+      title: 'SSE 重连竞态修复',
+      regressionAdded: true,
+      estimate: 2,
+      tags: ['sse', 'race'],
+      __proto__: 'ignored',
+      constructor: 'ignored',
+    },
+  }));
+  assert.ok(proposal);
+  assert.equal(proposal.pluginId, 'bug-retrospective');
+  assert.equal(proposal.values.title, 'SSE 重连竞态修复');
+  assert.equal(proposal.values.regressionAdded, 'true');
+  assert.equal(proposal.values.estimate, '2');
+  assert.equal(proposal.values.tags, 'sse, race');
+  assert.equal(Object.hasOwn(proposal.values, 'constructor'), false);
+  assert.equal(parsePluginRecordProposal('not-json'), null);
+  assert.equal(parsePluginRecordProposal('[]'), null);
+});
+
+test('Jira unknown ticket reconciles by marker search, verified issue link, or explicit not_created unlock without resending', async t => {
+  const f = await fixture(t); await f.install(todoPackage);
+  const record = await f.runtime.saveRecord('personal-todos', { values: { title: '待办核对解锁', details: '说明' } });
+  let posts = 0, searchMatches: any[] = [];
+  const request = async (resource: string, method = 'GET') => {
+    if (resource.startsWith('issue/createmeta/DEMO/issuetypes/10?')) return Response.json({ isLast: true, fields: [
+      { fieldId: 'summary', name: '标题', required: true, schema: { type: 'string' } },
+      { fieldId: 'labels', name: '标签', required: false, schema: { type: 'array', items: 'string' } },
+    ] });
+    if (resource.startsWith('issue/createmeta/DEMO/issuetypes?')) return Response.json({ isLast: true, issueTypes: [{ id: '10', name: 'Task', subtask: false }] });
+    if (resource === 'issue' && method === 'POST') { posts++; throw new Error('network timeout'); }
+    if (resource.startsWith('search?')) return Response.json({ issues: searchMatches });
+    if (resource.startsWith('issue/DEMO-99?')) return Response.json({ key: 'DEMO-99', fields: { summary: '人工找回任务', project: { key: 'DEMO' }, issuetype: { id: '10' } } });
+    if (resource.startsWith('issue/OTHER-1?')) return Response.json({ key: 'OTHER-1', fields: { summary: '跨项目误关联', project: { key: 'OTHER' }, issuetype: { id: '10' } } });
+    throw new Error(`unexpected resource: ${resource}`);
+  };
+  const jira = await createPluginJira(path.join(f.root, 'plugins'), f.runtime, request, {
+    site: () => 'https://jira.example.test',
+    identity: () => 'test-identity',
+  });
+  const baseInput = { recordId: record.id, version: fingerprint(record), project: 'DEMO', type: '10', fields: { summary: record.values.title } };
+  const preview = await jira.prepare('personal-todos', baseInput);
+  const committed = await jira.commit('personal-todos', { ticketId: preview.ticketId, confirmed: true });
+  assert.equal(committed.status, 'unknown');
+  assert.equal(posts, 1);
+
+  // 未检索到标记时仍保持 unknown，绝不假定远端未创建或自动重发
+  const emptyAuto = await jira.reconcile('personal-todos', { ticketId: preview.ticketId, outcome: 'auto', confirmed: true });
+  assert.equal(emptyAuto.status, 'unknown');
+  await assert.rejects(jira.prepare('personal-todos', baseInput), /禁止重复/);
+
+  // 确认远端未创建后解锁，允许重新 prepare，且不自动发写请求
+  const unlocked = await jira.reconcile('personal-todos', { ticketId: preview.ticketId, outcome: 'not_created', confirmed: true });
+  assert.equal(unlocked.status, 'failed');
+  assert.equal(posts, 1);
+
+  const preview2 = await jira.prepare('personal-todos', baseInput);
+  await jira.commit('personal-todos', { ticketId: preview2.ticketId, confirmed: true });
+  assert.equal(posts, 2);
+
+  // 拒绝跨项目错误编号，支持按标记自动找回并保存关联
+  await assert.rejects(jira.reconcile('personal-todos', { ticketId: preview2.ticketId, outcome: 'linked', issueKey: 'OTHER-1', confirmed: true }), /不一致/);
+  searchMatches = [{ key: 'DEMO-88', fields: { summary: record.values.title, project: { key: 'DEMO' }, issuetype: { id: '10' } } }];
+  const autoLinked = await jira.reconcile('personal-todos', { ticketId: preview2.ticketId, outcome: 'auto', confirmed: true });
+  assert.equal(autoLinked.status, 'done');
+  assert.equal(autoLinked.result?.key, 'DEMO-88');
+  assert.equal((await jira.status('personal-todos', record.id)).links[0].key, 'DEMO-88');
+  assert.equal(posts, 2);
 });

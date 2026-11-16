@@ -1,7 +1,7 @@
 # AI 交付门禁 · 90 天试点检查清单
 
 > **AI Delivery Kit** **v1.0.0**  
-> **Confluence**：[90 天试点检查清单](https://confluence.example.com/spaces/TEAM/pages/1003/)（TEAM · 示例 ID 1003）  
+> **Confluence**：[90 天试点检查清单](https://confluence.hahabianli.com/spaces/SOP/pages/33746029/)（SOP · ID 33746029）  
 > **试点周期**：Day 0–90（建议先 4 周基线，再 86 天评估）  
 > **指标权威源**：[core/metrics.md](../core/metrics.md)
 

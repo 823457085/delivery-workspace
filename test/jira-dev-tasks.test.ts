@@ -21,8 +21,6 @@ const defect = { key: 'TEST-123', url: `${site}/browse/TEST-123`, summary: '列�
 const git = (cwd: string, ...args: string[]) => exec('git', ['-C', cwd, '-c', 'user.name=Test', '-c', 'user.email=test@example.test', ...args]);
 
 async function fixture(overrides: Partial<Parameters<typeof createJiraDevTaskService>[0]> = {}) {
-  Object.assign(process.env, { CONFLUENCE_BASE_URL: 'https://confluence.example.test', DELIVERY_DESIGN_SPACE_KEY: 'DEMO',
-    DELIVERY_DESIGN_PARENT_ID: '123', DELIVERY_DESIGN_PARENT_TITLE: '技术方案' });
   const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'jira-dev-')));
   const origin = path.join(directory, 'origin.git'), project = path.join(directory, 'web');
   await exec('git', ['init', '--bare', '-b', 'master', origin]);

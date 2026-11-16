@@ -8,19 +8,18 @@ import { computed, shallowRef, watch } from 'vue';
 import { useWorkspacePanelState } from '../../shared/useWorkspacePanelState';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query';
 import { ElMessage } from 'element-plus';
+import plan from '../../../shared/refactor-integration-plan.json';
 import { reviewLabel, reviewStatuses, type ApexBffAssignee, type ApexBffReviewStatus, type ApexBffReviewState } from '../../../shared/apex-bff-review';
 import { integrationDeferral, integrationScopeCategory, type IntegrationScopeCategory } from '../../../shared/apex-integration-scope';
 import PageHeading from '../../shared/ui/PageHeading.vue';
-import type { ReviewCatalogItem } from './review-catalog';
-import { useIntegrationCatalog } from './useIntegrationCatalog';
+import { buildReviewCatalog, type ReviewCatalogItem } from './review-catalog';
 import { filterReviewCatalog, reviewDisplayStatus } from './review-filter';
 import ReviewNavigation from './ReviewNavigation.vue';
 import ReviewAssigneePicker from './ReviewAssigneePicker.vue';
 import ReviewMenuAssignment from './ReviewMenuAssignment.vue';
 import ReviewWecomPanel from './ReviewWecomPanel.vue';
 
-const { query: catalogQuery, catalog } = useIntegrationCatalog();
-const plan = computed(() => catalogQuery.data.value?.plan);
+const catalog = buildReviewCatalog();
 const client = useQueryClient();
 const reviewKey = ['apex-bff-review'];
 async function request(init?: RequestInit): Promise<ApexBffReviewState> {
@@ -43,19 +42,19 @@ const { selectedModule, selectedPage, statusFilter, search, page, pageSize } = u
 // 新筛选不读取旧版面板快照，避免缺失字段时失去响应式引用。
 const { assigneeFilter } = useWorkspacePanelState('integration-assignee', () => ({ assigneeFilter: '' }));
 const { categoryFilter } = useWorkspacePanelState('integration-scope', () => ({ categoryFilter: '' as IntegrationScopeCategory | '' }));
-const deferredCount = computed(() => catalog.value.filter(item => integrationScopeCategory(item) === '暂不联调').length);
-const unusedCount = computed(() => catalog.value.filter(item => integrationScopeCategory(item) === '暂不使用').length);
+const deferredCount = catalog.filter(item => integrationScopeCategory(item) === '暂不联调').length;
+const unusedCount = catalog.filter(item => integrationScopeCategory(item) === '暂不使用').length;
 const reviewOptions = reviewStatuses.map(value => ({ value, label: value === '已联调' ? '确认联调通过' : value }));
 const assignmentOpen = shallowRef(false);
 const wecomOpen = shallowRef(false);
 const feedbackItem = shallowRef<ReviewCatalogItem>();
 const savingId = shallowRef('');
-const reviewAvailable = computed(() => query.data.value !== undefined && catalogQuery.data.value !== undefined);
+const reviewAvailable = computed(() => query.data.value !== undefined);
 const records = computed(() => query.data.value ?? {});
 const assignees = computed(() => [...new Map(Object.values(records.value).flatMap(record => record.assignee ? [[record.assignee.name, record.assignee] as const] : [])).values()]);
 const counts = computed(() => {
   const result = { confirmed: 0, pending: 0, inactive: 0 };
-  for (const item of catalog.value) {
+  for (const item of catalog) {
     if (item.archived) continue;
     const status = reviewDisplayStatus(item, records.value[item.id]);
     if (status === '已联调') result.confirmed += 1;
@@ -68,7 +67,7 @@ watch(categoryFilter, (category, previous) => {
   if (category === '暂不联调' && statusFilter.value === '待人工审核'
     || previous !== undefined && (category === '暂不使用' || statusFilter.value === '暂不使用')) statusFilter.value = '';
 }, { immediate: true });
-const matchingItems = computed(() => filterReviewCatalog(catalog.value, records.value, {
+const matchingItems = computed(() => filterReviewCatalog(catalog, records.value, {
   status: reviewAvailable.value ? statusFilter.value : '', assignee: reviewAvailable.value ? assigneeFilter.value : '', search: search.value,
   category: categoryFilter.value,
 }));
@@ -86,7 +85,7 @@ const rows = computed(() => filtered.value.slice((page.value - 1) * pageSize.val
 watch([selectedModule, selectedPage, statusFilter, assigneeFilter, categoryFilter, search, pageSize], () => { page.value = 1; });
 watch(() => filtered.value.length, length => { page.value = Math.min(page.value, Math.max(1, Math.ceil(length / pageSize.value))); });
 async function assignInterfaces(ids: string[], assignee: ApexBffAssignee | undefined, batch = false) {
-  if (!reviewAvailable.value || savingId.value || !ids.length || ids.some(id => catalog.value.find(item => item.id === id)?.archived)) return;
+  if (!reviewAvailable.value || savingId.value || !ids.length || ids.some(id => catalog.find(item => item.id === id)?.archived)) return;
   savingId.value = batch ? 'menu-assignment' : ids[0];
   try {
     await reviewMutation.mutateAsync({ action: 'assign', ids, assignee: assignee ?? null });
@@ -115,7 +114,7 @@ async function saveStatus(item: ReviewCatalogItem, status: ApexBffReviewStatus) 
   } catch (error) { ElMessage.error((error as Error).message); }
   finally { savingId.value = ''; }
 }
-function refresh() { void query.refetch(); void catalogQuery.refetch(); }
+function refresh() { void query.refetch(); }
 async function toggleReview(item: ReviewCatalogItem) {
   if (item.archived || !reviewAvailable.value || savingId.value) return;
   const action = records.value[item.id]?.confirmedAt ? 'reopen' : 'confirm';
@@ -132,7 +131,7 @@ async function toggleReview(item: ReviewCatalogItem) {
   <PageHeading title="APEX 接口联调" description="按模块和页面核对接口；只有人工确认后才计入确认联调通过。" :loading="query.isFetching.value" @refresh="refresh">
     <RouterLink to="/agent?view=integration-execution" class="review-resource-link">联调执行进度</RouterLink>
     <el-button @click="feedbackItem = undefined; wecomOpen = true">企业微信机器人</el-button>
-    <a v-if="plan?.contractUrl" :href="plan.contractUrl" target="_blank" rel="noreferrer" class="review-resource-link">接口文档</a>
+    <a :href="plan.contractUrl" target="_blank" rel="noreferrer" class="review-resource-link">接口文档</a>
   </PageHeading>
   <div class="review-overview surface">
     <div class="overview-main"><small>接口总数</small><strong>{{ catalog.length }}</strong><span>暂不联调 {{ deferredCount }} · 暂不使用 {{ unusedCount }} · 已替代 / 不再使用 {{ reviewAvailable ? counts.inactive : '—' }}</span></div>
@@ -140,7 +139,6 @@ async function toggleReview(item: ReviewCatalogItem) {
     <div class="overview-stat pending"><small>待人工审核</small><strong>{{ reviewAvailable ? counts.pending : '—' }}</strong><span>不含暂不联调、暂不使用、已替代、不再使用</span></div>
   </div>
   <p v-if="query.error.value" class="load-error">审核记录读取失败：{{ query.error.value.message }}</p>
-  <p v-if="catalogQuery.error.value" class="load-error">接口清单读取失败：{{ catalogQuery.error.value.message }}</p>
   <div class="review-layout">
     <ReviewNavigation v-model:module="selectedModule" v-model:page="selectedPage" :items="matchingItems" :records="records" :available="reviewAvailable" />
     <section class="surface review-main">

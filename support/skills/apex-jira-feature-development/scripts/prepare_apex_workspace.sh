@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly DEFAULT_REPO_URL=""
+readonly DEFAULT_REPO_URL="git@codeup.aliyun.com:64ad9c6e702c0cacad9a2168/Raytheon_project/thor-admin2.0.git"
 
 usage() {
   printf 'Usage: %s <JIRA-KEY> <BASE-REF> [BRANCH]\n' "$0" >&2
@@ -29,10 +29,6 @@ fi
 desktop_root="${APEX_DESKTOP_ROOT:-$HOME/Desktop}"
 month="${APEX_MONTH:-$(date +%m)}"
 repo_url="${APEX_REPO_URL:-$DEFAULT_REPO_URL}"
-if [[ -z "$repo_url" ]]; then
-  printf "Set APEX_REPO_URL to your own repository URL before preparing a workspace.\n" >&2
-  exit 2
-fi
 
 if [[ ! "$month" =~ ^(0[1-9]|1[0-2])$ ]]; then
   printf 'APEX_MONTH must be a two-digit month from 01 to 12: %s\n' "$month" >&2

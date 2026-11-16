@@ -26,7 +26,7 @@ AI Delivery Hub 负责承载需求流转、文档协作、本地 Codex Bridge、
 ## 仓库地址
 
 ```text
-git@git.example.com:team/ai-delivery-kit.git
+git@gitlab.hahabianli.com:raytheon-middleware/ai-delivery-kit.git
 ```
 
 包根目录就是仓库根目录。

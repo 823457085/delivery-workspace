@@ -19,14 +19,6 @@ export function createGoLearningRoutes(
   return async (request: IncomingMessage, response: ServerResponse, url: URL): Promise<boolean> => {
     if (!url.pathname.startsWith('/api/go-learning/')) return false;
 
-    const host = request.headers.host || '';
-    const isLocalHost = [`localhost:${io.port}`, `127.0.0.1:${io.port}`].includes(host);
-    const isLocalSocket = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(request.socket.remoteAddress || '');
-    if (!isLocalHost || !isLocalSocket) {
-      io.json(response, 403, { message: '请在本机工作台操作 Go 实训工坊' });
-      return true;
-    }
-
     if (request.method === 'GET' && url.pathname === '/api/go-learning/overview') {
       const dayParam = url.searchParams.get('day');
       const dayNum = dayParam ? Number(dayParam) : undefined;
@@ -47,12 +39,10 @@ export function createGoLearningRoutes(
       return true;
     }
 
-    if (request.headers.origin !== `http://${host}` || request.headers['x-delivery-confirmed'] !== 'yes') {
-      io.json(response, 403, { message: '请从本机工作台确认 Go 实训工坊操作' });
-      return true;
-    }
-    if (request.headers['content-type']?.split(';')[0].trim().toLowerCase() !== 'application/json') {
-      io.json(response, 415, { message: '请发送 JSON' });
+    const isLocalHost = [`localhost:${io.port}`, `127.0.0.1:${io.port}`].includes(request.headers.host || '');
+    const isLocalSocket = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(request.socket.remoteAddress || '');
+    if (!isLocalHost || !isLocalSocket) {
+      io.json(response, 403, { message: '请在本机工作台操作 Go 实训工坊' });
       return true;
     }
 

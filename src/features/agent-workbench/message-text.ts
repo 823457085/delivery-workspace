@@ -1,32 +1,34 @@
 import { refactorActionLabels, type RefactorAction } from '../../../shared/refactor-control';
 
-export function jiraTaskPromptTitle(source: string) {
+export function jiraTaskPromptTitle(source?: string) {
+  if (!source) return;
   const [title, marker] = source.split(/\r?\n(?:[ \t]*\r?\n)*/, 2);
   if (/^(?:需求开发|Jira 修复)(?:[ \t]*·.+)?$/.test(title.trim())
     && /^JIRA_DEV_TASK_ID:[ \t]+[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}[ \t]*$/i.test(marker || '')) return title.trim();
 }
 
 /** 仅生成展示摘要；旧重构任务的正文仍作为完整提示词保留，不改变执行输入。 */
-export function groupTaskMessage(round: { text: string; taskPrompt?: string }): { text: string; prompt?: string } {
-  if (round.taskPrompt?.trim()) return { text: round.text, prompt: round.taskPrompt };
-  const [marker, metadata] = round.text.split('\n', 2);
-  if (!/^\[重构管理任务:[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}\]\r?$/i.test(marker || '')) return { text: round.text };
+export function groupTaskMessage(round: { text?: string; taskPrompt?: string }): { text: string; prompt?: string } {
+  const text = round.text || '';
+  if (round.taskPrompt?.trim()) return { text, prompt: round.taskPrompt };
+  const [marker, metadata] = text.split('\n', 2);
+  if (!/^\[重构管理任务:[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}\]\r?$/i.test(marker || '')) return { text };
   try {
     const data = JSON.parse(metadata || '');
     if (data && typeof data.action === 'string' && Object.hasOwn(refactorActionLabels, data.action)
       && typeof data.version === 'string'
       && ['moduleId', 'environment'].every(key => typeof data[key] === 'string' && data[key].trim())) {
-      return { text: `重构管理 · ${refactorActionLabels[data.action as RefactorAction]}（${data.environment}）`, prompt: round.text };
+      return { text: `重构管理 · ${refactorActionLabels[data.action as RefactorAction]}（${data.environment}）`, prompt: text };
     }
   } catch { /* 无法确认是生成的任务指令时仍完整展示消息。 */ }
-  return { text: round.text };
+  return { text };
 }
 
 /**
  * 只切分用户消息的展示片段，所有片段按顺序拼接仍是原文；不修改保存、复制或搜索使用的消息。
  * 优先识别明确的交接 JSON，保留其后的新要求；普通长消息只按长度折叠，避免猜测业务段落。
  */
-export function splitUserMessage(source: string) {
+export function splitUserMessage(source = '') {
   const marker = /^(?:以下是当前工作台对话跨执行器交接的近期文本|以下是跨执行器带入的近期对话文本)[^\n]*\n\s*(?=\[)/m.exec(source);
   if (marker) {
     const start = marker.index + marker[0].length;

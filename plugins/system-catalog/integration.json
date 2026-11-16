@@ -1,0 +1,22 @@
+{
+  "id": "system-catalog",
+  "name": "系统导航",
+  "description": "业务系统环境入口、测试账号管理与本地仓库映射目录",
+  "local": true,
+  "prefix": "SYSTEM_CATALOG",
+  "capabilities": [],
+  "views": [
+    {
+      "id": "systems",
+      "label": "系统导航",
+      "path": "/systems",
+      "section": "projects",
+      "component": "panel"
+    }
+  ],
+  "sourceKeys": [],
+  "apiPrefixes": [
+    "/api/systems"
+  ],
+  "apiPaths": []
+}

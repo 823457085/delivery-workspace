@@ -3,7 +3,8 @@
  * 工具诊断等本机运行细节。生成纯内容与浏览器下载分开，便于测试且避免组件持有文件逻辑。
  */
 import { agentConversationRunRounds, type AgentConversation } from './conversation';
-import { agentProviderLabels, isAgentImageAttachment } from '../../../shared/agent-runtime';
+import { agentProviderLabels, isAgentImageAttachment, type AgentProvider } from '../../../shared/agent-runtime';
+import { buildCrossAgentHandoffPacket, formatHandoffPacketMarkdown, type CrossAgentHandoffPacket } from '../../../shared/agent-handoff-packet';
 import type { GroupRoomDetail } from '../../../shared/agent-group-chat';
 import { groupChatMessages } from './group-chat-messages';
 import { groupTaskMessage } from './message-text';
@@ -126,7 +127,47 @@ function downloadExport(title: string, content: string, format: 'markdown' | 'js
   URL.revokeObjectURL(url);
 }
 
-export function downloadConversation(conversation: AgentConversation, format: 'markdown' | 'json') {
+export function conversationHandoffPacket(
+  conversation: AgentConversation,
+  targetProvider?: AgentProvider,
+): CrossAgentHandoffPacket {
+  return buildCrossAgentHandoffPacket({
+    conversationTitle: conversation.title,
+    workspacePath: conversation.latest.workspacePath,
+    branch: conversation.latest.branch,
+    targetProvider,
+    reason: '跨 Agent 会话交接与外部接力',
+    maxTextWindowTurns: 8,
+    turns: conversation.runs.map(run => ({
+      id: run.id,
+      provider: run.provider,
+      model: run.model,
+      status: run.status,
+      objective: run.objective,
+      supplements: (run.supplements || []).map(item => ({ objective: item.objective, createdAt: item.createdAt })),
+      result: run.result,
+      error: run.error,
+      events: (run.events || []).slice(-10).map(ev => ({ type: ev.type, message: ev.message })),
+      changedFiles: run.changedFiles,
+      revisesRunId: run.revisesRunId,
+      createdAt: run.createdAt,
+      updatedAt: run.updatedAt,
+    })),
+  });
+}
+
+export function conversationHandoffMarkdown(
+  conversation: AgentConversation,
+  targetProvider?: AgentProvider,
+): string {
+  return formatHandoffPacketMarkdown(conversationHandoffPacket(conversation, targetProvider));
+}
+
+export function downloadConversation(conversation: AgentConversation, format: 'markdown' | 'json' | 'handoff') {
+  if (format === 'handoff') {
+    downloadExport(`${conversation.title}-交接简报`, conversationHandoffMarkdown(conversation), 'markdown');
+    return;
+  }
   downloadExport(conversation.title, format === 'markdown' ? conversationMarkdown(conversation) : conversationJson(conversation), format);
 }
 

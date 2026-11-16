@@ -1,6 +1,6 @@
 /**
  * 设计说明：会话输入草稿必须以会话 ID 隔离，切换会话只切换当前引用，不销毁未发送内容。
- * 这里只管理当前页面生命周期内的文本和附件引用；不做本地持久化，避免刷新后恢复已经失效的临时附件。
+ * 纯文本草稿节流同步到浏览器 localStorage 防止误刷新丢失；临时附件仍仅保留在内存生命周期内，避免刷新后恢复失效附件。
  */
 import { computed, shallowRef, type Ref } from 'vue';
 import type { AgentAttachment } from '../../../shared/agent-runtime';
@@ -11,15 +11,75 @@ export interface AgentConversationDraft {
   attachments: AgentAttachment[];
 }
 
-export function useAgentConversationDrafts(conversationId: Readonly<Ref<string>>) {
-  const drafts = shallowRef<Record<string, AgentConversationDraft>>({});
+const DRAFT_STORAGE_KEY = 'delivery-workspace.agent-draft-texts.v1';
+const MAX_PERSISTED_DRAFTS = 60;
+const MAX_PERSISTED_DRAFT_CHARS = 32_000;
+
+export interface DraftTextStorage {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+  removeItem(key: string): void;
+}
+
+function defaultDraftStorage(): DraftTextStorage | undefined {
+  try {
+    return typeof window !== 'undefined' ? window.localStorage : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function loadPersistedDrafts(storage?: DraftTextStorage): Record<string, AgentConversationDraft> {
+  if (!storage) return {};
+  try {
+    const raw = storage.getItem(DRAFT_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const restored: Record<string, AgentConversationDraft> = {};
+    for (const [id, text] of Object.entries(parsed).slice(0, MAX_PERSISTED_DRAFTS)) {
+      if (id && typeof text === 'string' && text) {
+        restored[id] = { text: text.slice(0, MAX_PERSISTED_DRAFT_CHARS), attachments: [] };
+      }
+    }
+    return restored;
+  } catch {
+    return {};
+  }
+}
+
+export function useAgentConversationDrafts(conversationId: Readonly<Ref<string>>, storage = defaultDraftStorage()) {
+  const drafts = shallowRef<Record<string, AgentConversationDraft>>(loadPersistedDrafts(storage));
   const attachmentDrafts = shallowRef<Record<string, AgentAttachmentDraft>>({});
   let disposed = false;
+  let persistTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function flushPersist() {
+    if (persistTimer) { clearTimeout(persistTimer); persistTimer = undefined; }
+    if (!storage) return;
+    try {
+      const entries = Object.entries(drafts.value)
+        .filter(([id, item]) => id && item.text)
+        .slice(-MAX_PERSISTED_DRAFTS)
+        .map(([id, item]) => [id, item.text.slice(0, MAX_PERSISTED_DRAFT_CHARS)] as const);
+      if (!entries.length) storage.removeItem(DRAFT_STORAGE_KEY);
+      else storage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(Object.fromEntries(entries)));
+    } catch { /* 存储配额满或隐私模式时降级为内存草稿。 */ }
+  }
+
+  function schedulePersist(immediate = false) {
+    if (!storage) return;
+    if (immediate) { flushPersist(); return; }
+    if (persistTimer) return;
+    persistTimer = setTimeout(flushPersist, 200);
+    persistTimer.unref?.();
+  }
 
   function update(id: string, patch: Partial<AgentConversationDraft>) {
     if (!id || disposed) return;
     const current = drafts.value[id] || { text: '', attachments: [] };
     drafts.value = { ...drafts.value, [id]: { ...current, ...patch } };
+    if (patch.text !== undefined) schedulePersist(!patch.text);
   }
 
   function bind(id: Readonly<Ref<string>>) {
@@ -59,6 +119,7 @@ export function useAgentConversationDrafts(conversationId: Readonly<Ref<string>>
     const next = { ...drafts.value };
     delete next[id];
     drafts.value = next;
+    schedulePersist(true);
     return cleared;
   }
 
@@ -90,6 +151,7 @@ export function useAgentConversationDrafts(conversationId: Readonly<Ref<string>>
     delete next[from];
     drafts.value = next;
     if (pending) restore(to, pending);
+    schedulePersist(true);
   }
 
   function pendingAttachments() {
@@ -97,6 +159,7 @@ export function useAgentConversationDrafts(conversationId: Readonly<Ref<string>>
   }
 
   function dispose() {
+    flushPersist();
     disposed = true;
     Object.values(attachmentDrafts.value).forEach(target => target.discard());
     attachmentDrafts.value = {};

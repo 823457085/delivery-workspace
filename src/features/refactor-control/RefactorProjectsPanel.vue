@@ -10,7 +10,11 @@ import { refactorRequest } from './useRefactorControl';
 
 const emit = defineEmits<{ changed: [] }>();
 const suffix = '/workspace/projects';
-const query = useQuery({ queryKey: ['refactor-projects'], queryFn: ({ signal }) => refactorRequest<RefactorProjectDashboard>(suffix, undefined, signal), refetchInterval: 5000, retry: false });
+const query = useQuery({ queryKey: ['refactor-projects'],
+  queryFn: ({ signal }) => refactorRequest<RefactorProjectDashboard>(suffix, undefined, signal),
+  refetchIntervalInBackground: false,
+  refetchInterval: q => q.state.data?.projects.some(project => project.state === 'starting') ? 2500 : 15_000,
+  retry: false });
 const projects = computed(() => query.data.value?.projects || []);
 const editing = ref(false), busy = ref(false), draft = ref<RefactorProject[]>([]), revision = ref('');
 const roles = { shell: '基座', 'micro-app': '微前端子应用', legacy: '旧版应用', service: '服务' };

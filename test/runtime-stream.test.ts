@@ -55,13 +55,16 @@ test('密集正文只推送变化运行，合并多会话并保持 SSE revision 
   const stream = createAgentRuntimeStream(frame => frames.push(frame), true);
   try {
     for (let i = 1; i <= 100; i++) stream.update(i, run('a', String(i)));
-    stream.update(101, run('b', 'other'));
+    const teamRun = { ...run('b', 'other'), teamContext: '服务端团队提示词' };
+    stream.update(101, teamRun);
     await delay(130);
     assert.equal(frames.length, 1);
     assert.match(frames[0], /event: runs/);
     const data = JSON.parse(frames[0].split('data: ')[1]);
     assert.equal(data.runs.length, 2);
     assert.equal(data.runs[0].result, '100');
+    assert.equal(data.runs[1].teamContext, undefined);
+    assert.equal(teamRun.teamContext, '服务端团队提示词');
     stream.update(102, run('a', 'done', 'completed'));
     stream.update(103);
     assert.match(frames[1], /id: 102/);
@@ -101,6 +104,21 @@ test('同毫秒新增运行在 SSE 中保持队尾执行器，旧轮正文更新
   const slow = state.snapshot(initial);
   assert.deepEqual(slow.runs.map(item => item.id), [queued.id, active.id]);
   assert.equal(slow.runs[1].result, '继续输出');
+});
+
+test('发送回执先更新该条消息，慢快照和其他运行的事件仍按各自版本合并', () => {
+  const state = createRuntimeStreamState();
+  const base = state.snapshot(snapshot(1, [run('a', '原结果')]));
+  const accepted = state.accept(4, run('b', '已受理', 'queued'), base)!;
+  assert.equal(accepted.revision, 1);
+  assert.equal(accepted.runs[0].id, 'b');
+  const other = state.receive(2, [run('a', '其他会话已更新')], accepted)!;
+  assert.equal(other.runs.find(item => item.id === 'a')?.result, '其他会话已更新');
+  assert.equal(state.snapshot(snapshot(3, [run('a', '已落盘')])).runs[0].result, '已受理');
+  const updated = state.receive(5, [run('b', '流式正文')], other)!;
+  assert.equal(updated.runs[0].result, '流式正文');
+  assert.equal(state.accept(4, run('b', '迟到回执'), updated)!.runs[0].result, '流式正文');
+  assert.deepEqual(state.snapshot(snapshot(6, [])).runs, []);
 });
 
 test('连续刷新不打断在途请求，只在完成后补一次；卸载后不再刷新', async () => {

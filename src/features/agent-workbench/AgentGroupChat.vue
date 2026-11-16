@@ -1,32 +1,33 @@
 <script setup lang="ts">
-import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, ref, shallowRef, watch } from 'vue';
+import { computed, defineAsyncComponent, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, shallowRef, useTemplateRef, watch } from 'vue';
+import { RouterLink } from 'vue-router';
 import { useQuery, useQueryClient } from '@tanstack/vue-query';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { ChevronUp, ChevronDown, ChevronLeft, ChevronRight, CornerUpLeft, Download, Ellipsis, Folder, FolderOpen, Info, PanelRight, Pencil, Pin, Plus, Send, Settings2, Square, Trash2, Upload, Users } from '@lucide/vue';
-import type { AgentAccessMode, AgentAttachment, AgentReasoningEffort, AgentRun, AgentRuntimeHealth, AgentProvider, AgentUsageLimits, AntigravityUsageLimits } from '../../../shared/agent-runtime';
+import { ArrowDown, ArrowUp, ArrowUpRight, Check, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Copy, CornerUpLeft, Download, Ellipsis, FileText, Folder, FolderOpen, Info, ListOrdered, PanelRight, Pencil, Pin, Plus, Quote, Search, Send, Settings2, Sparkles, Square, Trash2, Upload, Users, X } from '@lucide/vue';
+import type { AgentAccessMode, AgentAttachment, AgentChangedFile, AgentReasoningEffort, AgentRun, AgentRuntimeHealth, AgentProvider, AgentUsageLimits, AntigravityUsageLimits } from '../../../shared/agent-runtime';
 import type { ProjectsData } from '../../../shared/hub';
 import { agentProviderLabels, isAgentImageAttachment } from '../../../shared/agent-runtime';
-import { groupCapabilityLabels, type GroupChatDashboard, type GroupConfig, type GroupMember, type GroupRoomDetail, type GroupSteerInput, type GroupTurn } from '../../../shared/agent-group-chat';
+import { applyGroupPreset, groupCapabilityLabels, groupPresetIds, groupPresetTemplates, type GroupBinding, type GroupChatDashboard, type GroupConfig, type GroupMember, type GroupPresetId, type GroupRoomDetail, type GroupRound, type GroupSteerInput, type GroupTurn } from '../../../shared/agent-group-chat';
 import { useSource } from '../../shared/api';
+import { useTheme } from '../../shared/theme/useTheme';
 import { useWorkspaceRestart } from '../../shared/version/useWorkspaceRestart';
 import { dateTime } from '../../shared/format';
 import { useWorkspacePicker } from '../../shared/useWorkspacePicker';
-import WorkspaceBrowserDialog from '../../shared/ui/WorkspaceBrowserDialog.vue';
 import AgentSidebarHeader from './AgentSidebarHeader.vue';
 import AgentAvatar from './AgentAvatar.vue';
 import AgentMarkdown from './AgentMarkdown.vue';
 import AgentPromptEditor from './AgentPromptEditor.vue';
-import AgentEditMessageDialog from './AgentEditMessageDialog.vue';
 import AgentWorkspaceSelector from './AgentWorkspaceSelector.vue';
-import AgentProjectLaunch from './AgentProjectLaunch.vue';
 import AgentCursorButton from './AgentCursorButton.vue';
 import { buildWorkspaceCatalog, workspacePathLabel } from './workspace-catalog';
 import AgentGroupSummary from './AgentGroupSummary.vue';
 import AgentElapsedTime from './AgentElapsedTime.vue';
 import { groupRoundTiming } from './group-elapsed';
 import AgentChangedFiles from './AgentChangedFiles.vue';
-import AgentTeamQuestion from './AgentTeamQuestion.vue';
+import AgentLiveRunActivity from './AgentLiveRunActivity.vue';
 import AgentGroupDetailsPanel from './AgentGroupDetailsPanel.vue';
+const AgentProjectLaunch = defineAsyncComponent(() => import('./AgentProjectLaunch.vue'));
+const AgentTeamQuestion = defineAsyncComponent(() => import('./AgentTeamQuestion.vue'));
 import AgentPanelResize from './AgentPanelResize.vue';
 import { answerTeamMessage, decideTeamTask, readTeamRoom } from './team-api';
 import { teamChatActivity, teamChatActiveStates, teamQuestionReply, teamQuestionState, type TeamQuestionTarget } from './team-chat';
@@ -46,9 +47,15 @@ import { groupDeliveryOverview } from './group-delivery-presentation';
 import { groupChatMessages } from './group-chat-messages';
 import { groupChatMessageBlocks, groupMemberReply, groupRoundReply } from './group-chat-replies';
 import { groupMemberFeedback } from './group-summary-presentation';
-import AgentTaskPromptDrawer from './AgentTaskPromptDrawer.vue';
 import { groupTaskMessage } from './message-text';
+import { formatChangedFileReference, formatQuoteReply, stripMarkdownToPlainText, summarizeOutlineText } from './conversation-outline';
 import { groupRoomSections, readGroupSidebarPreferences, saveGroupSidebarPreferences } from './group-room-sidebar';
+
+const ImmersivePhotoStage = defineAsyncComponent(() => import('../../shared/ui/ImmersivePhotoStage.vue'));
+const CinematicVideoStage = defineAsyncComponent(() => import('../../shared/ui/CinematicVideoStage.vue'));
+const WorkspaceBrowserDialog = defineAsyncComponent(() => import('../../shared/ui/WorkspaceBrowserDialog.vue'));
+const AgentEditMessageDialog = defineAsyncComponent(() => import('./AgentEditMessageDialog.vue'));
+const AgentTaskPromptDrawer = defineAsyncComponent(() => import('./AgentTaskPromptDrawer.vue'));
 
 const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value));
 const props = defineProps<{ runtimes: AgentRuntimeHealth[]; initialRoomId?: string; quotas?: Partial<Record<AgentProvider, AgentUsageLimits>>; antigravityUsage?: AntigravityUsageLimits; refreshing?: boolean; streamStatus?: 'connecting' | 'connected' | 'reconnecting' }>();
@@ -70,7 +77,15 @@ function beginRoomAction(id: string, kind: string) {
   };
 }
 const { busy: restarting } = useWorkspaceRestart();
-const dashboard = useQuery({ queryKey: scope, enabled: computed(() => active.value && !restarting.value), queryFn: ({ signal }) => readGroupDashboard(signal), retry: false, refetchInterval: 3000 });
+const groupSseConnected = shallowRef(false);
+const dashboard = useQuery({
+  queryKey: scope,
+  enabled: computed(() => active.value && !restarting.value),
+  queryFn: ({ signal }) => readGroupDashboard(signal),
+  retry: false,
+  refetchInterval: computed(() => groupSseConnected.value ? 30_000 : 8_000),
+  refetchIntervalInBackground: false,
+});
 const config = computed(() => dashboard.data.value?.config), rooms = computed(() => dashboard.data.value?.rooms || []);
 const batchMode = shallowRef(false), checkedIds = shallowRef(new Set<string>());
 const checkedRooms = computed(() => rooms.value.filter(item => checkedIds.value.has(item.id)));
@@ -84,8 +99,20 @@ function toggleChecked(id: string) {
 function cancelBatch() { batchMode.value = false; checkedIds.value = new Set(); }
 let initialized = false;
 watch(rooms, value => { if (!initialized && dashboard.data.value) { initialized = true; selectedId.value = props.initialRoomId !== undefined ? props.initialRoomId : value[0]?.id || ''; creating.value = !selectedId.value; } }, { immediate: true });
-const detail = useQuery({ queryKey: computed(() => [...scope, 'room', selectedId.value]), enabled: computed(() => active.value && !!selectedId.value && !restarting.value),
-  queryFn: ({ signal }) => readGroupRoom(selectedId.value, signal), retry: false, refetchInterval: 2000 });
+const detail = useQuery({
+  queryKey: computed(() => [...scope, 'room', selectedId.value]),
+  enabled: computed(() => active.value && !!selectedId.value && !restarting.value),
+  queryFn: ({ signal }) => readGroupRoom(selectedId.value, signal),
+  retry: false,
+  refetchInterval: (query) => {
+    const latestRound = query.state.data?.room.rounds.at(-1);
+    const activeWork = !!latestRound && (['queued', 'running'].includes(latestRound.state)
+      || !!query.state.data?.collaboration && teamChatActiveStates.has(query.state.data.collaboration.task.state));
+    if (!activeWork) return false;
+    return groupSseConnected.value ? 10_000 : 2_500;
+  },
+  refetchIntervalInBackground: false,
+});
 watch(() => props.initialRoomId, id => { if (id !== undefined && id !== selectedId.value) { selectedId.value = id; creating.value = !id; recipients.value = ['all']; } });
 const current = computed(() => detail.data.value?.room.id === selectedId.value ? detail.data.value : undefined);
 const room = computed(() => current.value?.room), runs = computed(() => current.value?.runs || []);
@@ -104,11 +131,12 @@ const currentLocalDelivery = computed(() => localDelivery.data.value?.roomId ===
 
 type PendingGroupSend = { roomId: string; requestId: string; text: string; attachments: AgentAttachment[]; createdAt: string; accepted: boolean };
 const pendingSends = shallowRef<PendingGroupSend[]>([]);
+const { current: currentTheme } = useTheme();
 const detailsCollapsed = shallowRef(window.matchMedia('(max-width: 900px)').matches);
 const narrowSidebarOpen = shallowRef(false);
-const detailsWidth = shallowRef(320);
-const sidebarWidth = defineModel<number>('sidebarWidth', { default: 232 });
-const detailsOpen = computed(() => !detailsCollapsed.value && (!!room.value || launchWorkspacePaths.value.length > 0));
+const detailsWidth = shallowRef(280);
+const sidebarWidth = defineModel<number>('sidebarWidth', { default: 240 });
+const detailsOpen = computed(() => !detailsCollapsed.value);
 const detailsPanel = shallowRef<InstanceType<typeof AgentGroupDetailsPanel>>();
 const composerInput = shallowRef<InstanceType<typeof AgentPromptEditor>>();
 watch(selectedId, () => { narrowSidebarOpen.value = false; if (window.matchMedia('(max-width: 900px)').matches) detailsCollapsed.value = true; });
@@ -125,9 +153,53 @@ async function composeDetailsPrompt(text: string) {
   await nextTick();
   await composerInput.value?.focusInput();
 }
+const selectedGroupQuote = shallowRef('');
+watch(() => selectedId.value, () => { selectedGroupQuote.value = ''; });
+function captureGroupSelection() {
+  const el = viewport.value;
+  if (!el || typeof window === 'undefined' || !window.getSelection) return;
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed) { selectedGroupQuote.value = ''; return; }
+  const anchor = selection.anchorNode, focus = selection.focusNode;
+  if (!anchor || !focus || !el.contains(anchor) || !el.contains(focus)) return;
+  const text = selection.toString().trim();
+  selectedGroupQuote.value = text.length >= 2 && text.length <= 2400 ? text : '';
+}
+async function quoteInGroupComposer(rawSnippet: string) {
+  const next = formatQuoteReply(rawSnippet, draft.value);
+  if (next === draft.value && !rawSnippet.trim()) return;
+  draft.value = next;
+  selectedGroupQuote.value = '';
+  if (typeof window !== 'undefined' && window.getSelection) window.getSelection()?.removeAllRanges();
+  await nextTick();
+  await composerInput.value?.focusInput();
+}
+async function askChangedFile(file: AgentChangedFile, line?: number) {
+  const reference = formatChangedFileReference(file.path, line);
+  if (!draft.value.includes(reference)) {
+    draft.value = `${draft.value}${draft.value && !/\s$/.test(draft.value) ? ' ' : ''}${reference} `;
+  }
+  await nextTick();
+  await composerInput.value?.focusInput();
+}
+async function applyGroupReviewPrompt(prompt: string) {
+  draft.value = draft.value.trim() ? `${draft.value.trim()}\n${prompt}` : prompt;
+  await nextTick();
+  await composerInput.value?.focusInput();
+}
 const collaborationId = computed(() => current.value?.collaboration?.task.id || '');
-const collaborationQuery = useQuery({ queryKey: computed(() => [...scope, 'collaboration', collaborationId.value]),
-  enabled: computed(() => active.value && !!collaborationId.value && !restarting.value), queryFn: ({ signal }) => readTeamRoom(collaborationId.value, signal), retry: false, refetchInterval: 2000 });
+const collaborationQuery = useQuery({
+  queryKey: computed(() => [...scope, 'collaboration', collaborationId.value]),
+  enabled: computed(() => active.value && !!collaborationId.value && !restarting.value),
+  queryFn: ({ signal }) => readTeamRoom(collaborationId.value, signal),
+  retry: false,
+  refetchInterval: (query) => {
+    const taskState = query.state.data?.task.state || current.value?.collaboration?.task.state;
+    if (taskState && !teamChatActiveStates.has(taskState)) return false;
+    return groupSseConnected.value ? 10_000 : 2_500;
+  },
+  refetchIntervalInBackground: false,
+});
 const collaboration = computed(() => collaborationQuery.data.value?.task.id === collaborationId.value ? collaborationQuery.data.value : undefined);
 const collaborationTask = computed(() => collaboration.value?.task);
 const collaborationTasks = computed(() => current.value?.collaborations?.map(item => item.task) || (current.value?.collaboration ? [current.value.collaboration.task] : []));
@@ -176,6 +248,23 @@ async function steerMessage(input: GroupSteerInput) {
   catch (error) { ElMessage.error(error instanceof Error ? error.message : '消息插队失败'); }
   finally { finish(); }
 }
+function canSteerQueuedRound(round: GroupRound) {
+  const currentRoom = room.value;
+  if (!currentRoom || currentRoom.source || round.automatic || round.state !== 'queued') return false;
+  if (!round.turns.every(turn => turn.status === 'pending' && !runs.value.some(run => run.id === turn.runId))) return false;
+  const activeIndex = currentRoom.rounds.findIndex(item => !['completed', 'cancelled'].includes(item.state));
+  const roundIndex = currentRoom.rounds.findIndex(item => item.id === round.id);
+  return activeIndex >= 0 && roundIndex > activeIndex;
+}
+async function steerQueuedRound(round: GroupRound) {
+  const roomId = room.value?.id;
+  if (!roomId || roomId !== selectedId.value || !canSteerQueuedRound(round)) return;
+  const finish = beginRoomAction(roomId, `steer:${round.id}`);
+  if (!finish) return;
+  try { setDetail(await steerGroupMessage(roomId, { messageId: round.id, accessMode: accessMode.value })); }
+  catch (error) { ElMessage.error(error instanceof Error ? error.message : '消息插队失败'); }
+  finally { finish(); }
+}
 const questionTarget = shallowRef<TeamQuestionTarget>();
 const workspaceExpanded = shallowRef(false);
 const questionReply = computed(() => questionTarget.value
@@ -204,7 +293,26 @@ const recipients = shallowRef<string[]>(['all']), accessMode = shallowRef<AgentA
 const newWorkspaces = shallowRef<string[]>([]);
 const projectsQuery = useSource<ProjectsData>('projects');
 const sidebarPreferences = shallowRef(readGroupSidebarPreferences(window.localStorage));
+const roomQuery = shallowRef('');
 const roomSections = computed(() => groupRoomSections(rooms.value, sidebarPreferences.value.pinnedIds, projectsQuery.data.value));
+const filteredRoomSections = computed(() => {
+  const term = roomQuery.value.trim().toLowerCase();
+  if (!term) return roomSections.value;
+  return roomSections.value
+    .map(section => ({
+      ...section,
+      rooms: section.rooms.filter(item =>
+        [item.title, section.label, item.workspacePath, item.activeMember].filter(Boolean).join(' ').toLowerCase().includes(term)),
+    }))
+    .filter(section => section.rooms.length > 0);
+});
+function roomStateTone(item: (typeof rooms.value)[number]) {
+  if (item.waitingForLogin || item.state === 'failed') return 'failed';
+  if (item.paused) return 'paused';
+  if (item.activeMember || item.state === 'running') return 'running';
+  if (item.state === 'completed') return 'completed';
+  return 'idle';
+}
 function saveSidebarPreferences(next: typeof sidebarPreferences.value) {
   sidebarPreferences.value = next;
   if (!saveGroupSidebarPreferences(window.localStorage, next)) ElMessage.warning('群聊列表偏好暂时无法保存，刷新后可能恢复。');
@@ -408,19 +516,25 @@ function switchRoom(id: string) {
 }
 function refresh() { void client.invalidateQueries({ queryKey: scope }); }
 function setDetail(value: GroupRoomDetail) { client.setQueryData([...scope, 'room', value.room.id], value); refresh(); }
-async function editRoomTitle() {
+const editingRoomTitle = shallowRef(false);
+const roomTitleDraft = shallowRef('');
+const roomTitleInput = useTemplateRef<HTMLInputElement>('roomTitleInput');
+watch([selectedId, () => room.value?.id], () => { editingRoomTitle.value = false; });
+function editRoomTitle() {
   const target = room.value;
   if (!target || roomBusy(target.id)) return;
-  let title: string;
-  try {
-    const { value } = await ElMessageBox.prompt('请输入新的群聊标题', '修改群聊标题', {
-      inputValue: target.title,
-      inputValidator: input => !input.trim() ? '请输入群聊标题' : input.trim().length > 300 ? '群聊标题不能超过 300 个字符' : true,
-      confirmButtonText: '保存', cancelButtonText: '取消', closeOnClickModal: false,
-    });
-    title = value.trim();
-  } catch { return; }
-  if (selectedId.value !== target.id || title === target.title) return;
+  roomTitleDraft.value = target.title;
+  editingRoomTitle.value = true;
+  void nextTick(() => { roomTitleInput.value?.focus(); roomTitleInput.value?.select(); });
+}
+function cancelRoomTitleEdit() { editingRoomTitle.value = false; }
+async function commitRoomTitleEdit() {
+  if (!editingRoomTitle.value) return;
+  editingRoomTitle.value = false;
+  const target = room.value;
+  const title = roomTitleDraft.value.trim();
+  if (!target || roomBusy(target.id) || selectedId.value !== target.id || !title || title === target.title) return;
+  if (title.length > 300) { ElMessage.warning('群聊标题不能超过 300 个字符'); return; }
   const finish = beginRoomAction(target.id, 'rename');
   if (!finish) return;
   try {
@@ -430,6 +544,44 @@ async function editRoomTitle() {
     client.setQueryData<GroupRoomDetail>(roomKey, value => value && ({ ...value, room: { ...value.room, title: result.title } }));
     client.setQueryData<GroupChatDashboard>(scope, value => value && ({ ...value,
       rooms: value.rooms.map(item => item.id === target.id ? { ...item, title: result.title } : item),
+    }));
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '修改群聊标题失败');
+  } finally { finish(); refresh(); }
+}
+const sidebarEditingRoomId = shallowRef('');
+const sidebarRoomTitleDraft = shallowRef('');
+watch(batchMode, value => { if (value) sidebarEditingRoomId.value = ''; });
+function focusSidebarRoomInput(el: unknown) {
+  if (!(el instanceof HTMLInputElement) || document.activeElement === el) return;
+  el.focus();
+  el.select();
+}
+function startSidebarRoomRename(item: { id: string; title: string }) {
+  if (batchMode.value || roomBusy(item.id)) return;
+  sidebarEditingRoomId.value = item.id;
+  sidebarRoomTitleDraft.value = item.title;
+}
+function cancelSidebarRoomRename() {
+  sidebarEditingRoomId.value = '';
+  sidebarRoomTitleDraft.value = '';
+}
+async function commitSidebarRoomRename(item: { id: string; title: string }) {
+  if (sidebarEditingRoomId.value !== item.id) return;
+  const title = sidebarRoomTitleDraft.value.trim();
+  sidebarEditingRoomId.value = '';
+  sidebarRoomTitleDraft.value = '';
+  if (!title || title === item.title || roomBusy(item.id)) return;
+  if (title.length > 300) { ElMessage.warning('群聊标题不能超过 300 个字符'); return; }
+  const finish = beginRoomAction(item.id, 'rename');
+  if (!finish) return;
+  try {
+    const result = await renameGroupRoom(item.id, title, item.title);
+    const roomKey = [...scope, 'room', item.id];
+    await Promise.all([client.cancelQueries({ queryKey: roomKey, exact: true }), client.cancelQueries({ queryKey: scope, exact: true })]);
+    client.setQueryData<GroupRoomDetail>(roomKey, value => value && ({ ...value, room: { ...value.room, title: result.title } }));
+    client.setQueryData<GroupChatDashboard>(scope, value => value && ({ ...value,
+      rooms: value.rooms.map(roomItem => roomItem.id === item.id ? { ...roomItem, title: result.title } : roomItem),
     }));
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '修改群聊标题失败');
@@ -743,6 +895,197 @@ async function saveRole() {
 }
 async function removeRole() { if (!configDraft.value || !roleDraft.value) return; const value = clone(configDraft.value); value.members = value.members.filter(member => member.id !== roleDraft.value!.id); if (await persistConfig(value)) roleOpen.value = false; }
 function moveRole(index: number, delta: number) { if (!configDraft.value) return; const list = configDraft.value.members; [list[index], list[index + delta]] = [list[index + delta], list[index]]; }
+const groupPresets = groupPresetIds.map(id => groupPresetTemplates[id]);
+const groupQuickPrompts = [
+  { code: '01', tag: '全面体检', label: '代码体检与排优', detail: '只看不改，找出项目隐患并按优先级排序', prompt: '请先只读摸底当前项目（读取 README、AGENTS.md、ADR/DESIGN.md 与构建测试脚本），围绕正确性、安全、性能、测试缺口与技术债做证据化体检；亲自复核每处 file:line、剔除刻意折中（by-design）后，按收益÷工时杠杆率输出排序清单供我选择，本轮先不要修改源码。' },
+  { code: '02', tag: '改动自检', label: '增量改动自检', detail: '检查最近未合并改动，提前发现上线风险', prompt: '请仅针对当前工作区最近的未合并/分支增量改动及直接调用方做上线前审查，区分“本次新引入问题”与“历史存量问题”，给出精确 file:line 证据与验证建议，本轮先不直接改代码。' },
+  { code: '03', tag: '详细方案', label: '先出改造计划', detail: '先列清楚步骤、改动范围和验证方法再动手', prompt: '请针对我接下来指定的模块输出一份面向零上下文执行模型的自包含改造计划：包含现状代码片段（file:line）、可模仿的示范文件、允许与禁改文件边界、每步可执行的验证门禁命令及 STOP 熔断条件，确认后再进入实施。' },
+];
+const collapsedTurnIds = shallowRef(new Set<string>());
+const groupRoleFilter = shallowRef('all');
+const groupMessageQuery = shallowRef('');
+const highlightedTurnId = shallowRef('');
+const copiedGroupKey = shallowRef('');
+let groupHighlightTimer: ReturnType<typeof setTimeout> | undefined;
+let groupCopyTimer: ReturnType<typeof setTimeout> | undefined;
+watch(() => selectedId.value, () => {
+  groupRoleFilter.value = 'all';
+  groupMessageQuery.value = '';
+  highlightedTurnId.value = '';
+  collapsedTurnIds.value = new Set();
+});
+function toggleTurnCollapse(turnId: string) {
+  const next = new Set(collapsedTurnIds.value);
+  if (next.has(turnId)) next.delete(turnId); else next.add(turnId);
+  collapsedTurnIds.value = next;
+}
+function currentRoundTurns(started: typeof presentation.value.rounds[number]['started']) {
+  return started.filter(item => summaryByTurn.value.get(item.turn.id)?.current !== false);
+}
+function supersededRoundTurns(started: typeof presentation.value.rounds[number]['started']) {
+  return started.filter(item => summaryByTurn.value.get(item.turn.id)?.current === false);
+}
+const groupActiveRoles = computed(() => {
+  const counts = new Map<string, { id: string; name: string; count: number }>();
+  for (const view of presentation.value.rounds) {
+    if (rerunHistory.value.has(view.round.id)) continue;
+    const turns = roundReply(view.round.id) ? view.turns.slice(0, 1) : currentRoundTurns(view.started);
+    for (const item of turns) {
+      const id = item.turn.member.id;
+      const existing = counts.get(id);
+      if (existing) existing.count += 1;
+      else counts.set(id, { id, name: item.turn.member.name, count: 1 });
+    }
+  }
+  return [...counts.values()];
+});
+const groupTotalTurnCount = computed(() => groupActiveRoles.value.reduce((sum, role) => sum + role.count, 0));
+const activeRoundsForOutline = computed(() => presentation.value.rounds
+  .filter(view => !rerunHistory.value.has(view.round.id))
+  .map((view, idx) => ({
+    id: view.round.id,
+    index: idx + 1,
+    summary: summarizeOutlineText(roundMessages.value.get(view.round.id)?.text || view.round.text, 40),
+    turnCount: roundReply(view.round.id) ? 1 : currentRoundTurns(view.started).length || view.turns.length,
+    state: view.round.state,
+  })));
+const allInlineTurnIds = computed(() => presentation.value.rounds
+  .filter(view => !rerunHistory.value.has(view.round.id) && !roundReply(view.round.id))
+  .flatMap(view => currentRoundTurns(view.started).map(item => item.turn.id)));
+const allInlineCollapsed = computed(() => !!allInlineTurnIds.value.length
+  && allInlineTurnIds.value.every(id => collapsedTurnIds.value.has(id)));
+function toggleAllInlineTurns() {
+  collapsedTurnIds.value = allInlineCollapsed.value ? new Set() : new Set(allInlineTurnIds.value);
+}
+function turnCopyMarkdown(turn: GroupTurn): string {
+  const summaryText = groupMemberReply(summaryByTurn.value.get(turn.id));
+  if (summaryText) return summaryText;
+  const feedback = feedbackByTurn.value.get(turn.id);
+  if (feedback) {
+    const checks = feedback.checks.map(check => `- **${check.title}**：${check.detail}`).join('\n');
+    return [`**${feedback.title}**`, checks, `**下一步**：${feedback.nextStep}`].filter(Boolean).join('\n\n');
+  }
+  const raw = turnResult(turn);
+  return raw ? agentReplyText(raw) : '';
+}
+function turnMatchesFilter(item: typeof presentation.value.rounds[number]['started'][number]) {
+  if (groupRoleFilter.value !== 'all' && item.turn.member.id !== groupRoleFilter.value) return false;
+  const term = groupMessageQuery.value.trim().toLowerCase();
+  if (!term) return true;
+  const haystack = [
+    item.turn.member.name,
+    groupCapabilityLabels[item.turn.member.capability],
+    turnCopyMarkdown(item.turn),
+    turnError(item.turn),
+  ].filter(Boolean).join('\n').toLowerCase();
+  return haystack.includes(term);
+}
+function visibleRoundTurns(started: typeof presentation.value.rounds[number]['started']) {
+  return currentRoundTurns(started).filter(turnMatchesFilter);
+}
+function roundMatchesFilter(view: typeof presentation.value.rounds[number]) {
+  const term = groupMessageQuery.value.trim().toLowerCase();
+  const role = groupRoleFilter.value;
+  if (!term && role === 'all') return true;
+  if (roundReply(view.round.id)) {
+    const first = view.turns[0];
+    if (role !== 'all' && first?.turn.member.id !== role) return false;
+    if (!term) return true;
+    return [
+      roundMessages.value.get(view.round.id)?.text || view.round.text,
+      first?.turn.member.name,
+      roundReply(view.round.id),
+    ].filter(Boolean).join('\n').toLowerCase().includes(term);
+  }
+  if (visibleRoundTurns(view.started).length > 0) return true;
+  if (role !== 'all') return false;
+  return [
+    roundMessages.value.get(view.round.id)?.text || view.round.text,
+    finalDeliveryOverview(view.round.id),
+  ].filter(Boolean).join('\n').toLowerCase().includes(term);
+}
+async function copyGroupText(key: string, markdown: string, plain = false) {
+  const text = plain ? stripMarkdownToPlainText(markdown) : markdown.trim();
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    copiedGroupKey.value = key;
+    clearTimeout(groupCopyTimer);
+    groupCopyTimer = setTimeout(() => {
+      if (copiedGroupKey.value === key) copiedGroupKey.value = '';
+    }, 1600);
+    ElMessage.success(plain ? '已复制纯文本' : '已复制汇报内容');
+  } catch {
+    ElMessage.error('浏览器未允许复制');
+  }
+}
+function scrollGroupToTop() {
+  if (viewport.value) {
+    pinnedToBottom = false;
+    viewport.value.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+}
+function scrollGroupToBottom() {
+  if (viewport.value) {
+    pinnedToBottom = true;
+    viewport.value.scrollTo({ top: viewport.value.scrollHeight, behavior: 'smooth' });
+  }
+}
+async function jumpToGroupRound(roundId: string) {
+  groupRoleFilter.value = 'all';
+  groupMessageQuery.value = '';
+  await nextTick();
+  const container = viewport.value;
+  const target = container?.querySelector<HTMLElement>(`[data-group-round-id="${CSS.escape(roundId)}"]`);
+  if (target) {
+    pinnedToBottom = false;
+    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+}
+async function jumpToGroupTurn(turnId: string) {
+  if (groupRoleFilter.value !== 'all') groupRoleFilter.value = 'all';
+  if (groupMessageQuery.value) groupMessageQuery.value = '';
+  if (collapsedTurnIds.value.has(turnId)) {
+    const next = new Set(collapsedTurnIds.value);
+    next.delete(turnId);
+    collapsedTurnIds.value = next;
+  }
+  await nextTick();
+  const container = viewport.value;
+  const target = container?.querySelector<HTMLElement>(`[data-turn-card-id="${CSS.escape(turnId)}"]`);
+  if (target) {
+    pinnedToBottom = false;
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    highlightedTurnId.value = turnId;
+    clearTimeout(groupHighlightTimer);
+    groupHighlightTimer = setTimeout(() => {
+      if (highlightedTurnId.value === turnId) highlightedTurnId.value = '';
+    }, 1800);
+  }
+}
+function isInlineRenderedTurn(turnId: string) {
+  return presentation.value.rounds.some(view => !rerunHistory.value.has(view.round.id)
+    && !roundReply(view.round.id)
+    && view.started.some(item => item.turn.id === turnId && summaryByTurn.value.get(item.turn.id)?.current !== false));
+}
+function relayStepState(state: string) {
+  if (['queued', 'running', 'saving'].includes(state)) return 'running';
+  if (state === 'completed') return 'completed';
+  if (['failed', 'interrupted'].includes(state)) return 'failed';
+  return 'pending';
+}
+function applyPreset(presetId: GroupPresetId) {
+  if (!configDraft.value) return;
+  const runtime = props.runtimes.find(item => item.ready) || props.runtimes[0];
+  const fallback: GroupBinding | undefined = runtime ? { provider: runtime.provider, model: runtime.defaultModel,
+    reasoningEffort: runtime.models.find(model => model.id === runtime.defaultModel)?.defaultEffort || '' } : undefined;
+  configDraft.value = applyGroupPreset(configDraft.value, presetId, undefined, fallback);
+}
+async function useQuickPrompt(text: string) {
+  draft.value = text;
+  await nextTick();
+  await composerInput.value?.focusInput();
+}
 async function saveTeam() { if (!configDraft.value?.name.trim()) { ElMessage.error('请填写团队名称'); return; } if (await persistConfig(configDraft.value)) teamOpen.value = false; }
 async function exportTeam() {
   try { const template = await readGroupTemplate(), url = URL.createObjectURL(new Blob([JSON.stringify(template, null, 2)], { type: 'application/json' }));
@@ -755,14 +1098,48 @@ async function importTeam(event: Event) {
   catch (error) { ElMessage.error(error instanceof SyntaxError ? '文件不是有效的团队 JSON' : error instanceof Error ? error.message : '团队导入失败'); }
   finally { input.value = ''; globalChanging.value = ''; }
 }
+let groupStreamSources: EventSource[] = [];
+let groupStreamTimer: ReturnType<typeof setTimeout> | undefined;
+function scheduleGroupStreamRefresh() {
+  if (!active.value || restarting.value || groupStreamTimer) return;
+  groupStreamTimer = setTimeout(() => {
+    groupStreamTimer = undefined;
+    if (active.value && !restarting.value) refresh();
+  }, 60);
+}
+onMounted(() => {
+  if (typeof EventSource === 'undefined') return;
+  const openStream = (globalThis as { __deliveryOpenEventSource?: (url: string) => EventSource }).__deliveryOpenEventSource;
+  const runStream = openStream ? openStream('/api/agent-runtimes/events?updates=runs') : new EventSource('/api/agent-runtimes/events?updates=runs');
+  const teamStream = openStream ? openStream('/api/agent-runtimes/team-tasks/events') : new EventSource('/api/agent-runtimes/team-tasks/events');
+  const syncSseState = () => { groupSseConnected.value = runStream.readyState === 1 || teamStream.readyState === 1; };
+  for (const stream of [runStream, teamStream]) {
+    stream.addEventListener('open', syncSseState);
+    stream.addEventListener('error', syncSseState);
+  }
+  syncSseState();
+  for (const type of ['runs', 'refresh']) runStream.addEventListener(type, scheduleGroupStreamRefresh);
+  for (const type of ['workflow.updated', 'workflow.message', 'workflow.intent', 'workflow.decision']) teamStream.addEventListener(type, scheduleGroupStreamRefresh);
+  groupStreamSources = [runStream, teamStream];
+});
 onActivated(() => { active.value = true; void scrollPinnedResult(); });
 onDeactivated(() => {
   active.value = false;
+  sidebarEditingRoomId.value = '';
   taskPromptDetail.value = undefined; editingMessage.value = undefined;
   membersOpen.value = false; teamOpen.value = false; roleOpen.value = false;
   if (picker.browserOpen.value) picker.completeBrowser(null);
 });
-onBeforeUnmount(() => { active.value = false; const pending = drafts.pendingAttachments(); drafts.dispose(); if (!globalChanging.value && pending.length) void removePendingAgentAttachments(pending); });
+onBeforeUnmount(() => {
+  active.value = false;
+  if (groupStreamTimer) clearTimeout(groupStreamTimer);
+  if (groupHighlightTimer) clearTimeout(groupHighlightTimer);
+  if (groupCopyTimer) clearTimeout(groupCopyTimer);
+  for (const source of groupStreamSources) source.close();
+  groupStreamSources = [];
+  const pending = drafts.pendingAttachments(); drafts.dispose();
+  if (!globalChanging.value && pending.length) void removePendingAgentAttachments(pending);
+});
 </script>
 
 <template>
@@ -774,6 +1151,13 @@ onBeforeUnmount(() => { active.value = false; const pending = drafts.pendingAtta
     <aside id="group-room-sidebar" class="group-sidebar" aria-label="群聊列表">
       <AgentSidebarHeader mode="group" @select="emit('back')" @create="switchRoom('')" />
       <slot name="navigation" />
+      <div class="group-filter-deck">
+        <label class="group-search">
+          <Search :size="14" />
+          <input v-model="roomQuery" type="search" placeholder="搜索群聊、任务或目录…" aria-label="搜索群聊" @keydown.esc="roomQuery = ''" />
+          <button v-if="roomQuery" type="button" class="group-search-clear" aria-label="清空搜索" title="清空搜索 (Esc)" @click.prevent="roomQuery = ''"><X :size="12" /></button>
+        </label>
+      </div>
       <div v-if="batchMode" class="group-batch-toolbar">
         <label><input type="checkbox" aria-label="全选群聊" :checked="allChecked" :indeterminate="!!checkedRooms.length && !allChecked" :disabled="!!changing || !rooms.length" @change="checkedIds = allChecked ? new Set() : new Set(rooms.map(item => item.id))" />全选</label>
         <span>已选 {{ checkedRooms.length }}</span>
@@ -782,33 +1166,71 @@ onBeforeUnmount(() => { active.value = false; const pending = drafts.pendingAtta
       </div>
       <div class="group-sidebar-heading"><strong>置顶与项目分组</strong><span>{{ rooms.length }}</span></div>
       <div class="group-rooms">
-        <section v-for="section in roomSections" :key="section.id" class="group-room-section" :aria-label="section.label">
+        <p v-if="roomQuery.trim() && !filteredRoomSections.length" class="group-rooms-empty">未找到匹配的协作群聊</p>
+        <section v-for="section in filteredRoomSections" :key="section.id" class="group-room-section" :aria-label="section.label">
           <div v-if="section.pinned" class="group-room-section-heading group-pinned-heading"><Pin :size="12" /><strong>置顶</strong><span>{{ section.rooms.length }}</span></div>
-          <button v-else type="button" class="group-room-section-heading" :title="section.path" :aria-expanded="batchMode || !sidebarPreferences.collapsedIds.has(section.id)" :disabled="batchMode" @click="toggleRoomSection(section.id)"><ChevronDown :size="12" :class="{ collapsed: !batchMode && sidebarPreferences.collapsedIds.has(section.id) }" /><Folder :size="13" /><strong>{{ section.label }}</strong><span>{{ section.rooms.length }}</span></button>
-          <div v-show="section.pinned || batchMode || !sidebarPreferences.collapsedIds.has(section.id)">
-            <div v-for="item in section.rooms" :key="item.id" class="group-room-row" :class="{ selected: selectedId === item.id }">
+          <button v-else type="button" class="group-room-section-heading" :title="section.path" :aria-expanded="batchMode || !!roomQuery.trim() || !sidebarPreferences.collapsedIds.has(section.id)" :disabled="batchMode" @click="toggleRoomSection(section.id)"><ChevronDown :size="12" :class="{ collapsed: !batchMode && !roomQuery.trim() && sidebarPreferences.collapsedIds.has(section.id) }" /><Folder :size="13" /><strong>{{ section.label }}</strong><span>{{ section.rooms.length }}</span></button>
+          <div v-show="section.pinned || batchMode || !!roomQuery.trim() || !sidebarPreferences.collapsedIds.has(section.id)" class="group-room-items">
+            <div v-for="item in section.rooms" :key="item.id" class="group-room-row" :class="{ selected: selectedId === item.id, 'is-renaming': sidebarEditingRoomId === item.id }" :data-room-tone="roomStateTone(item)">
               <input v-if="batchMode" type="checkbox" :aria-label="`选择群聊 ${item.title}`" :checked="checkedIds.has(item.id)" :disabled="!!changing" @change="toggleChecked(item.id)" />
-              <button type="button" class="group-room" :title="item.title" :aria-pressed="batchMode ? checkedIds.has(item.id) : selectedId === item.id" :disabled="batchMode && !!changing" @click="batchMode ? toggleChecked(item.id) : switchRoom(item.id)"><strong>{{ item.title }}</strong><small>{{ item.id === room?.id ? status : item.waitingForLogin ? '等待你登录测试环境' : item.state === 'failed' ? '被阻塞' : item.paused ? '已暂停' : item.activeMember ? `${item.activeMember}正在处理` : item.state === 'completed' ? '本轮完成' : item.state === 'cancelled' ? '已取消' : '待执行' }}</small></button>
-              <button v-if="!batchMode" type="button" class="group-room-delete" :aria-label="`删除群聊 ${item.title}`" title="删除群聊" :disabled="roomBusy(item.id)" @click="removeRooms([item])"><Trash2 :size="14" /></button>
+              <div v-if="sidebarEditingRoomId === item.id && !batchMode" class="group-room is-renaming" @click.stop>
+                <span class="group-room-top"><i class="group-room-dot" aria-hidden="true"></i><input :ref="focusSidebarRoomInput" v-model="sidebarRoomTitleDraft" class="group-room-inline-input" maxlength="300" aria-label="重命名群聊" @click.stop @keydown.enter.prevent="commitSidebarRoomRename(item)" @keydown.esc.prevent.stop="cancelSidebarRoomRename" @blur="commitSidebarRoomRename(item)" /></span>
+                <small>{{ item.id === room?.id ? status : item.waitingForLogin ? '等待你登录测试环境' : item.state === 'failed' ? '被阻塞' : item.paused ? '已暂停' : item.activeMember ? `${item.activeMember}正在处理` : item.state === 'completed' ? '本轮完成' : item.state === 'cancelled' ? '已取消' : '待执行' }}</small>
+              </div>
+              <button v-else type="button" class="group-room" :title="batchMode ? item.title : `${item.title}（双击可直接重命名）`" :aria-pressed="batchMode ? checkedIds.has(item.id) : selectedId === item.id" :disabled="batchMode && !!changing" @click="batchMode ? toggleChecked(item.id) : switchRoom(item.id)" @dblclick.stop="startSidebarRoomRename(item)">
+                <span class="group-room-top"><i class="group-room-dot" aria-hidden="true"></i><strong>{{ item.title }}</strong></span>
+                <small>{{ item.id === room?.id ? status : item.waitingForLogin ? '等待你登录测试环境' : item.state === 'failed' ? '被阻塞' : item.paused ? '已暂停' : item.activeMember ? `${item.activeMember}正在处理` : item.state === 'completed' ? '本轮完成' : item.state === 'cancelled' ? '已取消' : '待执行' }}</small>
+              </button>
+              <button v-if="!batchMode && sidebarEditingRoomId !== item.id" type="button" class="group-room-delete" :aria-label="`删除群聊 ${item.title}`" title="删除群聊" :disabled="roomBusy(item.id)" @click="removeRooms([item])"><Trash2 :size="14" /></button>
             </div>
           </div>
         </section>
       </div>
-      <button type="button" class="group-batch-toggle" :disabled="!!changing || !rooms.length || batchMode" @click="batchMode = true"><Trash2 :size="15" />批量删除群聊</button>
-      <div class="group-roster-entry"><button type="button" :aria-expanded="membersOpen" aria-haspopup="dialog" @click="membersOpen = true"><Users :size="18" /><strong>团队成员 · {{ members.length }}</strong><ChevronRight :size="15" /></button></div>
-      <div class="group-share"><el-button size="small" :disabled="!!changing" @click="importInput?.click()"><Upload :size="13" />导入团队</el-button><el-button size="small" @click="exportTeam"><Download :size="13" />分享团队</el-button></div>
+      <div class="group-sidebar-dock">
+        <div class="group-roster-entry">
+          <button type="button" :aria-expanded="membersOpen" aria-haspopup="dialog" @click="membersOpen = true">
+            <Users :size="16" />
+            <strong>团队成员 · {{ members.length }}</strong>
+            <span class="group-roster-badge">{{ members.filter(member => member.enabled).length }} 可用</span>
+            <ChevronRight :size="14" />
+          </button>
+        </div>
+        <div class="group-share">
+          <el-button size="small" :disabled="!!changing" @click="importInput?.click()"><Upload :size="12" />导入团队</el-button>
+          <el-button size="small" @click="exportTeam"><Download :size="12" />分享团队</el-button>
+          <button type="button" class="group-batch-toggle" :disabled="!!changing || !rooms.length || batchMode" title="批量删除群聊" aria-label="批量删除群聊" @click="batchMode = true"><Trash2 :size="13" /><span>批量</span></button>
+        </div>
+      </div>
     </aside>
     <AgentPanelResize v-model="sidebarWidth" class="group-sidebar-resize" side="left" variant="project-studio" />
     <main class="group-main" :class="{ 'jira-group': !!room?.source, 'is-new-room': !selectedId && !visiblePendingSends.length }">
       <div class="group-masthead">
       <header class="group-header">
         <div class="group-title">
-          <h1 :aria-label="config?.name || '团队群聊'"><button class="group-name-edit" type="button" :disabled="!!changing || !config" aria-label="修改团队名称" title="修改团队名称" @click="editTeamName">{{ config?.name || '团队群聊' }}<Pencil :size="13" /></button></h1>
-          <p v-if="room" class="group-room-title" :title="room.title">{{ room.title }}</p>
+          <div class="group-title-main">
+            <h1 :aria-label="config?.name || '团队群聊'"><button class="group-name-edit" type="button" :disabled="!!changing || !config" aria-label="修改团队名称" title="修改团队名称" @click="editTeamName">{{ config?.name || '团队群聊' }}<Pencil :size="13" /></button></h1>
+            <template v-if="room">
+              <span class="group-title-sep" aria-hidden="true">/</span>
+              <input v-if="editingRoomTitle" ref="roomTitleInput" v-model="roomTitleDraft" class="group-room-title-input" maxlength="300" aria-label="修改群聊标题" @keydown.enter.prevent="commitRoomTitleEdit" @keydown.esc.prevent="cancelRoomTitleEdit" @blur="commitRoomTitleEdit" />
+              <p v-else class="group-room-title is-editable" :title="`${room.title}（双击可直接重命名）`" @dblclick="editRoomTitle">{{ room.title }}</p>
+            </template>
+            <template v-else>
+              <span class="group-title-sep" aria-hidden="true">/</span>
+              <p class="group-room-title is-new">新建协作群聊</p>
+            </template>
+          </div>
+          <div class="group-stage-micro">
+            <button type="button" class="group-team-badge" title="查看团队岗位与模型配置" @click="membersOpen = true">
+              <Users :size="11" />
+              <span>{{ members.filter(member => member.enabled).length }}/{{ members.length }} 岗就绪</span>
+            </button>
+            <span class="group-progress-pill" :title="headerProgress">{{ headerProgress }}</span>
+            <AgentElapsedTime class="group-header-elapsed" :timing="latestTiming" />
+          </div>
         </div>
         <div class="group-header-actions">
           <span id="group-connection-status"></span>
-          <el-button v-if="room || launchWorkspacePaths.length" size="small" :aria-expanded="detailsOpen" :aria-label="detailsOpen ? '收起会话详情' : '展开会话详情'" title="会话详情" @click="detailsCollapsed = !detailsCollapsed"><PanelRight :size="14" /><span class="group-header-action-label">会话详情</span></el-button>
+          <el-button size="small" :aria-expanded="detailsOpen" :aria-label="detailsOpen ? '收起会话详情' : '展开会话详情'" title="会话详情" @click="detailsCollapsed = !detailsCollapsed"><PanelRight :size="14" /><span class="group-header-action-label">会话详情</span></el-button>
           <el-button size="small" :disabled="!!changing" aria-label="团队设置" title="团队设置" @click="openTeam"><Settings2 :size="14" /><span class="group-header-action-label">团队设置</span></el-button>
           <el-dropdown v-if="room" trigger="click" popper-class="studio-conversation-menu">
             <button type="button" class="group-room-menu" aria-label="更多群聊操作" title="更多群聊操作"><Ellipsis :size="18" /></button>
@@ -824,27 +1246,15 @@ onBeforeUnmount(() => { active.value = false; const pending = drafts.pendingAtta
             </template>
           </el-dropdown>
         </div>
-        <p class="group-header-progress"><span :title="`${headerProgress} · ${members.filter(member => member.enabled).length} 名可用成员`">{{ headerProgress }} · {{ members.filter(member => member.enabled).length }} 名可用成员</span><AgentElapsedTime class="group-header-elapsed" :timing="latestTiming" /></p>
       </header>
-      <div v-if="quotaProviders.length" class="group-quotas" aria-label="本群模型额度">
-        <div class="group-quota-list" tabindex="0" aria-label="模型额度，可横向滚动">
-        <div v-for="provider in quotaProviders" :key="provider" class="group-quota" :title="quotaTitle(provider)">
-          <strong>{{ agentProviderLabels[provider] }}</strong>
-          <template v-if="provider === 'antigravity'">
-            <span v-for="group in antigravityGroups" :key="group.name" class="group-quota-windows"><span class="quota-model-group">{{ group.name }}</span><template v-for="bucket in group.buckets" :key="bucket.id"><span v-if="!bucket.disabled" class="quota-value" :class="{ exhausted: !antigravityUsage?.stale && bucket.remainingPercent <= 0 }" :title="`${antigravityUsage?.stale ? '上次记录的重置时间' : '下次重置'}：${quotaReset(bucket.resetsAt)}`">{{ antigravityWindowSummary(bucket) }} <b>{{ antigravityUsage?.stale ? '上次剩余' : '剩余' }} {{ quotaPercent(bucket.remainingPercent) }}</b></span></template><span v-if="group.buckets.every(bucket => bucket.disabled)">额度未知</span></span>
-            <span v-if="!antigravityGroups.length">{{ antigravityUnavailableLabel(antigravityUsage) }}</span>
-          </template>
-          <span v-else-if="quotaWindows(provider).length" class="group-quota-windows"><span v-for="(window, index) in quotaWindows(provider)" :key="index" class="quota-value" :class="{ exhausted: quotaDisplayState(quotas?.[provider]) === 'exhausted' && window!.remainingPercent <= 0 }" :title="`${quotas?.[provider]?.stale ? '上次记录的重置时间' : '重置'} ${quotaReset(window!.resetsAt)}`">{{ quotaWindow(window!.windowDurationMins) }} <b>{{ quotas?.[provider]?.stale ? '上次剩余' : '剩余' }} {{ quotaPercent(window!.remainingPercent) }}</b></span><span v-if="quotaCreditsLabel(quotas?.[provider])" class="quota-value quota-credits"><template v-if="agentQuotaState(quotas?.[provider]).usingCredits">用量来源：额度 · </template><b>{{ quotaCreditsLabel(quotas?.[provider]) }}</b></span></span>
-          <span v-else>{{ quotaLabel(quotas?.[provider]) }}</span>
-        </div>
-        </div>
-        <button type="button" :disabled="refreshing" :aria-busy="!!refreshing" @click="emit('refresh')">{{ refreshing ? '刷新中…' : '刷新额度' }}</button>
-      </div>
+      <div class="group-subbar">
       <div class="group-context">
         <div v-if="room?.source" class="group-task-context" aria-label="关联 Jira 研发任务">
-          <strong>{{ room.source.workflow === 'jira' ? 'Jira 修复' : '需求开发' }}</strong><a v-if="room.source.issueUrl" :href="room.source.issueUrl" target="_blank" rel="noopener">{{ room.source.issueKey }}</a>
-          <span v-for="project in room.source.projects" :key="project.workspacePath" :title="project.workspacePath">{{ project.path.split('/').filter(Boolean).at(-1) }} · {{ project.branchName }}</span>
-          <a :href="`/agent?view=${room.source.workflow === 'jira' ? 'jira-fix' : 'design'}`">返回任务与交接</a>
+          <span class="group-workflow-pill" :data-workflow="room.source.workflow">{{ room.source.workflow === 'jira' ? 'Jira 修复' : '需求开发' }}</span>
+          <a v-if="room.source.issueUrl" class="group-issue-pill" :href="room.source.issueUrl" target="_blank" rel="noopener">{{ room.source.issueKey }}</a>
+          <span v-else class="group-issue-pill">{{ room.source.issueKey }}</span>
+          <span v-for="project in room.source.projects" :key="project.workspacePath" class="group-repo-pill" :title="project.workspacePath">{{ project.path.split('/').filter(Boolean).at(-1) }} · {{ project.branchName }}</span>
+          <RouterLink class="group-back-handoff" :to="{ path: '/agent', query: { view: room.source.workflow === 'jira' ? 'jira-fix' : 'design', tab: 'records', taskId: room.source.taskId } }">返回任务与交接</RouterLink>
         </div>
         <button v-if="room?.source" type="button" class="group-directory" :aria-expanded="workspaceExpanded" aria-controls="group-directory-path" :title="workspacePath" @click="workspaceExpanded = !workspaceExpanded"><FolderOpen :size="14" />工作目录</button>
         <AgentCursorButton v-if="room?.source && workspacePath && !workspaceExpanded" :workspace-path="workspacePath" size="small" />
@@ -884,31 +1294,180 @@ onBeforeUnmount(() => { active.value = false; const pending = drafts.pendingAtta
           <span v-else>未选择项目，使用独立会话目录</span>
         </div>
       </div>
+      <div v-if="quotaProviders.length" class="group-quotas" aria-label="本群模型额度">
+        <div class="group-quota-list" tabindex="0" aria-label="模型额度，可横向滚动">
+        <div v-for="provider in quotaProviders" :key="provider" class="group-quota" :title="quotaTitle(provider)">
+          <strong>{{ agentProviderLabels[provider] }}</strong>
+          <template v-if="provider === 'antigravity'">
+            <span v-for="group in antigravityGroups" :key="group.name" class="group-quota-windows"><span class="quota-model-group">{{ group.name }}</span><template v-for="bucket in group.buckets" :key="bucket.id"><span v-if="!bucket.disabled" class="quota-value" :class="{ exhausted: !antigravityUsage?.stale && bucket.remainingPercent <= 0 }" :title="`${antigravityUsage?.stale ? '上次记录的重置时间' : '下次重置'}：${quotaReset(bucket.resetsAt)}`">{{ antigravityWindowSummary(bucket) }} <b>{{ antigravityUsage?.stale ? '上次剩余' : '剩余' }} {{ quotaPercent(bucket.remainingPercent) }}</b></span></template><span v-if="group.buckets.every(bucket => bucket.disabled)">额度未知</span></span>
+            <span v-if="!antigravityGroups.length">{{ antigravityUnavailableLabel(antigravityUsage) }}</span>
+          </template>
+          <span v-else-if="quotaWindows(provider).length" class="group-quota-windows"><span v-for="(window, index) in quotaWindows(provider)" :key="index" class="quota-value" :class="{ exhausted: quotaDisplayState(quotas?.[provider]) === 'exhausted' && window!.remainingPercent <= 0 }" :title="`${quotas?.[provider]?.stale ? '上次记录的重置时间' : '重置'} ${quotaReset(window!.resetsAt)}`">{{ quotaWindow(window!.windowDurationMins) }} <b>{{ quotas?.[provider]?.stale ? '上次剩余' : '剩余' }} {{ quotaPercent(window!.remainingPercent) }}</b></span><span v-if="quotaCreditsLabel(quotas?.[provider])" class="quota-value quota-credits"><template v-if="agentQuotaState(quotas?.[provider]).usingCredits">用量来源：额度 · </template><b>{{ quotaCreditsLabel(quotas?.[provider]) }}</b></span></span>
+          <span v-else>{{ quotaLabel(quotas?.[provider]) }}</span>
+        </div>
+        </div>
+        <button type="button" :disabled="refreshing" :aria-busy="!!refreshing" @click="emit('refresh')">{{ refreshing ? '刷新中…' : '刷新额度' }}</button>
+      </div>
+      </div>
       </div>
       <div class="group-reading">
-      <div ref="viewport" class="group-messages" aria-live="polite" @scroll.passive="onScroll">
+      <div ref="viewport" class="group-messages" aria-live="polite" @scroll.passive="onScroll" @mouseup="captureGroupSelection" @keyup="captureGroupSelection">
         <el-skeleton v-if="dashboard.isPending.value || selectedId && detail.isPending.value" :rows="4" animated />
-        <div v-else-if="!room && !visiblePendingSends.length" class="group-empty"><Users :size="34" /><h2>给团队一个目标</h2><p>团队会自动规划、分工、验证和处理返工，也可以选择成员提问。</p></div>
+        <div v-else-if="!room && !visiblePendingSends.length" class="group-empty">
+          <CinematicVideoStage v-if="currentTheme.id === 'cinematic-video-hero'" mode="hero" compact>
+            <h2>向 <em>{{ config?.name || '协作团队' }}</em> 派发目标</h2>
+            <p>自动规划、多岗位接力、构建验证与返工闭环 · 也可在下方指定成员单独提问。</p>
+          </CinematicVideoStage>
+          <ImmersivePhotoStage v-else-if="currentTheme.id === 'immersive-photo'" mode="hero" compact>
+            <h2>向 <em>{{ config?.name || '协作团队' }}</em> 派发目标</h2>
+            <p>自动规划、多岗位接力、构建验证与返工闭环 · 也可在下方指定成员单独提问。</p>
+          </ImmersivePhotoStage>
+          <div v-else class="group-launchpad-hero">
+            <div class="group-hero-badge">
+              <span class="group-hero-mark" aria-hidden="true"><Users :size="16" /></span>
+              <span class="group-hero-protocol">多角色协作群聊</span>
+              <span class="group-hero-count">{{ members.filter(member => member.enabled).length }} 岗就绪</span>
+            </div>
+            <h2 class="acid-chrome">向 <em>{{ config?.name || '协作团队' }}</em> 派发目标</h2>
+            <p>团队会自动规划、分工、验证和处理返工，也可以在下方选择指定成员单独提问。</p>
+            <div v-if="members.filter(member => member.enabled).length" class="group-roster-strip" aria-label="就绪团队成员">
+              <button v-for="member in members.filter(item => item.enabled)" :key="member.id" type="button" class="group-roster-pill" :title="`${member.name} · ${groupCapabilityLabels[member.capability]}`" @click="openRole(member)">
+                <AgentAvatar :provider="memberBinding(member)?.provider" :model="memberBinding(member)?.model" :size="18" />
+                <strong>{{ member.name }}</strong>
+                <small>{{ groupCapabilityLabels[member.capability] }}</small>
+              </button>
+            </div>
+          </div>
+
+          <section class="group-starter-section" aria-label="快捷协作模板">
+            <header class="group-starter-head">
+              <span><Sparkles :size="12" />常用协作模板</span>
+              <small>点击一键填入</small>
+            </header>
+            <div class="group-empty-starters">
+              <button v-for="starter in groupQuickPrompts" :key="starter.label" type="button" class="group-starter-chip group-starter-card" :disabled="!!changing" @click="useQuickPrompt(starter.prompt)">
+                <div class="group-starter-top">
+                  <span class="group-starter-code">{{ starter.code }}</span>
+                  <span class="group-starter-tag">{{ starter.tag }}</span>
+                  <ArrowUpRight :size="13" class="group-starter-arrow" />
+                </div>
+                <strong>{{ starter.label }}</strong>
+                <small>{{ starter.detail }}</small>
+              </button>
+            </div>
+          </section>
+        </div>
+        <div v-if="room && presentation.rounds.length" class="group-stream-toolbar" aria-label="群内发言筛选与轮次目录">
+          <div class="group-role-pills" role="tablist" aria-label="按协作角色筛选">
+            <button
+              type="button"
+              role="tab"
+              class="group-role-pill"
+              :class="{ active: groupRoleFilter === 'all' }"
+              :aria-selected="groupRoleFilter === 'all'"
+              @click="groupRoleFilter = 'all'"
+            >
+              <span>全部</span>
+              <small v-if="groupTotalTurnCount">{{ groupTotalTurnCount }}</small>
+            </button>
+            <button
+              v-for="role in groupActiveRoles"
+              :key="role.id"
+              type="button"
+              role="tab"
+              class="group-role-pill"
+              :class="{ active: groupRoleFilter === role.id }"
+              :aria-selected="groupRoleFilter === role.id"
+              @click="groupRoleFilter = groupRoleFilter === role.id ? 'all' : role.id"
+            >
+              <span>{{ role.name }}</span>
+              <small>{{ role.count }}</small>
+            </button>
+          </div>
+          <div class="group-stream-tools">
+            <label class="group-stream-search">
+              <Search :size="12" />
+              <input
+                v-model="groupMessageQuery"
+                type="search"
+                placeholder="搜索群内发言或结论…"
+                aria-label="搜索群内发言"
+                @keydown.esc="groupMessageQuery = ''"
+              />
+              <button v-if="groupMessageQuery" type="button" class="group-search-clear" title="清空过滤 (Esc)" aria-label="清空过滤" @click.prevent="groupMessageQuery = ''"><X :size="11" /></button>
+            </label>
+            <el-dropdown v-if="activeRoundsForOutline.length" trigger="click" placement="bottom-end" @command="(cmd: string) => cmd === '__top' ? scrollGroupToTop() : cmd === '__bottom' ? scrollGroupToBottom() : jumpToGroupRound(cmd)">
+              <button type="button" class="group-round-outline-btn" title="轮次目录与快速跳转">
+                <ListOrdered :size="12" />
+                <span>{{ activeRoundsForOutline.length }} 轮</span>
+                <ChevronDown :size="11" />
+              </button>
+              <template #dropdown>
+                <el-dropdown-menu class="group-round-outline-menu">
+                  <el-dropdown-item command="__top"><ArrowUp :size="13" /><span>回到首轮顶部</span></el-dropdown-item>
+                  <el-dropdown-item command="__bottom"><ArrowDown :size="13" /><span>跳至最新进展</span></el-dropdown-item>
+                  <el-dropdown-item
+                    v-for="(item, rIdx) in activeRoundsForOutline"
+                    :key="item.id"
+                    :divided="rIdx === 0"
+                    :command="item.id"
+                  >
+                    <span class="group-outline-idx">#{{ String(item.index).padStart(2, '0') }}</span>
+                    <span class="group-outline-text">{{ item.summary }}</span>
+                    <small v-if="item.turnCount" class="group-outline-meta">{{ item.turnCount }} 岗</small>
+                  </el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+            <button
+              v-if="allInlineTurnIds.length > 1"
+              type="button"
+              class="group-fold-all-btn"
+              :title="allInlineCollapsed ? '展开全部成员卡片' : '收起全部成员卡片，仅保留标题速览'"
+              @click="toggleAllInlineTurns"
+            >
+              {{ allInlineCollapsed ? '全部展开' : '全部收起' }}
+            </button>
+          </div>
+        </div>
+        <div v-if="room && presentation.rounds.length && !presentation.rounds.some(roundMatchesFilter)" class="group-filter-empty">
+          <span>当前筛选下没有匹配的成员发言</span>
+          <button type="button" @click="groupRoleFilter = 'all'; groupMessageQuery = ''">重置筛选</button>
+        </div>
         <template v-for="view in presentation.rounds" :key="view.round.id">
-        <component :is="rerunHistory.has(view.round.id) ? 'details' : 'div'" :class="{ 'group-rerun-history': rerunHistory.has(view.round.id) }" :data-history-round="rerunHistory.has(view.round.id) ? view.round.id : undefined" @toggle="onScroll">
+        <component :is="rerunHistory.has(view.round.id) ? 'details' : 'div'" v-show="roundMatchesFilter(view)" :class="{ 'group-rerun-history': rerunHistory.has(view.round.id) }" :data-group-round-id="view.round.id" :data-history-round="rerunHistory.has(view.round.id) ? view.round.id : undefined" @toggle="onScroll">
           <summary v-if="rerunHistory.has(view.round.id)">重新执行前的记录 · {{ dateTime(view.round.createdAt) }}</summary>
-          <article class="group-message user"><AgentAvatar user :size="30" /><div><header><strong>你</strong><time>{{ dateTime(view.round.createdAt) }}</time></header><p class="user-text">{{ roundMessages.get(view.round.id)?.text }}</p><div v-if="view.round.attachmentIds.length" class="message-attachments"><a v-for="id in view.round.attachmentIds" :key="id" :href="`/api/agent-runtimes/attachments/${encodeURIComponent(id)}`" target="_blank" rel="noopener"><img v-if="attachmentFor(id) && isAgentImageAttachment(attachmentFor(id)!)" :src="attachmentFor(id)!.url" :alt="attachmentFor(id)!.name" />{{ attachmentFor(id)?.name || '查看附件' }}</a></div><div class="group-user-tools"><button v-if="roundMessages.get(view.round.id)?.prompt" type="button" class="group-message-edit" @click="taskPromptDetail = roundMessages.get(view.round.id)?.prompt">查看完整提示词</button><button type="button" class="group-message-edit" :disabled="!!changing" @click="editMessage(view.round.id, view.round.text, view.round.attachmentIds)"><Pencil :size="12" />{{ ['queued', 'running'].includes(view.round.state) ? '暂停并编辑' : '编辑消息' }}</button><small v-if="view.round.revisesMessageId">修订后的消息</small></div></div></article>
+          <article class="group-message user"><AgentAvatar user :size="30" /><div><header><strong>你</strong><time>{{ dateTime(view.round.createdAt) }}</time></header><p class="user-text">{{ roundMessages.get(view.round.id)?.text }}</p><div v-if="view.round.attachmentIds.length" class="message-attachments"><a v-for="id in view.round.attachmentIds" :key="id" :href="`/api/agent-runtimes/attachments/${encodeURIComponent(id)}`" target="_blank" rel="noopener"><img v-if="attachmentFor(id) && isAgentImageAttachment(attachmentFor(id)!)" :src="attachmentFor(id)!.url" :alt="attachmentFor(id)!.name" />{{ attachmentFor(id)?.name || '查看附件' }}</a></div><div class="group-user-tools"><button v-if="roundMessages.get(view.round.id)?.prompt" type="button" class="group-message-edit" @click="taskPromptDetail = roundMessages.get(view.round.id)?.prompt">查看完整提示词</button><button type="button" class="group-message-edit" :disabled="!!changing" @click="editMessage(view.round.id, view.round.text, view.round.attachmentIds)"><Pencil :size="12" />{{ ['queued', 'running'].includes(view.round.state) ? '暂停并编辑' : '编辑消息' }}</button><button v-if="canSteerQueuedRound(view.round)" type="button" class="group-message-edit" title="停止当前轮次未执行成员，提前执行本条消息" :disabled="!!changing" @click="steerQueuedRound(view.round)"><CornerUpLeft :size="12" />{{ changing === `steer:${view.round.id}` ? '插队中' : '插队' }}</button><small v-if="view.round.revisesMessageId">修订后的消息</small></div></div></article>
           <p v-if="view.round.automatic?.error" class="turn-error" role="status">{{ view.round.automatic.error }}</p>
-          <section v-if="!roundReply(view.round.id) && arrangedTurns(view.round.id).length" class="group-coordination" :data-round-id="view.round.id" aria-label="本轮执行安排">
-            <header><strong>{{ view.round.automatic ? '协调安排' : '执行安排' }}</strong><span v-if="summaryByRound.get(view.round.id)?.coordinator">负责人：{{ summaryByRound.get(view.round.id)?.coordinator?.turn.member.name }}</span><small v-if="!view.round.automatic">按已保存分工整理</small></header>
-            <details @toggle="onScroll"><summary><ChevronDown :size="14" aria-hidden="true" /><span>本轮分工</span><span class="group-record-count">{{ arrangedTurns(view.round.id).length }} 项</span></summary><ol><li v-for="item in arrangedTurns(view.round.id)" :key="item.turn.id"><strong>{{ item.turn.member.name }}</strong><p>{{ item.turn.member.instructions }}</p></li></ol></details>
+          <section v-if="!roundReply(view.round.id) && (arrangedTurns(view.round.id).length || view.turns.length)" class="group-relay-bar" :data-round-id="view.round.id" aria-label="本轮协作接力">
+            <div class="group-relay-top">
+              <span class="group-relay-badge">{{ view.round.automatic ? '团队接力直播' : '本轮分工接力' }}</span>
+              <span v-if="summaryByRound.get(view.round.id)?.coordinator" class="group-relay-lead">负责人：<strong>{{ summaryByRound.get(view.round.id)?.coordinator?.turn.member.name }}</strong></span>
+              <span v-if="view.summary" class="group-relay-summary">{{ view.summary }}</span>
+              <AgentElapsedTime class="group-relay-elapsed" :timing="roundTimings.get(view.round.id)" />
+              <details v-if="arrangedTurns(view.round.id).length" class="group-relay-plan" @toggle="onScroll">
+                <summary><span>分工职责</span><small>{{ arrangedTurns(view.round.id).length }} 岗</small></summary>
+                <ol><li v-for="item in arrangedTurns(view.round.id)" :key="item.turn.id"><strong>{{ item.turn.member.name }}</strong><span>{{ groupCapabilityLabels[item.turn.member.capability] }}</span><p>{{ item.turn.member.instructions }}</p></li></ol>
+              </details>
+            </div>
+            <ol class="group-relay-track" aria-label="成员接力顺序（点击定位成员发言）">
+              <li v-for="(stepItem, stepIdx) in (arrangedTurns(view.round.id).length ? arrangedTurns(view.round.id) : view.turns)" :key="stepItem.turn.id" class="group-relay-chip is-interactive" :class="{ 'is-focus': stepItem === view.focus }" :data-relay-state="relayStepState(stepItem.state)" :data-member-id="stepItem.turn.member.id" role="button" tabindex="0" :title="`定位到 ${stepItem.turn.member.name} 的发言卡片`" @click="jumpToGroupTurn(stepItem.turn.id)" @keydown.enter.prevent="jumpToGroupTurn(stepItem.turn.id)">
+                <span class="group-relay-index">{{ stepIdx + 1 }}</span>
+                <strong>{{ stepItem.turn.member.name }}</strong>
+                <small>{{ turnStatus(stepItem.turn) }}</small>
+              </li>
+            </ol>
           </section>
           <article v-if="roundReply(view.round.id)" class="group-message group-direct-reply" :data-reply-round="view.round.id">
-            <AgentAvatar :provider="(view.turns[0]?.run || view.turns[0]?.turn.executionBinding || view.turns[0]?.turn.member.binding)?.provider" :model="(view.turns[0]?.run || view.turns[0]?.turn.executionBinding || view.turns[0]?.turn.member.binding)?.model" :size="30" />
-            <div><header><strong>{{ view.turns[0]?.turn.member.name }}</strong><time>{{ dateTime(view.turns[0]?.run?.updatedAt || view.round.updatedAt) }}</time><span class="turn-status">{{ view.turns[0]?.label }}</span><AgentElapsedTime :timing="roundTimings.get(view.round.id)" /></header>
+            <AgentAvatar :provider="(view.turns[0]?.run || view.turns[0]?.turn.executionBinding || view.turns[0]?.turn.member.binding)?.provider" :model="(view.turns[0]?.run || view.turns[0]?.turn.executionBinding || view.turns[0]?.turn.member.binding)?.model" :size="32" />
+            <div><header><strong>{{ view.turns[0]?.turn.member.name }}</strong><small v-if="view.turns[0]" class="group-member-model">{{ modelText(view.turns[0].turn) }}</small><span class="turn-status" :data-turn-state="view.turns[0] ? relayStepState(view.turns[0].state) : undefined">{{ view.turns[0]?.label }}</span><AgentElapsedTime :timing="roundTimings.get(view.round.id)" /><time>{{ dateTime(view.turns[0]?.run?.updatedAt || view.round.updatedAt) }}</time></header>
               <AgentMarkdown :source="roundReply(view.round.id)" />
-              <template v-if="view.turns[0]?.run && ['queued', 'running', 'saving'].includes(view.turns[0].state)">
-                <p v-if="execution(view.turns[0].run).activityStep" class="latest-action"><span>{{ execution(view.turns[0].run).activityStep!.status === 'running' ? '正在进行' : '最近动作' }}：{{ execution(view.turns[0].run).activityStep!.title }}</span><small v-if="execution(view.turns[0].run).activityStep!.target">{{ execution(view.turns[0].run).activityStep!.target }}</small></p>
-                <p v-else-if="execution(view.turns[0].run).activity || progress(view.turns[0].turn)" class="turn-progress">{{ execution(view.turns[0].run).activity || progress(view.turns[0].turn) }}</p>
-              </template>
+              <AgentLiveRunActivity v-if="view.turns[0]?.run" :run="view.turns[0].run" :state="view.turns[0].state" :fallback-progress="progress(view.turns[0].turn)" @inspect="inspectRun" />
               <p v-if="view.turns[0] && turnError(view.turns[0].turn)" class="turn-error">{{ turnError(view.turns[0].turn) }}</p>
-              <details v-if="view.turns[0]?.run?.changedFiles?.length" class="member-files" @toggle="onScroll"><summary>成员文件 · {{ view.turns[0].run.changedFiles.length }}</summary><AgentChangedFiles :files="view.turns[0].run.changedFiles" :run-id="view.turns[0].run.id" /></details>
+              <AgentChangedFiles v-if="view.turns[0]?.run?.changedFiles?.length" :files="view.turns[0].run.changedFiles" :run-id="view.turns[0].run.id" :can-ask="!changing" @ask-file="askChangedFile" @apply-review-prompt="applyGroupReviewPrompt" />
               <div class="latest-feedback-tools">
+                <button type="button" class="group-copy-chip" title="复制 Markdown 汇报" @click="copyGroupText(`reply:${view.round.id}:md`, roundReply(view.round.id), false)"><component :is="copiedGroupKey === `reply:${view.round.id}:md` ? Check : Copy" :size="12" /><span>{{ copiedGroupKey === `reply:${view.round.id}:md` ? '已复制' : '复制' }}</span></button>
+                <button type="button" class="group-copy-chip" title="复制纯文本" @click="copyGroupText(`reply:${view.round.id}:txt`, roundReply(view.round.id), true)"><component :is="copiedGroupKey === `reply:${view.round.id}:txt` ? Check : FileText" :size="12" /><span>纯文本</span></button>
                 <el-button v-if="view.turns[0] && canRetry(view.turns[0].turn)" link type="primary" :loading="changing === 'retry:' + view.turns[0].turn.id" :disabled="!!changing" @click="retryTurn(view.turns[0].turn)">{{ changing === 'retry:' + view.turns[0].turn.id ? '正在重试' : '重试此成员' }}</el-button>
                 <el-button v-if="view.turns[0] && canFallback(view.turns[0].turn)" link type="primary" :disabled="!!changing" @click="fallbackTurn(view.turns[0].turn)">用备用模型继续</el-button>
                 <el-button v-if="view.turns[0] && needsTrust(view.turns[0].turn)" link type="primary" :disabled="!!changing" @click="trustTurn(view.turns[0].turn)">重试此成员</el-button>
@@ -916,62 +1475,75 @@ onBeforeUnmount(() => { active.value = false; const pending = drafts.pendingAtta
               </div>
             </div>
           </article>
-          <details v-if="!roundReply(view.round.id) && view.started.length" class="group-member-steps" @toggle="onScroll">
-            <summary class="group-section-heading">
-              <ChevronDown :size="14" aria-hidden="true" />
-              <span>成员执行记录</span>
-              <span class="group-record-count">{{ view.started.length }} 条</span>
-            </summary>
-            <template v-for="item in view.started" :key="item.turn.id">
-              <div v-if="item === view.focus" class="group-step-heading">{{ view.summary }}</div>
-              <article class="member-feedback" :class="{ current: item === view.focus }" :aria-current="item === view.focus ? 'step' : undefined" :data-member-id="item.turn.member.id" :data-turn-status="item.run?.status || item.turn.status">
-                <details class="member-feedback-content" @toggle="onScroll">
-                  <summary class="member-feedback-header">
-                    <AgentAvatar :provider="(item.run || item.turn.executionBinding || item.turn.member.binding)?.provider" :model="(item.run || item.turn.executionBinding || item.turn.member.binding)?.model" :size="30" />
-                    <span class="member-feedback-identity"><strong>{{ item.turn.member.name }}</strong><time>{{ dateTime(item.run?.updatedAt || item.turn.updatedAt) }}</time><small v-if="summaryByTurn.get(item.turn.id)?.current === false">历史记录</small><span class="turn-status" :class="{ 'member-needs-attention': item.state === 'failed' || ['failed', 'blocked'].includes(summaryByTurn.get(item.turn.id)?.outcome?.state || '') }">{{ turnStatus(item.turn) }}</span></span>
-                    <span class="member-feedback-toggle"><span class="feedback-open-label">收起</span><span class="feedback-closed-label">展开</span><ChevronDown :size="14" aria-hidden="true" /></span>
-                  </summary>
-                <div class="member-feedback-body">
-                  <AgentMarkdown v-if="groupMemberReply(summaryByTurn.get(item.turn.id))" class="member-local-summary" data-member-summary :source="groupMemberReply(summaryByTurn.get(item.turn.id))" />
-                  <div v-else-if="feedbackByTurn.has(item.turn.id)" class="member-readable-feedback" data-member-summary>
-                    <p><strong>{{ feedbackByTurn.get(item.turn.id)!.title }}</strong></p>
-                    <p v-for="check in feedbackByTurn.get(item.turn.id)!.checks" :key="check.title"><strong>{{ check.title }}：</strong>{{ check.detail }}</p>
-                    <p><strong>下一步：</strong>{{ feedbackByTurn.get(item.turn.id)!.nextStep }}</p>
-                  </div>
-                  <p v-else-if="turnResult(item.turn)" class="turn-progress">已保存本岗位汇报</p>
-                  <details v-if="!roundReply(view.round.id) && (turnResult(item.turn) || item.run && execution(item.run).messages.length)" class="member-original" @toggle="onScroll"><summary>查看成员原始汇报</summary>
-                    <AgentMarkdown v-for="message in item.run ? execution(item.run).messages : []" :key="message.id" :source="agentReplyText(message.message)" />
-                    <AgentMarkdown v-if="turnResult(item.turn)" :source="agentReplyText(turnResult(item.turn))" />
-                  </details>
-                  <p v-if="progress(item.turn) && (!item.run || !execution(item.run).activity)" class="turn-progress"><span v-if="item.run?.result || item.turn.result">最新进展：</span>{{ progress(item.turn) }}</p>
-                  <div v-if="item.run && (['queued', 'running', 'saving'].includes(item.state) || execution(item.run).toolCount)" class="turn-activity" aria-label="成员运行动态">
-                    <p v-if="execution(item.run).activity && ['queued', 'running', 'saving'].includes(item.state)" class="current-action"><span>{{ execution(item.run).activityStep?.status === 'running' ? '正在进行' : '最近动作' }}<time :datetime="execution(item.run).activityAt">{{ activityTime(execution(item.run).activityAt) }}</time></span><span v-if="execution(item.run).activityStep"><strong>{{ execution(item.run).activityStep!.title }}</strong><em class="step-state" :class="execution(item.run).activityStep!.status">{{ execution(item.run).activityStep!.status === 'running' ? '进行中' : stepStatusLabels[execution(item.run).activityStep!.status] }}</em><small v-if="execution(item.run).activityStep!.target">{{ execution(item.run).activityStep!.target }}</small></span><span v-else>{{ execution(item.run).activity }}</span></p>
-                    <details v-if="execution(item.run).toolCount" class="turn-tools" @toggle="onScroll">
-                      <summary>{{ ['queued', 'running', 'saving'].includes(item.state) ? '执行进度' : '技术详情' }} <span>{{ execution(item.run).toolCount }} 条执行记录</span><span>最近更新 {{ activityTime(execution(item.run).steps.at(-1)!.createdAt) }}</span></summary>
-                      <ol><li v-for="step in execution(item.run).steps" :key="step.id"><time :datetime="step.createdAt">{{ activityTime(step.createdAt) }}</time><div class="turn-step"><p class="step-heading"><strong>{{ step.title }}</strong><span class="step-state" :class="step.status">{{ stepStatusLabels[step.status] }}</span></p><p v-if="step.target" class="step-target">{{ step.target }}</p><details class="step-original" @toggle="onScroll"><summary>原始记录 · {{ step.events.length }} 条</summary><div v-for="event in step.events" :key="event.id"><small>{{ activityTime(event.createdAt) }}</small><code>{{ event.message }}</code></div></details></div></li></ol>
+          <div v-if="!roundReply(view.round.id) && view.started.length" class="group-live-stream" aria-label="成员接力发言流">
+            <article v-for="item in visibleRoundTurns(view.started)" :key="item.turn.id" class="group-message group-member-live" :class="{ current: item === view.focus, 'is-running': ['queued', 'running', 'saving'].includes(item.state), 'is-failed': item.state === 'failed' || ['failed', 'blocked'].includes(summaryByTurn.get(item.turn.id)?.outcome?.state || ''), 'is-collapsed': collapsedTurnIds.has(item.turn.id), 'is-highlighted': highlightedTurnId === item.turn.id }" :aria-current="item === view.focus ? 'step' : undefined" :data-turn-card-id="item.turn.id" :data-member-id="item.turn.member.id" :data-turn-status="item.run?.status || item.turn.status">
+              <AgentAvatar :provider="(item.run || item.turn.executionBinding || item.turn.member.binding)?.provider" :model="(item.run || item.turn.executionBinding || item.turn.member.binding)?.model" :size="32" />
+              <div class="group-member-card">
+                <header class="group-member-card-header">
+                  <strong>{{ item.turn.member.name }}</strong>
+                  <span class="group-role-cap">{{ groupCapabilityLabels[item.turn.member.capability] }}</span>
+                  <small class="group-member-model">{{ modelText(item.turn) }}</small>
+                  <span class="turn-status" :data-turn-state="relayStepState(item.state)" :class="{ 'member-needs-attention': item.state === 'failed' || ['failed', 'blocked'].includes(summaryByTurn.get(item.turn.id)?.outcome?.state || '') }">{{ turnStatus(item.turn) }}</span>
+                  <small v-if="item.turn.attempt > 1" class="group-attempt-badge">第 {{ item.turn.attempt }} 次</small>
+                  <time>{{ dateTime(item.run?.updatedAt || item.turn.updatedAt) }}</time>
+                  <button type="button" class="group-card-fold" :aria-expanded="!collapsedTurnIds.has(item.turn.id)" @click="toggleTurnCollapse(item.turn.id)">{{ collapsedTurnIds.has(item.turn.id) ? '展开' : '收起' }}</button>
+                </header>
+                <div v-show="!collapsedTurnIds.has(item.turn.id)" class="group-member-card-body">
+                  <template v-if="['queued', 'running', 'saving'].includes(item.state)">
+                    <template v-if="item.run && execution(item.run).messages.length">
+                      <AgentMarkdown v-for="message in execution(item.run).messages" :key="message.id" class="member-local-summary" :source="agentReplyText(message.message)" />
+                    </template>
+                    <AgentMarkdown v-else-if="item.run && execution(item.run).progress" class="member-local-summary" :source="execution(item.run).progress" />
+                    <AgentMarkdown v-else-if="turnResult(item.turn)" class="member-local-summary" :source="agentReplyText(turnResult(item.turn))" />
+                  </template>
+                  <template v-else>
+                    <AgentMarkdown v-if="groupMemberReply(summaryByTurn.get(item.turn.id))" class="member-local-summary" data-member-summary :source="groupMemberReply(summaryByTurn.get(item.turn.id))" />
+                    <div v-else-if="feedbackByTurn.has(item.turn.id)" class="member-readable-feedback" data-member-summary>
+                      <p class="member-feedback-headline"><strong>{{ feedbackByTurn.get(item.turn.id)!.title }}</strong></p>
+                      <div v-if="feedbackByTurn.get(item.turn.id)!.checks.length" class="member-feedback-checks">
+                        <div v-for="check in feedbackByTurn.get(item.turn.id)!.checks" :key="check.title" class="member-feedback-check"><strong>{{ check.title }}</strong><span>{{ check.detail }}</span></div>
+                      </div>
+                      <p class="member-feedback-next"><strong>下一步：</strong>{{ feedbackByTurn.get(item.turn.id)!.nextStep }}</p>
+                    </div>
+                    <AgentMarkdown v-else-if="turnResult(item.turn)" class="member-local-summary" data-member-summary :source="agentReplyText(turnResult(item.turn))" />
+                    <details v-if="(groupMemberReply(summaryByTurn.get(item.turn.id)) || feedbackByTurn.has(item.turn.id)) && (turnResult(item.turn) || item.run && execution(item.run).messages.length)" class="member-original" @toggle="onScroll"><summary>查看完整原始汇报</summary>
+                      <AgentMarkdown v-for="message in item.run ? execution(item.run).messages : []" :key="message.id" :source="agentReplyText(message.message)" />
+                      <AgentMarkdown v-if="turnResult(item.turn)" :source="agentReplyText(turnResult(item.turn))" />
                     </details>
-                    <p v-else class="no-tool-records">尚未收到工具执行记录</p>
-                  </div>
+                  </template>
+                  <AgentLiveRunActivity v-if="item.run" :run="item.run" :state="item.state" :fallback-progress="progress(item.turn)" @inspect="inspectRun" />
+                  <p v-else-if="progress(item.turn)" class="turn-progress">{{ progress(item.turn) }}</p>
                   <div v-for="(fallback, index) in item.turn.fallbacks || []" :key="index" class="turn-fallback"><strong>已启用备用模型 {{ fallback.to.model }}</strong><p>{{ agentProviderLabels[fallback.from.provider] }} → {{ agentProviderLabels[fallback.to.provider] }} · {{ fallback.reason }}</p><button v-if="fallback.runId && runs.find(run => run.id === fallback.runId)" type="button" @click="inspectRun(runs.find(run => run.id === fallback.runId)!)">查看原失败记录</button></div>
                   <p v-if="turnError(item.turn)" class="turn-error">{{ turnError(item.turn) }}</p>
-                  <details v-if="item.run?.changedFiles?.length" class="member-files" @toggle="onScroll"><summary>成员文件 · {{ item.run.changedFiles.length }}</summary><AgentChangedFiles :files="item.run.changedFiles" :run-id="item.turn.runId" /></details>
-                  <el-button v-if="canRetry(item.turn)" link type="primary" :loading="changing === 'retry:' + item.turn.id" :disabled="!!changing" @click="retryTurn(item.turn)">{{ changing === 'retry:' + item.turn.id ? '正在重试' : '重试此成员' }}</el-button>
-                  <el-button v-if="canFallback(item.turn)" link type="primary" :disabled="!!changing" @click="fallbackTurn(item.turn)">用备用模型继续</el-button>
-                  <el-button v-if="needsTrust(item.turn)" link type="primary" :disabled="!!changing" @click="trustTurn(item.turn)">重试此成员</el-button>
-                  <div class="turn-details"><button v-if="item.run" class="group-log" type="button" @click="inspectRun(item.run!)">查看执行记录</button><details class="turn-model" @toggle="onScroll"><summary>模型详情</summary><p>{{ modelText(item.turn) }}</p></details></div>
+                  <AgentChangedFiles v-if="item.run?.changedFiles?.length" :files="item.run.changedFiles" :run-id="item.turn.runId" :can-ask="!changing" @ask-file="askChangedFile" @apply-review-prompt="applyGroupReviewPrompt" />
+                  <div v-if="turnCopyMarkdown(item.turn) || canRetry(item.turn) || canFallback(item.turn) || needsTrust(item.turn) || item.run" class="latest-feedback-tools">
+                    <template v-if="turnCopyMarkdown(item.turn)">
+                      <button type="button" class="group-copy-chip" title="复制 Markdown 汇报" @click="copyGroupText(`turn:${item.turn.id}:md`, turnCopyMarkdown(item.turn), false)"><component :is="copiedGroupKey === `turn:${item.turn.id}:md` ? Check : Copy" :size="12" /><span>{{ copiedGroupKey === `turn:${item.turn.id}:md` ? '已复制' : '复制' }}</span></button>
+                      <button type="button" class="group-copy-chip" title="复制纯文本" @click="copyGroupText(`turn:${item.turn.id}:txt`, turnCopyMarkdown(item.turn), true)"><component :is="copiedGroupKey === `turn:${item.turn.id}:txt` ? Check : FileText" :size="12" /><span>纯文本</span></button>
+                    </template>
+                    <el-button v-if="canRetry(item.turn)" link type="primary" :loading="changing === 'retry:' + item.turn.id" :disabled="!!changing" @click="retryTurn(item.turn)">{{ changing === 'retry:' + item.turn.id ? '正在重试' : '重试此成员' }}</el-button>
+                    <el-button v-if="canFallback(item.turn)" link type="primary" :disabled="!!changing" @click="fallbackTurn(item.turn)">用备用模型继续</el-button>
+                    <el-button v-if="needsTrust(item.turn)" link type="primary" :disabled="!!changing" @click="trustTurn(item.turn)">重试此成员</el-button>
+                    <button v-if="item.run" class="group-log" type="button" @click="inspectRun(item.run!)">查看执行记录</button>
+                  </div>
                 </div>
-                </details>
-              </article>
-            </template>
-          </details>
-          <details v-if="view.pending.length" class="group-upcoming" :data-round-id="view.round.id" @toggle="onScroll">
-            <summary><span>{{ view.round.state === 'cancelled' ? '未执行' : view.started.length ? '后续' : '待执行' }} {{ view.pending.length }} 步<template v-if="view.round.state !== 'cancelled'"> · {{ view.started.length ? '下一位' : '首位' }}：{{ view.pending[0]!.turn.member.name }}</template></span><small v-if="['被阻塞', '已暂停', '已取消'].includes(view.pending[0]!.label)">{{ view.pending[0]!.label }}</small></summary>
-            <ol>
-              <li v-for="item in view.pending" :key="item.turn.id" :data-member-id="item.turn.member.id" :data-turn-status="item.state">
-                <details class="upcoming-step" @toggle="onScroll"><summary><span>{{ item.step }}. {{ item.turn.member.name }}</span><small>{{ item.label }}</small></summary><div><p>{{ modelText(item.turn) }}</p><p v-if="item.reason">{{ item.reason }}</p></div></details>
-              </li>
-            </ol>
-          </details>
+              </div>
+            </article>
+            <details v-if="supersededRoundTurns(view.started).length" class="group-superseded-turns" @toggle="onScroll">
+              <summary>历史重试记录 · {{ supersededRoundTurns(view.started).length }} 条</summary>
+              <div class="group-superseded-list">
+                <article v-for="item in supersededRoundTurns(view.started)" :key="item.turn.id" class="group-superseded-item">
+                  <header><strong>{{ item.turn.member.name }}</strong><small>{{ modelText(item.turn) }}</small><span class="turn-status">{{ turnStatus(item.turn) }}</span><time>{{ dateTime(item.run?.updatedAt || item.turn.updatedAt) }}</time><button v-if="item.run" type="button" class="group-log" @click="inspectRun(item.run!)">查看记录</button></header>
+                  <p v-if="turnError(item.turn)" class="turn-error">{{ turnError(item.turn) }}</p>
+                  <AgentMarkdown v-else-if="turnResult(item.turn)" :source="agentReplyText(turnResult(item.turn))" />
+                </article>
+              </div>
+            </details>
+          </div>
+          <p v-if="view.pending.length && view.round.state !== 'cancelled'" class="group-next-up-hint" :data-round-id="view.round.id">
+            <span>{{ view.started.length ? '下一棒待命' : '即将启动' }}：<strong>{{ view.pending[0]!.turn.member.name }}</strong>（{{ view.pending.length }} 步待执行）</span>
+            <small v-if="['被阻塞', '已暂停', '已取消'].includes(view.pending[0]!.label)">{{ view.pending[0]!.label }}</small>
+          </p>
         <template v-for="block in collaborationBlocks.filter(item => item.message.task.id === view.round.automatic?.taskId)" :key="block.history[0]?.id || block.message.id">
           <details v-if="block.history.length" class="group-feedback-history" @toggle="onScroll">
             <summary>查看{{ collaborationMemberName(block.message) }}此前 {{ block.history.length }} 条反馈</summary>
@@ -992,19 +1564,21 @@ onBeforeUnmount(() => { active.value = false; const pending = drafts.pendingAtta
           </div>
         </article>
         </template>
-        <article v-if="pendingLogin?.id === view.round.id" class="group-message" aria-label="等待登录测试环境">
-          <Users :size="30" />
+        <article v-if="pendingLogin?.id === view.round.id" class="group-message group-login-card" aria-label="等待登录测试环境">
+          <span class="group-system-avatar"><Users :size="18" /></span>
           <div>
             <header><strong>需要你登录测试环境</strong></header>
             <p>{{ view.round.loginHandoff?.reason === 'session_expired' ? '测试环境的登录已过期。' : '当前页面要求登录。' }}请在浏览器完成登录，再回到这里继续验证。</p>
             <p>账号、密码和验证码只在登录页面填写。</p>
-            <a v-if="loginUrl" :href="loginUrl" target="_blank" rel="noopener noreferrer">打开测试页面</a>
-            <el-button size="small" :loading="changing === 'resume-login'" :disabled="!!changing" @click="resumeLogin">已登录，继续验证</el-button>
+            <div class="group-login-actions">
+              <a v-if="loginUrl" class="group-login-link" :href="loginUrl" target="_blank" rel="noopener noreferrer">打开测试页面</a>
+              <el-button size="small" type="primary" :loading="changing === 'resume-login'" :disabled="!!changing" @click="resumeLogin">已登录，继续验证</el-button>
+            </div>
           </div>
         </article>
         <article v-if="!roundReply(view.round.id) && summaryByRound.get(view.round.id)?.ready" class="group-message group-team-summary" :data-team-summary="view.round.id" @toggle.capture="onScroll">
-          <Users :size="30" />
-          <div><header><strong>{{ finalDelivery(view.round.id) ? '总协调汇报' : summaryByRound.get(view.round.id)?.source?.workflow === 'requirement' ? '需求交付汇总' : '团队汇总' }}</strong><small>{{ finalDelivery(view.round.id) ? '依据团队已登记的交付证据' : '根据本轮已保存记录整理' }}</small><AgentElapsedTime :timing="roundTimings.get(view.round.id)" /></header>
+          <span class="group-system-avatar is-summary"><Users :size="18" /></span>
+          <div><header><strong>{{ finalDelivery(view.round.id) ? '总协调汇报' : summaryByRound.get(view.round.id)?.source?.workflow === 'requirement' ? '需求交付汇总' : '团队汇总' }}</strong><small>{{ finalDelivery(view.round.id) ? '依据团队已登记的交付证据' : '根据本轮已保存记录整理' }}</small><AgentElapsedTime :timing="roundTimings.get(view.round.id)" /><button v-if="finalDelivery(view.round.id)" type="button" class="group-copy-chip" title="复制统一汇报" @click="copyGroupText(`summary:${view.round.id}:md`, finalDeliveryOverview(view.round.id), false)"><component :is="copiedGroupKey === `summary:${view.round.id}:md` ? Check : Copy" :size="12" /><span>{{ copiedGroupKey === `summary:${view.round.id}:md` ? '已复制' : '复制结论' }}</span></button></header>
             <AgentMarkdown v-if="finalDelivery(view.round.id)" :source="finalDeliveryOverview(view.round.id)" />
             <details v-if="finalDelivery(view.round.id)" class="group-summary-evidence"><summary>查看技术记录（命令、代码和日志）</summary><AgentMarkdown :source="finalDelivery(view.round.id)!.text" /><AgentGroupSummary :summary="summaryByRound.get(view.round.id)!" :delivery-text="finalDelivery(view.round.id)!.text" :local-delivery="view.round.id === room?.rounds.at(-1)?.id ? currentLocalDelivery : undefined" @inspect="inspectRun" /></details>
             <AgentGroupSummary v-else-if="summaryByRound.get(view.round.id)" :summary="summaryByRound.get(view.round.id)!" :delivery-text="finalDelivery(view.round.id)?.text" :local-delivery="view.round.id === room?.rounds.at(-1)?.id ? currentLocalDelivery : undefined" @inspect="inspectRun" />
@@ -1018,22 +1592,30 @@ onBeforeUnmount(() => { active.value = false; const pending = drafts.pendingAtta
             <button v-if="canSteerPendingSend(message)" type="button" class="group-message-edit" title="停止当前阶段，并提前处理此消息" :disabled="!!changing || !!steeringMessage({ requestId: message.requestId })" @click="steerMessage({ requestId: message.requestId })"><CornerUpLeft :size="12" />{{ changing === `steer:${message.requestId}` || steeringMessage({ requestId: message.requestId })?.phase === 'stopping' ? '插队中' : steeringMessage({ requestId: message.requestId }) ? '已插队' : '插队' }}</button>
           </div>
         </article>
-        <article v-if="retryReceipt?.roomId === selectedId" class="group-message group-latest-feedback" aria-label="重试请求状态" role="status">
-          <Users :size="30" /><div><header><strong>团队执行</strong></header><p>{{ retryReceipt.state === 'sending' ? '正在提交重试请求…' : ['blocked', 'needs_decision', 'needs_reconciliation'].includes(collaborationTask?.state || '') ? '重试已接收，当前仍有阻塞，请核对任务状态。' : '重试已接收，等待最新执行状态。' }}</p></div>
+        <article v-if="visiblePendingSends.length" class="group-message group-latest-feedback group-live-ack" aria-label="群聊即时响应" role="status">
+          <span class="group-system-avatar"><Users :size="18" /></span>
+          <div>
+            <header><strong>团队协调</strong><span class="turn-status" data-turn-state="running">{{ visiblePendingSends.some(item => item.accepted) ? '正在调度成员' : '即时响应' }}</span></header>
+            <p>{{ visiblePendingSends.some(item => item.accepted) ? '消息已收到，正在安排团队成员开始处理…' : '已接收你的消息，正在同步群聊上下文并启动团队响应…' }}</p>
+          </div>
         </article>
-        <article v-for="item in recentTurns" :key="item.turn.runId || item.turn.id" class="group-message group-latest-feedback" :data-latest-run-id="item.turn.runId" aria-label="最新执行反馈">
-          <AgentAvatar :provider="(item.run || item.turn.executionBinding || item.turn.member.binding)?.provider" :model="(item.run || item.turn.executionBinding || item.turn.member.binding)?.model" :size="30" />
-          <div><header><strong>{{ item.turn.member.name }}</strong><span class="turn-status" :class="{ 'member-needs-attention': item.state === 'failed' || ['failed', 'blocked'].includes(summaryByTurn.get(item.turn.id)?.outcome?.state || '') }">{{ turnStatus(item.turn) }}</span><small v-if="item.turn.attempt > 1">第 {{ item.turn.attempt }} 次尝试</small></header>
+        <article v-if="retryReceipt?.roomId === selectedId" class="group-message group-latest-feedback" aria-label="重试请求状态" role="status">
+          <span class="group-system-avatar"><Users :size="18" /></span><div><header><strong>团队执行</strong></header><p>{{ retryReceipt.state === 'sending' ? '正在提交重试请求…' : ['blocked', 'needs_decision', 'needs_reconciliation'].includes(collaborationTask?.state || '') ? '重试已接收，当前仍有阻塞，请核对任务状态。' : '重试已接收，等待最新执行状态。' }}</p></div>
+        </article>
+        <article v-for="item in recentTurns.filter(candidate => !isInlineRenderedTurn(candidate.turn.id))" :key="item.turn.runId || item.turn.id" class="group-message group-latest-feedback" :data-latest-run-id="item.turn.runId" aria-label="最新执行反馈">
+          <AgentAvatar :provider="(item.run || item.turn.executionBinding || item.turn.member.binding)?.provider" :model="(item.run || item.turn.executionBinding || item.turn.member.binding)?.model" :size="32" />
+          <div><header><strong>{{ item.turn.member.name }}</strong><small class="group-member-model">{{ modelText(item.turn) }}</small><span class="turn-status" :data-turn-state="relayStepState(item.state)" :class="{ 'member-needs-attention': item.state === 'failed' || ['failed', 'blocked'].includes(summaryByTurn.get(item.turn.id)?.outcome?.state || '') }">{{ turnStatus(item.turn) }}</span><small v-if="item.turn.attempt > 1" class="group-attempt-badge">第 {{ item.turn.attempt }} 次尝试</small></header>
             <template v-if="item.run && ['queued', 'running', 'saving'].includes(item.state)">
               <AgentMarkdown v-if="execution(item.run).progress" :source="execution(item.run).progress" />
-              <p v-if="execution(item.run).activityStep" class="latest-action"><span>{{ execution(item.run).activityStep!.status === 'running' ? '正在进行' : '最近动作' }}：{{ execution(item.run).activityStep!.title }}</span><small v-if="execution(item.run).activityStep!.target" :title="execution(item.run).activityStep!.target">{{ execution(item.run).activityStep!.target }}</small></p>
-              <p v-else class="turn-progress">{{ execution(item.run).activity || progress(item.turn) || '等待执行器返回进度。' }}</p>
+              <AgentLiveRunActivity :run="item.run" :state="item.state" :fallback-progress="progress(item.turn)" @inspect="inspectRun" />
             </template>
             <AgentMarkdown v-else-if="groupMemberReply(summaryByTurn.get(item.turn.id))" :source="groupMemberReply(summaryByTurn.get(item.turn.id))" />
             <div v-else-if="feedbackByTurn.has(item.turn.id)" class="member-readable-feedback" data-member-summary>
-              <p><strong>{{ feedbackByTurn.get(item.turn.id)!.title }}</strong></p>
-              <p v-for="check in feedbackByTurn.get(item.turn.id)!.checks" :key="check.title"><strong>{{ check.title }}：</strong>{{ check.detail }}</p>
-              <p><strong>下一步：</strong>{{ feedbackByTurn.get(item.turn.id)!.nextStep }}</p>
+              <p class="member-feedback-headline"><strong>{{ feedbackByTurn.get(item.turn.id)!.title }}</strong></p>
+              <div v-if="feedbackByTurn.get(item.turn.id)!.checks.length" class="member-feedback-checks">
+                <div v-for="check in feedbackByTurn.get(item.turn.id)!.checks" :key="check.title" class="member-feedback-check"><strong>{{ check.title }}</strong><span>{{ check.detail }}</span></div>
+              </div>
+              <p class="member-feedback-next"><strong>下一步：</strong>{{ feedbackByTurn.get(item.turn.id)!.nextStep }}</p>
               <details class="member-original"><summary>查看原始验证记录</summary><AgentMarkdown :source="agentReplyText(turnResult(item.turn))" /></details>
             </div>
             <p v-if="turnError(item.turn)" class="turn-error">{{ turnError(item.turn) }}</p>
@@ -1055,6 +1637,12 @@ onBeforeUnmount(() => { active.value = false; const pending = drafts.pendingAtta
         <el-button v-if="unfinished" link size="small" :disabled="!!changing" @click="action('cancel')">取消待办</el-button>
       </div>
       <form class="group-composer" @submit.prevent="send">
+        <span class="group-composer-hint">Enter 发送 · Shift+Enter 换行</span>
+        <div v-if="selectedGroupQuote && !changing" class="group-reply group-quote-bar"><Quote :size="12" /><span>已选中 {{ selectedGroupQuote.length }} 字：“{{ selectedGroupQuote.slice(0, 60) }}{{ selectedGroupQuote.length > 60 ? '…' : '' }}”</span><el-button link type="primary" size="small" @click="quoteInGroupComposer(selectedGroupQuote)">引用追问</el-button><el-button link size="small" @click="selectedGroupQuote = ''">关闭</el-button></div>
+        <div v-if="questionTarget" class="group-reply"><span>{{ questionReply?.state === 'pending' ? '回复：' : '问题已回答或已过期：' }}{{ questionReply?.text }}</span><el-button link size="small" :disabled="!!changing" @click="questionTarget = undefined">取消回复</el-button></div>
+        <AgentPromptEditor ref="composerInput" v-model="draft" v-model:attachments="attachments" class="group-composer-prompt"
+          :workspace-path="workspacePath" :attachment-draft="attachmentDraft" :disabled="!!changing" :min-rows="1"
+          input-label="发送给团队的消息" placeholder="给团队安排工作，或选择成员提问（输 / 用快捷指令，输 @ 引用 Jira、仓库、接口或文档）…" submit-on-enter @submit="send" />
         <div class="group-composer-targets">
           <el-select :model-value="recipients" multiple collapse-tags collapse-tags-tooltip size="small" aria-label="接收成员" :disabled="!!changing" @update:model-value="updateRecipients">
             <el-option value="all" label="发给全体成员" />
@@ -1064,13 +1652,8 @@ onBeforeUnmount(() => { active.value = false; const pending = drafts.pendingAtta
             <el-option value="workspace" label="工作区访问" /><el-option value="full" label="完全访问" />
           </el-select>
         </div>
-        <div v-if="questionTarget" class="group-reply"><span>{{ questionReply?.state === 'pending' ? '回复：' : '问题已回答或已过期：' }}{{ questionReply?.text }}</span><el-button link size="small" :disabled="!!changing" @click="questionTarget = undefined">取消回复</el-button></div>
-        <AgentPromptEditor ref="composerInput" v-model="draft" v-model:attachments="attachments" class="group-composer-prompt"
-          :workspace-path="workspacePath" :attachment-draft="attachmentDraft" :disabled="!!changing"
-          input-label="发送给团队的消息" placeholder="给团队安排工作，或选择成员提问…" submit-on-enter @submit="send" />
         <div class="group-composer-footer">
-          <span>Enter 发送 · Shift+Enter 换行</span>
-          <el-button native-type="submit" type="primary" :loading="changing === 'send'" :disabled="!canSend"><Send :size="14" />发送</el-button>
+          <el-button class="send-button" native-type="submit" type="primary" :loading="changing === 'send'" :disabled="!canSend"><Send :size="14" />发送</el-button>
         </div>
       </form>
       </section>
@@ -1078,13 +1661,13 @@ onBeforeUnmount(() => { active.value = false; const pending = drafts.pendingAtta
     </main>
     <AgentPanelResize v-if="detailsOpen" v-model="detailsWidth" class="group-details-resize" side="right" variant="project-studio" />
     <AgentGroupDetailsPanel v-show="detailsOpen" ref="detailsPanel" :visible="active && detailsOpen" :room="room" :runs="runs" :tasks="collaborationTasks" :task="collaborationTask || current?.collaboration?.task"
-      :status="status" :runtimes="runtimes" :stream-status="streamStatus || 'connecting'" @collapse="detailsCollapsed = true" @compose="composeDetailsPrompt">
+      :status="status" :runtimes="runtimes" :workspace-path-override="workspacePath" :queue-summary="`${members.filter(member => member.enabled).length} 岗可用 · ${rooms.length} 群聊`" :stream-status="streamStatus || 'connecting'" @collapse="detailsCollapsed = true" @compose="composeDetailsPrompt">
       <template v-if="launchWorkspacePaths.length" #project-launch><AgentProjectLaunch class="project-launch-sidebar" :workspace-paths="launchWorkspacePaths" /></template>
     </AgentGroupDetailsPanel>
     <input ref="importInput" type="file" accept=".json,application/json" hidden @change="importTeam" />
   </section>
-  <AgentTaskPromptDrawer v-model="taskPromptDetail" />
-  <el-dialog v-model="groupInfoOpen" title="群聊信息" width="min(560px, 94vw)" append-to-body>
+  <AgentTaskPromptDrawer v-if="taskPromptDetail" v-model="taskPromptDetail" />
+  <el-dialog v-if="groupInfoOpen" v-model="groupInfoOpen" title="群聊信息" width="min(560px, 94vw)" append-to-body>
     <dl v-if="room" class="group-room-info">
       <dt>群聊标题</dt><dd>{{ room.title }}</dd>
       <dt>群聊 ID</dt><dd>{{ room.id }}</dd>
@@ -1095,7 +1678,7 @@ onBeforeUnmount(() => { active.value = false; const pending = drafts.pendingAtta
       <dt>最近更新</dt><dd>{{ dateTime(room.updatedAt) }}</dd>
     </dl>
   </el-dialog>
-  <el-drawer v-model="membersOpen" :title="`团队成员 · ${members.length}`" size="min(640px, 94vw)" append-to-body @open="dashboard.refetch()">
+  <el-drawer v-if="membersOpen" v-model="membersOpen" :title="`团队成员 · ${members.length}`" size="min(640px, 94vw)" append-to-body @open="dashboard.refetch()">
     <div class="group-roster-panel">
       <div class="roster-member-grid">
         <button v-for="member in members" :key="member.id" type="button" class="roster-member" :class="{ inactive: !member.enabled }" :aria-label="`编辑成员 ${member.name}`" :disabled="!!changing" @click="openRole(member)">
@@ -1113,12 +1696,12 @@ onBeforeUnmount(() => { active.value = false; const pending = drafts.pendingAtta
     </div>
     <template #footer><div class="roster-drawer-footer"><el-button type="primary" aria-label="添加成员角色" :disabled="!!changing" @click="openRole()"><Plus :size="14" />添加成员</el-button><el-button @click="membersOpen = false">关闭</el-button></div></template>
   </el-drawer>
-  <AgentEditMessageDialog :open="!!editingMessage" v-model="editObjective" :source="editingSource" :submitting="changing === 'revise'" @submit="saveEditedMessage" @close="editingMessage = undefined" />
-  <el-dialog v-model="teamOpen"  title="团队设置" width="min(600px, 94vw)" append-to-body @opened="focusTeamName">
-    <el-form v-if="configDraft" label-position="top" @submit.prevent="saveTeam"><el-form-item label="团队名称" required><el-input ref="teamNameInput" v-model="configDraft.name" maxlength="100" show-word-limit aria-label="团队名称" /></el-form-item><div class="group-config-members"><div v-for="(member, index) in configDraft.members" :key="member.id"><el-checkbox v-model="member.enabled">{{ member.name }}</el-checkbox><span>{{ groupCapabilityLabels[member.capability] }}</span><el-button link :disabled="index === 0" :aria-label="`上移${member.name}`" @click="moveRole(index, -1)"><ChevronUp :size="14" /></el-button><el-button link :disabled="index === configDraft.members.length - 1" :aria-label="`下移${member.name}`" @click="moveRole(index, 1)"><ChevronDown :size="14" /></el-button></div></div><p class="group-setting-hint">按列表顺序接续处理。在团队成员中可修改职责和模型；已开始的消息保留当时的配置。</p></el-form>
+  <AgentEditMessageDialog v-if="editingMessage" :open="!!editingMessage" v-model="editObjective" :source="editingSource" :submitting="changing === 'revise'" @submit="saveEditedMessage" @close="editingMessage = undefined" />
+  <el-dialog v-if="teamOpen" v-model="teamOpen" title="团队设置" width="min(600px, 94vw)" append-to-body @opened="focusTeamName">
+    <el-form v-if="configDraft" label-position="top" @submit.prevent="saveTeam"><el-form-item label="内置协作预设（保留已配模型）"><div class="group-preset-bar"><button v-for="preset in groupPresets" :key="preset.id" type="button" class="group-preset-chip" :class="{ active: configDraft.name === preset.teamName }" :title="preset.summary" @click="applyPreset(preset.id)"><strong>{{ preset.label }}</strong><small>{{ preset.summary }}</small></button></div></el-form-item><el-form-item label="团队名称" required><el-input ref="teamNameInput" v-model="configDraft.name" maxlength="100" show-word-limit aria-label="团队名称" /></el-form-item><div class="group-config-members"><div v-for="(member, index) in configDraft.members" :key="member.id"><el-checkbox v-model="member.enabled">{{ member.name }}</el-checkbox><span>{{ groupCapabilityLabels[member.capability] }}</span><el-button link :disabled="index === 0" :aria-label="`上移${member.name}`" @click="moveRole(index, -1)"><ChevronUp :size="14" /></el-button><el-button link :disabled="index === configDraft.members.length - 1" :aria-label="`下移${member.name}`" @click="moveRole(index, 1)"><ChevronDown :size="14" /></el-button></div></div><p class="group-setting-hint">按列表顺序依次接力处理。套用预设会自动带入交接、异常停机保护和审查规范，同时保留成员已选好的模型；已经开始的任务不受影响。</p></el-form>
     <template #footer><el-button @click="teamOpen = false">取消</el-button><el-button type="primary" :loading="changing === 'config'" @click="saveTeam">保存</el-button></template>
   </el-dialog>
-  <el-dialog v-model="roleOpen" :title="roleIsNew ? '添加成员角色' : '编辑成员角色'" width="min(980px, 94vw)" top="24px" class="group-role-dialog" append-to-body>
+  <el-dialog v-if="roleOpen" v-model="roleOpen" :title="roleIsNew ? '添加成员角色' : '编辑成员角色'" width="min(980px, 94vw)" top="24px" class="group-role-dialog" append-to-body>
     <el-form v-if="roleDraft" label-position="top" class="group-role-form" @submit.prevent="saveRole">
       <div class="group-role-fields">
         <div class="group-role-identity">
@@ -1147,7 +1730,7 @@ onBeforeUnmount(() => { active.value = false; const pending = drafts.pendingAtta
     </el-form>
     <template #footer><div class="group-role-footer"><el-button v-if="!roleIsNew" link type="danger" :disabled="!!changing" @click="removeRole">移除此角色</el-button><div class="group-role-actions"><el-button @click="roleOpen = false">取消</el-button><el-button type="primary" :loading="changing === 'config'" :disabled="!roleDraft?.name.trim() || !roleDraft?.instructions.trim()" @click="saveRole">保存</el-button></div></div></template>
   </el-dialog>
-  <WorkspaceBrowserDialog :open="picker.browserOpen.value" :initial-path="picker.browserPath.value" @select="picker.completeBrowser" @cancel="picker.completeBrowser(null)" />
+  <WorkspaceBrowserDialog v-if="picker.browserOpen.value" :open="picker.browserOpen.value" :initial-path="picker.browserPath.value" @select="picker.completeBrowser" @cancel="picker.completeBrowser(null)" />
 </template>
 
 <style scoped>
@@ -1157,27 +1740,28 @@ onBeforeUnmount(() => { active.value = false; const pending = drafts.pendingAtta
 .group-roster-panel{color:var(--ui-text);font-family:var(--sans)}.roster-member-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.roster-member{display:flex;flex-direction:column;gap:10px;min-width:0;min-height:108px;padding:14px;border:1px solid var(--ui-border);border-radius:10px;background:var(--ui-surface);color:var(--ui-text);font:inherit;text-align:left;cursor:pointer}.roster-member:hover{border-color:var(--ui-accent);background:var(--ui-hover)}.roster-member:focus-visible{outline:2px solid var(--ui-accent);outline-offset:2px}.roster-member.inactive{opacity:.5}.roster-member:disabled{cursor:not-allowed;opacity:.5}.roster-member-heading{display:grid;grid-template-columns:32px minmax(0,1fr) auto;align-items:center;gap:10px;width:100%;min-width:0}.roster-member-heading>strong{min-width:0;font-size:13px;font-weight:600;line-height:1.6;overflow-wrap:anywhere}.roster-member-quota{font-size:11px;line-height:1.6;color:var(--ui-secondary);white-space:nowrap}.roster-member-quota.exhausted{color:var(--ui-danger)}.roster-member-models{display:grid;gap:4px;min-width:0;padding-left:42px;overflow-wrap:anywhere}.roster-member-model{font-size:12px;line-height:1.65;color:var(--ui-secondary)}.roster-member-backup{font-size:11px;line-height:1.65;color:var(--ui-muted)}.roster-drawer-footer{display:flex;align-items:center;justify-content:space-between;gap:12px}.roster-drawer-footer :deep(.el-button){margin-left:0}.roster-drawer-footer :deep(.el-button>span){gap:6px}
 @media(max-width:700px){.roster-member-grid{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:480px){.group-roster-entry{padding:8px 6px}.group-roster-entry>button{gap:6px;padding:6px;font-size:11px}.roster-drawer-footer :deep(.el-button){min-height:44px}}
-.group-feedback-history,.group-summary-evidence{margin:0 0 20px;min-width:0}.group-feedback-history>summary,.group-summary-evidence>summary{padding:8px 0;color:var(--agent-muted);font-size:12px;cursor:pointer}.group-feedback-history[open]>summary,.group-summary-evidence[open]>summary{margin-bottom:14px}
-.group-message:not(.user){display:block;position:relative;padding:0;border:0;background:transparent}
-.group-message:not(.user)>:deep(.agent-avatar),.group-message:not(.user)>svg{position:absolute;top:0;left:0}
-.group-message:not(.user)>div{width:100%;max-width:100%}
-.group-message:not(.user)>div>header{min-height:30px;margin:0 0 16px;padding-left:42px;gap:8px 10px}
-.group-message:not(.user)>div>header time{order:1;margin-left:auto;font-size:11px}
-.group-message:not(.user) :deep(.agent-markdown){font-size:15px;line-height:1.8}
-.group-message:not(.user):not(.group-team-summary) :deep(.markdown-paragraph){margin-bottom:14px}
+.group-feedback-history,.group-summary-evidence{margin:0 0 16px;min-width:0}.group-feedback-history>summary,.group-summary-evidence>summary{padding:6px 0;color:var(--agent-accent);font-size:12px;font-weight:500;cursor:pointer}.group-feedback-history[open]>summary,.group-summary-evidence[open]>summary{margin-bottom:12px}
+.group-message:not(.user){display:flex;align-items:flex-start;gap:10px;position:relative;padding:0;border:0;background:transparent}
+.group-message:not(.user)>:deep(.agent-avatar),.group-message:not(.user)>.group-system-avatar{position:static;flex-shrink:0;margin-top:1px;width:24px!important;height:24px!important;border-radius:6px!important}
+.group-system-avatar{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border:1px solid var(--agent-border);border-radius:6px;background:var(--agent-panel-strong);color:var(--agent-accent);box-shadow:none}
+.group-system-avatar.is-summary{border-color:color-mix(in srgb,var(--agent-accent) 36%,var(--agent-border));background:color-mix(in srgb,var(--agent-accent) 12%,var(--agent-panel-strong))}
+.group-message:not(.user)>div{flex:1 1 auto;min-width:0;max-width:calc(100% - 34px);padding:8px 12px;border:1px solid color-mix(in srgb,var(--agent-border) 78%,transparent);border-radius:4px 10px 10px 10px;background:color-mix(in srgb,var(--agent-panel-strong) 72%,transparent);box-shadow:none}
+.group-message:not(.user)>div>header{min-height:20px;margin:0 0 6px;padding:0 0 5px;border-bottom:1px solid color-mix(in srgb,var(--agent-border) 55%,transparent);gap:4px 7px}
+.group-message:not(.user)>div>header time{margin-left:auto;font-size:11px;font-variant-numeric:tabular-nums}
+.group-message:not(.user) :deep(.agent-markdown){font-size:13px;line-height:1.58}
+.group-message:not(.user):not(.group-team-summary) :deep(.markdown-paragraph){margin-bottom:7px}
 .group-message:not(.user):not(.group-team-summary) :deep(.markdown-paragraph:last-child){margin-bottom:0}
-
-@media(max-width:480px){.group-message:not(.user)>div>header{padding-left:0}.group-message:not(.user)>svg{display:none}}
+@media(max-width:480px){.group-message:not(.user)>.group-system-avatar{display:none}.group-message:not(.user)>div{max-width:100%;padding:8px 10px}}
 </style>
 
 <style scoped>
-.group-coordination{margin:8px 0 20px 42px;padding:12px 0;border-bottom:1px solid var(--agent-border);color:var(--agent-secondary);font-size:12px;overflow-wrap:anywhere}.group-coordination header{display:flex;align-items:baseline;flex-wrap:wrap;gap:8px}.group-coordination header strong{color:var(--agent-text);font-size:13px}.group-coordination header small{color:var(--agent-muted);font-size:11px}.group-coordination details{margin-top:8px}.group-coordination summary,.member-original>summary,.member-files>summary,.team-summary-blockers>summary{cursor:pointer;color:var(--agent-accent);font-size:12px}.group-coordination ol{margin:10px 0 0;padding-left:20px}.group-coordination li{padding:5px 0}.group-coordination li p{margin:4px 0;line-height:1.7}
-.group-section-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 12px;padding:8px 0;color:var(--agent-muted);font-size:12px;font-weight:500;list-style:none}.group-member-steps{margin:0 0 16px;min-width:0}.group-member-steps>summary{cursor:pointer;color:var(--agent-accent);user-select:none}.group-member-steps[open]>summary{margin-bottom:12px;color:var(--agent-muted)}.group-member-steps>summary::-webkit-details-marker,.member-feedback-header::-webkit-details-marker{display:none}.group-member-steps>summary::marker,.member-feedback-header::marker{content:''}.group-member-steps>summary>svg{flex-shrink:0;transform:rotate(-90deg)}.group-member-steps[open]>summary>svg{transform:rotate(0)}
-.member-feedback{min-width:0;max-width:100%;margin:0 0 14px;border:1px solid var(--agent-border);border-radius:12px;background:color-mix(in srgb,var(--agent-panel-strong) 70%,transparent)}.member-feedback-content{min-width:0;max-width:100%}.member-feedback-header{display:grid;grid-template-columns:30px minmax(0,1fr) auto;align-items:center;gap:12px;min-width:0;padding:14px 16px;border-radius:11px;list-style:none;cursor:pointer;user-select:none}.member-feedback-header:hover{background:var(--agent-raised)}.member-feedback-header:focus-visible,.group-member-steps>summary:focus-visible{outline:2px solid var(--agent-accent);outline-offset:-3px}.member-feedback-content[open]>.member-feedback-header{border-radius:11px 11px 0 0}.member-feedback-identity{display:flex;align-items:center;flex-wrap:wrap;gap:5px 9px;min-width:0;overflow-wrap:anywhere}.member-feedback-identity>strong{color:var(--agent-text);font-size:13px;font-weight:600;line-height:1.6}.member-feedback-identity>time,.member-feedback-identity>small{color:var(--agent-muted);font-size:11px}.member-feedback-toggle{display:flex;align-items:center;gap:5px;color:var(--agent-muted);font-size:11px;white-space:nowrap}.member-feedback-toggle>svg{flex-shrink:0;transform:rotate(-90deg)}.feedback-open-label{display:none}.member-feedback-content[open]>.member-feedback-header .feedback-open-label{display:inline}.member-feedback-content[open]>.member-feedback-header .feedback-closed-label{display:none}.member-feedback-content[open]>.member-feedback-header .member-feedback-toggle>svg{transform:rotate(0)}
-.member-feedback-body{min-width:0;padding:0 16px 16px 58px;overflow-wrap:anywhere;color:var(--agent-text);font-size:15px;line-height:1.8}.member-feedback-body :deep(.agent-markdown){font-size:15px;line-height:1.8}.member-feedback-body :deep(.agent-markdown>:first-child){margin-top:0}.member-feedback-body :deep(.agent-markdown>:last-child){margin-bottom:0}.member-feedback-body>.turn-activity{margin:14px 0 0;padding-top:12px;border-top:1px solid var(--agent-border)}.member-feedback-body>.turn-details{margin-top:12px;padding-top:10px;border-top:1px solid var(--agent-border)}
-@media(max-width:600px){.member-feedback-header{grid-template-columns:26px minmax(0,1fr) auto;gap:8px;padding:12px}.member-feedback-header :deep(.agent-avatar){width:26px!important;height:26px!important}.member-feedback-identity{gap:3px 6px}.member-feedback-body{padding:0 12px 14px}.member-feedback{margin-bottom:12px}}
-.member-local-summary{margin:8px 0;white-space:pre-line;overflow-wrap:anywhere;font-size:15px;line-height:1.8}.member-original,.member-files{margin:10px 0}.member-original[open]>summary,.member-files[open]>summary{margin-bottom:12px}.turn-status.member-needs-attention{color:var(--ui-danger)}
-.member-readable-feedback{margin:8px 0;font-size:15px;line-height:1.8;overflow-wrap:anywhere}.member-readable-feedback p{margin:6px 0}.member-readable-feedback strong{font-weight:600}
+.group-coordination{margin:6px 0 12px 34px;padding:8px 0;border-bottom:1px solid var(--agent-border);color:var(--agent-secondary);font-size:12px;overflow-wrap:anywhere}.group-coordination header{display:flex;align-items:baseline;flex-wrap:wrap;gap:8px}.group-coordination header strong{color:var(--agent-text);font-size:12.5px}.group-coordination header small{color:var(--agent-muted);font-size:11px}.group-coordination details{margin-top:6px}.group-coordination summary,.member-original>summary,.member-files>summary,.team-summary-blockers>summary{cursor:pointer;color:var(--agent-accent);font-size:11.5px}.group-coordination ol{margin:6px 0 0;padding-left:18px}.group-coordination li{padding:3px 0}.group-coordination li p{margin:3px 0;line-height:1.56}
+.group-section-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 8px;padding:6px 0;color:var(--agent-muted);font-size:12px;font-weight:500;list-style:none}.group-member-steps{margin:0 0 10px;min-width:0}.group-member-steps>summary{cursor:pointer;color:var(--agent-accent);user-select:none}.group-member-steps[open]>summary{margin-bottom:8px;color:var(--agent-muted)}.group-member-steps>summary::-webkit-details-marker,.member-feedback-header::-webkit-details-marker{display:none}.group-member-steps>summary::marker,.member-feedback-header::marker{content:''}.group-member-steps>summary>svg{flex-shrink:0;transform:rotate(-90deg)}.group-member-steps[open]>summary>svg{transform:rotate(0)}
+.member-feedback{min-width:0;max-width:100%;margin:0 0 10px;border:1px solid var(--agent-border);border-radius:10px;background:color-mix(in srgb,var(--agent-panel-strong) 70%,transparent)}.member-feedback-content{min-width:0;max-width:100%}.member-feedback-header{display:grid;grid-template-columns:24px minmax(0,1fr) auto;align-items:center;gap:8px;min-width:0;padding:8px 12px;border-radius:9px;list-style:none;cursor:pointer;user-select:none}.member-feedback-header:hover{background:var(--agent-raised)}.member-feedback-header:focus-visible,.group-member-steps>summary:focus-visible{outline:2px solid var(--agent-accent);outline-offset:-3px}.member-feedback-content[open]>.member-feedback-header{border-radius:9px 9px 0 0}.member-feedback-identity{display:flex;align-items:center;flex-wrap:wrap;gap:4px 8px;min-width:0;overflow-wrap:anywhere}.member-feedback-identity>strong{color:var(--agent-text);font-size:12.5px;font-weight:600;line-height:1.45}.member-feedback-identity>time,.member-feedback-identity>small{color:var(--agent-muted);font-size:11px}.member-feedback-toggle{display:flex;align-items:center;gap:4px;color:var(--agent-muted);font-size:11px;white-space:nowrap}.member-feedback-toggle>svg{flex-shrink:0;transform:rotate(-90deg)}.feedback-open-label{display:none}.member-feedback-content[open]>.member-feedback-header .feedback-open-label{display:inline}.member-feedback-content[open]>.member-feedback-header .feedback-closed-label{display:none}.member-feedback-content[open]>.member-feedback-header .member-feedback-toggle>svg{transform:rotate(0)}
+.member-feedback-body{min-width:0;padding:0 12px 10px 44px;overflow-wrap:anywhere;color:var(--agent-text);font-size:13px;line-height:1.58}.member-feedback-body :deep(.agent-markdown){font-size:13px;line-height:1.58}.member-feedback-body :deep(.agent-markdown>:first-child){margin-top:0}.member-feedback-body :deep(.agent-markdown>:last-child){margin-bottom:0}.member-feedback-body>.turn-activity{margin:8px 0 0;padding-top:8px;border-top:1px solid var(--agent-border)}.member-feedback-body>.turn-details{margin-top:8px;padding-top:6px;border-top:1px solid var(--agent-border)}
+@media(max-width:600px){.member-feedback-header{grid-template-columns:22px minmax(0,1fr) auto;gap:6px;padding:8px 10px}.member-feedback-header :deep(.agent-avatar){width:22px!important;height:22px!important}.member-feedback-identity{gap:3px 6px}.member-feedback-body{padding:0 10px 10px}.member-feedback{margin-bottom:8px}}
+.member-local-summary{margin:4px 0;white-space:pre-line;overflow-wrap:anywhere;font-size:13px;line-height:1.58}.member-original,.member-files{margin:6px 0}.member-original[open]>summary,.member-files[open]>summary{margin-bottom:8px}.turn-status.member-needs-attention{color:var(--ui-danger)}
+.member-readable-feedback{margin:4px 0;font-size:13px;line-height:1.58;overflow-wrap:anywhere}.member-readable-feedback p{margin:4px 0}.member-readable-feedback strong{font-weight:600}
 .group-team-summary>svg{color:var(--agent-accent)}.group-team-summary header{flex-wrap:wrap}.group-team-summary header small,.team-summary-source{color:var(--agent-muted);font-size:11px}.team-summary-headline{color:var(--agent-text);font-size:13px;font-weight:600}.team-summary-blockers ul{padding:0;list-style:none}.team-summary-blockers li{padding:10px 0;border-top:1px solid var(--agent-border);font-size:12px;overflow-wrap:anywhere}.team-summary-blockers li p{margin:5px 0;white-space:pre-wrap;line-height:1.7}.team-summary-blockers button{padding:0;border:0;background:transparent;color:var(--agent-accent);font:inherit;cursor:pointer}
 .team-summary-blockers li summary{display:flex;align-items:baseline;gap:10px;cursor:pointer}.team-summary-blockers li summary strong{flex-shrink:0}.team-summary-blockers li summary span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--agent-muted)}
 @media(max-width:700px){.group-coordination,.group-section-heading{margin-left:0}}
@@ -1185,7 +1769,7 @@ onBeforeUnmount(() => { active.value = false; const pending = drafts.pendingAtta
 .group-message :deep(.report-row summary){min-width:0}@media(max-width:480px){.group-message :deep(.report-row summary){grid-template-columns:minmax(0,1fr) auto;gap:4px 8px}.group-message :deep(.report-row summary small){grid-column:1/-1;text-align:left}}
 .turn-activity{margin:10px 0;color:var(--agent-secondary);font-size:12px;line-height:1.7;min-width:0}.current-action{display:flex;align-items:baseline;gap:10px;margin:0 0 8px;white-space:pre-wrap;overflow-wrap:anywhere}.current-action>span:first-child{flex-shrink:0;color:var(--agent-muted)}.current-action time{display:block;font:11px/1.7 var(--mono);color:var(--agent-muted)}.current-action>span:last-child{min-width:0;max-height:5.1em;overflow:auto}.turn-tools summary{cursor:pointer;color:var(--agent-secondary);line-height:1.8}.turn-tools summary>span{margin-left:12px;color:var(--agent-muted);font-size:11px}.turn-tools ol{list-style:none;margin:8px 0;padding:0}.turn-tools li{display:grid;grid-template-columns:68px minmax(0,1fr);gap:8px;margin:7px 0}.turn-tools li time{color:var(--agent-muted);font:11px/1.7 var(--mono);white-space:nowrap}.turn-tools code{display:block;white-space:pre-wrap;overflow-wrap:anywhere;max-height:10em;overflow:auto;font:12px/1.7 var(--mono);color:var(--agent-text)}.turn-tools small{display:block;color:var(--agent-muted);font-size:11px}.no-tool-records{margin:0;color:var(--agent-muted)}.turn-tools summary:focus-visible{outline:2px solid var(--agent-accent);outline-offset:3px;border-radius:3px}@media(max-width:480px){.turn-tools summary>span{display:block;margin-left:14px}.turn-tools li{grid-template-columns:60px minmax(0,1fr);gap:6px}}
 .group-step-heading{margin:0 0 12px 42px;color:var(--agent-accent);font-size:12px;font-weight:600;line-height:1.6}.group-message.current header strong{color:var(--agent-text)}.turn-details{display:flex;align-items:baseline;gap:16px;flex-wrap:wrap}.turn-model{color:var(--agent-muted);font-size:11px;min-width:0}.turn-model summary{cursor:pointer}.turn-model p{margin:6px 0;overflow-wrap:anywhere}.group-upcoming{margin:0 0 26px 42px;border-top:1px solid var(--agent-border);color:var(--agent-muted);font-size:12px}.group-upcoming>summary{padding:12px 0;cursor:pointer;line-height:1.7}.group-upcoming>summary>small{margin-left:12px;color:var(--agent-secondary);font-size:11px}.group-upcoming ol{list-style:none;margin:0;padding:0}.group-upcoming li+li{border-top:1px solid var(--agent-border)}.upcoming-step>summary{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:9px 0;cursor:pointer}.upcoming-step>summary span{color:var(--agent-secondary);overflow-wrap:anywhere}.upcoming-step>summary small{flex-shrink:0;font-size:11px}.upcoming-step>div{padding:0 0 7px;font-size:11px;line-height:1.7;overflow-wrap:anywhere}.upcoming-step p{margin:0 0 5px}.group-upcoming summary:focus-visible,.turn-model summary:focus-visible{outline:2px solid var(--agent-accent);outline-offset:3px;border-radius:3px}@media(max-width:480px){.group-step-heading,.group-upcoming{margin-left:0}.group-upcoming>summary>small{display:block;margin-left:0}.upcoming-step>summary{gap:6px;font-size:11px}}
-.group-workspace{display:grid;grid-template-columns:var(--session-column-width,250px) minmax(0,1fr);height:100%;min-height:0;background:var(--agent-bg);color:var(--agent-text)}.group-sidebar{display:flex;flex-direction:column;min-height:0;overflow:hidden;background:var(--agent-panel-strong);border-right:1px solid var(--agent-border)}.group-rooms{flex:1;min-height:72px;overflow:auto;padding:0 8px;overscroll-behavior:contain}.group-room{display:grid;gap:5px;width:100%;padding:10px;border:0;border-radius:8px;background:transparent;color:var(--agent-secondary);text-align:left;cursor:pointer}.group-room.selected{background:color-mix(in srgb,var(--agent-accent) 24%,transparent);color:var(--agent-text)}.group-room strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.group-room small{font-size:10px;color:var(--agent-muted)}.group-share{display:flex;justify-content:center;gap:8px;margin-top:0;padding:8px 10px;border-top:1px solid var(--agent-border)}.group-share:deep(.el-button+.el-button){margin-left:0}.group-main{--conversation-reading-width:800px;display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto auto minmax(0,1fr) auto auto;min-height:0;min-width:0;background:var(--agent-bg)}.group-header{display:flex;align-items:center;gap:12px;padding:17px 22px;border-bottom:1px solid var(--agent-border)}.group-header>div:first-child{flex:1}.group-header h1{margin:0;font-size:17px}.group-header p{margin:5px 0 0;color:var(--agent-muted);font-size:11px}.group-header:deep(.el-button){gap:5px}.group-project{display:flex;align-items:center;gap:7px;min-width:0;padding:8px 22px;border-bottom:1px solid var(--agent-border);color:var(--agent-muted);font-size:11px}.group-project>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.group-messages{min-height:0;overflow:auto;padding:32px max(24px,calc((100% - var(--conversation-reading-width))/2));scrollbar-gutter:stable}.group-empty{display:grid;justify-items:center;align-content:center;min-height:55vh;color:var(--agent-muted);text-align:center}.group-empty h2{font-size:20px;color:var(--agent-text)}.group-empty p{max-width:380px;font-size:12px;line-height:1.8}.group-message{display:flex;gap:12px;margin-bottom:32px;min-width:0}.group-message>div{min-width:0;max-width:calc(100% - 44px);flex:1}.group-message header{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin:2px 0 8px}.group-message header strong{font-size:13px}.group-message header small,.group-message time{font-size:10px;color:var(--agent-muted)}.turn-status{font-size:10px;color:var(--agent-accent)}.group-message.user{flex-direction:row-reverse}.group-message.user>div{flex:0 1 auto;max-width:min(85%,640px)}.group-message.user header{justify-content:flex-end}.user-text{margin:0;padding:12px 16px;border-radius:16px;background:var(--ui-user-message-bg,color-mix(in srgb,var(--agent-accent) 17%,var(--agent-panel-strong)));color:var(--ui-user-message-text,var(--agent-text));white-space:pre-wrap;overflow-wrap:anywhere;font-size:15px;line-height:1.8}.group-message :deep(.agent-markdown){font-size:15px;line-height:1.8}.turn-progress{font-size:12px;color:var(--agent-muted);line-height:1.8}.turn-error{font-size:12px;color:var(--el-color-danger);white-space:pre-wrap}.group-log{border:0;padding:3px 0;background:transparent;color:var(--agent-accent);font-size:11px;cursor:pointer}.message-attachments{display:flex;gap:8px;font-size:11px}.message-attachments img{display:block;max-width:180px;max-height:150px;object-fit:contain;border-radius:7px}.message-attachments a{color:var(--agent-accent)}.group-control{display:flex;align-items:center;justify-content:flex-end;gap:9px;padding:8px max(24px,calc((100% - var(--conversation-reading-width))/2));color:var(--agent-muted);font-size:11px}.group-control>span{margin-right:auto}.group-composer{display:flex;flex-wrap:wrap;align-items:center;min-width:0;gap:9px 12px;margin:0 max(24px,calc((100% - var(--conversation-reading-width))/2)) 18px;padding:12px 13px;border:1px solid var(--agent-border);border-radius:14px;background:var(--agent-panel-strong)}
+.group-workspace{display:grid;grid-template-columns:var(--session-column-width,250px) minmax(0,1fr);height:100%;min-height:0;background:var(--agent-bg);color:var(--agent-text)}.group-sidebar{display:flex;flex-direction:column;min-height:0;overflow:hidden;background:var(--agent-panel-strong);border-right:1px solid var(--agent-border)}.group-rooms{flex:1;min-height:72px;overflow:auto;padding:0 8px;overscroll-behavior:contain}.group-room{display:grid;gap:2px;width:100%;padding:6px 8px;border:0;border-radius:7px;background:transparent;color:var(--agent-secondary);text-align:left;cursor:pointer}.group-room.selected{background:color-mix(in srgb,var(--agent-accent) 20%,transparent);color:var(--agent-text)}.group-room strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px}.group-room small{font-size:10.5px;color:var(--agent-muted)}.group-share{display:flex;justify-content:center;gap:6px;margin-top:0;padding:6px 8px;border-top:1px solid var(--agent-border)}.group-share:deep(.el-button+.el-button){margin-left:0}.group-main{--conversation-reading-width:980px;display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto auto minmax(0,1fr) auto auto;min-height:0;min-width:0;background:var(--agent-bg)}.group-header{display:flex;align-items:center;gap:10px;padding:7px 16px;border-bottom:1px solid var(--agent-border)}.group-header>div:first-child{flex:1}.group-header h1{margin:0;font-size:13.5px}.group-header p{margin:2px 0 0;color:var(--agent-muted);font-size:11px}.group-header:deep(.el-button){gap:4px}.group-project{display:flex;align-items:center;gap:6px;min-width:0;padding:4px 16px;border-bottom:1px solid var(--agent-border);color:var(--agent-muted);font-size:11px}.group-project>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.group-messages{min-height:0;overflow:auto;padding:16px max(18px,calc((100% - var(--conversation-reading-width))/2));scrollbar-gutter:stable}.group-empty{display:grid;justify-items:center;align-content:center;min-height:42vh;color:var(--agent-muted);text-align:center}.group-empty h2{font-size:18px;color:var(--agent-text)}.group-empty p{max-width:380px;font-size:12px;line-height:1.6}.group-message{display:flex;gap:10px;margin-bottom:12px;min-width:0}.group-message>div{min-width:0;max-width:calc(100% - 34px);flex:1}.group-message header{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:0 0 4px}.group-message header strong{font-size:12px}.group-message header small,.group-message time{font-size:11px;color:var(--agent-muted)}.turn-status{font-size:10.5px;color:var(--agent-accent)}.group-message.user{flex-direction:row-reverse}.group-message.user>:deep(.agent-avatar){display:none}.group-message.user>div{flex:0 1 auto;max-width:min(76%,560px)}.group-message.user header{justify-content:flex-end;margin-bottom:3px}.group-message.user header strong{display:none}.user-text{margin:0;padding:7px 14px;border-radius:18px;background:var(--ui-user-message-bg,color-mix(in srgb,var(--agent-accent) 16%,var(--agent-panel-strong)));color:var(--ui-user-message-text,var(--agent-text));white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;line-height:1.52}.group-message :deep(.agent-markdown){font-size:13px;line-height:1.58}.turn-progress{font-size:12px;color:var(--agent-muted);line-height:1.6}.turn-error{font-size:12px;color:var(--el-color-danger);white-space:pre-wrap}.group-log{border:0;padding:2px 0;background:transparent;color:var(--agent-accent);font-size:11px;cursor:pointer}.message-attachments{display:flex;gap:6px;font-size:11px}.message-attachments img{display:block;max-width:160px;max-height:120px;object-fit:contain;border-radius:6px}.message-attachments a{color:var(--agent-accent)}.group-control{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:5px max(18px,calc((100% - var(--conversation-reading-width))/2));color:var(--agent-muted);font-size:11px}.group-control>span{margin-right:auto}.group-composer{display:flex;flex-wrap:wrap;align-items:center;min-width:0;gap:5px 10px;margin:0 max(18px,calc((100% - var(--conversation-reading-width))/2)) 10px;padding:8px 12px;border:1px solid var(--agent-border);border-radius:14px;background:var(--agent-panel-strong)}
 .group-composer-targets{display:flex;align-items:center;flex-wrap:wrap;flex:1 1 276px;gap:8px;min-width:0;max-width:100%;order:0}.group-composer-targets :deep(.el-select){flex:0 1 148px;width:148px;min-width:0;max-width:148px}.group-composer-targets :deep(.el-select:last-child){flex-basis:120px;width:120px;max-width:120px}.group-composer-targets :deep(.el-select__wrapper){min-height:30px;border-radius:7px}.group-composer-targets :deep(.el-select__selected-item){font-size:11px}
 .group-composer-workspace{display:flex;align-items:center;flex-wrap:wrap;flex:1 0 100%;gap:8px;min-width:0;order:2}.group-composer-workspace :deep(.workspace-selector-wrap){flex:0 1 auto;min-width:0;max-width:100%}.group-composer-workspace :deep(.project-launch){flex:0 1 auto}.group-composer-workspace :deep(.el-select__wrapper){min-height:30px;border-radius:7px}
 .group-composer-bound-workspaces{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:min(260px,100%);min-height:30px;padding:0 10px;border:1px solid color-mix(in srgb,var(--agent-accent) 42%,var(--agent-border));border-radius:8px;background:color-mix(in srgb,var(--agent-accent) 12%,var(--agent-panel));color:var(--agent-text);font-size:11px;white-space:nowrap}
@@ -1195,23 +1779,32 @@ onBeforeUnmount(() => { active.value = false; const pending = drafts.pendingAtta
 .group-composer-prompt :deep(.el-textarea__inner),.group-composer-prompt :deep(.markdown-preview){background:var(--agent-panel);color:var(--agent-text);border-color:var(--agent-border)}.group-composer-prompt :deep(.el-textarea__inner::placeholder){color:var(--agent-muted)}.group-composer-prompt :deep(.el-textarea__inner:focus){border-color:var(--agent-accent)}
 .group-composer-footer{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px 12px;order:5;flex-basis:100%;min-width:0}.group-composer-footer>span{color:var(--agent-muted);font-size:11px;line-height:1.6}.group-composer-footer :deep(.el-button){gap:6px;min-width:88px;height:34px;margin-left:auto;border-radius:8px}.group-composer-footer :deep(.el-button>span){gap:6px}
 .group-name-edit{display:inline-flex;align-items:center;gap:8px;max-width:100%;padding:0;border:0;background:transparent;color:inherit;font:inherit;font-weight:inherit;text-align:left;overflow-wrap:anywhere;cursor:pointer}.group-name-edit svg{flex-shrink:0;color:var(--agent-muted)}.group-name-edit:hover svg{color:var(--agent-accent)}.group-name-edit:focus-visible{outline:2px solid var(--agent-accent);outline-offset:4px;border-radius:2px}.group-name-edit:disabled{cursor:default}
-.group-config-members>div{display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--el-border-color-lighter);padding:5px 0}.group-config-members>div>span{margin-left:auto;font-size:11px;color:var(--el-text-color-secondary)}.group-config-members :deep(.el-button+.el-button){margin-left:0}.group-setting-hint{font-size:11px;color:var(--el-text-color-secondary);line-height:1.7}.group-personal-model{padding-top:5px}.group-personal-model summary{cursor:pointer;font-size:13px;font-weight:600}.group-personal-model .el-form-item{margin-top:14px}@media(max-width:720px){.group-share{padding:8px 4px;gap:3px}.group-share :deep(.el-button){padding:6px;font-size:10px}.group-header{padding:12px}.group-header #group-connection-status{display:none}.group-header h1{font-size:14px}.group-header :deep(.el-button){padding:6px}.group-project{padding:7px 12px}.group-messages{padding:16px 12px}.group-message{gap:8px}.group-message header{gap:5px}.group-message header small{font-size:9px}.group-composer{margin:0 10px 10px;padding:9px}.group-control{padding:8px 10px;flex-wrap:wrap}.group-control>span{width:100%}}@media(max-width:480px){.group-message>:deep(.agent-avatar){display:none}.group-message>div{max-width:100%}.group-share{flex-direction:column}.group-header{flex-wrap:wrap}}
+.group-empty-starters{display:flex;flex-wrap:wrap;justify-content:center;gap:8px;margin-top:14px;max-width:520px}.group-starter-chip{padding:6px 12px;border:1px solid var(--agent-border);border-radius:999px;background:var(--agent-panel-strong);color:var(--agent-secondary);font:12px/1.4 var(--sans);cursor:pointer;transition:border-color .15s,color .15s}.group-starter-chip:hover:not(:disabled){border-color:var(--agent-accent);color:var(--agent-text)}.group-starter-chip:disabled{opacity:.5;cursor:not-allowed}
+.group-preset-bar{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;width:100%}.group-preset-chip{display:grid;gap:3px;padding:9px 10px;border:1px solid var(--ui-border);border-radius:8px;background:var(--ui-surface);color:var(--ui-text);text-align:left;font:inherit;cursor:pointer;transition:border-color 140ms ease,background-color 140ms ease}.group-preset-chip:hover{border-color:color-mix(in srgb,var(--ui-text) 22%,var(--ui-border));background:var(--ui-hover)}.group-preset-chip.active{border-color:color-mix(in srgb,var(--ui-text) 28%,var(--ui-border));background:var(--ui-raised);box-shadow:0 1px 2px rgba(0,0,0,.04)}:global(:root[data-theme='acid']) .group-preset-chip.active{border-color:var(--ui-accent);background:var(--ui-accent-soft)}.group-preset-chip strong{font-size:12px;font-weight:600;line-height:1.4}.group-preset-chip small{font-size:11px;line-height:1.45;color:var(--ui-muted)}@media(max-width:600px){.group-preset-bar{grid-template-columns:minmax(0,1fr)}}
+.group-config-members{border:1px solid var(--ui-border);border-radius:8px;padding:2px 12px;background:var(--ui-surface)}.group-config-members>div{display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--ui-divider);padding:4px 0}.group-config-members>div:last-child{border-bottom:0}.group-config-members>div>span{margin-left:auto;font-size:11.5px;color:var(--ui-muted)}.group-config-members :deep(.el-button+.el-button){margin-left:0}.group-setting-hint{font-size:11px;color:var(--el-text-color-secondary);line-height:1.7}.group-personal-model{padding-top:5px}.group-personal-model summary{cursor:pointer;font-size:13px;font-weight:600}.group-personal-model .el-form-item{margin-top:14px}@media(max-width:720px){.group-share{padding:8px 4px;gap:3px}.group-share :deep(.el-button){padding:6px;font-size:10px}.group-header{padding:12px}.group-header #group-connection-status{display:none}.group-header h1{font-size:14px}.group-header :deep(.el-button){padding:6px}.group-project{padding:7px 12px}.group-messages{padding:16px 12px}.group-message{gap:8px}.group-message header{gap:5px}.group-message header small{font-size:9px}.group-composer{margin:0 10px 10px;padding:9px}.group-control{padding:8px 10px;flex-wrap:wrap}.group-control>span{width:100%}}@media(max-width:480px){.group-message>:deep(.agent-avatar){display:none}.group-message>div{max-width:100%}.group-share{flex-direction:column}.group-header{flex-wrap:wrap}}
 .current-action strong{font-weight:500;color:var(--agent-text)}.current-action small{display:block;margin-top:3px;color:var(--agent-muted);font-size:12px;line-height:1.6}.current-action .step-state{margin-left:8px}.step-state{flex-shrink:0;color:var(--agent-muted);font-size:11px;font-style:normal;font-weight:400}.step-state.running{color:var(--agent-accent)}.step-state.failed{color:var(--ui-danger)}.turn-step{min-width:0}.step-heading{display:flex;align-items:baseline;flex-wrap:wrap;gap:6px 10px;margin:0;line-height:1.7}.step-heading strong{color:var(--agent-text);font-size:12px;font-weight:500}.step-target{margin:3px 0 0;color:var(--agent-secondary);font-size:12px;line-height:1.6;overflow-wrap:anywhere}.turn-tools .step-original{margin-top:5px}.turn-tools .step-original>summary{color:var(--agent-accent);font-size:11px}.step-original>div{margin-top:8px}.step-original small{margin-bottom:3px}
 .group-feedback-history,.group-summary-evidence{margin:0 0 20px;min-width:0}.group-feedback-history>summary,.group-summary-evidence>summary{padding:8px 0;color:var(--agent-muted);font-size:12px;cursor:pointer}.group-feedback-history[open]>summary,.group-summary-evidence[open]>summary{margin-bottom:14px}
 </style>
 
 <style scoped>
 .group-share{flex-shrink:0}
-.group-messages{padding-block:0}.group-messages::before,.group-messages::after{content:"";display:block;height:32px}
+.group-messages{padding-block:0}.group-messages::before,.group-messages::after{content:"";display:block;height:14px}
 @media(max-width:720px){.group-messages::before,.group-messages::after{height:16px}}
 .group-header{grid-row:1}.group-quotas{grid-row:2}.group-context{grid-row:3}.group-messages{grid-row:4}.group-control{grid-row:5}.group-composer{grid-row:6}
 .group-header{padding-block:10px}.group-title{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 14px;min-width:0}.group-title p{margin:0;line-height:1.6}
 .group-room-title{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.group-room-title.is-editable{cursor:text;padding:1px 6px;border-radius:6px;transition:background 160ms ease}
+.group-room-title.is-editable:hover{background:color-mix(in srgb,var(--agent-accent) 14%,transparent)}
+.group-room-title-input{min-width:180px;max-width:min(100%,480px);height:28px;padding:0 8px;border:1px solid var(--agent-accent);border-radius:6px;background:var(--ui-raised);color:var(--agent-text);font:600 13px/24px var(--sans);outline:none}
 .group-room-info{display:grid;grid-template-columns:auto minmax(0,1fr);gap:10px 16px;margin:0}
 .group-room-info dt{color:var(--ui-secondary)}.group-room-info dd{margin:0;overflow-wrap:anywhere}
 @media(max-width:720px){.group-header #group-connection-status{display:inline-flex}}
 .group-context{display:flex;align-items:center;flex-wrap:wrap;gap:6px 16px;min-width:0;padding:7px 22px;border-bottom:1px solid var(--agent-border);font-size:11px;color:var(--agent-secondary)}
-.group-task-context{display:flex;align-items:center;flex-wrap:wrap;gap:6px 12px;min-width:0;overflow-wrap:anywhere}.group-task-context strong{font-weight:500}.group-task-context a{color:var(--agent-accent)}
+.group-task-context{display:flex;align-items:center;flex-wrap:wrap;gap:6px 8px;min-width:0;overflow-wrap:anywhere}
+.group-workflow-pill{display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;background:var(--agent-accent);color:var(--ui-on-primary,#fff);font-size:11px;font-weight:600;white-space:nowrap}
+.group-issue-pill{display:inline-flex;align-items:center;padding:2px 8px;border:1px solid color-mix(in srgb,var(--agent-accent) 34%,var(--agent-border));border-radius:6px;background:var(--agent-panel-strong);color:var(--agent-accent);font:600 11px/16px var(--mono);text-decoration:none;white-space:nowrap}
+.group-repo-pill{display:inline-flex;align-items:center;padding:2px 8px;border:1px solid var(--agent-border);border-radius:6px;background:var(--agent-panel-strong);color:var(--agent-text);font:11px/16px var(--mono);white-space:nowrap}
+.group-back-handoff{color:var(--agent-accent);font-weight:500;text-decoration:none;white-space:nowrap}.group-back-handoff:hover{text-decoration:underline}
 .group-directory{display:inline-flex;align-items:center;gap:5px;margin-left:auto;min-width:0;padding:0;border:0;background:transparent;color:var(--agent-muted);font:inherit;cursor:pointer;white-space:nowrap}.group-directory:hover{color:var(--agent-text)}.group-directory:focus-visible{outline:2px solid var(--agent-accent);outline-offset:2px}.group-directory-path{display:grid;flex:0 0 100%;order:1;gap:6px;min-width:0;margin:4px 0 0;color:var(--agent-muted)}.group-context .group-project{padding:0;border:0;flex:1;flex-wrap:wrap}.group-project>svg{flex-shrink:0}
 .group-project-selector-bar{gap:10px}.group-project-selector-bar>.cursor-button{margin-left:auto}.group-context .group-project-list{display:grid;gap:6px}.group-project-entry{display:flex;align-items:center;gap:8px;min-width:0;width:100%}.group-project-entry>svg{flex-shrink:0}.group-project-entry>.group-project-pill{max-width:42%;min-width:0;flex-shrink:1;min-height:26px;box-sizing:border-box}.group-project-entry>.group-project-pill strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.group-project-entry>.group-project-raw{flex:1;min-width:0}.group-project-entry>.cursor-button{margin-left:auto;height:28px;font-size:11px}.group-project-hint{color:var(--agent-muted);font-size:11px}
 .group-project-pill{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border:1px solid var(--agent-border);border-radius:6px;background:var(--agent-panel-strong);color:var(--agent-text);font-size:11px}.group-project-pill.is-primary{border-color:color-mix(in srgb,var(--agent-accent) 45%,var(--agent-border))}.group-project-pill strong{font-weight:550}.group-project-pill small{padding:0 4px;border-radius:4px;background:color-mix(in srgb,var(--agent-accent) 22%,transparent);color:var(--agent-accent);font-size:10px}.group-project-raw{color:var(--agent-muted);font:11px var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -1273,7 +1866,8 @@ onBeforeUnmount(() => { active.value = false; const pending = drafts.pendingAtta
 .group-batch-toolbar button{padding:3px;border:0;background:transparent;color:var(--agent-secondary);cursor:pointer}
 .group-batch-toolbar button:first-of-type{color:var(--el-color-danger)}
 .group-batch-toggle{display:flex;align-items:center;gap:8px;margin:7px 12px;padding:8px;border:0;background:transparent;color:var(--agent-secondary);text-align:left;cursor:pointer;font-size:12px}
-.group-user-tools{display:flex;align-items:center;gap:9px;justify-content:flex-end;margin-top:7px;color:var(--agent-muted);font-size:11px}
+.group-user-tools{display:flex;align-items:center;gap:8px;justify-content:flex-end;margin-top:0;max-height:0;overflow:hidden;opacity:0;pointer-events:none;color:var(--agent-muted);font-size:11px;transition:opacity 140ms ease,max-height 140ms ease,margin-top 140ms ease}
+.group-message.user:hover .group-user-tools,.group-message.user:focus-within .group-user-tools{margin-top:4px;max-height:28px;opacity:1;pointer-events:auto}
 .group-message-edit{display:inline-flex;align-items:center;gap:4px;border:0;padding:2px 0;background:transparent;color:var(--agent-accent);cursor:pointer;font-size:11px}
 .group-batch-toggle:disabled,.group-batch-toolbar button:disabled,.group-message-edit:disabled{opacity:.45;cursor:not-allowed}
 .group-feedback-history,.group-summary-evidence{margin:0 0 20px;min-width:0}.group-feedback-history>summary,.group-summary-evidence>summary{padding:8px 0;color:var(--agent-muted);font-size:12px;cursor:pointer}.group-feedback-history[open]>summary,.group-summary-evidence[open]>summary{margin-bottom:14px}

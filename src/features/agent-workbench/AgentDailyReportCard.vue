@@ -25,9 +25,13 @@ function generate() {
 
 <template>
   <form class="daily-report" aria-label="日报生成" @submit.prevent="generate">
-    <header class="daily-heading"><FileText :size="14" /><strong>日报生成</strong><span>Computer History</span></header>
-    <p class="daily-description">按所选日期生成草稿，可在此查看，不自动发布。</p>
+    <header class="daily-heading"><FileText :size="14" /><strong>日报生成</strong><span>本地草稿</span></header>
+    <p class="daily-description">按所选日期汇总工作记录并生成草稿，不自动对外发布。</p>
     <input v-model="date" class="daily-date" type="date" aria-label="日报日期" :max="dailyReportDate()" required :disabled="pending" />
+    <dl class="daily-facts">
+      <div><dt>数据范围</dt><dd>Jira 动态 + 本机会话</dd></div>
+      <div><dt>发布策略</dt><dd>仅存本机 · 手动确认</dd></div>
+    </dl>
     <small v-if="report?.error" class="daily-hint">{{ report.error }}</small>
     <small v-else-if="status?.value === 'completed' && !content" class="daily-hint">本轮没有保存草稿。</small>
     <small v-if="!available" class="daily-hint">请先连接支持只读问答的 Codex。</small>
@@ -44,12 +48,17 @@ function generate() {
 <style scoped>
 .daily-report{margin-bottom:16px;padding:12px;border:1px solid var(--agent-border);border-radius:10px;background:var(--agent-panel-strong)}
 .daily-heading{display:flex;align-items:center;gap:6px;color:var(--agent-text);font-size:13px;flex-wrap:wrap}
-.daily-heading span{margin-left:auto;color:var(--agent-muted);font-size:12px}
-.daily-description,.daily-hint{color:var(--agent-muted);font-size:12px;line-height:1.6}
-.daily-description{margin:8px 0 12px}.daily-hint{display:block;margin-top:8px}
+.daily-heading span{margin-left:auto;color:var(--agent-muted);font-size:11.5px}
+.daily-description,.daily-hint{color:var(--agent-muted);font-size:12px;line-height:1.55}
+.daily-description{margin:6px 0 10px}.daily-hint{display:block;margin-top:6px}
+.daily-facts{display:grid;gap:5px;margin:10px 0 2px}
+.daily-facts div{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.daily-facts dt,.daily-facts dd{margin:0;font-size:12px;line-height:1.5}
+.daily-facts dt{color:var(--agent-muted)}
+.daily-facts dd{color:var(--agent-secondary);text-align:right}
 .daily-result{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-left:auto}
 .daily-actions{display:flex;flex-wrap:wrap;gap:8px}
-.daily-date{width:min(100%,240px);min-width:0;padding:6px 8px;border:1px solid var(--agent-border);border-radius:6px;background:var(--agent-bg);color:var(--agent-text);font:12px var(--mono);color-scheme:dark}
+.daily-date{width:100%;min-width:0;height:30px;padding:4px 8px;border:1px solid var(--agent-border);border-radius:6px;background:var(--agent-bg);color:var(--agent-text);font:12px var(--mono);color-scheme:inherit}
 .daily-actions button{display:flex;align-items:center;justify-content:center;gap:5px;padding:6px 9px;border:1px solid var(--agent-border);border-radius:6px;background:var(--agent-raised);color:var(--agent-text);font-size:12px;cursor:pointer}
 .daily-actions button:disabled{opacity:.45;cursor:default}
 </style>

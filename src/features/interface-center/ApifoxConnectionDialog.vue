@@ -71,7 +71,7 @@ async function disconnect() {
     </div>
     <template #footer>
       <div class="connection-footer">
-        <el-link href="https://docs.apifox.com/" target="_blank" rel="noopener noreferrer" :underline="false" class="connection-help">连接说明<ExternalLink :size="12" /></el-link>
+        <el-link href="https://s.apifox.cn/apidoc/docs-site/4478210/doc-4296599" target="_blank" rel="noopener noreferrer" :underline="false" class="connection-help">连接说明<ExternalLink :size="12" /></el-link>
         <div class="connection-buttons">
           <el-button :disabled="!!busy" @click="open = false">关闭</el-button>
           <el-button v-if="showConnectForm" type="primary" native-type="submit" form="apifox-connect-form" :disabled="!!busy || !token.trim()" :loading="busy === 'connect'">连接并验证</el-button>

@@ -6,12 +6,16 @@ import type { AgentRun, AgentRuntimeDashboard } from '../../../shared/agent-runt
 
 export function createRuntimeStreamState() {
   const updates = new Map<string, { revision: number; run: AgentRun }>();
+  // POST 只确认一条运行，不能把整个列表的 SSE 水位推进到响应版本。
+  const accepted = new Map<string, { revision: number; run: AgentRun }>();
+  let snapshotRevision = 0;
   function merge(snapshot: AgentRuntimeDashboard) {
     const fresh = [...updates.values()].filter(item => item.revision > (snapshot.revision || 0));
-    if (!fresh.length) return snapshot;
+    const acknowledged = [...accepted.values()];
+    if (!fresh.length && !acknowledged.length) return snapshot;
     let runs = new Map(snapshot.runs.map(run => [run.id, run]));
     const locks = new Map(snapshot.activeWorkspaceLocks.map(lock => [lock.runId, lock]));
-    for (const { run } of fresh) {
+    for (const { run } of [...fresh, ...acknowledged]) {
       // 同毫秒的新运行保持后端的新到旧顺序；正文更新不改变已有运行的位置。
       if (runs.has(run.id)) runs.set(run.id, run);
       else runs = new Map([[run.id, run], ...runs]);
@@ -26,18 +30,26 @@ export function createRuntimeStreamState() {
   return {
     receive(revision: number, runs: AgentRun[], snapshot?: AgentRuntimeDashboard) {
       for (const run of runs) {
+        if (revision >= (accepted.get(run.id)?.revision ?? Infinity)) accepted.delete(run.id);
         if (revision > (updates.get(run.id)?.revision || 0)) updates.set(run.id, { revision, run });
       }
       return snapshot ? merge(snapshot) : undefined;
     },
+    accept(revision: number, run: AgentRun, snapshot?: AgentRuntimeDashboard) {
+      if (revision > snapshotRevision && revision > (updates.get(run.id)?.revision || 0)
+        && revision > (accepted.get(run.id)?.revision || 0)) accepted.set(run.id, { revision, run });
+      return snapshot ? merge(snapshot) : undefined;
+    },
     snapshot(value: AgentRuntimeDashboard) {
+      snapshotRevision = value.revision || 0;
+      for (const [id, item] of accepted) if (item.revision <= snapshotRevision) accepted.delete(id);
       for (const [id, item] of updates) if (item.revision <= (value.revision || 0)) updates.delete(id);
       return merge(value);
     },
   };
 }
 
-export function createRuntimeRefresh(refresh: () => Promise<unknown>, delayMs = 120) {
+export function createRuntimeRefresh(refresh: () => Promise<unknown>, delayMs = 40) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let running = false;
   let requested = false;

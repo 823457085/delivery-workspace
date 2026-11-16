@@ -1,4 +1,4 @@
-/** 合成构建和审查报告用于验证正文事实与未确认范围。 */
+/** 原群本轮构建/审查报告 fixture，仅规范化绝对目录；验证正文事实与未确认范围，不重跑任务。 */
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
@@ -21,7 +21,7 @@ test('只读复核优先呈现原问题的验证结果，正文不再列固定�
   const view = groupDeliveryPresentation(task), text = groupDeliveryOverview(task);
   assert.equal(view.buildStatus, 'passed'); assert.equal(view.buildPassed, true);
   assert.equal(view.reviewPassed, true); assert.equal(view.noFindings, true);
-  assert.match(text, /^示例项目完成类型修复，本轮原目录构建通过。/);
+  assert.match(text, /^原项目当前已包含4处TS7006类型修复，本轮原目录完整构建通过。/);
   assert.doesNotMatch(text, /自动测试：|页面功能：|代码推送：|部署结果：|\/workspace|validationEvidence/);
   assert.deepEqual(task, before);
   assert.match(task.nodes[0].result!, /本节点未重新运行单元测试/);
@@ -45,12 +45,12 @@ test('旧轮报告、当前未结束或已跳过的步骤不能冒充本轮验�
   const old = fixture(); old.round += 1;
   const stale = groupDeliveryPresentation(old);
   assert.equal(stale.buildPassed, false); assert.equal(stale.reviewPassed, false);
-  assert.doesNotMatch(stale.conclusion, /示例项目完成类型修复/);
+  assert.doesNotMatch(stale.conclusion, /TS7006/);
   for (const status of ['running', 'blocked', 'skipped'] as const) {
     const task = fixture(); task.nodes.forEach(node => { node.status = status; });
     const view = groupDeliveryPresentation(task);
     assert.equal(view.buildPassed, false); assert.equal(view.reviewPassed, false);
-    assert.doesNotMatch(view.conclusion, /示例项目完成类型修复|已经通过|没有发现需要继续修改/);
+    assert.doesNotMatch(view.conclusion, /TS7006|已经通过|没有发现需要继续修改/);
   }
 });
 
@@ -100,14 +100,14 @@ test('只有诊断或普通回复不显示修复成功，也不按日志关键�
 
 test('最新验证结论补全实际改动和打包限制，批准的审查也展示具体意见', () => {
   const task = fixture();
-  const summary = '已确认构建入口恢复。只保留一个校验脚本，专用测试文件已移除。测试打包因缺少示例翻译条目中止。';
+  const summary = '已确认构建入口恢复。只保留一个校验脚本，专用测试文件已移除。真实 test 打包查到 15 个远端缺码后中止。';
   const finding = '单独执行校验时的失败提示容易让人误以为调用过打包。';
   task.nodes.push({ ...task.nodes[0], stage: 'implement', profileId: 'engineer',
     result: '```delivery-report\n' + JSON.stringify({ taskResult: { role: 'implementer', status: 'succeeded',
       summary: '已修复构建入口。' } }) + '\n```' });
   editReport(task, 'verify', report => {
     report.taskResult.summary = summary + '浏览器、真实业务接口及独立审查仍未验证。正式独立审查尚待宿主后续派发，整体交付尚不能据此宣称独立审查完成。';
-    report.validationEvidence.remote = { status: 'failed', evidence: '远端语言包缺少示例条目', sha: '' };
+    report.validationEvidence.remote = { status: 'failed', evidence: '远端语言包缺 15 个位置码', sha: '' };
   });
   editReport(task, 'review', report => {
     report.taskResult.findings = [{ id: 'F-1', severity: 'minor', problem: finding }];
@@ -135,7 +135,7 @@ test('群聊实际finalDeliveryOverview按round关联任务，不从旧长报告
   const render = new Function(...Object.keys(dependencies), `${code}; return finalDeliveryOverview;`)(...Object.values(dependencies)) as (roundId: string) => string;
   assert.equal(render('current-round'), groupDeliveryOverview(current));
   assert.doesNotMatch(render('old-round'), /构建已经通过|没有发现需要继续修改/);
-  assert.doesNotMatch(render('missing-round'), /构建已经通过/);
+  assert.doesNotMatch(render('missing-round'), /ops-data-monitoring|构建已经通过/);
 });
 
 test('方案汇报先展示已记录的方案决定', () => {
@@ -153,10 +153,10 @@ test('方案汇报先展示已记录的方案决定', () => {
 
 test('工作副本和原目录位置边界直接来自结构化路径，原目录结果不受影响', () => {
   const task = fixture(); task.workspacePath = '/workspace/team-copy';
-  editReport(task, 'verify', report => { report.taskResult.summary = '参数类型修复已在工作副本验证。'; });
+  editReport(task, 'verify', report => { report.taskResult.summary = '四处参数类型修复已在工作副本验证。'; });
   const before = structuredClone(task), view = groupDeliveryPresentation(task), text = groupDeliveryOverview(task);
   assert.equal(view.buildPassed, true);
-  assert.match(view.conclusion, /参数类型修复已在工作副本验证/);
+  assert.match(view.conclusion, /四处参数类型修复已在工作副本验证/);
   assert.equal(view.workspaceNotice, '结果保存在工作副本中，原项目尚未确认。');
   assert.match(text, /结果保存在工作副本中，原项目尚未确认/);
   assert.doesNotMatch(text, /\/workspace|本地构建已经通过/);

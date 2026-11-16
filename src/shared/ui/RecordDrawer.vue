@@ -3,4 +3,4 @@
 defineProps<{ title: string; subtitle?: string; record: unknown }>();
 const visible = defineModel<boolean>({ default: false });
 </script>
-<template><el-drawer v-model="visible" :title="title" size="min(920px, 94vw)" class="hub-drawer" destroy-on-close><p v-if="subtitle" class="drawer-subtitle">{{ subtitle }}</p><slot /><template #footer><slot name="footer" /><el-button @click="visible = false">关闭</el-button></template></el-drawer></template>
+<template><el-drawer v-model="visible" :title="title" size="min(920px, 94vw)" class="hub-drawer" append-to-body destroy-on-close><p v-if="subtitle" class="drawer-subtitle">{{ subtitle }}</p><slot /><template #footer><slot name="footer" /><el-button @click="visible = false">关闭</el-button></template></el-drawer></template>

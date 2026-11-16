@@ -5,11 +5,6 @@ import { assertPluginEnabled, definition, pluginBaseUrl, pluginDefinitions, plug
 
 const connection = config => JSON.stringify(config ? Object.fromEntries(Object.entries(config).filter(([key]) => !['enabled', 'installed'].includes(key))) : {});
 const authKeys = ['AUTH_HEADER', 'COOKIE', 'KEYCHAIN_SERVICE', 'KEYCHAIN_ACCOUNT', 'USERNAME', 'API_TOKEN'];
-export function managedPluginCredential(key, env = process.env) {
-  const match = /^(JIRA|CONFLUENCE)_(.+)$/.exec(key);
-  return !!match && env[`DELIVERY_PLUGIN_${match[1]}_MANAGED`] === 'true' && authKeys.includes(match[2]);
-}
-
 export const pluginFile = (env = process.env) => path.resolve(env.DELIVERY_DATA_DIR || '.data', 'credentials', 'plugins.json');
 export async function readPluginFile(file) {
   try {
@@ -29,9 +24,9 @@ function site(value) {
   return url.href.replace(/\/+$/, '');
 }
 function validate(id, input) {
-  definition(id);
+  const plugin = definition(id);
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('插件配置格式无效');
-  const fields = id === 'wecom' ? ['enabled', 'installed', 'groupName', 'webhook'] : ['enabled', 'installed', 'baseUrl', 'username', 'token'];
+  const fields = plugin.local ? ['enabled', 'installed'] : id === 'wecom' ? ['enabled', 'installed', 'groupName', 'webhook'] : ['enabled', 'installed', 'baseUrl', 'username', 'token'];
   if (Object.keys(input).some(key => !fields.includes(key))) throw new Error('插件配置包含不支持的字段');
   if (typeof input.enabled !== 'boolean') throw new Error('请选择插件启用状态');
   if (input.installed !== undefined && typeof input.installed !== 'boolean') throw new Error('插件安装状态无效');
@@ -69,7 +64,7 @@ export function applyPluginEnvironment(data, env) {
     }
   }
 }
-export async function createPluginStore({ file = pluginFile(), env = process.env, fetchImpl = fetch, wecomConfig = () => ({}), legacyProbe } = {}) {
+export async function createPluginStore({ file = pluginFile(), env = process.env, fetchImpl = fetch, wecomConfig = () => ({}), legacyProbe, port = Number(env.DELIVERY_PORT || env.PORT) } = {}) {
   const startup = await readPluginFile(file);
   let queue = Promise.resolve();
   async function list() {
@@ -77,13 +72,18 @@ export async function createPluginStore({ file = pluginFile(), env = process.env
     return pluginDefinitions.map(plugin => {
       const saved = data.plugins[plugin.id];
       const enabled = saved?.enabled ?? env[`DELIVERY_PLUGIN_${plugin.prefix}_ENABLED`] !== 'false';
+      if (plugin.local) {
+        const configured = !plugin.localPort || plugin.localPort === port;
+        return { ...plugin, enabled, installed: saved?.installed !== false, runningEnabled: pluginEnabled(plugin.id, env),
+          runningConfigured: configured, configured, restartRequired: false, baseUrl: '', username: '', groupName: '', source: 'builtin' };
+      }
       const isWecom = plugin.id === 'wecom';
       const legacy = isWecom ? wecomConfig() : {};
       const baseUrl = isWecom ? '' : pluginBaseUrl(plugin.id, env);
       const hasAuthentication = Boolean(env[`${plugin.prefix}_AUTH_HEADER`] || env[`${plugin.prefix}_COOKIE`]
         || env[`${plugin.prefix}_KEYCHAIN_SERVICE`] || env[`${plugin.prefix}_USERNAME`] && env[`${plugin.prefix}_API_TOKEN`]);
       const runningConfigured = isWecom ? Boolean(env.DELIVERY_PLUGIN_WECOM_WEBHOOK || legacy.hasWebhook) : Boolean(baseUrl && hasAuthentication);
-      const configured = isWecom ? Boolean(saved?.webhook || legacy.hasWebhook) : saved?.baseUrl ? Boolean(saved.token) : runningConfigured;
+      const configured = isWecom ? Boolean(saved?.webhook || legacy.hasWebhook) : saved?.baseUrl ? Boolean(saved.token) : hasAuthentication;
       return { ...plugin, enabled, installed: saved?.installed !== false, runningEnabled: pluginEnabled(plugin.id, env),
         runningConfigured, baseUrl: saved?.baseUrl ?? baseUrl,
         username: saved?.username ?? env[`${plugin.prefix}_USERNAME`] ?? '', groupName: saved?.groupName ?? legacy.groupName ?? '',
@@ -93,6 +93,7 @@ export async function createPluginStore({ file = pluginFile(), env = process.env
     });
   }
   async function candidate(id, input) {
+    if (definition(id).local) throw new Error('本机插件请在管理页启用或停用');
     const next = validate(id, input), current = (await readPluginFile(file)).plugins[id];
     // Saving an unchanged legacy connection must not replace its credential source with an empty token.
     const prefix = definition(id).prefix;

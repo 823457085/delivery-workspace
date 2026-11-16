@@ -8,6 +8,7 @@ import { writePrivateJson } from './ui-state.mjs';
 import { defaultDesignDestination, normalizeDesignDestination } from './project-preferences.mjs';
 import { chinaWorkingDates, splitWorkingDates } from '../../shared/china-work-calendar.mjs';
 import { childScopeTitles, requirementScopes, requirementSummary, requirementTitle } from '../../shared/jira-dev-requirement-titles.mjs';
+import { hasDevelopmentDescriptionSections, jiraReferenceLinks, renderDevelopmentDescription } from '../../shared/jira-development-description.mjs';
 
 const roles = ['parent', 'design', 'implementation'];
 const names = { parent: '前端 DEV', design: '技术方案', implementation: '前端实现' };
@@ -37,8 +38,10 @@ const titleRuleVersion = 5;
 const scheduleRuleVersion = 2;
 const reuseRuleVersion = 1;
 const linkedItem = record => record.items.find(item => item.role === 'parent') || record.items.find(item => item.role === 'implementation');
+// 团队已指定的方案归档目录只写入新预览；恢复旧计划不追加外部发布范围。
+const designDestination = defaultDesignDestination;
 // 已尝试写入的计划保留原确认内容和去重标记，不能因升级标题规则中断恢复。
-const needsTitleReview = record => record.sourceKind === 'product' && record.titleRuleVersion !== titleRuleVersion && !record.sourceLink?.attemptedAt && !record.items.some(item => item.attemptedAt || item.dateUpdate?.attemptedAt || ['unknown', 'attempting'].includes(item.state)) && record.items.some(item => item.action === 'create' && item.state !== 'created');
+const needsTitleReview = record => record.sourceKind === 'product' && !record.sourceLink?.attemptedAt && !record.items.some(item => item.attemptedAt || item.dateUpdate?.attemptedAt || ['unknown', 'attempting'].includes(item.state)) && record.items.some(item => item.action === 'create' && item.state !== 'created' && (record.titleRuleVersion !== titleRuleVersion || !hasDevelopmentDescriptionSections(item.description)));
 const needsScheduleReview = record => record.sourceKind === 'product' && record.scheduleRuleVersion !== scheduleRuleVersion && !unknown(record) && record.status !== 'applied' && record.items.some(item => item.action === 'create' && item.state !== 'created');
 
 /** 产品需求按前端父任务排期拆分；复用和缺陷流程保留各角色原有日期语义。 */
@@ -95,9 +98,14 @@ function splitChildren(record, title, details) {
     return parts.map((part, index) => {
       const plannedSchedule = { startDate: part[0], endDate: part.at(-1) };
       const marker = `${item.marker}-${plannedSchedule.startDate}-${plannedSchedule.endDate}`;
+      const wholeScope = item.role === 'implementation' && parts.length === 1 ? scopes.map(scope => scope.text).join('\n\n') : '';
+      const segmentScope = titles[index].scope || (wholeScope ? `${wholeScope}\n\n` : '');
+      const description = item.description
+        .replace('*实现说明*\n', () => `*实现说明*\n${segmentScope}计划范围：${plannedSchedule.startDate} 至 ${plannedSchedule.endDate}（${part.length} 个工作日）。\n\n`)
+        .replace(`JIRA_DEV_REQUIREMENT_MARKER: ${item.marker}`, `JIRA_DEV_REQUIREMENT_MARKER: ${marker}`);
       return { ...item, id: marker, marker, plannedSchedule, workdays: part.length,
         summary: titles[index].summary,
-        description: item.description.replace(`JIRA_DEV_REQUIREMENT_MARKER: ${item.marker}`, `${titles[index].scope}计划范围：${plannedSchedule.startDate} 至 ${plannedSchedule.endDate}（${part.length} 个工作日）。本子任务承接上述需求范围及该时间段内的${names[item.role]}工作，单独记录交付结果。\n\nJIRA_DEV_REQUIREMENT_MARKER: ${marker}`),
+        description,
         schedule: scheduleFor(item, plannedSchedule) };
     });
   })];
@@ -287,22 +295,39 @@ export function createRequirementStore({ jira, dataDirectory }) {
     item.dateUpdate = { state: 'pending', fields };
   }
   function draftItems(sourceIssue, details, repositoryId, repositoryName, scope, title) {
+    const sourceDescription = rawText(sourceIssue.description);
+    const references = jiraReferenceLinks(`${details}\n${sourceDescription}`) || '以来源 Jira 中的相关文档为准。';
+    const scopes = requirementScopes(details, sourceIssue.description);
+    const scopeDescription = scopes.length
+      ? `前端范围：\n${scopes.map(item => `* ${item.text}`).join('\n')}`
+      : '具体业务范围以来源 Jira 的需求与验收条件为准。';
+    const brief = typeof sourceIssue.description === 'string' && sourceDescription.trim().length <= 500 && !sourceDescription.trim().includes('\n')
+      ? sourceDescription.trim() : '';
     return roles.map(role => {
       const marker = `jira-dev-requirement-${scope}-${role}`;
       const { multiProject, repositoryNames = [] } = title;
       const summary = requirementSummary(role, title);
-      const description = [
-        `需求来源：${sourceIssue.url || sourceIssue.key || '用户提供的需求材料'}`,
-        multiProject ? `项目范围：${repositoryNames.join('、')}（共 ${repositoryNames.length} 个项目）` : repositoryName ? `仓库：${repositoryName}` : '', repositoryId ? `Repository ID: ${repositoryId}` : '',
-        `目标版本：${sourceIssue.fixVersions?.length ? sourceIssue.fixVersions.map(version => version.name || version.id).join('、') : '来源未指定，不推测版本'}`,
-        '范围与影响：以需求原文及用户补充为准；读取当前仓库代码后核对页面、接口与兼容影响，不扩展业务范围。',
-        `交付内容：${names[role]}`,
-        role === 'design' ? '根据产品需求与现有代码完成前端技术方案；已有方案先核对后复用。' : role === 'implementation' ? '依据已确认需求与技术方案完成实现、自测和交接；真实接口验证情况单独说明。' : `关联产品需求，承接${multiProject ? '所选项目' : '本仓库'}前端技术方案与实现。`,
-        role === 'design' ? '交付物与完成条件：基于实际代码保存或核验可读的技术方案文件，记录真实路径；覆盖需求范围、交互与状态、接口暂拟项、影响及验证计划。未知后端字段明确待对齐，本地设计继续。' : role === 'implementation' ? '交付物与完成条件：完成已确认范围代码和必要检查，记录真实命令、结果与交接；区分静态检查、mock、浏览器和真实接口证据，mock 不代表真实联调或业务验收。' : '交付物与完成条件：技术方案有实际文件与来源，实现有代码和相称验证证据；未运行或待后端对齐部分如实记录，不虚报验收。',
-        details ? `用户补充原文：\n${details}` : '',
-        `需求标题原文：${sourceIssue.summary || ''}\n需求正文原文：\n${rawText(sourceIssue.description)}`,
-        `JIRA_DEV_REQUIREMENT_MARKER: ${marker}`,
-      ].filter(Boolean).join('\n\n');
+      const description = renderDevelopmentDescription({
+        source: [
+          `需求来源：${sourceIssue.url || sourceIssue.key || '用户提供的需求材料'}`,
+          `需求标题原文：${sourceIssue.summary || ''}`,
+          `目标版本：${sourceIssue.fixVersions?.length ? sourceIssue.fixVersions.map(version => version.name || version.id).join('、') : '来源未指定'}`,
+        ].join('\n'),
+        implementation: [
+          role === 'design' ? '根据产品需求和现有代码编写或复用前端技术方案。' : role === 'implementation' ? '依据已确认需求和技术方案完成前端实现、自测及交接。' : '组织前端技术方案、实现和验证，汇总各子任务的交付证据。',
+          !scopes.length && brief ? `需求摘要：${brief}` : '',
+          details ? `用户补充原文：\n${details}` : '',
+          role !== 'implementation' ? scopeDescription : '',
+        ].filter(Boolean).join('\n\n'),
+        deliverables: role === 'design' ? '技术方案，记录改动范围、交互、接口及验证计划。未知契约注明待对齐。' : role === 'implementation' ? '前端改动、自测和交接记录。分别记录静态检查、模拟验证和真实接口结果。' : '前端技术方案、代码及自测记录。按来源需求验收，注明未验证项。',
+        impact: [
+          multiProject ? `项目范围：${repositoryNames.join('、')}（共 ${repositoryNames.length} 个项目）` : repositoryName ? `仓库：${repositoryName}` : '',
+          repositoryId ? `Repository ID: ${repositoryId}` : '',
+          '按已确认范围核对页面、接口和兼容影响。',
+        ].filter(Boolean).join('\n'),
+        references,
+        markers: [`JIRA_DEV_REQUIREMENT_MARKER: ${marker}`],
+      });
       return { role, action: 'create', summary, description, marker, ...(role !== 'parent' ? { parentRole: 'parent' } : {}), state: 'pending', requiredFields: [] };
     });
   }
@@ -495,7 +520,7 @@ export function createRequirementStore({ jira, dataDirectory }) {
       const prior = records.find(record => record.taskId === taskId);
       if (prior && (prior.scope !== scope || prior.sourceKind !== sourceKind)) throw new Error('任务预览不能改绑其他需求或仓库。');
       if (prior && (unknown(prior) || prior.status === 'applied')) return publicRecord(prior);
-      const destination = Object.hasOwn(input, 'designDestination') ? normalizeDesignDestination(input.designDestination) : defaultDesignDestination();
+      const destination = Object.hasOwn(input, 'designDestination') ? normalizeDesignDestination(input.designDestination) : designDestination;
       const record = { taskId, sourceKind, sourceIssue, repositoryId, repositoryName, scope, schedules, ...(prior ? prior.designDestination ? { designDestination: prior.designDestination } : {} : destination ? { designDestination: destination } : {}), titleRuleVersion, scheduleRuleVersion, businessModule: title.businessModule, status: 'local', requiresConfirmation: false, items: draftItems(sourceIssue, details, repositoryId, repositoryName, scope, title), createdAt: new Date().toISOString() };
       if (sourceKind === 'frontend' || sourceKind === 'defect') record.reuseRuleVersion = reuseRuleVersion;
       if (sourceKind === 'frontend') record.items = [];

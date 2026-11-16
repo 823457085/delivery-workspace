@@ -1,6 +1,5 @@
-/** Verify resumed turns against immutable prior evidence, never against the presence of a reply alone.
+/** Verify CLI ERROR results against the native trajectory and the streamed current turn.
  * Native JSON can omit error steps; the session SQLite trajectory supplies those missing steps.
- * Both sources stay read-only, and only exact old errors plus a fully completed current turn allow recovery.
  */
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
@@ -13,9 +12,18 @@ type NativeStep = { idx: number; step_type: number; status: number; error_detail
 type NativeBaseline = { file: string; sessionId: string; trajectoryId: string; hash: string };
 export type AntigravityTurnBaseline = {
   file: string; bytes: number; hash: string; stepCount: number; rowCount: number;
-  error: string; errors?: string[]; native?: NativeBaseline;
+  error?: string; errors?: string[]; native?: NativeBaseline;
 };
 export type AntigravityStreamStep = { type: string; state: string; failed: boolean };
+type TurnEvidence = {
+  error: string; response: string; prompt: string; steps: Map<number, AntigravityStreamStep>;
+  lastResponse: { index: number; text: string; done: boolean } | undefined;
+  responses: Map<number, { text: string; done: boolean }>;
+};
+export const antigravityTransportError = /\b(?:EPIPE|ECONNRESET|ECONNREFUSED|ETIMEDOUT)\b|broken pipe|connection reset by peer|unexpected EOF|i\/o timeout|network issue connecting to the server|(?:Get|Post) "[^"\r\n]+": EOF\b/i;
+const modelRetry = /^API error \(attempt [1-9][0-9]*\): /;
+const finishedTaskCancellation = /^cannot kill task "[^"\r\n]+": task is not running \(status: DONE\)$/;
+const editTargetMissing = /^target content not found in the file; the Target must exactly match existing file text, including whitespace$/;
 const maxTranscriptBytes = 32 * 1024 * 1024;
 const hash = (data: Buffer) => createHash('sha256').update(data).digest('hex');
 
@@ -139,19 +147,15 @@ export async function antigravityTurnBaseline(root: string, sessionId: string): 
       const error = before.steps.slice().reverse().find(step => step.type === 'ERROR_MESSAGE')?.error;
       if (typeof error === 'string' && error.trim()) errors = [error];
     }
-    if (!errors.length) return;
+    if (!native && !errors.length) return;
     return { file, bytes: before.bytes.length, hash: hash(before.bytes), stepCount, rowCount: before.steps.length,
-      error: errors[0]!, errors: [...new Set(errors)], ...(native ? { native } : {}) };
+      error: errors[0], errors: [...new Set(errors)], ...(native ? { native } : {}) };
   } catch { return; }
 }
 
 /** Only a matching prior error can be ignored, after both native sources prove this turn completed. */
-export async function confirmsAntigravityHistoricalError(baseline: AntigravityTurnBaseline, input: {
-  error: unknown; response: string; prompt: string; steps: Map<number, AntigravityStreamStep>;
-  lastResponse: { index: number; text: string; done: boolean } | undefined;
-  responses: Map<number, { text: string; done: boolean }>;
-}) {
-  if (typeof input.error !== 'string' || !(baseline.errors || [baseline.error]).includes(input.error) || !input.response.trim()) return false;
+export async function confirmsAntigravityHistoricalError(baseline: AntigravityTurnBaseline, input: TurnEvidence) {
+  if (!(baseline.errors || [baseline.error]).includes(input.error) || !input.response.trim()) return false;
   const first = input.steps.get(baseline.stepCount), last = input.lastResponse;
   let end = -1;
   for (const index of input.steps.keys()) end = Math.max(end, index);
@@ -184,16 +188,89 @@ export async function confirmsAntigravityHistoricalError(baseline: AntigravityTu
         || nativeCurrent[0]?.step_type !== 14 || nativeCurrent.slice(1).some(step => step.step_type === 14)) return false;
       if (snapshot.rows[last.index]?.step_type !== 15 || nativeCurrent.some(step => step.idx > last.index && step.step_type !== 101)) return false;
     }
-    const final = current.find(step => step.step_index === last.index);
-    if (final?.type !== 'PLANNER_RESPONSE' || typeof final.content !== 'string' || !final.content.trim()) return false;
-    const expected = input.response.trim();
-    if (last.text.trim() === expected && final.content.trim() === expected) return true;
-    const streamed = [...input.responses.entries()].sort(([left], [right]) => left - right);
-    const native = current.filter(step => step.type === 'PLANNER_RESPONSE' && typeof step.content === 'string' && step.content.trim());
-    const publicStream = streamed.filter(([, response]) => response.text.trim());
-    if (publicStream.length !== native.length || publicStream.some(([index, response], position) => !response.done
-      || native[position]?.step_index !== index || response.text.trim() !== String(native[position]?.content).trim())) return false;
-    return publicStream.map(([, response]) => response.text).join('').trim() === expected
-      && native.map(step => step.content).join('\n').trim() === expected;
+    return matchesPublicReply(current, input, last);
+  } catch { return false; }
+}
+
+function matchesPublicReply(current: Step[], input: TurnEvidence, last: NonNullable<TurnEvidence['lastResponse']>) {
+  const final = current.find(step => step.step_index === last.index);
+  if (final?.type !== 'PLANNER_RESPONSE' || typeof final.content !== 'string' || !final.content.trim()) return false;
+  const expected = input.response.trim();
+  if (last.text.trim() === expected && final.content.trim() === expected) return true;
+  const publicStream = [...input.responses.entries()].filter(([, response]) => response.text.trim()).sort(([left], [right]) => left - right);
+  const native = current.filter(step => step.type === 'PLANNER_RESPONSE' && typeof step.content === 'string' && step.content.trim());
+  if (publicStream.length !== native.length || publicStream.some(([index, response], position) => !response.done
+    || native[position]?.step_index !== index || response.text.trim() !== String(native[position]?.content).trim())) return false;
+  return publicStream.map(([, response]) => response.text).join('').trim() === expected
+    && native.map(step => step.content).join('\n').trim() === expected;
+}
+
+function editTargetAt(steps: Step[], offset: number): string | undefined {
+  let planner = offset - 1;
+  while (steps[planner]?.type === 'GENERIC') planner--;
+  const calls = steps[planner]?.type === 'PLANNER_RESPONSE' ? steps[planner]?.tool_calls : undefined;
+  const call = Array.isArray(calls) ? calls[offset - planner - 1] : undefined;
+  return call?.name === 'edit_file' && typeof call.args?.Path === 'string' && call.args.Path ? call.args.Path : undefined;
+}
+
+/** agy can report the last failed model attempt after its internal retry has already finished. */
+export async function confirmsAntigravityTransportRecovery(root: string, sessionId: string, baseline: AntigravityTurnBaseline | undefined,
+  input: TurnEvidence) {
+  const first = baseline?.stepCount ?? 0, last = input.lastResponse;
+  if (!last?.done || last.index <= first || input.steps.get(first)?.type !== 'user_input'
+    || input.steps.get(first)?.state !== 'DONE' || input.steps.get(first)?.failed
+    || input.steps.get(last.index)?.type !== 'agent_response' || input.steps.get(last.index)?.failed) return false;
+  try {
+    const file = path.join(root, sessionId, '.system_generated', 'logs', 'transcript_full.jsonl');
+    const nativeFile = path.join(path.dirname(root), 'conversations', `${sessionId}.db`);
+    const [after, snapshot] = await Promise.all([transcript(file), nativeSnapshot(nativeFile, sessionId)]);
+    if (!after || !snapshot || (baseline && (!baseline.native || hash(after.bytes.subarray(0, baseline.bytes)) !== baseline.hash
+      || snapshot.trajectoryId !== baseline.native.trajectoryId || nativeHash(snapshot.rows.slice(0, first)) !== baseline.native.hash))) return false;
+
+    const current = after.steps.slice(baseline?.rowCount ?? 0), rows = snapshot.rows.slice(first);
+    const user = current[0];
+    if (user?.type !== 'USER_INPUT' || user.status !== 'DONE' || typeof user.content !== 'string'
+      || !user.content.startsWith(`<USER_REQUEST>\n${input.prompt}\n</USER_REQUEST>`)
+      || rows[0]?.step_type !== 14 || rows.length !== current.length || rows.length < 2) return false;
+    const final = current[last.index - first];
+    if (rows[last.index - first]?.step_type !== 15 || final?.status !== 'DONE' || final.tool_calls) return false;
+
+    const retries = new Map<number, string[]>();
+    const recoveredTools = new Set<number>();
+    for (const [offset, row] of rows.entries()) {
+      const step = current[offset]!;
+      if (step.step_index !== row.idx || (offset > 0 && (row.step_type === 14 || step.type === 'USER_INPUT'))
+        || (row.idx > last.index && (row.step_type !== 101 || step.type !== 'SYSTEM_MESSAGE'))) return false;
+      if (row.step_type === 17 && row.status === 3 && !row.error_details?.length && step.type === 'ERROR_MESSAGE' && step.status === 'DONE') {
+        const errors = nativeErrors(row.step_payload);
+        if (row.idx >= last.index || typeof step.error !== 'string' || !errors.includes(step.error)
+          || !errors.some(error => modelRetry.test(error) && antigravityTransportError.test(error))) return false;
+        retries.set(row.idx, errors);
+      } else if (row.step_type === 132 && row.status === 7 && row.error_details?.length && step.type === 'GENERIC'
+        && step.status === 'ERROR' && typeof step.error === 'string' && Buffer.from(row.error_details).includes(Buffer.from(step.error))) {
+        // An edit whose match failed is recovered only by a later successful edit of that exact file.
+        const target = editTargetMissing.test(step.error) ? editTargetAt(current, offset) : undefined;
+        if (!finishedTaskCancellation.test(step.error) && !(target && current.some((later, index) =>
+          index > offset && rows[index]?.step_type === 132 && rows[index]?.status === 3 && !rows[index]?.error_details?.length
+          && later.type === 'GENERIC' && later.status === 'DONE' && !later.error && editTargetAt(current, index) === target))) return false;
+        recoveredTools.add(row.idx);
+      } else if (row.status !== 3 || row.error_details?.length || step.error || step.type === 'ERROR_MESSAGE'
+        || (step.status !== 'DONE' && !(step.status === 'RUNNING' && step.type === 'GENERIC' && row.step_type === 132))) return false;
+    }
+    for (const [index, step] of input.steps) {
+      const persisted = current[index - first];
+      if (!persisted) return false;
+      if ((retries.has(index) && step.type === 'error_message') || (recoveredTools.has(index) && step.type === 'tool')) continue;
+      const backgroundTool = step.type === 'tool' && step.state === 'ACTIVE' && persisted.status === 'RUNNING';
+      if (step.failed || (step.state !== 'DONE' && !backgroundTool)) return false;
+    }
+    // The terminal error must be the last persisted model error, not just a similar transport failure.
+    const latestRetry = [...retries.values()].at(-1);
+    const previous = !latestRetry && snapshot.rows.slice(0, first).reverse().find(row => row.step_type === 17);
+    // A prior turn may store the terminal network error after exhausting its retries.
+    // The exact match and the unchanged baseline establish that this error predates this turn.
+    const matched = latestRetry ? latestRetry.includes(input.error)
+      : !!previous && antigravityTransportError.test(input.error) && nativeErrors(previous.step_payload).includes(input.error);
+    return matched && matchesPublicReply(current, input, last);
   } catch { return false; }
 }

@@ -39,6 +39,15 @@ export const jiraStatusChangeInputSchema = z.object({
   transitionFields,
   authorization: z.literal('transition-jira-status'),
 }).strict();
+export const jiraHandoffReconcileInputSchema = z.object({
+  runId: z.uuid(),
+  target: z.enum(['status', 'handoff']),
+  commentOutcome: z.enum(['posted', 'not_posted']).optional(),
+  commentId: z.string().trim().max(100).optional(),
+  confirmed: z.literal(true),
+  authorization: z.literal('reconcile-jira-handoff'),
+}).strict();
+export type JiraHandoffReconcileInput = z.infer<typeof jiraHandoffReconcileInputSchema>;
 export interface JiraStatusChangeState {
   input: z.infer<typeof jiraStatusChangeInputSchema>;
   status: 'submitting' | 'completed' | 'failed' | 'uncertain';

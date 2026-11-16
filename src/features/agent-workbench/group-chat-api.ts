@@ -1,5 +1,5 @@
 import type { GroupChatDashboard, GroupConfig, GroupRoomDetail, GroupSendInput, GroupTemplate, GroupReviseInput, GroupRerunInput, GroupSteerInput } from '../../../shared/agent-group-chat';
-import type { RemoteDeliveryAttempt, RemoteDeliveryPreview, RemoteDeliverySubmit } from '../../../shared/agent-remote-delivery';
+import type { RemoteDeliveryAttempt, RemoteDeliveryPreview, RemoteDeliveryReconcile, RemoteDeliverySubmit } from '../../../shared/agent-remote-delivery';
 import type { AgentAccessMode } from '../../../shared/agent-runtime';
 const base = '/api/agent-runtimes/group-chat';
 async function request<T>(path = '', method = 'GET', body?: unknown, signal?: AbortSignal): Promise<T> {
@@ -27,6 +27,7 @@ export const retryGroupTurn = (id: string, input: { turnId: string; runId: strin
 export const fallbackGroupTurn = (id: string, input: { turnId: string; runId: string; accessMode?: AgentAccessMode }) => request<GroupRoomDetail>(`/rooms/${encodeURIComponent(id)}/fallback`, 'POST', input);
 export const readRemoteDelivery = (id: string, signal?: AbortSignal) => request<RemoteDeliveryPreview>(`/rooms/${encodeURIComponent(id)}/delivery`, 'GET', undefined, signal);
 export const submitRemoteDelivery = (id: string, input: RemoteDeliverySubmit) => request<RemoteDeliveryAttempt>(`/rooms/${encodeURIComponent(id)}/delivery`, 'POST', input);
+export const reconcileRemoteDelivery = (id: string, input: RemoteDeliveryReconcile) => request<RemoteDeliveryAttempt>(`/rooms/${encodeURIComponent(id)}/delivery-reconcile`, 'POST', input);
 
 export const resumeGroupLogin = (id: string, input: { roundId: string; runId: string; accessMode?: AgentAccessMode }) =>
   request<GroupRoomDetail>(`/rooms/${encodeURIComponent(id)}/resume-login`, 'POST', input);

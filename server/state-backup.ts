@@ -1,5 +1,6 @@
 /** 关键 JSON 的逐文件备份；不备份工作区、凭据或数据库，不自动重放任务。 */
 import fs from 'node:fs/promises';
+import type { BigIntStats } from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
 import { createHash, randomUUID } from 'node:crypto';
@@ -128,6 +129,7 @@ async function atomicWrite(file: string, content: string) {
 }
 
 interface BackupEnvelope { version: 1; path: string; createdAt: string; sha256: string; content: string }
+export const largeStateBytes = 1024 * 1024;
 export interface StateBackupEntry { path: string; id: string; valid: boolean; createdAt?: string; sha256?: string; bytes?: number; error?: string }
 export interface StateBackupManifest {
   version: 1; startedAt: string; finishedAt: string; consistency: 'per-file';
@@ -162,33 +164,66 @@ export async function createStateBackupStore(dataDirectory: string, options: Sta
       return content;
     } finally { await handle.close(); }
   }
-  async function readEnvelope(relative: string, id: string) {
-    if (!/^[0-9TZ.-]+-[0-9a-f-]{36}\.json$/.test(id)) throw new Error('备份编号不合法');
-    const file = await safePath(root, `${folder(relative)}/${id}`);
-    const stat = await fs.stat(file);
-    if (!stat.isFile() || stat.size > maxBytes * 6 + 4096) throw new Error('备份文件类型或大小不合法');
-    const value: unknown = JSON.parse(await fs.readFile(file, 'utf8'));
+  function decodeEnvelope(relative: string, content: string) {
+    const value: unknown = JSON.parse(content);
     if (!isObject(value) || value.version !== 1 || value.path !== relative || typeof value.createdAt !== 'string'
       || !Number.isFinite(Date.parse(value.createdAt)) || typeof value.content !== 'string' || typeof value.sha256 !== 'string'
       || hash(value.content) !== value.sha256) throw new Error('备份清单或 SHA256 校验失败');
     parse(relative, value.content);
     return value as unknown as BackupEnvelope;
   }
-  async function list(relative: string): Promise<StateBackupEntry[]> {
+  async function openEnvelope(relative: string, id: string) {
+    if (!/^[0-9TZ.-]+-[0-9a-f-]{36}\.json$/.test(id)) throw new Error('备份编号不合法');
+    return fs.open(await safePath(root, `${folder(relative)}/${id}`), 'r');
+  }
+  function fingerprint(stat: BigIntStats) {
+    if (!stat.isFile() || stat.size > BigInt(maxBytes * 6 + 4096)) throw new Error('备份文件类型或大小不合法');
+    return [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(':');
+  }
+  async function readEnvelope(relative: string, id: string) {
+    const handle = await openEnvelope(relative, id);
+    try {
+      fingerprint(await handle.stat({ bigint: true }));
+      return decodeEnvelope(relative, await handle.readFile('utf8'));
+    } finally { await handle.close(); }
+  }
+  function backupEntry(relative: string, id: string, envelope: BackupEnvelope): StateBackupEntry {
+    return { path: relative, id, valid: true, createdAt: envelope.createdAt, sha256: envelope.sha256, bytes: Buffer.byteLength(envelope.content) };
+  }
+  // 运行账本与协作状态副本可达数十 MB。写入和快照时复用文件身份与时间戳均未变化的已验证条目；
+  // 手动列表、恢复和校验仍完整读取文件。
+  const verifiedBackups = new Map<string, { fingerprint: string; entry: StateBackupEntry }>();
+  async function verifyCachedBackup(relative: string, id: string) {
+    const handle = await openEnvelope(relative, id);
+    try {
+      const key = fingerprint(await handle.stat({ bigint: true }));
+      const cacheKey = `${relative}/${id}`;
+      const cached = verifiedBackups.get(cacheKey);
+      if (cached?.fingerprint === key) return cached.entry;
+      const entry = backupEntry(relative, id, decodeEnvelope(relative, await handle.readFile('utf8')));
+      if (key === fingerprint(await handle.stat({ bigint: true }))) verifiedBackups.set(cacheKey, { fingerprint: key, entry });
+      return entry;
+    } finally { await handle.close(); }
+  }
+  async function list(relative: string, reuseVerified = false): Promise<StateBackupEntry[]> {
     const directory = await safePath(root, folder(relative));
     let names: string[];
     try { names = await fs.readdir(directory); } catch (error) { if (missing(error)) return []; throw error; }
     return Promise.all(names.filter(name => name.endsWith('.json')).sort().reverse().map(async id => {
       try {
-        const envelope = await readEnvelope(relative, id);
-        return { path: relative, id, valid: true, createdAt: envelope.createdAt, sha256: envelope.sha256, bytes: Buffer.byteLength(envelope.content) };
+        return reuseVerified ? await verifyCachedBackup(relative, id) : backupEntry(relative, id, await readEnvelope(relative, id));
       } catch (error) { return { path: relative, id, valid: false, error: message(error) }; }
     }));
   }
-  async function saveBackup(relative: string, content: string): Promise<StateBackupEntry> {
-    parse(relative, content);
+  async function saveBackup(relative: string, content: string, validated = false): Promise<StateBackupEntry> {
+    if (!validated) parse(relative, content);
     const sha256 = hash(content);
-    const previous = await list(relative);
+    const previous = await list(relative, true);
+    const validPrefix = `${relative}/`;
+    const validIds = new Set(previous.filter(entry => entry.valid).map(entry => `${relative}/${entry.id}`));
+    for (const cacheKey of verifiedBackups.keys()) {
+      if (cacheKey.startsWith(validPrefix) && !validIds.has(cacheKey)) verifiedBackups.delete(cacheKey);
+    }
     if (previous[0]?.valid && previous[0].sha256 === sha256) return previous[0];
     // 连续写入可能落在同一毫秒，不能让随机 UUID 决定哪一版是 latest。
     const latestTime = Math.max(0, ...previous.filter(item => item.valid).map(item => Date.parse(item.createdAt!)));
@@ -196,15 +231,18 @@ export async function createStateBackupStore(dataDirectory: string, options: Sta
     const id = `${createdAt.replace(/:/g, '-')}-${randomUUID()}.json`;
     const target = await safePath(root, `${folder(relative)}/${id}`);
     await atomicWrite(target, JSON.stringify({ version: 1, path: relative, createdAt, sha256, content } satisfies BackupEnvelope));
-    await readEnvelope(relative, id);
+    // 刚以 fsync 原子写入的副本直接登记文件身份；之后任何外部改动都会改变 ctime 并触发完整复核。
+    const entry: StateBackupEntry = { path: relative, id, valid: true, createdAt, sha256, bytes: Buffer.byteLength(content) };
+    verifiedBackups.set(`${relative}/${id}`, { fingerprint: fingerprint(await fs.stat(target, { bigint: true })), entry });
     // 损坏副本保留用于诊断；仅清理多余的已校验副本。
     for (const entry of previous.filter(item => item.valid).slice(keep - 1)) {
       const obsolete = await safePath(root, `${folder(relative)}/${entry.id}`);
+      verifiedBackups.delete(`${relative}/${entry.id}`);
       try { await fs.unlink(obsolete); }
       // 另一个备份实例可能已清理同一旧副本；其他删除故障仍需报告。
       catch (error) { if (!missing(error)) throw error; }
     }
-    return { path: relative, id, valid: true, createdAt, sha256, bytes: Buffer.byteLength(content) };
+    return entry;
   }
   async function managedFiles() {
     const files = new Set<string>(stateBackupFiles);
@@ -235,50 +273,90 @@ export async function createStateBackupStore(dataDirectory: string, options: Sta
       throw new Error(`状态文件不可读，原件未覆盖：${relative}。${latest ? `可停止服务后恢复备份 ${latest.id}` : '没有已校验的备份可用'}。${message(error)}`);
     }
   }
-  function writeJson(relative: string, value: unknown) {
+  // 本进程上一次写入并已备份的原件身份；原件未被外部改动时无需再次全文读取、解析和备份旧版本。
+  const writtenFiles = new Map<string, string>();
+  const fileIdentity = (stat: BigIntStats) => [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(':');
+  function writeJson(relative: string, value: unknown, options?: { preformattedJson?: string }) {
     return exclusive(async () => {
       assertManaged(relative);
-      const content = JSON.stringify(value, null, 2) + '\n';
-      parse(relative, content);
-      let original: string | undefined;
-      try { original = await readContent(relative); }
-      catch (error) {
-        if (!missing(error)) throw new Error(`写入已取消，原状态及备份未覆盖：${relative}。${message(error)}`);
-        if ((await list(relative)).length) throw new Error(`状态文件已缺失但存在历史备份，写入已取消，请停止服务后核对恢复：${relative}`);
+      let content: string;
+      if (options?.preformattedJson !== undefined) {
+        content = options.preformattedJson.endsWith('\n') ? options.preformattedJson : `${options.preformattedJson}\n`;
+        if (Buffer.byteLength(content) > maxBytes) throw new Error(`状态文件超过备份大小限制：${relative}`);
+        validateStateJson(relative, value);
+      } else {
+        const compact = JSON.stringify(value);
+        // 大账本使用紧凑格式，减少约三成体积与写入量；小文件保留缩进便于人工排查。
+        content = (compact.length > largeStateBytes ? compact : JSON.stringify(value, null, 2)) + '\n';
+        parse(relative, content);
       }
-      if (original !== undefined) {
-        try { await saveBackup(relative, original); }
-        catch (error) { throw new Error(`写入已取消，旧版本备份失败：${relative}。${message(error)}`); }
+      const target = await safePath(root, relative);
+      const known = writtenFiles.get(relative);
+      writtenFiles.delete(relative);
+      let unchangedSinceLastWrite = false;
+      if (known) {
+        try {
+          const stat = await fs.lstat(target, { bigint: true });
+          unchangedSinceLastWrite = stat.isFile() && fileIdentity(stat) === known;
+        } catch { /* 原件缺失或不可读时走完整核对。 */ }
       }
-      await atomicWrite(await safePath(root, relative), content);
+      if (!unchangedSinceLastWrite) {
+        let original: string | undefined;
+        try { original = await readContent(relative); }
+        catch (error) {
+          if (!missing(error)) throw new Error(`写入已取消，原状态及备份未覆盖：${relative}。${message(error)}`);
+          if ((await list(relative)).length) throw new Error(`状态文件已缺失但存在历史备份，写入已取消，请停止服务后核对恢复：${relative}`);
+        }
+        if (original !== undefined) {
+          try { await saveBackup(relative, original, true); }
+          catch (error) { throw new Error(`写入已取消，旧版本备份失败：${relative}。${message(error)}`); }
+        }
+      }
+      await atomicWrite(target, content);
+      let identity = '';
+      try { identity = fileIdentity(await fs.lstat(target, { bigint: true })); } catch { /* 下一次写入完整核对。 */ }
       // 写入成功后的备份失败不能谎称业务写入失败，避免调用方重复执行副作用。
-      try { await saveBackup(relative, content); }
+      try {
+        await saveBackup(relative, content, true);
+        if (identity) writtenFiles.set(relative, identity);
+      }
       catch (error) { warn(`状态已保存，但新版本备份失败：${relative}。${message(error)}`); }
     });
   }
   function snapshot() {
     return exclusive(async (): Promise<StateBackupManifest> => {
-      const manifest: StateBackupManifest = { version: 1, startedAt: new Date().toISOString(), finishedAt: '', consistency: 'per-file', entries: [] };
-      for (const relative of await managedFiles()) {
+      const startedAt = new Date().toISOString();
+      const files = await managedFiles();
+      const entries = await Promise.all(files.map(async (relative): Promise<StateBackupManifest['entries'][number]> => {
         let content: string;
         try { content = await readContent(relative); }
         catch (error) {
           if (missing(error)) {
             try {
-              manifest.entries.push((await list(relative)).length
+              return (await list(relative, true)).length
                 ? { path: relative, status: 'failed', error: '状态文件已缺失，历史备份仍保留，请停止服务后核对恢复' }
-                : { path: relative, status: 'missing' });
-            } catch (lookupError) { manifest.entries.push({ path: relative, status: 'failed', error: message(lookupError) }); }
-          } else manifest.entries.push({ path: relative, status: 'failed', error: message(error) });
-          continue;
+                : { path: relative, status: 'missing' };
+            } catch (lookupError) { return { path: relative, status: 'failed', error: message(lookupError) }; }
+          }
+          return { path: relative, status: 'failed', error: message(error) };
         }
-        try { manifest.entries.push({ path: relative, status: 'backed-up', backup: await saveBackup(relative, content) }); }
-        catch (error) { manifest.entries.push({ path: relative, status: 'failed', error: message(error) }); }
-      }
-      manifest.finishedAt = new Date().toISOString();
+        try { return { path: relative, status: 'backed-up', backup: await saveBackup(relative, content) }; }
+        catch (error) { return { path: relative, status: 'failed', error: message(error) }; }
+      }));
+      const manifest: StateBackupManifest = { version: 1, startedAt, finishedAt: new Date().toISOString(), consistency: 'per-file', entries };
       await atomicWrite(await safePath(root, `${backupDirectory}/latest-snapshot.json`), JSON.stringify(manifest, null, 2) + '\n');
       return manifest;
     });
+  }
+  async function hasRecentCleanSnapshot(maxAgeMs = 45_000): Promise<boolean> {
+    try {
+      const file = await safePath(root, `${backupDirectory}/latest-snapshot.json`);
+      const manifest = JSON.parse(await fs.readFile(file, 'utf8')) as StateBackupManifest;
+      if (!manifest || manifest.version !== 1 || typeof manifest.finishedAt !== 'string' || !Array.isArray(manifest.entries)) return false;
+      const finishedMs = Date.parse(manifest.finishedAt);
+      if (!Number.isFinite(finishedMs) || Date.now() - finishedMs > maxAgeMs) return false;
+      return manifest.entries.every(entry => entry.status !== 'failed');
+    } catch { return false; }
   }
   async function restore(relative: string, id: string, offline: OfflineCheckOptions = {}) {
     assertManaged(relative);
@@ -313,7 +391,7 @@ export async function createStateBackupStore(dataDirectory: string, options: Sta
       return { path: relative, backup: selected, sha256: backup.sha256, original, restoredAt: new Date().toISOString() };
     } finally { await release(); }
   }
-  return { root, managedFiles, readJson, writeJson, list, snapshot, restore, verify: async (relative: string, id: string) => {
+  return { root, managedFiles, readJson, writeJson, list, snapshot, hasRecentCleanSnapshot, restore, verify: async (relative: string, id: string) => {
     const value = await readEnvelope(relative, id);
     return { path: relative, id, valid: true, createdAt: value.createdAt, sha256: value.sha256, bytes: Buffer.byteLength(value.content) } satisfies StateBackupEntry;
   }, close: () => writes };

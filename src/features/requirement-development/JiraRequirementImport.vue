@@ -54,7 +54,7 @@ async function importSelected() {
 </script>
 
 <template>
-  <el-drawer :model-value="true" title="从 Jira 导入需求" size="min(1180px, 100vw)" :close-on-click-modal="false" :show-close="!saving"
+  <el-drawer :model-value="true" title="从 Jira 导入需求" size="min(1180px, 100vw)" append-to-body :close-on-click-modal="false" :show-close="!saving"
     :close-on-press-escape="!saving" @close="emit('close')">
     <div class="jira-requirement-import">
       <TaskFilters v-model="filters" :loading="loading" @search="search" />

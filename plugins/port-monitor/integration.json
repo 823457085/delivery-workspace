@@ -1,0 +1,22 @@
+{
+  "id": "port-monitor",
+  "name": "端口检测",
+  "description": "本机开发端口占用巡检、进程定位与一键释放控制",
+  "local": true,
+  "prefix": "PORT_MONITOR",
+  "capabilities": [],
+  "views": [
+    {
+      "id": "ports",
+      "label": "端口检测",
+      "path": "/ports",
+      "section": "projects",
+      "component": "panel"
+    }
+  ],
+  "sourceKeys": [],
+  "apiPrefixes": [
+    "/api/ports"
+  ],
+  "apiPaths": []
+}

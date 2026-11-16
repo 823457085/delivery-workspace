@@ -41,8 +41,10 @@ const participantKey = (value: ParticipantRef) => value.kind === 'user' ? 'user'
 const hashRequest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 function overlap(first: string, second: string) { return first === second || first.startsWith(`${second}${path.sep}`) || second.startsWith(`${first}${path.sep}`); }
 
+const largeLedgerBytes = 1024 * 1024;
+
 export async function createAgentCollaborationStore(directory: string, options: {
-  writeJson?: (relativePath: string, value: unknown) => Promise<void>;
+  writeJson?: (relativePath: string, value: unknown, options?: { preformattedJson?: string }) => Promise<void>;
   now?: () => string;
 } = {}) {
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
@@ -64,9 +66,16 @@ export async function createAgentCollaborationStore(directory: string, options: 
       const draft = copy(state);
       const result = await action(draft);
       draft.revision += 1;
-      collaborationStateSchema.parse(draft);
-      if (options.writeJson) await options.writeJson('agent-runtimes/collaboration-state.json', draft);
-      else {
+      if (options.writeJson) {
+        const compact = JSON.stringify(draft);
+        if (compact.length > largeLedgerBytes) {
+          await options.writeJson('agent-runtimes/collaboration-state.json', draft, { preformattedJson: compact });
+        } else {
+          collaborationStateSchema.parse(draft);
+          await options.writeJson('agent-runtimes/collaboration-state.json', draft);
+        }
+      } else {
+        collaborationStateSchema.parse(draft);
         const temporary = `${file}.${randomUUID()}.tmp`;
         try { await fs.writeFile(temporary, JSON.stringify(draft, null, 2), { mode: 0o600 }); await fs.rename(temporary, file); }
         finally { await fs.rm(temporary, { force: true }).catch(() => {}); }
@@ -285,38 +294,51 @@ export async function createAgentCollaborationStore(directory: string, options: 
       if (!lease || lease.state === 'needs_reconciliation' || (requireActive && lease.state !== 'active')) throw new Error('补丁来源写入租约已过期或需要核对');
       return copy(lease);
     },
-    archiveCompleted: (workflowIds: string[]) => mutate(async draft => {
-      const cutoff = Date.parse(now()) - 30 * 24 * 60 * 60 * 1000;
-      const archived: string[] = [];
-      for (const workflowId of [...new Set(workflowIds)]) {
-        const messages = draft.messages.filter(item => item.workflowId === workflowId);
-        const intents = draft.intents.filter(item => item.workflowId === workflowId);
-        const events = draft.events.filter(item => item.workflowId === workflowId);
-        const records = [...messages, ...intents, ...events];
-        if (!records.length || records.some(item => Date.parse(item.createdAt) > cutoff)) continue;
-        if (intents.some(item => !item.settled && item.state !== 'abandoned')) throw new Error('流程还有未核对的派发意图，不能归档');
-        const archiveDirectory = path.join(directory, 'collaboration-archive');
-        await fs.mkdir(archiveDirectory, { recursive: true, mode: 0o700 });
-        const archiveFile = path.join(archiveDirectory, `${hashRequest(workflowId)}.json`);
-        const previous = await fs.readFile(archiveFile, 'utf8').then(value => JSON.parse(value) as { messages?: AgentCollaborationMessage[]; intents?: AgentDispatchIntent[]; events?: AgentCollaborationState['events'] },
-          (error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return { messages: [], intents: [], events: [] }; throw error; });
-        const merge = <T extends { id?: string; eventId?: string }>(before: T[], after: T[]) => [...new Map([...before, ...after].map(item => [item.id || item.eventId, item])).values()];
-        const temporary = `${archiveFile}.${randomUUID()}.tmp`;
-        try {
-          await fs.writeFile(temporary, JSON.stringify({ version: 1, workflowId, archivedAt: now(),
-            messages: merge(previous.messages || [], messages), intents: merge(previous.intents || [], intents), events: merge(previous.events || [], events) }, null, 2), { mode: 0o600 });
-          await fs.rename(temporary, archiveFile);
-        } finally { await fs.rm(temporary, { force: true }).catch(() => {}); }
-        const ids = new Set(messages.map(item => item.id));
-        draft.messages = draft.messages.filter(item => item.workflowId !== workflowId);
-        draft.intents = draft.intents.filter(item => item.workflowId !== workflowId);
-        draft.events = draft.events.filter(item => item.workflowId !== workflowId);
-        for (const [key, value] of Object.entries(draft.idempotency)) if (typeof value.response === 'string' && ids.has(value.response)) delete draft.idempotency[key];
-        // 执行计数和 fencing tombstone 保留，归档不重置已执行次数或使旧补丁重新有效。
-        archived.push(workflowId);
-      }
-      return archived;
-    }),
+    archiveCompleted: (workflowIds: string[]) => {
+      const uniqueIds = [...new Set(workflowIds)];
+      return mutate(async draft => {
+        const cutoff = Date.parse(now()) - 30 * 24 * 60 * 60 * 1000;
+        const archived: string[] = [];
+        for (const workflowId of uniqueIds) {
+          const messages = draft.messages.filter(item => item.workflowId === workflowId);
+          const intents = draft.intents.filter(item => item.workflowId === workflowId);
+          const events = draft.events.filter(item => item.workflowId === workflowId);
+          const records = [...messages, ...intents, ...events];
+          if (!records.length || records.some(item => Date.parse(item.createdAt) > cutoff)) continue;
+          if (intents.some(item => !item.settled && item.state !== 'abandoned')) throw new Error('流程还有未核对的派发意图，不能归档');
+          const archiveDirectory = path.join(directory, 'collaboration-archive');
+          await fs.mkdir(archiveDirectory, { recursive: true, mode: 0o700 });
+          const archiveFile = path.join(archiveDirectory, `${hashRequest(workflowId)}.json`);
+          const previous = await fs.readFile(archiveFile, 'utf8').then(value => JSON.parse(value) as { messages?: AgentCollaborationMessage[]; intents?: AgentDispatchIntent[]; events?: AgentCollaborationState['events'] },
+            (error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return { messages: [], intents: [], events: [] }; throw error; });
+          const merge = <T extends { id?: string; eventId?: string }>(before: T[], after: T[]) => [...new Map([...before, ...after].map(item => [item.id || item.eventId, item])).values()];
+          const temporary = `${archiveFile}.${randomUUID()}.tmp`;
+          try {
+            await fs.writeFile(temporary, JSON.stringify({ version: 1, workflowId, archivedAt: now(),
+              messages: merge(previous.messages || [], messages), intents: merge(previous.intents || [], intents), events: merge(previous.events || [], events) }, null, 2), { mode: 0o600 });
+            await fs.rename(temporary, archiveFile);
+          } finally { await fs.rm(temporary, { force: true }).catch(() => {}); }
+          const ids = new Set(messages.map(item => item.id));
+          draft.messages = draft.messages.filter(item => item.workflowId !== workflowId);
+          draft.intents = draft.intents.filter(item => item.workflowId !== workflowId);
+          draft.events = draft.events.filter(item => item.workflowId !== workflowId);
+          for (const [key, value] of Object.entries(draft.idempotency)) if (typeof value.response === 'string' && ids.has(value.response)) delete draft.idempotency[key];
+          // 执行计数和 fencing tombstone 保留，归档不重置已执行次数或使旧补丁重新有效。
+          archived.push(workflowId);
+        }
+        return archived;
+      }, current => {
+        const cutoff = Date.parse(now()) - 30 * 24 * 60 * 60 * 1000;
+        const hasCandidate = uniqueIds.some(workflowId => {
+          const messages = current.messages.filter(item => item.workflowId === workflowId);
+          const intents = current.intents.filter(item => item.workflowId === workflowId);
+          const events = current.events.filter(item => item.workflowId === workflowId);
+          const records = [...messages, ...intents, ...events];
+          return records.length > 0 && records.every(item => Date.parse(item.createdAt) <= cutoff);
+        });
+        return hasCandidate ? undefined : [];
+      });
+    },
     reconcileLeases: (probe: (lease: AgentWriteLease) => Promise<'exited' | 'active' | 'unknown'>) => mutate(async draft => {
       for (const lease of draft.leases.filter(item => item.state !== 'released')) {
         const result = await probe(copy(lease));

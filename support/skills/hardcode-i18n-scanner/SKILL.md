@@ -102,14 +102,14 @@ Validation commands:
 
 ```bash
 # Validate newly generated keys that already exist in src/locale/zh-CN.json.
-node "${DELIVERY_SKILLS_ROOT:-${CODEX_HOME:-$HOME/.codex}/skills}/hardcode-i18n-scanner/scripts/validate_vue_i18n_messages.mjs" \
+node ~/.codex/skills/hardcode-i18n-scanner/scripts/validate_vue_i18n_messages.mjs \
   --project-root . \
   --locale src/locale/zh-CN.json \
   --keys-file tempdocs/i18n-generated-keys.txt \
   --strict-placeholders
 
 # Validate one raw message before it is imported to the language platform/CDN.
-node "${DELIVERY_SKILLS_ROOT:-${CODEX_HOME:-$HOME/.codex}/skills}/hardcode-i18n-scanner/scripts/validate_vue_i18n_messages.mjs" \
+node ~/.codex/skills/hardcode-i18n-scanner/scripts/validate_vue_i18n_messages.mjs \
   --project-root . \
   --message "包含特殊字符（如 !@#$%^&*）"
 ```
@@ -125,7 +125,7 @@ Local dev awareness:
 Use the bundled script to export selected locale keys from a project:
 
 ```bash
-python3 "${DELIVERY_SKILLS_ROOT:-${CODEX_HOME:-$HOME/.codex}/skills}/hardcode-i18n-scanner/scripts/export_locale_keys_to_xlsx.py" \
+python3 ~/.codex/skills/hardcode-i18n-scanner/scripts/export_locale_keys_to_xlsx.py \
   --project-root . \
   --keys APEXM501B0D4,APEXS7O62196 \
   -o tempdocs/locale-keys-export.xlsx
@@ -136,7 +136,7 @@ Use `--keys-file` for newline or comma separated key lists. The script reads `sr
 For the current batch-import template, provide English translations with either an English locale JSON or a small mapping JSON:
 
 ```bash
-python3 "${DELIVERY_SKILLS_ROOT:-${CODEX_HOME:-$HOME/.codex}/skills}/hardcode-i18n-scanner/scripts/export_locale_keys_to_xlsx.py" \
+python3 ~/.codex/skills/hardcode-i18n-scanner/scripts/export_locale_keys_to_xlsx.py \
   --project-root . \
   --keys APEXM501B0D4,APEXS7O62196 \
   --english-map tempdocs/i18n-english-map.json \

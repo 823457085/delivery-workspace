@@ -4,7 +4,9 @@ import type { createJenkinsDeployments } from './jenkins-deployments.js';
 import type { createYunxiaoDeployments } from './yunxiao-deployments.js';
 
 type Service = Pick<Awaited<ReturnType<typeof createJenkinsDeployments>>, 'snapshot' | 'saveConfig' | 'checkConnection' | 'jobs'
-  | 'saveBinding' | 'saveManualBinding' | 'deleteBinding' | 'startRun' | 'getRun' | 'log'>;
+  | 'saveBinding' | 'saveManualBinding' | 'deleteBinding' | 'startRun' | 'getRun' | 'log'> & {
+  resolveRun?: (input: unknown) => Promise<unknown>;
+};
 export function createJenkinsDeploymentsRoute(service: Service, yunxiao?: Awaited<ReturnType<typeof createYunxiaoDeployments>>) {
   return async (request: http.IncomingMessage, response: http.ServerResponse, port: number) => {
     const send = (status: number, value: unknown) => {
@@ -56,9 +58,15 @@ export function createJenkinsDeploymentsRoute(service: Service, yunxiao?: Awaite
       if (request.headers['content-type']?.split(';')[0].trim().toLowerCase() !== 'application/json') {
         send(415, { message: '请发送 JSON' }); return;
       }
-      let raw = '';
-      for await (const chunk of request) { raw += chunk; if (Buffer.byteLength(raw) > 100_000) { send(413, { message: '请求内容过大' }); return; } }
-      const input: unknown = JSON.parse(raw || '{}');
+      const chunks: Buffer[] = [];
+      let byteLength = 0;
+      for await (const chunk of request) {
+        const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), 'utf8');
+        byteLength += buf.byteLength;
+        if (byteLength > 100_000) { send(413, { message: '请求内容过大' }); return; }
+        chunks.push(buf);
+      }
+      const input: unknown = JSON.parse(byteLength ? Buffer.concat(chunks, byteLength).toString('utf8') : '{}');
       if (url.pathname === '/api/deployments/bindings/manual') {
         const data = z.object({ projectId: z.string().min(1).max(2000), environment: z.string().trim().min(1).max(100),
           url: z.string().trim().min(1).max(2000) }).strict().parse(input);
@@ -74,6 +82,7 @@ export function createJenkinsDeploymentsRoute(service: Service, yunxiao?: Awaite
       if (yunxiao && url.pathname === '/api/deployments/yunxiao/config') { send(200, await yunxiao.saveConfig(input)); return; }
       if (yunxiao && url.pathname === '/api/deployments/yunxiao/prepare') { send(200, await yunxiao.prepare(input)); return; }
       if (yunxiao && url.pathname === '/api/deployments/yunxiao/runs') { send(202, await yunxiao.startRun(input)); return; }
+      if (yunxiao && url.pathname === '/api/deployments/yunxiao/runs/resolve') { send(200, await yunxiao.resolveRun(input)); return; }
       if (url.pathname === '/api/deployments/config') { send(200, await service.saveConfig(input)); return; }
       if (url.pathname === '/api/deployments/connection/check') {
         z.object({}).strict().parse(input); send(200, await service.checkConnection()); return;
@@ -81,6 +90,7 @@ export function createJenkinsDeploymentsRoute(service: Service, yunxiao?: Awaite
       if (url.pathname === '/api/deployments/bindings') { send(200, await service.saveBinding(input)); return; }
       if (url.pathname === '/api/deployments/bindings/delete') { send(200, await service.deleteBinding(input)); return; }
       if (url.pathname === '/api/deployments/runs') { send(202, await service.startRun(input)); return; }
+      if (url.pathname === '/api/deployments/runs/resolve' && service.resolveRun) { send(200, await service.resolveRun(input)); return; }
       send(404, { message: '部署接口不存在' });
     } catch (error) {
       send(400, { message: error instanceof z.ZodError || error instanceof SyntaxError ? '输入格式不正确'

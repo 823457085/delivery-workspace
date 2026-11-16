@@ -115,9 +115,8 @@ test('Switching to Antigravity preserves the conversation but starts its own nat
   await completed(continued);
   assert.equal(continued.mode, 'agent');
   assert.equal(continued.accessMode, 'workspace');
-  assert.equal(continued.conversationId, switched.conversationId);
-  assert.notEqual(continued.sessionId, switched.sessionId);
-  assert.equal(f.calls[2].resume, '');
+  assert.equal(continued.sessionId, switched.sessionId);
+  assert.equal(f.calls[2].resume, switched.sessionId);
   assert.equal(previous.provider, 'kiro');
   assert.equal(switched.mode, 'ask');
 });

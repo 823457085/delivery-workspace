@@ -11,13 +11,15 @@ Use this skill for a requested formal delivery artifact or AI Delivery Hub revis
 
 Use `AI_DELIVERY_KIT_ROOT` when set; otherwise prefer `${CODEX_HOME:-$HOME/.codex}/ai-delivery-kit`, then a `kit.yaml` in or beside the current repository. Resolve all paths from that root.
 
+Route all frontend technical designs, including S2a/G2a frontend deliverables, to `frontend-tech-solution` for the document format. Apply this skill for relevant coverage and sign-off requirements.
+
 ## Route the request
 
 | Requested output | Read |
 | --- | --- |
 | PRD, prototype notes, review minutes | `prompts/S0-PRD.md`, `S0-prototype-notes.md`, or `S1-review-minutes.md` and its matching template |
 | PRD review | `R0-prd-self-check.md`, `R1a-dev-prd-review.md`, or `R1b-qa-prd-review.md`; load `prd-prototype-challenge` for R1 |
-| Technical design | `S2a-tech-design.md`, `artifacts/templates/tech-design.md`, and `tech-design-coverage-review` when auditing |
+| Backend or full-stack main technical design | `S2a-tech-design.md`, `artifacts/templates/tech-design.md`, and `tech-design-coverage-review` when auditing |
 | Test plan or cases | `S2b-test-plan.md` or `S2b-test-cases.md`; load `test-plan-coverage-review` when auditing |
 | Implementation, self-test, test, acceptance, release, outcome | the matching `G3-implementation-plan.md`, `S3-self-test-report.md`, `S4-test-report.md`, `S5-acceptance-record.md`, `G8-release-plan.md`, or `G9-outcome-review.md` |
 

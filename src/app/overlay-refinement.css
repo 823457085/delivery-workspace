@@ -1,0 +1,397 @@
+/* ==========================================================================
+   Global Interactive Overlays Refinement (Drawers, Dialogs, MessageBoxes, Popovers)
+   Applies across all themes while preserving Acid Graphics 0px geometry.
+   ========================================================================== */
+
+@keyframes agy-overlay-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes agy-dialog-pop {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.982);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes agy-drawer-in-rtl {
+  from {
+    opacity: 0.72;
+    transform: translate3d(28px, 0, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes agy-drawer-in-ltr {
+  from {
+    opacity: 0.72;
+    transform: translate3d(-28px, 0, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes agy-popper-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* 1. Tactile Frosted Backdrop Scrim */
+:root[data-theme] .el-overlay {
+  background-color: rgb(15 23 42 / 0.28);
+  backdrop-filter: blur(6px) saturate(115%);
+  -webkit-backdrop-filter: blur(6px) saturate(115%);
+  transition: opacity 220ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+:root.dark[data-theme] .el-overlay {
+  background-color: rgb(4 6 12 / 0.56);
+}
+
+/* 2. Floating Studio Sheet Drawers (Desktop >= 768px) */
+@media (min-width: 768px) {
+  :root[data-theme] .el-drawer.rtl,
+  :root[data-theme] .el-drawer.ltr {
+    top: 10px !important;
+    bottom: 10px !important;
+    height: auto !important;
+    max-height: calc(100dvh - 20px);
+    border: 1px solid color-mix(in srgb, var(--ui-border) 88%, var(--ui-text) 12%);
+    border-radius: 14px !important;
+    background: var(--ui-surface);
+    box-shadow:
+      0 24px 64px -12px rgb(15 23 42 / 0.22),
+      0 6px 20px -4px rgb(15 23 42 / 0.10);
+    overflow: hidden;
+  }
+
+  :root.dark[data-theme] .el-drawer.rtl,
+  :root.dark[data-theme] .el-drawer.ltr {
+    box-shadow:
+      0 28px 72px -12px rgb(0 0 0 / 0.62),
+      0 8px 24px -6px rgb(0 0 0 / 0.38),
+      inset 0 1px 0 rgb(255 255 255 / 0.05);
+  }
+
+  :root[data-theme] .el-drawer.rtl {
+    right: 10px !important;
+    animation: agy-drawer-in-rtl 260ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  :root[data-theme] .el-drawer.ltr {
+    left: 10px !important;
+    animation: agy-drawer-in-ltr 260ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  :root[data-theme='acid'] .el-drawer.rtl,
+  :root[data-theme='acid'] .el-drawer.ltr {
+    border-radius: 0 !important;
+    border: 2px solid var(--acid-green, #39ff14) !important;
+    box-shadow: -6px 6px 0 rgb(160 32 240 / 0.52), 0 24px 60px rgb(0 0 0 / 0.72) !important;
+  }
+}
+
+/* Drawer Header / Body / Footer Interior Rhythm */
+:root[data-theme] .el-drawer__header {
+  margin-bottom: 0 !important;
+  padding: 12px 18px !important;
+  border-bottom: 1px solid var(--ui-divider);
+  background: color-mix(in srgb, var(--ui-surface) 92%, var(--ui-raised));
+  gap: 12px;
+}
+
+:root[data-theme] .el-drawer__title {
+  font: 600 15px/22px var(--ds-display, var(--sans)) !important;
+  letter-spacing: -0.015em;
+  color: var(--ui-text);
+}
+
+:root[data-theme] .el-drawer:not(.project-git-drawer) > .el-drawer__body {
+  padding: 16px 20px 22px !important;
+  overscroll-behavior: contain;
+}
+
+:root[data-theme] .el-drawer__footer {
+  padding: 12px 20px !important;
+  border-top: 1px solid var(--ui-divider);
+  background: color-mix(in srgb, var(--ui-surface) 92%, var(--ui-raised));
+}
+
+/* Interactive Close Buttons Across Drawers, Dialogs & MessageBoxes */
+:root[data-theme] :is(.el-drawer__close-btn, .el-dialog__headerbtn, .el-message-box__headerbtn) {
+  display: inline-grid;
+  place-items: center;
+  width: 30px !important;
+  height: 30px !important;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ui-muted);
+  cursor: pointer;
+  transition:
+    background-color 160ms cubic-bezier(0.16, 1, 0.3, 1),
+    border-color 160ms cubic-bezier(0.16, 1, 0.3, 1),
+    color 160ms cubic-bezier(0.16, 1, 0.3, 1),
+    transform 140ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+:root[data-theme='acid'] :is(.el-drawer__close-btn, .el-dialog__headerbtn, .el-message-box__headerbtn) {
+  border-radius: 0 !important;
+}
+
+:root[data-theme] :is(.el-drawer__close-btn, .el-dialog__headerbtn, .el-message-box__headerbtn):hover {
+  border-color: var(--ui-border);
+  background: var(--ui-hover);
+  color: var(--ui-text) !important;
+}
+
+:root[data-theme] :is(.el-drawer__close-btn, .el-dialog__headerbtn, .el-message-box__headerbtn):active {
+  transform: scale(0.93);
+}
+
+:root[data-theme] :is(.el-dialog__headerbtn, .el-message-box__headerbtn) .el-dialog__close,
+:root[data-theme] :is(.el-dialog__headerbtn, .el-message-box__headerbtn) .el-message-box__close {
+  color: inherit !important;
+  font-size: 16px;
+}
+
+/* 3. Structured Elevated Dialogs & MessageBoxes */
+:root[data-theme] .el-dialog {
+  padding: 0 !important;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--ui-border) 88%, var(--ui-text) 12%) !important;
+  border-radius: 16px !important;
+  background: var(--ui-surface) !important;
+  box-shadow:
+    0 24px 64px -12px rgb(15 23 42 / 0.22),
+    0 8px 24px -6px rgb(15 23 42 / 0.10) !important;
+  animation: agy-dialog-pop 220ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+:root.dark[data-theme] .el-dialog,
+:root.dark[data-theme] .el-message-box {
+  box-shadow:
+    0 28px 72px -12px rgb(0 0 0 / 0.65),
+    0 8px 24px -6px rgb(0 0 0 / 0.42),
+    inset 0 1px 0 rgb(255 255 255 / 0.05) !important;
+}
+
+:root[data-theme='acid'] .el-dialog,
+:root[data-theme='acid'] .el-message-box {
+  border-radius: 0 !important;
+  border: 2px solid var(--acid-green, #39ff14) !important;
+  box-shadow: 6px 6px 0 var(--acid-violet, #a020f0), 0 24px 60px rgb(0 0 0 / 0.72) !important;
+}
+
+:root:is([data-theme='immersive-photo'], [data-theme='cinematic-video-hero']) .el-dialog,
+:root:is([data-theme='immersive-photo'], [data-theme='cinematic-video-hero']) .el-message-box,
+:root:is([data-theme='immersive-photo'], [data-theme='cinematic-video-hero']) .el-drawer {
+  background: rgb(18 22 30 / 0.92) !important;
+  backdrop-filter: blur(22px) saturate(130%);
+  -webkit-backdrop-filter: blur(22px) saturate(130%);
+  border-color: rgb(255 255 255 / 0.16) !important;
+}
+
+:root[data-theme] .el-dialog__header {
+  position: relative;
+  margin-right: 0 !important;
+  padding: 14px 48px 13px 20px !important;
+  border-bottom: 1px solid var(--ui-divider);
+  background: color-mix(in srgb, var(--ui-surface) 94%, var(--ui-raised));
+}
+
+:root[data-theme] .el-dialog__headerbtn {
+  top: 11px !important;
+  right: 14px !important;
+}
+
+:root[data-theme] .el-dialog__title,
+:root[data-theme] .el-message-box__title {
+  font: 600 15px/22px var(--ds-display, var(--sans)) !important;
+  letter-spacing: -0.015em;
+  color: var(--ui-text);
+}
+
+:root[data-theme] .el-dialog__body {
+  padding: 16px 20px 18px !important;
+  color: var(--ui-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+:root[data-theme] .el-dialog__footer {
+  padding: 12px 20px 14px !important;
+  border-top: 1px solid var(--ui-divider);
+  background: color-mix(in srgb, var(--ui-raised) 42%, var(--ui-surface));
+}
+
+:root[data-theme] .el-message-box {
+  padding: 0 !important;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--ui-border) 88%, var(--ui-text) 12%) !important;
+  border-radius: 16px !important;
+  background: var(--ui-surface) !important;
+  animation: agy-dialog-pop 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+:root[data-theme] .el-message-box__header {
+  padding: 16px 50px 14px 22px !important;
+  border-bottom: 1px solid var(--ui-divider);
+  background: color-mix(in srgb, var(--ui-surface) 94%, var(--ui-raised));
+}
+
+:root[data-theme] .el-message-box__headerbtn {
+  top: 12px !important;
+  right: 14px !important;
+}
+
+:root[data-theme] .el-message-box__content {
+  padding: 18px 22px 20px !important;
+  color: var(--ui-secondary);
+  font-size: 13.5px;
+  line-height: 1.65;
+}
+
+:root[data-theme] .el-message-box__btns {
+  padding: 12px 22px 14px !important;
+  border-top: 1px solid var(--ui-divider);
+  background: color-mix(in srgb, var(--ui-raised) 42%, var(--ui-surface));
+}
+
+/* 4. Popovers, Dropdown Menus & Select Poppers */
+:root[data-theme] :is(.el-popover.el-popper, .el-dropdown__popper.el-popper, .el-select__popper.el-popper) {
+  border: 1px solid color-mix(in srgb, var(--ui-border) 90%, var(--ui-text) 10%) !important;
+  border-radius: 12px;
+  background: var(--ui-surface) !important;
+  box-shadow:
+    0 16px 40px -10px rgb(15 23 42 / 0.18),
+    0 4px 12px -2px rgb(15 23 42 / 0.08) !important;
+  animation: agy-popper-in 160ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+:root.dark[data-theme] :is(.el-popover.el-popper, .el-dropdown__popper.el-popper, .el-select__popper.el-popper) {
+  box-shadow:
+    0 20px 48px -10px rgb(0 0 0 / 0.58),
+    0 6px 16px -4px rgb(0 0 0 / 0.36),
+    inset 0 1px 0 rgb(255 255 255 / 0.05) !important;
+}
+
+:root[data-theme='acid'] :is(.el-popover.el-popper, .el-dropdown__popper.el-popper, .el-select__popper.el-popper) {
+  border-radius: 0 !important;
+  border-color: #303030 !important;
+  box-shadow: 4px 4px 0 var(--acid-violet, #a020f0) !important;
+}
+
+:root[data-theme] .el-dropdown-menu,
+:root[data-theme] .el-select-dropdown__list {
+  padding: 5px !important;
+  background: transparent !important;
+}
+
+:root[data-theme] .el-dropdown-menu__item,
+:root[data-theme] .el-select-dropdown__item {
+  min-height: 32px;
+  height: auto;
+  margin: 1px 0;
+  padding: 6px 10px !important;
+  border-radius: 7px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--ui-secondary);
+  transition: background-color 140ms ease, color 140ms ease;
+}
+
+:root[data-theme='acid'] .el-dropdown-menu__item,
+:root[data-theme='acid'] .el-select-dropdown__item {
+  border-radius: 0 !important;
+}
+
+:root[data-theme] .el-dropdown-menu__item:not(.is-disabled):hover,
+:root[data-theme] .el-dropdown-menu__item:not(.is-disabled):focus,
+:root[data-theme] .el-select-dropdown__item.is-hovering,
+:root[data-theme] .el-select-dropdown__item:hover {
+  background: var(--ui-hover) !important;
+  color: var(--ui-text) !important;
+}
+
+:root[data-theme] .el-select-dropdown__item.is-selected {
+  background: var(--ui-raised) !important;
+  color: var(--ui-text) !important;
+  font-weight: 600;
+}
+
+:root[data-theme='acid'] .el-select-dropdown__item.is-selected {
+  background: var(--ui-accent-soft) !important;
+  color: var(--ui-accent) !important;
+}
+
+/* 5. Neutral Studio Tabs, Checkboxes & Compact Loading Spinners inside Overlays */
+:root:not([data-theme='acid']) :is(.el-dialog, .el-drawer) .el-tabs__item.is-active {
+  color: var(--ui-text) !important;
+  font-weight: 600;
+}
+
+:root:not([data-theme='acid']) :is(.el-dialog, .el-drawer) .el-tabs__item:hover {
+  color: var(--ui-text) !important;
+}
+
+:root:not([data-theme='acid']) :is(.el-dialog, .el-drawer) .el-tabs__active-bar {
+  background-color: var(--ui-text) !important;
+}
+
+:root:not([data-theme='acid']) :is(.el-dialog, .el-drawer) .el-checkbox {
+  --el-checkbox-checked-bg-color: var(--ui-text);
+  --el-checkbox-checked-input-border-color: var(--ui-text);
+  --el-checkbox-checked-icon-color: var(--ui-bg);
+  --el-checkbox-checked-text-color: var(--ui-text);
+  --el-checkbox-input-border-color-hover: color-mix(in srgb, var(--ui-text) 45%, var(--ui-border));
+}
+
+:root[data-theme] .el-loading-mask {
+  background-color: color-mix(in srgb, var(--ui-surface) 76%, transparent) !important;
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+
+:root[data-theme] .el-loading-spinner .circular {
+  width: 26px !important;
+  height: 26px !important;
+}
+
+:root:not([data-theme='acid']) .el-loading-spinner .path {
+  stroke: var(--ui-secondary) !important;
+  stroke-width: 2.6;
+}
+
+:root[data-theme] .el-dropdown-menu__item--divided {
+  margin-top: 5px !important;
+  border-top-color: var(--ui-divider) !important;
+}
+
+:root[data-theme] .el-dropdown-menu__item--divided::before {
+  display: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-theme] :is(.el-overlay, .el-drawer.rtl, .el-drawer.ltr, .el-dialog, .el-message-box, .el-popover.el-popper, .el-dropdown__popper.el-popper, .el-select__popper.el-popper) {
+    animation: none !important;
+    transition: none !important;
+  }
+}

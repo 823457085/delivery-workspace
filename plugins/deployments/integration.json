@@ -1,0 +1,22 @@
+{
+  "id": "deployments",
+  "name": "项目部署",
+  "description": "多环境构建发布流水线、部署快捷链接与发布状态核对",
+  "local": true,
+  "prefix": "DEPLOYMENTS",
+  "capabilities": [],
+  "views": [
+    {
+      "id": "deployments",
+      "label": "项目部署",
+      "path": "/deployments",
+      "section": "projects",
+      "component": "panel"
+    }
+  ],
+  "sourceKeys": [],
+  "apiPrefixes": [
+    "/api/deployments"
+  ],
+  "apiPaths": []
+}

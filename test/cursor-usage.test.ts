@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { normalizeCursorUsage, parseCursorKeychainPassword } from '../server/cursor-usage.js';
+import { createCursorUsageReader, normalizeCursorUsage, parseCursorKeychainPassword } from '../server/cursor-usage.js';
 
 const checkedAt = '2026-10-22T00:00:00.000Z';
 
@@ -59,4 +59,23 @@ test('钥匙串密码行只解析口令本身', () => {
   assert.equal(parseCursorKeychainPassword('password: "cursor-token"\nkeychain: "login"'), 'cursor-token');
   assert.equal(parseCursorKeychainPassword(`password: 0x${Buffer.from('cursor-token').toString('hex')}`), 'cursor-token');
   assert.equal(parseCursorKeychainPassword('keychain: "login"'), null);
+});
+
+test('Cursor 额度读取器在账号版本变化时立即失效旧额度缓存', async () => {
+  let calls = 0;
+  const reader = createCursorUsageReader(async () => 'token', 60_000, {
+    request: async () => {
+      const id = ++calls;
+      return {
+        available: true,
+        checkedAt,
+        primary: { usedPercent: id === 1 ? 100 : 20, remainingPercent: id === 1 ? 0 : 80, windowDurationMins: 10080, resetsAt: null },
+      };
+    },
+  });
+  assert.equal((await reader(false, 'v1')).primary?.remainingPercent, 0);
+  assert.equal((await reader(false, 'v1')).primary?.remainingPercent, 0);
+  assert.equal(calls, 1);
+  assert.equal((await reader(false, 'v2')).primary?.remainingPercent, 80);
+  assert.equal(calls, 2);
 });

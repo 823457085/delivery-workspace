@@ -4,28 +4,33 @@ import AgentAvatar from './AgentAvatar.vue';
  * 设计说明：该组件把一次会话的运行链呈现为用户/Agent 消息，并提供唯一的会话输入口。
  * 它不直接请求后端，发送、停止和详情操作全部通过显式事件交给容器，避免隐藏副作用。
  */
-import { computed, nextTick, onBeforeUnmount, shallowRef, useTemplateRef, watch } from 'vue';
-import { Activity, PackageCheck, Check, ChevronRight, CircleStop, CornerUpLeft, Copy, Download, Ellipsis, File, Folder, GitBranch, GitFork, Info,
-  Pencil, Pin, Play, RotateCcw, Search, Trash2 } from '@lucide/vue';
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, shallowRef, useTemplateRef, watch } from 'vue';
+import { Activity, ArrowDown, ArrowUp, Bookmark, PackageCheck, Check, ChevronDown, ChevronRight, CircleStop, CornerUpLeft, Copy, Download, Ellipsis, File, FileText, Folder, GitBranch, GitFork, Info,
+  ListOrdered, Pencil, Pin, Play, Quote, RotateCcw, Search, Trash2, X } from '@lucide/vue';
 import { ElMessage } from 'element-plus';
-import { agentProviderLabels, canContinueStoppedCodexRun, isAgentImageAttachment, type AgentAccessMode, type AgentAttachment, type AgentProvider, type AgentQueuePlacement, type AgentReasoningEffort, type AgentRun, type AgentRunMode, type AgentRuntimeHealth, type AgentServiceTier } from '../../../shared/agent-runtime';
+import { agentProviderLabels, canContinueStoppedCodexRun, isAgentImageAttachment, type AgentAccessMode, type AgentAttachment, type AgentChangedFile, type AgentProvider, type AgentQueuePlacement, type AgentReasoningEffort, type AgentRun, type AgentRunMode, type AgentRuntimeHealth, type AgentServiceTier } from '../../../shared/agent-runtime';
 import { dateTime } from '../../shared/format';
 import StatusPill from '../../shared/ui/StatusPill.vue';
 import AgentComposer from './AgentComposer.vue';
-import AgentTeamQuestion from './AgentTeamQuestion.vue';
 import type { AgentTeamRequest } from './AgentTeamDialog.vue';
 import AgentTerminalButton from './AgentTerminalButton.vue';
 import AgentCursorButton from './AgentCursorButton.vue';
 import AgentChangedFiles from './AgentChangedFiles.vue';
-import AgentExecutionPanel from './AgentExecutionPanel.vue';
-import AgentRemoteDelivery from './AgentRemoteDelivery.vue';
-import AgentWorkspaceCodeArtifacts from './AgentWorkspaceCodeArtifacts.vue';
+import AgentLiveRunActivity from './AgentLiveRunActivity.vue';
+import AgentPlanChecklistCard from './AgentPlanChecklistCard.vue';
+const AgentTeamQuestion = defineAsyncComponent(() => import('./AgentTeamQuestion.vue'));
+const AgentExecutionPanel = defineAsyncComponent(() => import('./AgentExecutionPanel.vue'));
+const AgentRemoteDelivery = defineAsyncComponent(() => import('./AgentRemoteDelivery.vue'));
+const AgentWorkspaceCodeArtifacts = defineAsyncComponent(() => import('./AgentWorkspaceCodeArtifacts.vue'));
+const AgentConversationDeliveryBrief = defineAsyncComponent(() => import('./AgentConversationDeliveryBrief.vue'));
+const AgentFailureRcaCard = defineAsyncComponent(() => import('./AgentFailureRcaCard.vue'));
 import type { JiraDevTaskView } from '../../../shared/jira-dev';
 import { jiraDevTaskDeliveryId, jiraDevTaskIssue, jiraDevTaskProjects, jiraDevTaskWorkspacePaths } from './jira-dev-context';
 import { canRetryTeamReviewWithCodex } from '../../../shared/agent-team';
 import AgentMarkdown from './AgentMarkdown.vue';
+const PluginRecordQuickSave = defineAsyncComponent(() => import('../custom-plugins/PluginRecordQuickSave.vue'));
 import AgentMessageText from './AgentMessageText.vue';
-import AgentTaskPromptDrawer from './AgentTaskPromptDrawer.vue';
+const AgentTaskPromptDrawer = defineAsyncComponent(() => import('./AgentTaskPromptDrawer.vue'));
 import { jiraTaskPromptTitle } from './message-text';
 import AgentTranslatedText from './AgentTranslatedText.vue';
 import AgentTranslateToggle from './AgentTranslateToggle.vue';
@@ -36,6 +41,11 @@ import type { AgentBusinessMention } from './agent-business-context';
 import type { AgentAttachmentDraft } from './useAgentAttachments';
 import { teamChatEntries, teamChatParticipant, teamChatActivity, teamChatActiveStates, teamQuestionReply, isCurrentTeamChatTask, type TeamQuestionTarget } from './team-chat';
 import { agentReplyText } from './execution-summary';
+import { formatChangedFileReference, formatQuoteReply, summarizeOutlineText } from './conversation-outline';
+import { formatCodeBlockFollowUp } from './code-block-tools';
+import { buildSelectionActionPrompt, looksLikeErrorSelection, type SelectionQuickActionKind } from './selection-quick-actions';
+import { buildConversationClipboardDigest, countKeywordOccurrences, stepSearchMatchIndex } from './conversation-search-and-share';
+import { useAgentBookmarks, type AgentMessageBookmark } from './useAgentBookmarks';
 import { teamRoomAcceptanceRecord, type AdvancedTeamTask, type TeamRoom, type TeamDecision } from './team-api';
 
 const props = defineProps<{ conversation?: AgentConversation; visible?: boolean; changing: string; runtimes: AgentRuntimeHealth[]; sideForkAvailable?: boolean; projectlessFork?: boolean;
@@ -44,7 +54,25 @@ const automatic = defineModel<boolean>('automatic', { default: false });
 const draft = defineModel<string>({ default: '' });
 const attachments = defineModel<AgentAttachment[]>('attachments', { default: () => [] });
 const emit = defineEmits<{ send: [selection: { provider: AgentProvider; mode?: AgentRunMode; model: string; reasoningEffort: AgentReasoningEffort | ''; accessMode: AgentAccessMode;
-  queuePlacement: AgentQueuePlacement; serviceTier?: AgentServiceTier; workflow?: boolean; team?: AgentTeamRequest; question?: TeamQuestionTarget }]; accessChange: [accessMode: AgentAccessMode]; stop: [run: AgentRun]; edit: [run: AgentRun]; steer: [run: AgentRun]; removeQueued: [run: AgentRun]; retry: [run: AgentRun, selection?: Pick<AgentRun, 'mode' | 'accessMode'>]; fork: [run: AgentRun]; forkSide: [run: AgentRun]; pin: [conversation: AgentConversation]; rename: [conversation: AgentConversation]; remove: [conversation: AgentConversation]; inspect: [run: AgentRun]; configureModels: []; teamDecision: [action: TeamDecision]; teamCommand: [command: '暂停任务' | '继续执行']; chooseTeamWorkspace: []; providerChange: [provider: AgentProvider]; openGroup: [roomId: string] }>();
+  queuePlacement: AgentQueuePlacement; serviceTier?: AgentServiceTier; workflow?: boolean; team?: AgentTeamRequest; question?: TeamQuestionTarget }]; accessChange: [accessMode: AgentAccessMode]; stop: [run: AgentRun]; edit: [run: AgentRun]; steer: [run: AgentRun]; removeQueued: [run: AgentRun]; retry: [run: AgentRun, selection?: Pick<AgentRun, 'mode' | 'accessMode'>]; fork: [run: AgentRun]; forkSide: [run: AgentRun]; pin: [conversation: AgentConversation]; rename: [conversation: AgentConversation]; renameTitle: [conversation: AgentConversation, title: string]; remove: [conversation: AgentConversation]; inspect: [run: AgentRun]; configureModels: []; teamDecision: [action: TeamDecision]; teamCommand: [command: '暂停任务' | '继续执行']; chooseTeamWorkspace: []; providerChange: [provider: AgentProvider]; openGroup: [roomId: string] }>();
+const editingTitle = shallowRef(false);
+const titleDraft = shallowRef('');
+const titleInput = useTemplateRef<HTMLInputElement>('titleInput');
+function startTitleEdit() {
+  if (!props.conversation || props.changing) return;
+  titleDraft.value = props.conversation.title;
+  editingTitle.value = true;
+  void nextTick(() => { titleInput.value?.focus(); titleInput.value?.select(); });
+}
+function cancelTitleEdit() { editingTitle.value = false; }
+function commitTitleEdit() {
+  if (!editingTitle.value) return;
+  editingTitle.value = false;
+  const target = props.conversation, trimmed = titleDraft.value.trim();
+  if (!target || !trimmed || trimmed === target.title) return;
+  if (trimmed.length > 120) { ElMessage.warning('会话标题不能超过 120 个字符'); return; }
+  emit('renameTitle', target, trimmed);
+}
 const jiraTaskIssue = computed(() => props.jiraTask ? jiraDevTaskIssue(props.jiraTask) : undefined);
 const jiraTaskProjects = computed(() => props.jiraTask ? jiraDevTaskProjects(props.jiraTask) : []);
 const codePaths = computed(() => {
@@ -54,11 +82,43 @@ const codePaths = computed(() => {
 const messageViewport = useTemplateRef<HTMLDivElement>('messageViewport');
 const composer = useTemplateRef<InstanceType<typeof AgentComposer>>('composer');
 const searchQuery = shallowRef('');
+const activeSearchTurnIndex = shallowRef(0);
+const awayFromLatest = shallowRef(false);
+const openedExecution = shallowRef(false);
+const nearLatest = (viewport: HTMLDivElement) => viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 72;
 const conversationView = shallowRef<'chat' | 'execution' | 'delivery'>('chat');
 const taskPromptDetail = shallowRef<string>();
+const selectedQuoteText = shallowRef('');
+const bookmarkStore = typeof useAgentBookmarks === 'function'
+  ? useAgentBookmarks()
+  : {
+      bookmarks: shallowRef<AgentMessageBookmark[]>([]),
+      isBookmarked: () => false,
+      toggleBookmark: () => false,
+      removeBookmark: () => {},
+      reloadBookmarks: () => {},
+    };
+const bookmarkFilter = shallowRef('');
+const filteredBookmarks = computed(() => {
+  const term = bookmarkFilter.value.trim().toLowerCase();
+  if (!term) return bookmarkStore.bookmarks.value;
+  return bookmarkStore.bookmarks.value.filter(item =>
+    `${item.conversationTitle} ${item.excerpt} ${item.content}`.toLowerCase().includes(term),
+  );
+});
+const currentSessionBookmarks = computed(() =>
+  filteredBookmarks.value.filter(item => item.conversationId === props.conversation?.id),
+);
+const otherSessionBookmarks = computed(() =>
+  filteredBookmarks.value.filter(item => item.conversationId !== props.conversation?.id),
+);
 watch([() => props.conversation?.id, () => props.visible], ([id, visible], [previousId]) => {
-  if (id !== previousId) conversationView.value = 'chat';
+  if (id !== previousId) { conversationView.value = 'chat'; editingTitle.value = false; selectedQuoteText.value = ''; }
   if (id !== previousId || visible === false) taskPromptDetail.value = undefined;
+});
+watch(conversationView, view => {
+  if (view === 'execution') openedExecution.value = true;
+  if (view !== 'chat') selectedQuoteText.value = '';
 });
 const copiedMessageId = shallowRef('');
 const searchQueries = new Map<string, string>();
@@ -164,11 +224,32 @@ const taskPromptTitles = computed(() => new Map(visibleEntries.value.flatMap(ent
   const title = jiraTaskPromptTitle(text);
   return title ? [[entry.id, title] as const] : [];
 })));
+const turnOutlineItems = computed(() => {
+  const items: { entryIndex: number; round: number; label: string; changedFiles: number }[] = [];
+  let round = 0;
+  for (let i = 0; i < transcriptEntries.value.length; i++) {
+    const entry = transcriptEntries.value[i];
+    if (entry.kind === 'run') {
+      const first = entry.runs[0];
+      const raw = taskPromptTitles.value.get(first.id) || first.run.objective || '';
+      const changedFiles = entry.runs.reduce((sum, item) => sum + (item.run.changedFiles?.length || 0), 0);
+      items.push({ entryIndex: i, round: ++round, label: summarizeOutlineText(raw, 56), changedFiles });
+    } else if (entry.message.role === 'user') {
+      const raw = taskPromptTitles.value.get(entry.id) || entry.message.text || '';
+      items.push({ entryIndex: i, round: ++round, label: summarizeOutlineText(raw, 56), changedFiles: 0 });
+    }
+  }
+  return items;
+});
 const entrySignature = computed(() => [visibleEntries.value.map(entry => entry.kind === 'run' ? `${entry.id}:${entry.run.updatedAt}:${entry.run.result.length}` : `${entry.id}:${entry.message.text.length}`).join('|'),
   currentTeamTask.value?.updatedAt || '', ...(props.teamRoom?.runs || []).map(run => `${run.id}:${run.updatedAt}:${run.events.length}:${run.result.length}`)].join('|'));
 
 watch(() => props.conversation?.id, (id, previousId) => {
-  if (previousId && messageViewport.value?.clientHeight) scrollPositions.set(previousId, messageViewport.value.scrollTop);
+  const viewport = messageViewport.value;
+  if (previousId && viewport?.clientHeight && conversationView.value === 'chat') {
+    if (nearLatest(viewport)) scrollPositions.delete(previousId);
+    else scrollPositions.set(previousId, viewport.scrollTop);
+  }
   searchQuery.value = id ? searchQueries.get(id) || '' : '';
 }, { immediate: true });
 watch([conversationView, () => props.visible], (_value, [previousView, previousVisible]) => {
@@ -177,25 +258,93 @@ watch([conversationView, () => props.visible], (_value, [previousView, previousV
 // 工作面板通过 v-show 隐藏会话；等容器挂载并真正显示后再恢复，不能在隐藏时把位置归零。
 watch([() => props.conversation?.id, conversationView, () => props.visible, messageViewport], ([id, view, visible, viewport]) => {
   if (!id || view !== 'chat' || visible === false || !viewport?.clientHeight) return;
-  viewport.scrollTop = scrollPositions.get(id) ?? viewport.scrollHeight;
+  if (!searchQuery.value) viewport.scrollTop = scrollPositions.get(id) ?? viewport.scrollHeight;
+  awayFromLatest.value = !nearLatest(viewport);
 }, { immediate: true, flush: 'post' });
-watch(searchQuery, (value) => { if (props.conversation?.id) searchQueries.set(props.conversation.id, value); });
+watch(searchQuery, (value) => {
+  activeSearchTurnIndex.value = 0;
+  if (props.conversation?.id) searchQueries.set(props.conversation.id, value);
+});
+const searchHitTotal = computed(() => {
+  const q = searchQuery.value.trim();
+  if (!q || typeof countKeywordOccurrences !== 'function') return 0;
+  let sum = 0;
+  for (const entry of visibleEntries.value) {
+    if (entry.kind === 'run') {
+      sum += countKeywordOccurrences(entry.run.objective, q);
+      sum += countKeywordOccurrences(entry.run.result, q);
+      sum += countKeywordOccurrences(entry.run.error, q);
+    } else {
+      sum += countKeywordOccurrences(entry.message.text, q);
+    }
+  }
+  return sum;
+});
+function stepSearchTurn(delta: 1 | -1) {
+  const total = transcriptEntries.value.length;
+  if (!total) return;
+  const next = typeof stepSearchMatchIndex === 'function'
+    ? stepSearchMatchIndex(activeSearchTurnIndex.value, total, delta)
+    : (activeSearchTurnIndex.value + delta + total) % total;
+  activeSearchTurnIndex.value = next;
+  jumpToTurn(next);
+}
+let scrollQueued = false;
 watch(() => [props.conversation?.id, entrySignature.value] as const, async ([id], [previousId]) => {
-  if (id !== previousId) return;
+  if (id !== previousId || scrollQueued) return;
   const viewport = messageViewport.value;
   if (!viewport || !viewport.clientHeight || searchQuery.value || !isChatVisible()) return;
-  const followsLatest = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 72;
-  // 同步记录更新前的位置，等本轮响应式更新全部入队后再等待 DOM 完成。
-  await Promise.resolve();
-  await nextTick();
-  if (followsLatest && props.conversation?.id === id && messageViewport.value === viewport && viewport.clientHeight
-    && isChatVisible() && !searchQuery.value) viewport.scrollTop = viewport.scrollHeight;
-}, { flush: 'sync' });
+  const followsLatest = !awayFromLatest.value || nearLatest(viewport);
+  if (!followsLatest) return;
+  scrollQueued = true;
+  try {
+    // 批量合并同一微任务内的流式更新，避免 flush: 'sync' 在每个字符块触发强制同步布局回流。
+    await nextTick();
+    if (props.conversation?.id === id && messageViewport.value === viewport && viewport.clientHeight
+      && isChatVisible() && !searchQuery.value && !awayFromLatest.value) jumpToLatest();
+  } finally { scrollQueued = false; }
+});
 
 function isChatVisible() { return props.visible !== false && conversationView.value === 'chat'; }
 
 function rememberScroll() {
-  if (props.conversation?.id && messageViewport.value?.clientHeight) scrollPositions.set(props.conversation.id, messageViewport.value.scrollTop);
+  const viewport = messageViewport.value;
+  if (!props.conversation?.id || !viewport?.clientHeight) return;
+  awayFromLatest.value = !nearLatest(viewport);
+  if (searchQuery.value || awayFromLatest.value) scrollPositions.set(props.conversation.id, viewport.scrollTop);
+  else scrollPositions.delete(props.conversation.id);
+}
+
+function jumpToLatest() {
+  const viewport = messageViewport.value;
+  if (!viewport?.clientHeight) return;
+  viewport.scrollTop = viewport.scrollHeight;
+  rememberScroll();
+}
+
+function jumpToTop() {
+  const viewport = messageViewport.value;
+  if (!viewport?.clientHeight) return;
+  viewport.scrollTop = 0;
+  rememberScroll();
+}
+
+function jumpToTurn(entryIndex: number) {
+  const viewport = messageViewport.value;
+  if (!viewport) return;
+  const target = viewport.querySelector<HTMLElement>(`[data-turn-index="${entryIndex}"]`);
+  if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function stripMarkdownPlain(source: string): string {
+  return source
+    .replace(/```[^\n]*\n([\s\S]*?)```/g, '$1')
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/(\*\*|__)(.*?)\1/g, '$2')
+    .replace(/`([^`]+)`/g, '$1')
+    .trim();
 }
 
 async function copyMessage(id: string, content: string) {
@@ -208,13 +357,139 @@ async function copyMessage(id: string, content: string) {
 }
 
 function exportConversation(format: unknown) {
-  if (!props.conversation || !['markdown', 'json'].includes(String(format))) return;
-  downloadConversation(props.conversation, format as 'markdown' | 'json');
+  if (!props.conversation || !['markdown', 'json', 'handoff'].includes(String(format))) return;
+  downloadConversation(props.conversation, format as 'markdown' | 'json' | 'handoff');
+}
+
+async function copyConversationDigest() {
+  if (!props.conversation || typeof buildConversationClipboardDigest !== 'function') return;
+  try {
+    await navigator.clipboard.writeText(buildConversationClipboardDigest(props.conversation));
+    ElMessage.success('已复制整场对话纪要，可直接粘贴到飞书、企微或笔记');
+  } catch {
+    ElMessage.error('复制对话纪要失败');
+  }
+}
+
+async function applyPromptFromDelivery(prompt: string) {
+  draft.value = draft.value.trim() ? `${draft.value.trim()}\n${prompt}` : prompt;
+  if (conversationView.value !== 'chat') conversationView.value = 'chat';
+  await nextTick();
+  composer.value?.focusPrompt();
 }
 
 onBeforeUnmount(() => { if (copyTimer) clearTimeout(copyTimer); });
 
 function focusComposer() { composer.value?.focusPrompt(); }
+
+function captureViewportSelection() {
+  const viewport = messageViewport.value;
+  if (!viewport || typeof window === 'undefined' || !window.getSelection) return;
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed) {
+    selectedQuoteText.value = '';
+    return;
+  }
+  const anchor = selection.anchorNode;
+  const focus = selection.focusNode;
+  if (!anchor || !focus || !viewport.contains(anchor) || !viewport.contains(focus)) return;
+  const text = selection.toString().trim();
+  selectedQuoteText.value = text.length >= 2 && text.length <= 2400 ? text : '';
+}
+
+const selectionLooksLikeError = computed(() =>
+  typeof looksLikeErrorSelection === 'function' && looksLikeErrorSelection(selectedQuoteText.value),
+);
+
+async function quoteTextToComposer(rawSnippet: string) {
+  const next = formatQuoteReply(rawSnippet, draft.value);
+  if (next === draft.value && !rawSnippet.trim()) return;
+  draft.value = next;
+  selectedQuoteText.value = '';
+  if (typeof window !== 'undefined' && window.getSelection) {
+    window.getSelection()?.removeAllRanges();
+  }
+  if (conversationView.value !== 'chat') conversationView.value = 'chat';
+  await nextTick();
+  composer.value?.focusPrompt();
+}
+
+async function applySelectionAction(action: SelectionQuickActionKind) {
+  const raw = selectedQuoteText.value;
+  if (!raw.trim()) return;
+  const next = typeof buildSelectionActionPrompt === 'function'
+    ? buildSelectionActionPrompt(raw, action, draft.value)
+    : formatQuoteReply(raw, draft.value);
+  draft.value = next;
+  selectedQuoteText.value = '';
+  if (typeof window !== 'undefined' && window.getSelection) {
+    window.getSelection()?.removeAllRanges();
+  }
+  if (conversationView.value !== 'chat') conversationView.value = 'chat';
+  await nextTick();
+  composer.value?.focusPrompt();
+}
+
+async function copySelectedQuote() {
+  const raw = selectedQuoteText.value;
+  if (!raw) return;
+  try {
+    await navigator.clipboard.writeText(raw);
+    selectedQuoteText.value = '';
+    if (typeof window !== 'undefined' && window.getSelection) {
+      window.getSelection()?.removeAllRanges();
+    }
+    ElMessage.success('已复制选中内容');
+  } catch {
+    ElMessage.error('复制选中内容失败');
+  }
+}
+
+async function askCodeBlockToComposer(payload: { language: string | undefined; code: string }) {
+  const next = typeof formatCodeBlockFollowUp === 'function'
+    ? formatCodeBlockFollowUp(payload.language, payload.code, draft.value)
+    : formatQuoteReply(payload.code, draft.value);
+  draft.value = next;
+  if (conversationView.value !== 'chat') conversationView.value = 'chat';
+  await nextTick();
+  composer.value?.focusPrompt();
+}
+
+async function askChangedFile(file: AgentChangedFile, line?: number) {
+  const reference = formatChangedFileReference(file.path, line);
+  if (!draft.value.includes(reference)) {
+    draft.value = `${draft.value}${draft.value && !/\s$/.test(draft.value) ? ' ' : ''}${reference} `;
+  }
+  if (conversationView.value !== 'chat') conversationView.value = 'chat';
+  await nextTick();
+  composer.value?.focusPrompt();
+}
+
+function toggleRunBookmark(run: AgentRun, entryIndex: number) {
+  if (!props.conversation) return;
+  const content = agentReplyText(run.result) || agentRunErrorText(run);
+  if (!content.trim()) return;
+  const added = bookmarkStore.toggleBookmark({
+    conversationId: props.conversation.id,
+    conversationTitle: props.conversation.title,
+    messageKey: run.id,
+    turnIndex: entryIndex + 1,
+    content,
+  });
+  ElMessage.success(added ? '已加入重点收藏，可在顶部收藏夹或跨会话直接引用' : '已从重点收藏移除');
+}
+
+async function jumpToBookmarkedMessage(item: AgentMessageBookmark) {
+  if (item.conversationId !== props.conversation?.id) return;
+  if (conversationView.value !== 'chat') conversationView.value = 'chat';
+  if (searchQuery.value) searchQuery.value = '';
+  await nextTick();
+  const idx = transcriptEntries.value.findIndex(entry =>
+    (entry.kind === 'run' && entry.runs.some(r => r.run.id === item.messageKey))
+    || entry.id === item.messageKey,
+  );
+  if (idx >= 0) jumpToTurn(idx);
+}
 
 function retryRun(run: AgentRun, continueOriginal = false) { emit('retry', run, continueOriginal ? undefined : composer.value?.retrySelection(run)); }
 
@@ -228,24 +503,33 @@ defineExpose({ focusComposer });
       <div class="conversation-masthead">
       <header class="conversation-header studio-conversation-header">
         <div class="conversation-title-copy">
-          <h1 :title="conversation.title">{{ conversation.title }}</h1>
-          <AgentTranslatedText class="title-translation" :source="conversation.title" compact />
-          <div class="conversation-meta"><span :title="agentConversationProjectPath(conversation)">{{ workspaceLabel }}</span><ChevronRight :size="12" /><span>{{ agentProviderLabels[conversation.latest.provider] }}</span><span>{{ modeLabel }}</span><span>访问权限：{{ accessLabel }}</span><span :title="selectedModelLabel">{{ selectedModelLabel }}</span></div>
+          <div class="conversation-title-bar">
+            <input v-if="editingTitle" ref="titleInput" v-model="titleDraft" class="conversation-title-input" maxlength="120" aria-label="修改会话标题" @keydown.enter.prevent="commitTitleEdit" @keydown.esc.prevent="cancelTitleEdit" @blur="commitTitleEdit" />
+            <h1 v-else :title="`${conversation.title}（双击可直接重命名）`" class="editable-conversation-title" @dblclick="startTitleEdit">{{ conversation.title }}</h1>
+            <div class="conversation-heading-row">
+              <StatusPill v-if="status" v-bind="status" />
+              <span class="meta-chip is-provider">{{ agentProviderLabels[conversation.latest.provider] }}</span>
+              <span class="meta-chip" :title="selectedModelLabel">{{ selectedModelLabel }}</span>
+              <span class="meta-chip is-mode">{{ modeLabel }} · {{ accessLabel }}</span>
+            </div>
+          </div>
+          <AgentTranslatedText v-if="!editingTitle" class="title-translation" :source="conversation.title" compact />
         </div>
         <div class="conversation-actions">
           <slot name="header-actions" />
-          <StatusPill v-bind="status" />
           <AgentTranslateToggle />
           <el-button v-if="stoppableRun && !pausedRun" link type="danger" :loading="changing === stoppableRun.id" @click="emit('stop', stoppableRun)"><CircleStop :size="14" /> 停止</el-button>
           <el-dropdown trigger="click" popper-class="studio-conversation-menu">
-            <button type="button" class="studio-panel-toggle" aria-label="更多会话操作" title="更多会话操作"><Ellipsis :size="19" /></button>
+            <button type="button" class="studio-panel-toggle" aria-label="更多会话操作" title="更多会话操作"><Ellipsis :size="18" /></button>
             <template #dropdown><el-dropdown-menu>
               <el-dropdown-item v-if="canFork" :disabled="running || !!changing" @click="emit('fork', conversation.latest)"><GitFork :size="14" />基于此会话新建</el-dropdown-item>
               <el-dropdown-item v-if="sideForkAvailable" :disabled="!!changing" @click="emit('forkSide', conversation.latest)"><GitFork :size="14" />在侧边新建继承会话</el-dropdown-item>
-              <el-dropdown-item :disabled="!!changing" @click="emit('rename', conversation)"><Pencil :size="14" />修改标题</el-dropdown-item>
+              <el-dropdown-item :disabled="!!changing" @click="startTitleEdit"><Pencil :size="14" />修改标题</el-dropdown-item>
               <el-dropdown-item @click="emit('pin', conversation)"><Pin :size="14" />{{ pinned ? '取消置顶' : '置顶会话' }}</el-dropdown-item>
               <el-dropdown-item @click="emit('inspect', conversation.latest)"><Info :size="14" />会话信息</el-dropdown-item>
-              <el-dropdown-item divided @click="exportConversation('markdown')"><Download :size="14" />导出 Markdown</el-dropdown-item>
+              <el-dropdown-item divided @click="copyConversationDigest"><Copy :size="14" />复制整场对话纪要（贴飞书/笔记）</el-dropdown-item>
+              <el-dropdown-item @click="exportConversation('handoff')"><Download :size="14" />导出跨 Agent 交接简报</el-dropdown-item>
+              <el-dropdown-item @click="exportConversation('markdown')"><Download :size="14" />导出 Markdown</el-dropdown-item>
               <el-dropdown-item @click="exportConversation('json')"><Download :size="14" />导出 JSON</el-dropdown-item>
               <el-dropdown-item divided :disabled="!!changing" class="studio-delete-conversation" @click="emit('remove', conversation)"><Trash2 :size="14" />删除会话</el-dropdown-item>
             </el-dropdown-menu></template>
@@ -255,77 +539,161 @@ defineExpose({ focusComposer });
       <div class="conversation-toolbar">
       <nav class="studio-conversation-tools" aria-label="会话视图">
         <button type="button" :class="{ active: conversationView === 'chat' }" :aria-pressed="conversationView === 'chat'" @click="conversationView = 'chat'">对话</button>
-        <button type="button" :class="{ active: conversationView === 'execution' }" :aria-pressed="conversationView === 'execution'" @click="conversationView = 'execution'"><Activity :size="14" />执行记录</button>
-        <button type="button" :class="{ active: conversationView === 'delivery' }" :aria-pressed="conversationView === 'delivery'" @click="conversationView = 'delivery'"><PackageCheck :size="14" />本轮交付<span>{{ currentFileCount }}</span></button>
+        <button type="button" :class="{ active: conversationView === 'execution' }" :aria-pressed="conversationView === 'execution'" @click="conversationView = 'execution'"><Activity :size="13" />执行记录</button>
+        <button type="button" :class="{ active: conversationView === 'delivery' }" :aria-pressed="conversationView === 'delivery'" @click="conversationView = 'delivery'"><PackageCheck :size="13" />本轮交付<span class="tool-count">{{ currentFileCount }}</span></button>
       </nav>
       <div class="conversation-context">
-        <div class="context-block project-context" :title="agentConversationProjectPath(conversation)"><Folder :size="14" /><span><small>当前项目</small><strong>{{ workspaceLabel }}</strong></span></div>
-        <div v-if="!conversation.teamChat || conversation.teamChat.workspaceBound" class="context-block branch-context" :title="conversation.latest.baseBranch || conversation.latest.branch || '普通文件夹'"><GitBranch :size="14" /><span><small>{{ conversation.latest.isolatedWorkspace ? '基线分支' : conversation.latest.branch ? '当前分支' : '工作区类型' }}</small><strong>{{ conversation.latest.baseBranch || conversation.latest.branch || '普通文件夹' }}</strong></span></div>
-        <div v-if="!conversation.teamChat || conversation.teamChat.workspaceBound" class="context-block workspace-context" :title="conversation.latest.workspacePath"><span><small>工作区</small><strong>{{ conversation.latest.workspacePath.split(/[\\/]/).filter(Boolean).slice(-2).join('/') || conversation.latest.workspacePath }}</strong></span></div>
+        <div class="context-block project-context" :title="agentConversationProjectPath(conversation) || '当前会话未绑定本地项目'"><Folder :size="13" /><span><small>项目</small><strong>{{ workspaceLabel === '未指定工作区' ? '未绑定项目' : workspaceLabel }}</strong></span></div>
+        <div v-if="(!conversation.teamChat || conversation.teamChat.workspaceBound) && (conversation.latest.baseBranch || conversation.latest.branch)" class="context-block branch-context" :title="conversation.latest.baseBranch || conversation.latest.branch"><GitBranch :size="13" /><span><small>分支</small><strong>{{ conversation.latest.baseBranch || conversation.latest.branch }}</strong></span></div>
         <AgentTerminalButton v-if="!conversation.teamChat || conversation.teamChat.workspaceBound" :workspace-path="conversation.latest.workspacePath" />
         <AgentCursorButton v-if="!conversation.teamChat || conversation.teamChat.workspaceBound" :workspace-path="conversation.latest.workspacePath" />
-        <label class="message-search"><Search :size="12" /><input v-model="searchQuery" type="search" placeholder="搜索当前会话" /></label>
+        <el-dropdown v-if="conversationView === 'chat' && turnOutlineItems.length >= 2" trigger="click" popper-class="studio-turn-outline-popper">
+          <button type="button" class="context-block turn-outline-trigger" title="对话轮次目录 · 快速跳转到任意提问轮次">
+            <ListOrdered :size="12" />
+            <span><strong>{{ turnOutlineItems.length }} 轮</strong></span>
+            <ChevronDown :size="11" />
+          </button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item v-for="turn in turnOutlineItems" :key="turn.entryIndex" @click="jumpToTurn(turn.entryIndex)">
+                <span class="turn-outline-num">#{{ String(turn.round).padStart(2, '0') }}</span>
+                <span class="turn-outline-text">{{ turn.label }}</span>
+                <small v-if="turn.changedFiles > 0" class="turn-outline-files">{{ turn.changedFiles }} 改</small>
+              </el-dropdown-item>
+              <el-dropdown-item divided @click="jumpToTop"><ArrowUp :size="13" /><span>回到首轮顶部</span></el-dropdown-item>
+              <el-dropdown-item @click="jumpToLatest"><ArrowDown :size="13" /><span>跳至最新消息</span></el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+        <span v-else-if="conversationView === 'chat' && turnOutlineItems.length === 1" class="context-block turn-count-pill" title="当前会话共 1 轮对话">
+          <ListOrdered :size="12" /><span><strong>1 轮</strong></span>
+        </span>
+        <el-popover v-if="bookmarkStore.bookmarks.value.length > 0" trigger="click" :width="368" placement="bottom-start" popper-class="studio-bookmark-popper">
+          <template #reference>
+            <button type="button" class="context-block turn-outline-trigger is-bookmark-trigger" title="重点收藏夹 · 快速定位本会话或跨会话复用已收藏的关键回复">
+              <Bookmark :size="12" />
+              <span><strong>收藏 · {{ bookmarkStore.bookmarks.value.length }}</strong></span>
+            </button>
+          </template>
+          <div class="bookmark-popover-body">
+            <div class="bookmark-popover-head">
+              <strong>重点消息收藏夹</strong>
+              <small>共 {{ bookmarkStore.bookmarks.value.length }} 条</small>
+            </div>
+            <input v-if="bookmarkStore.bookmarks.value.length > 3" v-model="bookmarkFilter" type="search" class="bookmark-filter-input" placeholder="搜收藏内容、命令或会话名…" />
+            <div v-if="currentSessionBookmarks.length" class="bookmark-group">
+              <header>当前会话（点击定位轮次）</header>
+              <div v-for="item in currentSessionBookmarks" :key="item.id" class="bookmark-row">
+                <button type="button" class="bookmark-main-btn" @click="jumpToBookmarkedMessage(item)">
+                  <span v-if="item.turnIndex" class="bookmark-turn-badge">#{{ String(item.turnIndex).padStart(2, '0') }}</span>
+                  <span class="bookmark-excerpt">{{ item.excerpt }}</span>
+                </button>
+                <div class="bookmark-row-actions">
+                  <button v-if="!pausedRun" type="button" title="引用到当前输入框" @click="quoteTextToComposer(item.content)"><Quote :size="11" /></button>
+                  <button type="button" title="复制完整内容" @click="copyMessage(`bm:${item.id}`, item.content)"><Check v-if="copiedMessageId === `bm:${item.id}`" :size="11" /><Copy v-else :size="11" /></button>
+                  <button type="button" class="is-remove" title="取消收藏" @click="bookmarkStore.removeBookmark(item.id)"><Trash2 :size="11" /></button>
+                </div>
+              </div>
+            </div>
+            <div v-if="otherSessionBookmarks.length" class="bookmark-group">
+              <header>其他会话（可跨会话直接引用或复制）</header>
+              <div v-for="item in otherSessionBookmarks" :key="item.id" class="bookmark-row is-cross">
+                <div class="bookmark-cross-info">
+                  <small>{{ item.conversationTitle }}</small>
+                  <span class="bookmark-excerpt">{{ item.excerpt }}</span>
+                </div>
+                <div class="bookmark-row-actions">
+                  <button v-if="!pausedRun" type="button" title="跨会话引用到当前输入框" @click="quoteTextToComposer(item.content)"><Quote :size="11" /></button>
+                  <button type="button" title="复制完整内容" @click="copyMessage(`bm:${item.id}`, item.content)"><Check v-if="copiedMessageId === `bm:${item.id}`" :size="11" /><Copy v-else :size="11" /></button>
+                  <button type="button" class="is-remove" title="取消收藏" @click="bookmarkStore.removeBookmark(item.id)"><Trash2 :size="11" /></button>
+                </div>
+              </div>
+            </div>
+            <p v-if="!filteredBookmarks.length" class="bookmark-empty">没有匹配的收藏内容</p>
+          </div>
+        </el-popover>
+        <label class="message-search" :class="{ 'has-query': Boolean(searchQuery.trim()) }">
+          <Search :size="12" />
+          <input v-model="searchQuery" type="search" placeholder="搜索对话内容…" @keydown.esc="searchQuery = ''" @keydown.enter.prevent="stepSearchTurn($event.shiftKey ? -1 : 1)" />
+          <span v-if="searchQuery.trim()" class="message-search-counter" :title="`共匹配 ${transcriptEntries.length} 轮对话 · ${searchHitTotal} 处关键词（回车跳下一轮，Shift+回车上一轮）`">
+            {{ transcriptEntries.length ? `${Math.min(activeSearchTurnIndex + 1, transcriptEntries.length)}/${transcriptEntries.length}` : '0' }}<template v-if="searchHitTotal > transcriptEntries.length"> · {{ searchHitTotal }}处</template>
+          </span>
+          <button v-if="searchQuery.trim() && transcriptEntries.length > 1" type="button" class="message-search-step" aria-label="上一处匹配轮次" title="上一处匹配轮次 (Shift+Enter)" @click.prevent="stepSearchTurn(-1)"><ArrowUp :size="11" /></button>
+          <button v-if="searchQuery.trim() && transcriptEntries.length > 1" type="button" class="message-search-step" aria-label="下一处匹配轮次" title="下一处匹配轮次 (Enter)" @click.prevent="stepSearchTurn(1)"><ArrowDown :size="11" /></button>
+          <button v-if="searchQuery" type="button" class="message-search-clear" aria-label="清空搜索" title="清空搜索 (Esc)" @click.prevent="searchQuery = ''"><X :size="11" /></button>
+        </label>
       </div>
       <div v-if="jiraTask" class="conversation-jira-task" aria-label="关联 Jira 研发任务">
-        <strong>{{ jiraTask.workflow === 'requirement' ? '需求开发' : 'Jira 修复' }}</strong>
-        <a v-if="jiraTaskIssue?.url" :href="jiraTaskIssue.url" target="_blank" rel="noreferrer">{{ jiraTaskIssue.key }}</a>
-        <span v-else-if="jiraTaskIssue">{{ jiraTaskIssue.key }}</span>
-        <span v-for="project in jiraTaskProjects" :key="`${project.path}:${project.branchName}`" :title="project.workspacePath || project.path">{{ project.path.split(/[\\/]/).filter(Boolean).at(-1) || project.path }} · {{ project.branchName }}</span>
-        <router-link :to="{ path: '/delivery/handoff', query: { view: 'jira', workflow: jiraTask.workflow, taskId: jiraTask.taskId } }">返回任务与交接</router-link>
-        <button v-if="jiraTask.launch?.groupRoomId" type="button" class="jira-group-link" @click="emit('openGroup', jiraTask.launch.groupRoomId)">打开团队群聊</button>
+        <span class="conversation-workflow-pill" :data-workflow="jiraTask.workflow">{{ jiraTask.workflow === 'requirement' ? '需求开发' : 'Jira 修复' }}</span>
+        <a v-if="jiraTaskIssue?.url" class="conversation-issue-pill" :href="jiraTaskIssue.url" target="_blank" rel="noreferrer">{{ jiraTaskIssue.key }}</a>
+        <span v-else-if="jiraTaskIssue" class="conversation-issue-pill">{{ jiraTaskIssue.key }}</span>
+        <span v-for="project in jiraTaskProjects" :key="`${project.path}:${project.branchName}`" class="conversation-repo-pill" :title="project.workspacePath || project.path"><GitBranch :size="12" />{{ project.path.split(/[\\/]/).filter(Boolean).at(-1) || project.path }} · {{ project.branchName }}</span>
+        <div class="conversation-jira-links">
+          <router-link :to="{ path: '/agent', query: { view: jiraTask.workflow === 'jira' ? 'jira-fix' : 'design', tab: 'records', taskId: jiraTask.taskId } }">返回任务与交接</router-link>
+          <button v-if="jiraTask.launch?.groupRoomId" type="button" class="jira-group-link" @click="emit('openGroup', jiraTask.launch.groupRoomId)">打开团队群聊</button>
+        </div>
       </div>
       </div>
       </div>
       <div class="conversation-reading">
-      <AgentExecutionPanel v-show="conversationView === 'execution'" :visible="visible !== false && conversationView === 'execution'" class="studio-main-execution" :conversation="conversation" :team-room="teamRoom" :team-task="currentTeamTask" @inspect="emit('inspect', $event)" />
+      <AgentExecutionPanel v-if="openedExecution" v-show="conversationView === 'execution'" :visible="visible !== false && conversationView === 'execution'" class="studio-main-execution" :conversation="conversation" :team-room="teamRoom" :team-task="currentTeamTask" @inspect="emit('inspect', $event)" />
       <section v-if="conversationView === 'delivery'" class="studio-main-delivery" aria-label="本轮交付成果">
+        <div v-if="codePaths.length || currentFileDeliveries.length" class="delivery-pipeline-bar" aria-label="一站式研发交付流转入口">
+          <span class="delivery-pipeline-label">交付流转：</span>
+          <RouterLink class="delivery-pipeline-link" :to="{ path: '/agent', query: { view: 'projects' } }">1. 项目 Git 提交与推送</RouterLink>
+          <span class="delivery-pipeline-sep">→</span>
+          <RouterLink class="delivery-pipeline-link" :to="{ path: '/agent', query: { view: 'queue' } }">2. 交付队列与合并请求</RouterLink>
+          <span class="delivery-pipeline-sep">→</span>
+          <RouterLink class="delivery-pipeline-link" :to="{ path: '/agent', query: { view: 'deployments' } }">3. 环境部署与验证</RouterLink>
+        </div>
         <AgentWorkspaceCodeArtifacts v-if="codePaths.length" :paths="codePaths" :active="visible" :run-state="conversation.latest.status" />
         <AgentRemoteDelivery v-if="jiraTask" :key="jiraDevTaskDeliveryId(jiraTask)" :target-id="jiraDevTaskDeliveryId(jiraTask)" :active="visible !== false && conversationView === 'delivery'" />
+        <AgentConversationDeliveryBrief :conversation="conversation" :paused="!!pausedRun" @ask-test="applyPromptFromDelivery" />
         <h2>本轮交付</h2>
-        <AgentChangedFiles v-for="item in currentFileDeliveries" :key="item.run.id" :files="item.run.changedFiles!" :run-id="item.run.id" />
+        <AgentChangedFiles v-for="item in currentFileDeliveries" :key="item.run.id" :files="item.run.changedFiles!" :run-id="item.run.id" :can-ask="!pausedRun" @ask-file="askChangedFile" @apply-review-prompt="applyPromptFromDelivery" />
         <el-empty v-if="!currentFileDeliveries.length && !jiraTask" description="本轮暂无记录的改动文件" :image-size="56" />
         <details v-if="historicalFileDeliveries.length" class="delivery-file-history">
           <summary>历史文件</summary>
           <section v-for="item in historicalFileDeliveries" :key="item.run.id">
             <h3>第 {{ item.round }} 轮 · {{ dateTime(item.run.updatedAt) }}</h3>
-            <AgentChangedFiles :files="item.run.changedFiles!" :run-id="item.run.id" />
+            <AgentChangedFiles :files="item.run.changedFiles!" :run-id="item.run.id" :can-ask="!pausedRun" @ask-file="askChangedFile" @apply-review-prompt="applyPromptFromDelivery" />
           </section>
         </details>
       </section>
-      <div v-show="conversationView === 'chat'" ref="messageViewport" class="message-viewport" aria-live="polite" @scroll.passive="rememberScroll">
+      <div v-show="conversationView === 'chat'" ref="messageViewport" class="message-viewport" aria-live="polite" @scroll.passive="rememberScroll" @mouseup="captureViewportSelection" @keyup="captureViewportSelection">
         <div class="message-list">
-          <template v-for="entry in transcriptEntries" :key="entry.id">
-          <div v-if="entry.kind === 'run'" class="message-turn">
+          <template v-for="(entry, entryIndex) in transcriptEntries" :key="entry.id">
+          <div v-if="entry.kind === 'run'" :data-turn-index="entryIndex" class="message-turn" :class="{ 'is-settled-turn': !searchQuery && entryIndex < transcriptEntries.length - 2 && entry.runs.every(item => !['running', 'queued'].includes(item.run.status) && !item.run.pausedForEdit) }">
             <template v-for="{ run, id } in entry.runs" :key="id">
-            <article v-if="!legacyContinuations.has(run.id)" class="chat-message user-message"><AgentAvatar user class="message-avatar" /><div><header><strong>你</strong><time>{{ dateTime(run.createdAt) }}</time></header><div v-if="run.attachments?.length" class="message-images"><a v-for="attachment in run.attachments" :key="attachment.id" :href="attachment.url" target="_blank" rel="noopener"><img v-if="isAgentImageAttachment(attachment)" :src="attachment.url" :alt="attachment.name" /><span v-else class="message-file"><File :size="24" /></span><span>{{ attachment.name }}</span></a></div>
+            <article v-if="!legacyContinuations.has(run.id)" class="chat-message user-message"><AgentAvatar user class="message-avatar" /><div class="user-turn-stack"><div class="message-card user-card"><header class="user-card-header"><strong>你</strong><time>{{ dateTime(run.createdAt) }}</time></header><div v-if="run.attachments?.length" class="message-images"><a v-for="attachment in run.attachments" :key="attachment.id" :href="attachment.url" target="_blank" rel="noopener"><img v-if="isAgentImageAttachment(attachment)" :src="attachment.url" :alt="attachment.name" loading="lazy" decoding="async" /><span v-else class="message-file"><File :size="20" /></span><span>{{ attachment.name }}</span></a></div>
               <p v-if="taskPromptTitles.has(id)">{{ taskPromptTitles.get(id) }}</p>
               <AgentTranslatedText v-else :source="run.objective" replace><AgentMessageText :source="run.objective" :knowledge-context="run.knowledgeContext" :search-query="searchQuery" /></AgentTranslatedText>
-              <div class="message-tools user-message-tools">
+            </div>
+              <div class="message-tools user-message-tools" :class="{ 'is-pinned': taskPromptTitles.has(id) || !!run.revisesRunId }">
                 <button v-if="taskPromptTitles.has(id)" type="button" class="event-link" aria-haspopup="dialog" @click="taskPromptDetail = run.objective">查看完整提示词</button>
                 <button v-if="conversation.source !== 'codex' && (run.pausedForEdit || (!pausedRun && (run.status === 'running' || run.id === conversation.latest.id && ['queued', 'cancelled', 'interrupted', 'failed'].includes(run.status))))"
-                  type="button" class="event-link" :disabled="!!changing" @click="emit('edit', run)"><Pencil :size="12" /> {{ ['running', 'queued'].includes(run.status) ? '暂停并编辑' : '编辑消息' }}</button>
-                <span v-if="run.revisesRunId" class="event-link">修订后的消息</span>
+                  type="button" class="event-link" :disabled="!!changing" @click="emit('edit', run)"><Pencil :size="11" /> {{ ['running', 'queued'].includes(run.status) ? '暂停并编辑' : '编辑' }}</button>
+                <span v-if="run.revisesRunId" class="event-link">已修订</span>
                 <button v-if="canFork"
                   type="button" class="event-link" :disabled="running || !!changing"
                   title="继承当前会话已完成的上下文，原会话保留不变"
-                  @click="emit('fork', conversation.latest)"><GitFork :size="12" /> 基于此会话新建</button>
+                  @click="emit('fork', conversation.latest)"><GitFork :size="11" /> 分叉</button>
                 <button type="button" class="message-copy" title="复制消息" @click="copyMessage(`user:${run.id}`, run.objective)"><Check v-if="copiedMessageId === `user:${run.id}`" :size="12" /><Copy v-else :size="12" /></button>
-              </div>
-            </div></article>
+              </div></div></article>
             <article v-for="supplement in run.supplements || []" :key="supplement.id" class="chat-message user-message">
-              <AgentAvatar user class="message-avatar" /><div><header><strong>你 · 补充</strong><time>{{ dateTime(supplement.createdAt) }}</time></header>
-                <div v-if="supplement.attachments.length" class="message-images"><a v-for="attachment in supplement.attachments" :key="attachment.id" :href="attachment.url" target="_blank" rel="noopener"><img v-if="isAgentImageAttachment(attachment)" :src="attachment.url" :alt="attachment.name" /><span v-else class="message-file"><File :size="24" /></span><span>{{ attachment.name }}</span></a></div><AgentTranslatedText :source="supplement.objective" replace><AgentMessageText :source="supplement.objective" :knowledge-context="supplement.knowledgeContext" :search-query="searchQuery" /></AgentTranslatedText>
-              </div>
+              <AgentAvatar user class="message-avatar" /><div class="user-turn-stack"><div class="message-card user-card"><header class="user-card-header"><strong>你 · 补充</strong><time>{{ dateTime(supplement.createdAt) }}</time></header>
+                <div v-if="supplement.attachments.length" class="message-images"><a v-for="attachment in supplement.attachments" :key="attachment.id" :href="attachment.url" target="_blank" rel="noopener"><img v-if="isAgentImageAttachment(attachment)" :src="attachment.url" :alt="attachment.name" loading="lazy" decoding="async" /><span v-else class="message-file"><File :size="20" /></span><span>{{ attachment.name }}</span></a></div><AgentTranslatedText :source="supplement.objective" replace><AgentMessageText :source="supplement.objective" :knowledge-context="supplement.knowledgeContext" :search-query="searchQuery" /></AgentTranslatedText>
+              </div></div>
             </article>
-            <article class="chat-message agent-message"><AgentAvatar :provider="run.provider" :model="run.model" class="message-avatar" /><div><header><strong>{{ run.provider === 'codex' ? 'GPT / Codex' : run.provider === 'claude' ? 'Claude Code' : run.provider === 'kiro' ? 'Kiro CLI' : run.provider === 'antigravity' ? 'Antigravity CLI' : run.provider === 'api' ? '模型 API' : run.provider === 'deepseek' ? 'DeepSeek（官方 API）' : run.provider === 'workbuddy' ? '腾讯 WorkBuddy' : run.provider === 'grok' ? 'Grok（xAI）' : 'Cursor Agent' }}</strong><small class="message-model">{{ run.model || 'CLI 默认' }}</small><StatusPill v-bind="agentRunStatus(run)" /><small v-if="legacyContinuations.has(run.id)" class="continuation-label" title="沿用上一轮的 Codex 会话">续跑</small><time>{{ dateTime(run.updatedAt) }}</time></header><AgentTranslatedText v-if="run.result" :source="agentReplyText(run.result)" :stable="!['queued', 'running'].includes(run.status)" markdown replace><AgentMarkdown class="agent-result" :source="agentReplyText(run.result)" /></AgentTranslatedText><AgentTranslatedText v-if="run.error" :source="agentRunErrorText(run)" replace><p class="agent-error">{{ agentRunErrorText(run) }}</p></AgentTranslatedText><template v-else-if="!run.result"><AgentTranslatedText v-if="run.events.length" :source="latestActivity(run)" replace><p class="agent-progress">{{ latestActivity(run) }}</p></AgentTranslatedText><p v-else class="agent-progress">该轮没有保存最终回复</p></template><AgentChangedFiles v-if="run.changedFiles" :files="run.changedFiles" :run-id="run.id" /><div class="message-tools"><button v-if="run.result || run.error" type="button" class="message-copy" title="复制消息" @click="copyMessage(`agent:${run.id}`, agentReplyText(run.result) || agentRunErrorText(run))"><Check v-if="copiedMessageId === `agent:${run.id}`" :size="12" /><Copy v-else :size="12" /></button><button v-if="canSteerAgentRun(run, activeRun, conversation.runs)" type="button" class="event-link" :disabled="!!changing" title="停止当前轮，并提前执行此消息" @click="emit('steer', run)"><CornerUpLeft :size="12" /> 调整方向</button><button v-if="conversation.source !== 'codex' && run.status === 'queued' && run.parentRunId" type="button" class="event-link danger-link" :disabled="!!changing" title="从当前会话删除这条排队消息" @click="emit('removeQueued', run)"><Trash2 :size="12" /> {{ changing === `delete:${run.id}` ? '删除中' : '删除' }}</button><button v-if="!pausedRun && continuableRun?.id === run.id" type="button" class="event-link" :disabled="!!changing" title="在原轮次继续，沿用已保存的会话和权限" @click="retryRun(run, true)"><Play :size="12" /> 继续执行</button>
+            <article class="chat-message agent-message"><AgentAvatar :provider="run.provider" :model="run.model" class="message-avatar" /><div class="message-card agent-card"><header><strong>{{ run.provider === 'codex' ? 'GPT / Codex' : run.provider === 'claude' ? 'Claude Code' : run.provider === 'kiro' ? 'Kiro CLI' : run.provider === 'antigravity' ? 'Antigravity CLI' : run.provider === 'api' ? '模型 API' : run.provider === 'deepseek' ? 'DeepSeek（官方 API）' : run.provider === 'workbuddy' ? '腾讯 WorkBuddy' : run.provider === 'grok' ? 'Grok（xAI）' : 'Cursor Agent' }}</strong><small class="message-model">{{ run.model || 'CLI 默认' }}</small><StatusPill v-bind="agentRunStatus(run)" /><small v-if="legacyContinuations.has(run.id)" class="continuation-label" title="沿用上一轮的 Codex 会话">续跑</small><time>{{ dateTime(run.updatedAt) }}</time></header><AgentLiveRunActivity :run="run" @inspect="emit('inspect', run)" /><AgentTranslatedText v-if="run.result" :source="agentReplyText(run.result)" :stable="!['queued', 'running'].includes(run.status)" markdown replace><AgentMarkdown class="agent-result" :source="agentReplyText(run.result)" :can-ask-code="!pausedRun && conversation.source !== 'codex'" @ask-code="askCodeBlockToComposer" /></AgentTranslatedText><AgentPlanChecklistCard v-if="run.status === 'completed' && run.result" :run="run" :reply-text="agentReplyText(run.result)" :can-apply-prompt="!pausedRun && conversation.source !== 'codex'" @apply-prompt="applyPromptFromDelivery" /><AgentTranslatedText v-if="run.error" :source="agentRunErrorText(run)" replace><p class="agent-error">{{ agentRunErrorText(run) }}</p></AgentTranslatedText><AgentFailureRcaCard v-if="run.status === 'failed' || run.status === 'interrupted'" :run="run" compact :can-apply-prompt="!pausedRun && conversation.source !== 'codex'" @apply-prompt="applyPromptFromDelivery" /><template v-else-if="!run.result && !['queued', 'running'].includes(run.status) && !run.events.length"><p class="agent-progress">该轮没有保存最终回复</p></template><AgentChangedFiles v-if="run.changedFiles" :files="run.changedFiles" :run-id="run.id" :can-ask="!pausedRun" @ask-file="askChangedFile" @apply-review-prompt="applyPromptFromDelivery" /><div class="message-tools"><button v-if="run.result || run.error" type="button" class="event-link copy-md-link" title="复制 Markdown 原文" @click="copyMessage(`agent:${run.id}`, agentReplyText(run.result) || agentRunErrorText(run))"><Check v-if="copiedMessageId === `agent:${run.id}`" :size="12" /><Copy v-else :size="12" /> {{ copiedMessageId === `agent:${run.id}` ? '已复制' : '复制' }}</button><button v-if="run.result" type="button" class="event-link" title="去除 Markdown 格式复制纯文本（适合粘贴至企微或 Jira）" @click="copyMessage(`plain:${run.id}`, stripMarkdownPlain(agentReplyText(run.result)))"><Check v-if="copiedMessageId === `plain:${run.id}`" :size="12" /><FileText v-else :size="12" /> {{ copiedMessageId === `plain:${run.id}` ? '已复制纯文本' : '纯文本' }}</button><button v-if="!pausedRun && (run.result || run.error)" type="button" class="event-link" title="将该回复作为引用块填入输入框继续追问" @click="quoteTextToComposer(agentReplyText(run.result) || agentRunErrorText(run))"><Quote :size="12" /> 引用</button><button v-if="run.result || run.error" type="button" class="event-link" :class="{ 'is-bookmarked': bookmarkStore.isBookmarked(conversation.id, run.id) }" :title="bookmarkStore.isBookmarked(conversation.id, run.id) ? '取消重点收藏' : '收藏这条关键回复（可在顶部收藏夹或跨会话随时复用）'" @click="toggleRunBookmark(run, entryIndex)"><Bookmark :size="12" /> {{ bookmarkStore.isBookmarked(conversation.id, run.id) ? '已收藏' : '收藏' }}</button><PluginRecordQuickSave v-if="run.result" :title="run.objective" :content="agentReplyText(run.result)" /><button v-if="canSteerAgentRun(run, activeRun, conversation.runs)" type="button" class="event-link" :disabled="!!changing" title="停止当前轮，并提前执行此消息" @click="emit('steer', run)"><CornerUpLeft :size="12" /> 调整方向</button><button v-if="conversation.source !== 'codex' && run.status === 'queued' && run.parentRunId" type="button" class="event-link danger-link" :disabled="!!changing" title="从当前会话删除这条排队消息" @click="emit('removeQueued', run)"><Trash2 :size="12" /> {{ changing === `delete:${run.id}` ? '删除中' : '删除' }}</button><button v-if="!pausedRun && continuableRun?.id === run.id" type="button" class="event-link" :disabled="!!changing" title="在原轮次继续，沿用已保存的会话和权限" @click="retryRun(run, true)"><Play :size="12" /> 继续执行</button>
               <button v-else-if="isRestartableAgentRun(run) && !pausedRun && !canContinueStoppedCodexRun(run)" type="button" class="event-link" :disabled="!!changing" :title="isRetryableSessionBusyRun(run) ? '尝试续接原会话；真实运行中的任务不会被中断' : '从已保存状态重新执行该任务'" @click="retryRun(run)"><RotateCcw :size="12" /> 重新执行</button><button v-if="run.events.length" type="button" class="event-link" @click="emit('inspect', run)">{{ run.events.length }} 条运行事件</button></div></div></article>
             </template>
           </div>
-          <article v-else class="chat-message team-chat-message" :class="entry.message.role === 'user' ? 'user-message' : 'agent-message'" :data-message-id="entry.id">
+          <article v-else :data-turn-index="entryIndex" class="chat-message team-chat-message" :class="[entry.message.role === 'user' ? 'user-message' : 'agent-message', { 'is-settled-turn': !searchQuery && entryIndex < transcriptEntries.length - 2 && !entry.pendingInput }]" :data-message-id="entry.id">
             <AgentAvatar :user="entry.message.role === 'user'" :provider="entry.identity?.provider" :model="entry.identity?.model" class="message-avatar" />
-            <div><header><strong>{{ teamChatParticipant(entry.message) }}</strong><small v-if="entry.identity" class="message-model">{{ agentProviderLabels[entry.identity.provider] }} · {{ entry.identity.model || 'CLI 默认' }}</small><small v-if="entry.message.kind === 'handoff'">交接</small><small v-else-if="entry.message.kind === 'question'">问题</small><time>{{ dateTime(entry.message.createdAt) }}</time></header>
+            <div class="message-card"><header><strong>{{ teamChatParticipant(entry.message) }}</strong><small v-if="entry.identity" class="message-model">{{ agentProviderLabels[entry.identity.provider] }} · {{ entry.identity.model || 'CLI 默认' }}</small><small v-if="entry.message.kind === 'handoff'">交接</small><small v-else-if="entry.message.kind === 'question'">问题</small><time>{{ dateTime(entry.message.createdAt) }}</time></header>
               <div v-if="entry.message.attachmentIds?.length" class="message-images"><a v-for="id in entry.message.attachmentIds" :key="id" :href="chatAttachment(id)?.url || `/api/agent-runtimes/attachments/${encodeURIComponent(id)}`" target="_blank" rel="noopener"><img v-if="chatAttachment(id) && isAgentImageAttachment(chatAttachment(id)!)" :src="chatAttachment(id)!.url" :alt="chatAttachment(id)!.name" /><span v-else class="message-file"><File :size="24" /></span><span>{{ chatAttachment(id)?.name || '附件' }}</span></a></div>
-              <AgentMarkdown v-if="entry.message.role === 'assistant'" class="agent-result" :source="entry.message.text" />
+              <AgentMarkdown v-if="entry.message.role === 'assistant'" class="agent-result" :source="entry.message.text" :can-ask-code="!pausedRun && conversation.source !== 'codex'" @ask-code="askCodeBlockToComposer" />
               <template v-else-if="taskPromptTitles.has(entry.id)">
                 <p>{{ taskPromptTitles.get(entry.id) }}</p>
                 <div class="message-tools user-message-tools"><button type="button" class="event-link" aria-haspopup="dialog" @click="taskPromptDetail = entry.message.text">查看完整提示词</button></div>
@@ -336,6 +704,13 @@ defineExpose({ focusComposer });
               <small v-if="entry.message.replyTo" class="agent-progress">对问题的回复</small>
             </div>
           </article>
+          <article v-if="entry.kind === 'team' && entry.pendingInput" class="chat-message agent-message optimistic-team-ack" role="status">
+            <AgentAvatar provider="codex" class="message-avatar" />
+            <div class="message-card agent-card">
+              <header><strong>任务助手</strong><StatusPill value="running" label="正在响应" /></header>
+              <p class="agent-progress">已收到你的消息，正在唤醒任务协调器并分配执行步骤…</p>
+            </div>
+          </article>
           </template>
           <section v-if="teamResultVisible && currentTeamTask && !searchQuery && (!hasTeamDeliveryMessage || teamResultDownloads.length)" class="team-result-state" aria-label="任务结果">
             <div class="team-result-heading"><div><small>本轮已完成</small><strong>{{ hasTeamDeliveryMessage ? '交付文件' : '结果' }}</strong></div><el-button link class="team-progress-link" @click="conversationView = 'execution'">查看执行记录<ChevronRight :size="14" /></el-button></div>
@@ -344,8 +719,8 @@ defineExpose({ focusComposer });
               <a v-for="file in teamResultDownloads" :key="file.key" :href="file.url" :download="file.name"><Download :size="15" /><span><small>交付文件</small>{{ file.name }}</span></a>
             </div>
           </section>
-          <section v-if="teamProgressVisible && currentTeamTask && !searchQuery && !teamResultVisible" class="team-chat-state" aria-label="团队协作进度">
-            <div class="team-chat-status"><p role="status">{{ teamActivity }}</p><el-button v-if="currentTeamTask.nodes.length" link class="team-progress-link" @click="conversationView = 'execution'">查看协作进展<ChevronRight :size="14" /></el-button></div>
+          <section v-if="teamProgressVisible && currentTeamTask && !searchQuery && !teamResultVisible" class="team-chat-state" :class="{ 'is-active': ['planning', 'running'].includes(currentTeamTask.state) }" aria-label="团队协作进度">
+            <div class="team-chat-status"><span v-if="['planning', 'running'].includes(currentTeamTask.state)" class="team-live-dot" aria-hidden="true"></span><p role="status">{{ teamActivity }}</p><el-button v-if="currentTeamTask.nodes.length" link class="team-progress-link" @click="conversationView = 'execution'">查看协作进展<ChevronRight :size="14" /></el-button></div>
             <p v-if="currentTeamTask.reason && currentTeamTask.reason !== teamActivity && ['blocked','needs_decision','needs_reconciliation'].includes(currentTeamTask.state)">{{ currentTeamTask.reason }}</p>
             <div class="team-chat-decisions">
               <el-button v-if="!currentTeamTask.chat?.workspaceBound && ['awaiting_plan','waiting_input','blocked'].includes(currentTeamTask.state)" :disabled="!!changing" @click="emit('chooseTeamWorkspace')">选择项目</el-button>
@@ -359,11 +734,25 @@ defineExpose({ focusComposer });
                 <el-button :disabled="!!changing" @click="emit('teamDecision','takeover')">我来接手</el-button><el-button :disabled="!!changing" @click="emit('teamDecision','cancel')">取消任务</el-button>
               </div></details>
             </div>
-            <AgentChangedFiles v-for="item in currentFileDeliveries" :key="item.run.id" :files="item.run.changedFiles!" :run-id="item.run.id" />
+            <AgentChangedFiles v-for="item in currentFileDeliveries" :key="item.run.id" :files="item.run.changedFiles!" :run-id="item.run.id" :can-ask="!pausedRun" @ask-file="askChangedFile" @apply-review-prompt="applyPromptFromDelivery" />
           </section>
           <div v-if="!conversation.loaded" class="history-loading"><el-skeleton :rows="2" animated /></div>
           <el-empty v-if="searchQuery && !visibleEntries.length" description="当前会话没有匹配内容" :image-size="56" />
         </div>
+      </div>
+      <button v-if="awayFromLatest && conversationView === 'chat' && !searchQuery" type="button" class="jump-to-latest" @click="jumpToLatest"><ArrowDown :size="14" /> 最新消息</button>
+      <div v-if="!pausedRun && selectedQuoteText && conversationView === 'chat'" class="selection-quote-bar" role="region" aria-label="划词快捷操作">
+        <Quote :size="13" class="selection-quote-icon" />
+        <span class="selection-quote-preview">已选中 {{ selectedQuoteText.length }} 字：“{{ selectedQuoteText.slice(0, 48) }}{{ selectedQuoteText.length > 48 ? '…' : '' }}”</span>
+        <div class="selection-quote-actions">
+          <button v-if="selectionLooksLikeError" type="button" class="selection-quote-btn is-error-fix" title="把选中报错带入输入框并让 AI 定位根因与修复" @click="applySelectionAction('fix-error')">排查报错</button>
+          <button type="button" class="selection-quote-btn" :class="{ 'is-secondary': selectionLooksLikeError }" title="仅作为引用块带入输入框自由追问" @click="applySelectionAction('quote')">引用追问</button>
+          <button type="button" class="selection-quote-chip" title="让 AI 用通俗易懂的大白话解释这段内容" @click="applySelectionAction('explain')">通俗解释</button>
+          <button v-if="!selectionLooksLikeError" type="button" class="selection-quote-chip" title="若这是异常信息，让 AI 直接排查原因并给修复方案" @click="applySelectionAction('fix-error')">排查报错</button>
+          <button v-if="selectedQuoteText.length >= 24" type="button" class="selection-quote-chip" title="让 AI 提炼这段内容的核心要点与待办事项" @click="applySelectionAction('summarize')">提炼要点</button>
+          <button type="button" class="selection-quote-chip" title="复制选中文字" @click="copySelectedQuote">复制</button>
+        </div>
+        <button type="button" class="selection-quote-close" aria-label="关闭划词快捷提示" @click="selectedQuoteText = ''"><X :size="12" /></button>
       </div>
       <AgentComposer v-model:automatic="effectiveAutomatic" v-if="!pausedRun" ref="composer" v-model="draft" v-model:attachments="attachments" :conversation="conversation" :runtimes="runtimes" :automatic-access-mode="nextAccessMode" :changing="changing" :running="running" :can-insert="!!activeRun?.liveInputReady"
         :business-options="businessOptions" :attachment-draft="attachmentDraft" :question-reply="questionReply" :stopping="(effectiveAutomatic || !stoppableRun) && currentTeamTask?.chat?.coordination?.phase === 'stopping'"
@@ -376,36 +765,65 @@ defineExpose({ focusComposer });
       </div>
     </template>
     <template v-else><header class="conversation-header studio-conversation-header"><div class="conversation-title-copy"></div><slot name="header-actions" /></header><el-empty description="选择左侧会话，或新建一个 Agent 会话" :image-size="70" /></template>
-    <AgentTaskPromptDrawer v-model="taskPromptDetail" />
+    <AgentTaskPromptDrawer v-if="taskPromptDetail !== undefined" v-model="taskPromptDetail" />
   </section>
 </template>
 
 <style scoped>
-.team-more-actions{font-size:12px;color:var(--agent-muted)}.team-more-actions summary{cursor:pointer;line-height:32px}.team-more-actions .team-chat-decisions{margin-top:4px}
-.team-result-downloads{display:grid;gap:8px;margin-top:14px;padding-top:12px;border-top:1px solid var(--agent-border)}.team-result-downloads a{display:flex;align-items:center;gap:9px;max-width:100%;padding:8px 10px;border:1px solid color-mix(in srgb,var(--agent-accent) 28%,var(--agent-border));border-radius:8px;background:color-mix(in srgb,var(--agent-accent) 7%,var(--agent-panel-strong));color:var(--agent-accent);overflow-wrap:anywhere;text-decoration:none}.team-result-downloads a:hover{border-color:var(--agent-accent);background:color-mix(in srgb,var(--agent-accent) 13%,var(--agent-panel-strong))}.team-result-downloads a>span{display:grid;gap:2px;min-width:0}.team-result-downloads small{color:var(--agent-muted);font-size:10px}.team-result-downloads svg{flex-shrink:0}
-.chat-message header{flex-wrap:wrap;row-gap:4px}.message-model{font-size:11px;color:var(--agent-muted);overflow-wrap:anywhere}
-.continuation-label{color:var(--agent-accent);font-size:11px;white-space:nowrap}
+.jump-to-latest{align-self:center;position:relative;margin:-36px 0 8px;z-index:2;display:inline-flex;align-items:center;gap:6px;padding:5px 12px;border:1px solid var(--ui-border);border-radius:var(--ds-radius-sm,999px);background:var(--ui-surface);color:var(--ui-text);box-shadow:var(--ui-shadow);font:600 12px/18px var(--sans);cursor:pointer}
+.jump-to-latest:hover{color:var(--ui-accent);border-color:var(--ui-accent)}
+.team-more-actions{font-size:12px;color:var(--ui-muted)}.team-more-actions summary{cursor:pointer;line-height:32px}.team-more-actions .team-chat-decisions{margin-top:4px}
+.team-result-downloads{display:grid;gap:8px;margin-top:16px;padding-top:12px;border-top:1px solid var(--ui-border)}.team-result-downloads a{display:flex;align-items:center;gap:8px;max-width:100%;padding:8px 12px;border:1px solid color-mix(in srgb,var(--ui-accent) 28%,var(--ui-border));border-radius:var(--ds-radius-sm,8px);background:var(--ui-accent-soft);color:var(--ui-accent);overflow-wrap:anywhere;text-decoration:none;transition:border-color 220ms cubic-bezier(0.22,1,0.36,1),background 220ms cubic-bezier(0.22,1,0.36,1)}.team-result-downloads a:hover{border-color:var(--ui-accent);background:color-mix(in srgb,var(--ui-accent) 16%,var(--ui-surface))}.team-result-downloads a>span{display:grid;gap:2px;min-width:0}.team-result-downloads small{color:var(--ui-muted);font-size:12px;line-height:16px}.team-result-downloads svg{flex-shrink:0}
+.chat-message header{flex-wrap:wrap;row-gap:3px}.message-model{padding:0 5px;border:0;border-radius:4px;background:transparent;font:500 11px/16px var(--mono);color:var(--ui-muted);overflow-wrap:anywhere}
+.continuation-label{color:var(--ui-accent);font-size:11px;line-height:16px;white-space:nowrap}
+.conversation-title-bar{display:flex;align-items:center;flex-wrap:wrap;gap:6px 8px;min-width:0}
+.conversation-heading-row{display:inline-flex;align-items:center;flex-wrap:wrap;gap:5px;margin-bottom:0;min-width:0}
+.editable-conversation-title{cursor:text;border-radius:5px;transition:background 140ms ease}
+.editable-conversation-title:hover{background:color-mix(in srgb,var(--ui-accent-soft) 45%,transparent)}
+.conversation-title-input{width:min(100%,460px);height:26px;padding:0 8px;border:1px solid var(--ui-accent);border-radius:var(--ds-radius-xs,5px);background:var(--ui-raised);color:var(--ui-text);font:600 13.5px/20px var(--sans);outline:none}
+.conversation-zone-tag{font:700 9.5px/1 var(--mono);letter-spacing:0.12em;text-transform:uppercase;color:var(--ui-accent)}
+.meta-chip{display:inline-flex;align-items:center;height:20px;padding:0 6px;border:1px solid color-mix(in srgb,var(--ui-border) 80%,transparent);border-radius:var(--ds-radius-xs,5px);background:var(--ui-raised);color:var(--ui-muted);font:500 11px/1 var(--mono);max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.meta-chip.is-provider{border-color:color-mix(in srgb,var(--ui-accent) 28%,var(--ui-border));background:var(--ui-accent-soft);color:var(--ui-accent);font-weight:600}
+.tool-count{display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:15px;padding:0 4px;border-radius:var(--ds-radius-xs,999px);background:var(--ui-accent-soft);color:var(--ui-accent);font:600 10px/1 var(--mono)}
+.role-kicker{font:700 9.5px/1 var(--mono);letter-spacing:0.14em;color:var(--ui-accent)}
 .conversation-toolbar{display:contents}
-.conversation-jira-task{display:flex;align-items:center;flex-wrap:wrap;gap:10px;padding:6px 22px;border-bottom:1px solid var(--agent-border);background:color-mix(in srgb,var(--agent-panel) 84%,transparent);color:var(--agent-muted);font-size:12px}
-.conversation-jira-task strong{color:var(--agent-text)}
-.conversation-jira-task a{color:var(--agent-accent);text-decoration:none}
+.conversation-jira-task{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:8px 20px;border-bottom:1px solid var(--ui-border);background:color-mix(in srgb,var(--ui-accent-soft) 35%,var(--ui-surface));color:var(--ui-secondary);font-size:12px;line-height:16px}
+.conversation-workflow-pill{display:inline-flex;align-items:center;padding:2px 8px;border-radius:var(--ds-radius-xs,999px);background:var(--ui-accent);color:var(--ui-on-primary,#fff);font-size:11px;font-weight:600;white-space:nowrap}
+.conversation-issue-pill{display:inline-flex;align-items:center;padding:2px 8px;border:1px solid color-mix(in srgb,var(--ui-accent) 32%,var(--ui-border));border-radius:var(--ds-radius-xs,6px);background:var(--ui-surface);color:var(--ui-accent);font:600 11px/16px var(--mono);text-decoration:none;white-space:nowrap}
+.conversation-repo-pill{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border:1px solid var(--ui-border);border-radius:var(--ds-radius-xs,6px);background:var(--ui-surface);color:var(--ui-text);font:11px/16px var(--mono);white-space:nowrap}
+.conversation-jira-links{display:inline-flex;align-items:center;gap:10px;margin-left:auto}
+.conversation-jira-task a{color:var(--ui-accent);text-decoration:none;font-weight:500}
 .conversation-jira-task a:hover{text-decoration:underline}
-.jira-group-link{padding:0;border:0;background:transparent;color:var(--agent-accent);font-size:12px;cursor:pointer}
-.jira-group-link:hover{text-decoration:underline}
-.studio-main-delivery:deep(.remote-delivery){margin-bottom:16px;padding:12px 0;border-bottom:1px solid var(--agent-border)}
-.delivery-file-history{margin-top:24px;color:var(--agent-muted);font-size:13px}.delivery-file-history>summary{cursor:pointer}.delivery-file-history h3{margin:20px 0 0;font-size:12px;font-weight:500}
+.jira-group-link{padding:3px 9px;border:1px solid color-mix(in srgb,var(--ui-accent) 34%,var(--ui-border));border-radius:var(--ds-radius-xs,6px);background:var(--ui-surface);color:var(--ui-accent);font:500 12px/16px var(--sans);cursor:pointer}
+.jira-group-link:hover{border-color:var(--ui-accent);background:var(--ui-accent-soft)}
+.studio-main-delivery{flex:1;min-height:0;overflow-y:auto;padding:24px clamp(20px,3vw,40px)}
+.delivery-pipeline-bar{display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px;padding:10px 14px;margin-bottom:16px;border:1px solid color-mix(in srgb,var(--ui-accent) 28%,var(--ui-border));border-radius:var(--ds-radius-sm,8px);background:color-mix(in srgb,var(--ui-accent-soft) 40%,var(--ui-surface));font-size:12px;line-height:18px}
+.delivery-pipeline-label{font:600 11px/16px var(--mono);color:var(--ui-muted)}
+.delivery-pipeline-link{padding:2px 8px;border:1px solid var(--ui-border);border-radius:var(--ds-radius-xs,6px);background:var(--ui-surface);color:var(--ui-accent);font-weight:500;text-decoration:none;transition:border-color 160ms ease,background 160ms ease}
+.delivery-pipeline-link:hover{border-color:var(--ui-accent);background:var(--ui-accent-soft)}
+.delivery-pipeline-sep{color:var(--ui-muted);font-family:var(--mono)}
+.is-settled-turn{content-visibility:auto;contain-intrinsic-size:auto 220px}
+.studio-main-delivery:deep(.remote-delivery){margin-bottom:16px;padding:12px 0;border-bottom:1px solid var(--ui-border)}
+.delivery-file-history{margin-top:24px;color:var(--ui-muted);font-size:14px;line-height:20px}.delivery-file-history>summary{cursor:pointer}.delivery-file-history h3{margin:20px 0 0;font-size:12px;line-height:16px;font-weight:500}
 .team-chat-state :deep(.changed-file-open code){white-space:normal;overflow-wrap:anywhere}
-.team-result-state{margin:18px 0 10px;padding:16px;border:1px solid color-mix(in srgb,var(--agent-accent) 26%,var(--agent-border));border-radius:12px;background:linear-gradient(145deg,color-mix(in srgb,var(--agent-accent) 7%,var(--agent-panel-strong)),color-mix(in srgb,var(--agent-panel) 90%,transparent));font-size:13px;color:var(--agent-secondary)}.team-result-heading{display:flex;align-items:center;justify-content:space-between;gap:8px}.team-result-heading>div{display:grid;gap:3px}.team-result-heading small{color:var(--agent-accent);font-size:10px}.team-result-heading strong{font-size:15px;color:var(--agent-text)}.team-result-state>p{margin:11px 0 0;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.75}.team-chat-status{display:flex;align-items:center;flex-wrap:wrap;gap:4px 16px}.team-progress-link{gap:3px;font-size:12px;color:var(--agent-muted)}.team-progress-link:hover{color:var(--agent-accent)}.team-chat-decisions:empty{display:none}
-.team-chat-state{font-size:12px;color:var(--agent-muted);padding:8px 0}.team-chat-state p{margin:6px 0;white-space:pre-wrap}.team-chat-decisions{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}.team-chat-decisions:deep(.el-button+.el-button){margin-left:0}.team-chat-state details{margin-top:12px}.team-chat-state li{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:8px 0}.team-chat-state ul{padding-left:16px}.team-chat-message header small{font-size:10px;color:var(--agent-muted)}
-.title-translation{max-width:100%;margin:2px 0 3px;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.title-translation:deep(p){white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.user-message:deep(.agent-translation){border-left-color:#ffffffb3;background:#ffffff1f}.user-message:deep(.translation-label),.user-message:deep(.translation-bar){color:#ffffffc0}
+.team-result-state{margin:16px 0 12px;padding:16px;border:1px solid color-mix(in srgb,var(--ui-accent) 28%,var(--ui-border));border-radius:var(--ds-radius,12px);background:var(--ui-surface);font-size:14px;line-height:20px;color:var(--ui-secondary);box-shadow:var(--ds-shadow)}.team-result-heading{display:flex;align-items:center;justify-content:space-between;gap:8px}.team-result-heading>div{display:grid;gap:4px}.team-result-heading small{color:var(--ui-accent);font:500 12px/16px var(--mono)}.team-result-heading strong{font-size:16px;line-height:24px;font-weight:600;color:var(--ui-text)}.team-result-state>p{margin:12px 0 0;white-space:pre-wrap;overflow-wrap:anywhere;line-height:22px}.team-chat-status{display:flex;align-items:center;flex-wrap:wrap;gap:4px 16px}.team-progress-link{gap:4px;font-size:12px;color:var(--ui-muted)}.team-progress-link:hover{color:var(--ui-accent)}.team-chat-decisions:empty{display:none}
+.team-chat-state{margin-top:4px;padding:12px 16px;border:1px solid color-mix(in srgb,var(--ui-accent) 26%,var(--ui-border));border-radius:var(--ds-radius,12px);background:color-mix(in srgb,var(--ui-accent-soft) 45%,var(--ui-surface));font-size:13px;line-height:20px;color:var(--ui-secondary)}.team-chat-state p{margin:4px 0;white-space:pre-wrap;color:var(--ui-text)}.team-live-dot{width:8px;height:8px;flex-shrink:0;border-radius:999px;background:var(--ui-accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--ui-accent) 22%,transparent)}.team-chat-decisions{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 0}.team-chat-decisions:deep(.el-button+.el-button){margin-left:0}.team-chat-state details{margin-top:10px}.team-chat-state li{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:8px 0}.team-chat-state ul{padding-left:16px}.team-chat-message header small{font-size:12px;color:var(--ui-muted)}
+.title-translation{max-width:100%;margin:2px 0 0;font-size:12px;line-height:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.title-translation:deep(p){white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.user-message:deep(.agent-translation){border-left-color:var(--ui-accent);background:color-mix(in srgb,var(--ui-surface) 72%,transparent)}.user-message:deep(.translation-label),.user-message:deep(.translation-bar){color:var(--ui-secondary)}
 .paused-editor>span{margin-inline-end:auto}
-.paused-editor{display:flex;flex-wrap:wrap;align-items:center;gap:12px;padding:18px 24px;border-top:1px solid var(--agent-border);background:var(--agent-panel);color:var(--agent-muted);font-size:12px}
-.user-message-tools{justify-content:flex-end;flex-wrap:wrap}.user-message .user-message-tools .message-copy{position:static}
-.danger-link{border-color:color-mix(in srgb,var(--el-color-danger) 56%,var(--agent-border));background:color-mix(in srgb,var(--el-color-danger) 10%,var(--agent-panel-strong));color:color-mix(in srgb,var(--el-color-danger) 68%,#fff)}
-.conversation-pane{display:flex;flex-direction:column;min-width:0;min-height:0;height:100%;overflow:hidden;background:transparent;color:var(--agent-text)}.conversation-header{display:flex;align-items:center;justify-content:space-between;gap:18px;min-height:58px;padding:0 22px;border-bottom:1px solid var(--agent-border);background:color-mix(in srgb,var(--agent-panel) 90%,transparent);backdrop-filter:blur(16px)}.conversation-tabs{display:flex;align-items:center;gap:7px;min-width:0}.conversation-tabs strong,.conversation-tabs span{padding:5px 10px;border:1px solid transparent;border-radius:7px;font-size:10px;white-space:nowrap}.conversation-tabs strong{background:linear-gradient(120deg,var(--agent-cyan),var(--agent-accent));color:#fff;box-shadow:0 5px 16px color-mix(in srgb,var(--agent-accent) 25%,transparent)}.conversation-tabs span{color:var(--agent-muted);background:var(--agent-panel-strong)}.conversation-tabs span:last-child{max-width:190px;overflow:hidden;border-color:color-mix(in srgb,var(--agent-accent) 44%,var(--agent-border));color:var(--agent-secondary);background:var(--agent-raised);text-overflow:ellipsis}.conversation-actions{display:flex;align-items:center;gap:3px;flex-shrink:0}.conversation-actions:deep(.el-button){height:30px;margin-left:0;padding:5px 7px;border-radius:7px;color:color-mix(in srgb,var(--agent-accent) 48%,#dce8ff);font-size:10px}.conversation-actions:deep(.el-button:hover){background:var(--agent-panel-strong)}.conversation-context{display:flex;align-items:center;gap:8px;min-height:56px;padding:6px 22px;border-bottom:1px solid var(--agent-border);overflow:hidden;background:color-mix(in srgb,var(--agent-panel) 78%,transparent)}.context-block{display:flex;align-items:center;gap:8px;min-width:0;height:40px;padding:0 11px;border:1px solid var(--agent-border);border-radius:8px;background:var(--agent-panel-strong);color:var(--agent-muted)}.context-block>span{display:grid;min-width:0;gap:2px}.context-block small{color:var(--agent-muted);font-size:8px;line-height:1}.context-block strong{overflow:hidden;color:var(--agent-text);font-size:10px;font-weight:620;text-overflow:ellipsis;white-space:nowrap}.project-context{width:150px;flex:0 0 auto}.branch-context{width:min(34%,310px);border-color:color-mix(in srgb,var(--agent-accent) 42%,var(--agent-border));background:color-mix(in srgb,var(--agent-accent) 10%,var(--agent-panel-strong))}.branch-context svg{flex:0 0 auto;color:var(--agent-accent)}.workspace-context{flex:1}.message-search{display:flex;align-items:center;width:180px;height:32px;margin-left:auto;padding:0 9px;flex-shrink:0;border:1px solid var(--agent-border);border-radius:7px;background:var(--agent-panel-strong);color:var(--agent-muted)}.message-search:focus-within{border-color:var(--agent-accent);color:var(--agent-accent)}.message-search input{width:100%;min-width:0;border:0;outline:0;background:transparent;color:var(--agent-text);font-size:9px}.message-search input::placeholder{color:var(--agent-muted)}
-.message-viewport{flex:1 1 0;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:30px clamp(24px,3vw,52px) 22px;background-color:var(--agent-bg);background-image:linear-gradient(var(--agent-wallpaper-chat-shade),var(--agent-wallpaper-chat-shade)),radial-gradient(circle at 50% -8%,color-mix(in srgb,var(--agent-accent) 16%,transparent) 0,transparent 43%),var(--agent-wallpaper);background-position:center,center,var(--agent-wallpaper-position);background-size:auto,auto,cover;background-repeat:no-repeat;background-attachment:scroll}.message-list{display:flex;flex-direction:column;gap:28px;width:min(100%,1180px);min-height:100%;margin:0 auto}.message-turn{display:flex;flex-direction:column;gap:15px}.message-turn:first-child{margin-top:auto}.chat-message{display:flex;align-items:flex-start;gap:11px}.chat-message>div{position:relative;min-width:0;max-width:min(88%,960px);backdrop-filter:blur(10px)}.message-avatar{display:grid;place-items:center;width:32px;height:32px;flex-shrink:0;border:1px solid var(--agent-border);border-radius:9px;background:var(--agent-panel-strong);color:var(--agent-accent);box-shadow:0 6px 18px #0003}.chat-message header{display:flex;align-items:center;gap:8px;margin:0 0 8px}.chat-message header strong{font-size:10px;letter-spacing:.1px}.chat-message time{font:8px var(--mono);color:var(--agent-muted)}.chat-message p{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.76}.user-message{justify-content:flex-end}.user-message>div{order:-1;padding:12px 38px 12px 16px;border:1px solid color-mix(in srgb,var(--agent-cyan) 46%,transparent);border-radius:14px 4px 14px 14px;background:linear-gradient(125deg,color-mix(in srgb,var(--agent-cyan) var(--agent-message-opacity),transparent),color-mix(in srgb,var(--agent-accent) var(--agent-message-opacity),transparent));color:#fff;box-shadow:0 10px 28px color-mix(in srgb,var(--agent-accent) 22%,transparent)}.user-message header{justify-content:flex-end}.user-message header strong,.user-message time{color:#fff}.user-message time{opacity:.72}.user-message .message-avatar{border-color:var(--agent-border);background:var(--agent-panel-strong);color:var(--agent-cyan)}.user-message .message-copy{position:absolute;right:9px;bottom:8px;color:#fff}.agent-message>div{width:min(88%,960px);padding:15px 17px;border:1px solid var(--agent-border);border-radius:4px 14px 14px;background:linear-gradient(145deg,color-mix(in srgb,var(--agent-raised) var(--agent-message-opacity),transparent),color-mix(in srgb,var(--agent-panel-strong) var(--agent-message-opacity),transparent));box-shadow:0 12px 32px #0003}.agent-message header time{margin-left:auto}.agent-result{color:var(--agent-text)}.agent-error{color:#ff9aac}.agent-progress{color:var(--agent-muted)}.message-tools{display:flex;align-items:center;gap:7px;margin-top:10px}.message-copy{display:grid;place-items:center;width:24px;height:24px;padding:0;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--agent-muted);cursor:pointer}.message-copy:hover{border-color:var(--agent-border);background:var(--agent-raised);color:#fff}.event-link{display:inline-flex;align-items:center;gap:4px;margin:0;padding:4px 7px;border:1px solid color-mix(in srgb,var(--agent-accent) 38%,var(--agent-border));border-radius:6px;background:color-mix(in srgb,var(--agent-accent) 10%,var(--agent-panel-strong));color:color-mix(in srgb,var(--agent-accent) 45%,#fff);font-size:9px;cursor:pointer;transition:.16s ease}.event-link:hover{border-color:var(--agent-accent);background:var(--agent-raised);color:#fff}.event-link:disabled{cursor:not-allowed;opacity:.45}
-.message-images{display:flex;flex-wrap:wrap;align-items:flex-start;gap:7px;margin:0 0 9px}.message-images a{display:grid;gap:3px;width:92px;color:#fff;text-decoration:none}.message-images img{display:block;width:92px;height:72px;border:1px solid #ffffff4d;border-radius:7px;object-fit:cover}.message-images span{overflow:hidden;font-size:8px;opacity:.8;text-overflow:ellipsis;white-space:nowrap}
+.paused-editor{display:flex;flex-wrap:wrap;align-items:center;gap:12px;padding:16px 24px;border-top:1px solid var(--ui-border);background:var(--ui-surface);color:var(--ui-muted);font-size:12px;line-height:16px}
+.user-turn-stack{display:flex;flex-direction:column;align-items:flex-end;width:100%;max-width:100%;min-width:0}
+.user-turn-stamp{align-self:center;margin:0 0 6px;color:var(--ui-muted);font:400 11px/15px var(--sans);font-variant-numeric:tabular-nums;opacity:0.86}
+.user-card-header{display:none!important}
+:global(:root[data-theme='acid']) .user-card-header{display:flex!important}
+:global(:root[data-theme='acid']) .user-turn-stamp{display:none}
+.user-message-tools{justify-content:flex-end;flex-wrap:wrap;gap:4px;margin-top:0;padding-top:0;border-top:0;max-height:0;overflow:hidden;opacity:0;pointer-events:none;transition:opacity 140ms ease,max-height 140ms ease,margin-top 140ms ease}.user-message:hover .user-message-tools,.user-message:focus-within .user-message-tools,.user-message-tools.is-pinned{margin-top:3px;max-height:40px;opacity:0.9;pointer-events:auto}.user-message .user-message-tools .message-copy{position:static}
+.danger-link{border-color:color-mix(in srgb,var(--ui-danger) 48%,var(--ui-border));background:var(--ui-danger-bg);color:var(--ui-danger)}
+.conversation-pane{display:flex;flex-direction:column;min-width:0;min-height:0;height:100%;overflow:hidden;background:transparent;color:var(--ui-text)}.conversation-header{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:40px;padding:6px 16px;border-bottom:1px solid var(--ui-border);background:color-mix(in srgb,var(--ui-surface) 92%,transparent);backdrop-filter:blur(16px)}.conversation-actions{display:flex;align-items:center;gap:4px;flex-shrink:0}.conversation-actions:deep(.el-button){height:26px;margin-left:0;padding:4px 8px;border-radius:var(--ds-radius-xs,6px);color:var(--ui-secondary);font:500 11.5px/15px var(--sans)}.conversation-actions:deep(.el-button:hover){background:var(--ui-raised);color:var(--ui-text)}.conversation-context{display:flex;align-items:center;gap:6px;min-height:30px;padding:4px 16px;border-bottom:1px solid var(--ui-border);overflow:hidden;background:var(--ui-surface)}.context-block{display:inline-flex;align-items:center;gap:5px;min-width:0;height:24px;padding:0 8px;border:1px solid var(--ui-border);border-radius:var(--ds-radius-xs,6px);background:var(--ui-raised);color:var(--ui-muted)}.context-block>span{display:flex;align-items:center;min-width:0;gap:4px}.context-block small{color:var(--ui-muted);font:500 10.5px/14px var(--mono);white-space:nowrap}:is(.project-context,.branch-context) small{display:none}.context-block strong{overflow:hidden;color:var(--ui-text);font:500 11.5px/15px var(--mono);text-overflow:ellipsis;white-space:nowrap}.project-context{max-width:200px;flex:0 1 auto}.branch-context{max-width:260px;flex:0 1 auto;border-color:color-mix(in srgb,var(--ui-accent) 28%,var(--ui-border));background:var(--ui-accent-soft)}.branch-context svg{flex:0 0 auto;color:var(--ui-accent)}.workspace-context{flex:1;min-width:0}.message-search{display:flex;align-items:center;gap:4px;width:168px;height:24px;margin-left:auto;padding:0 8px;flex-shrink:0;border:1px solid var(--ui-border);border-radius:var(--ds-radius-xs,6px);background:var(--ui-raised);color:var(--ui-muted);transition:width 160ms ease,border-color 160ms ease,box-shadow 160ms ease,background 160ms ease}.message-search.has-query{width:258px}.message-search:focus-within{border-color:var(--ui-accent);background:var(--ui-surface);color:var(--ui-accent);box-shadow:0 0 0 2px var(--ui-accent-soft)}.message-search input{width:100%;min-width:0;border:0;outline:0;background:transparent;color:var(--ui-text);font:400 11.5px/15px var(--sans)}.message-search input::placeholder{color:var(--ui-muted)}.message-search input[type="search"]::-webkit-search-cancel-button{-webkit-appearance:none;display:none}.message-search-counter{flex-shrink:0;padding:0 4px;border-radius:4px;background:var(--ui-accent-soft);color:var(--ui-accent);font:600 10px/15px var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap}.message-search-step,.message-search-clear{display:grid;place-items:center;width:16px;height:16px;padding:0;border:0;border-radius:999px;background:transparent;color:var(--ui-muted);cursor:pointer;flex-shrink:0}.message-search-step:hover,.message-search-clear:hover{background:var(--ui-hover);color:var(--ui-text)}
+.message-viewport{flex:1 1 0;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:16px clamp(18px,3vw,36px) 20px;background-color:var(--ui-bg);background-image:none}
+:global(:root[data-theme='custom'] .message-viewport){background-image:linear-gradient(var(--agent-wallpaper-chat-shade),var(--agent-wallpaper-chat-shade)),var(--agent-wallpaper);background-position:center,var(--agent-wallpaper-position);background-size:auto,cover;background-repeat:no-repeat;background-attachment:scroll}
+.message-list{display:flex;flex-direction:column;gap:14px;width:min(100%,840px);min-height:100%;margin:0 auto}.message-turn{display:flex;flex-direction:column;gap:10px}.message-turn:first-child{margin-top:auto}.chat-message{display:flex;align-items:flex-start;gap:10px}.chat-message>div{position:relative;min-width:0;max-width:100%}.message-avatar{display:grid;place-items:center;width:24px;height:24px;flex-shrink:0;border:1px solid var(--ui-border);border-radius:var(--ds-radius-xs,6px);background:var(--ui-surface);color:var(--ui-accent);box-shadow:none}.chat-message header{display:flex;align-items:center;gap:6px;margin:0 0 4px}.chat-message header strong{font:500 12px/16px var(--sans);color:var(--ui-secondary)}.chat-message time{font:400 11px/16px var(--mono);font-variant-numeric:tabular-nums;color:var(--ui-muted)}.chat-message p{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;line-height:1.58}.user-message{justify-content:flex-end}.user-message:not(.team-chat-message)>.message-avatar{display:none}.user-message .user-card,.user-message.team-chat-message>div{max-width:min(74%,560px);padding:7px 14px;border:1px solid color-mix(in srgb,var(--ui-accent) 26%,var(--ui-border));border-radius:18px;background:color-mix(in srgb,var(--ui-accent-soft) 82%,var(--ui-raised));color:var(--ui-text);box-shadow:none}.user-message header{justify-content:space-between;gap:10px;margin:0 0 3px;padding-bottom:0;border-bottom:0}.user-message header time{margin-left:auto;color:var(--ui-muted)}.user-message header strong{font:600 11.5px/15px var(--sans);color:var(--ui-secondary)}.user-message .message-avatar{border-color:var(--ui-border);background:var(--ui-surface);color:var(--ui-accent)}.user-message .message-copy{position:static;color:var(--ui-muted)}.agent-message:not(.team-chat-message)>.message-avatar{display:none}.agent-message>div{flex:1 1 auto;width:100%;max-width:100%;padding:2px 0;border:0;border-radius:0;background:transparent;box-shadow:none}.agent-message header time{margin-left:auto;opacity:0.82}.agent-result{color:var(--ui-text)}.agent-error{color:var(--ui-danger);font-size:12.5px;line-height:1.55}.agent-progress{color:var(--ui-muted);font-size:12.5px}.message-tools{display:flex;align-items:center;gap:4px;margin-top:4px}.message-tools:empty{display:none}.message-copy{display:grid;place-items:center;width:22px;height:22px;padding:0;border:1px solid transparent;border-radius:var(--ds-radius-xs,5px);background:transparent;color:var(--ui-muted);cursor:pointer;transition:background 140ms ease,border-color 140ms ease,color 140ms ease}.message-copy:hover{border-color:var(--ui-border);background:var(--ui-raised);color:var(--ui-text)}.event-link{display:inline-flex;align-items:center;gap:3px;margin:0;padding:2px 7px;border:1px solid transparent;border-radius:var(--ds-radius-xs,5px);background:transparent;color:var(--ui-muted);font:500 11.5px/16px var(--sans);cursor:pointer;transition:background 140ms ease,border-color 140ms ease,color 140ms ease}.event-link:hover{border-color:var(--ui-border);background:var(--ui-raised);color:var(--ui-text)}.event-link:disabled{cursor:not-allowed;opacity:.45}
+.message-images{display:flex;flex-wrap:wrap;align-items:flex-start;gap:8px;margin:0 0 8px}.message-images a{display:grid;gap:4px;width:96px;color:var(--ui-text);text-decoration:none}.message-images img{display:block;width:96px;height:72px;border:1px solid var(--ui-border);border-radius:var(--ds-radius-xs,8px);object-fit:cover}.message-images span{overflow:hidden;font-size:12px;line-height:16px;color:var(--ui-muted);text-overflow:ellipsis;white-space:nowrap}
 .message-images a:has(> .message-file) {
   display: inline-flex;
   align-items: center;
@@ -413,27 +831,72 @@ defineExpose({ focusComposer });
   width: auto;
   min-width: 0;
   max-width: min(100%, 360px);
-  min-height: 34px;
-  padding: 6px 9px;
-  border: 1px solid var(--agent-border);
-  border-radius: 7px;
-  background: var(--agent-panel);
-  color: var(--agent-text);
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ds-radius-xs, 8px);
+  background: var(--ui-surface);
+  color: var(--ui-text);
 }
-.message-images a:has(> .message-file):hover { border-color: var(--agent-accent); }
-.message-images .message-file { display: inline-flex; flex: none; color: var(--agent-accent); opacity: 1; }
+.message-images a:has(> .message-file):hover { border-color: var(--ui-accent); }
+.message-images .message-file { display: inline-flex; flex: none; color: var(--ui-accent); opacity: 1; }
 .message-images .message-file svg { width: 16px; height: 16px; }
 .message-images .message-file + span {
   min-width: 0;
   font-size: 12px;
-  line-height: 1.45;
+  line-height: 18px;
   opacity: 1;
   white-space: normal;
   overflow-wrap: anywhere;
 }
-.user-message p:deep(a){color:#fff;text-decoration:underline;text-underline-offset:3px}
-.history-loading{width:min(100%,980px);margin:0 auto}.history-loading:deep(.el-skeleton__item){background:var(--agent-panel-strong)}
-.conversation-pane:deep(.el-empty){margin:auto}.conversation-pane:deep(.el-empty__description p){color:var(--agent-muted)}.conversation-pane:deep(.status-pill){padding:3px 8px;font-size:9px}
-@media(max-width:1440px){.workspace-context{display:none}.project-context{width:130px}.branch-context{width:auto;flex:1}.message-search{width:150px}}
-@media(max-width:1600px){.conversation-header{flex-wrap:wrap;gap:8px;padding:12px 16px}.conversation-tabs{flex-wrap:wrap;gap:5px}.conversation-actions{flex-wrap:wrap;gap:4px;max-width:100%}.conversation-context{flex-wrap:wrap;padding:8px 16px}.message-search{flex:1;min-width:140px}.branch-context{flex:1;min-width:160px}.workspace-context{min-width:160px}}
+.user-message p:deep(a){color:var(--ui-accent);text-decoration:underline;text-underline-offset:3px}
+.history-loading{width:min(100%,960px);margin:0 auto}.history-loading:deep(.el-skeleton__item){background:var(--ui-raised)}
+.conversation-pane:deep(.el-empty){margin:auto}.conversation-pane:deep(.el-empty__description p){color:var(--ui-muted)}.conversation-pane:deep(.status-pill){padding:2px 8px;font-size:11.5px}
+.turn-outline-trigger,.turn-count-pill{cursor:pointer;font-variant-numeric:tabular-nums;transition:border-color 140ms ease,background-color 140ms ease,color 140ms ease}
+.turn-count-pill{cursor:default}
+.turn-outline-trigger:hover{border-color:color-mix(in srgb,var(--ui-accent) 42%,var(--ui-border));background:var(--ui-surface);color:var(--ui-accent)}
+.turn-outline-trigger strong,.turn-count-pill strong{font-variant-numeric:tabular-nums}
+.copy-md-link{color:var(--ui-secondary)}
+:global(.studio-turn-outline-popper.el-popper){--el-bg-color-overlay:var(--ui-surface);--el-text-color-regular:var(--ui-text);--el-fill-color-light:var(--ui-raised);border-color:var(--ui-border);border-radius:10px;background:var(--ui-surface);box-shadow:var(--ui-shadow)}
+:global(.studio-turn-outline-popper .el-dropdown-menu){max-height:320px;overflow-y:auto;padding:4px}
+:global(.studio-turn-outline-popper .el-dropdown-menu__item){display:flex;align-items:center;gap:8px;max-width:340px;padding:6px 10px;border-radius:7px;color:var(--ui-secondary);font-size:12px}
+:global(.studio-turn-outline-popper .el-dropdown-menu__item:hover){background:var(--ui-raised);color:var(--ui-text)}
+:global(.studio-turn-outline-popper .turn-outline-num){flex-shrink:0;padding:1px 5px;border:1px solid var(--ui-border);border-radius:4px;background:var(--ui-raised);color:var(--ui-accent);font:600 10.5px/14px var(--mono);font-variant-numeric:tabular-nums}
+:global(.studio-turn-outline-popper .turn-outline-text){flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ui-text)}
+:global(.studio-turn-outline-popper .turn-outline-files){flex-shrink:0;padding:1px 5px;border-radius:999px;border:1px solid var(--ui-border);background:var(--ui-raised);color:var(--ui-muted);font:600 10px/1.3 var(--mono)}
+.selection-quote-bar{align-self:center;display:flex;align-items:center;flex-wrap:wrap;gap:6px 8px;width:min(calc(100% - 36px),840px);margin:4px auto 6px;padding:6px 10px;border:1px solid color-mix(in srgb,var(--ui-accent) 34%,var(--ui-border));border-radius:10px;background:color-mix(in srgb,var(--ui-accent-soft) 55%,var(--ui-surface));color:var(--ui-secondary);font-size:12px}
+.selection-quote-icon{flex-shrink:0;color:var(--ui-accent)}
+.selection-quote-preview{flex:1;min-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ui-text)}
+.selection-quote-actions{display:inline-flex;align-items:center;flex-wrap:wrap;gap:5px}
+.selection-quote-btn{flex-shrink:0;height:24px;padding:0 10px;border:0;border-radius:6px;background:var(--ui-accent);color:var(--ui-on-primary,#fff);font:600 11.5px/1 var(--sans);cursor:pointer;transition:opacity 140ms ease,background 140ms ease}
+.selection-quote-btn.is-secondary{border:1px solid color-mix(in srgb,var(--ui-accent) 38%,var(--ui-border));background:var(--ui-surface);color:var(--ui-accent)}
+.selection-quote-btn:hover{opacity:0.9}
+.selection-quote-chip{flex-shrink:0;height:24px;padding:0 8px;border:1px solid var(--ui-border);border-radius:6px;background:var(--ui-surface);color:var(--ui-secondary);font:500 11.5px/1 var(--sans);cursor:pointer;transition:border-color 140ms ease,color 140ms ease,background 140ms ease}
+.selection-quote-chip:hover{border-color:color-mix(in srgb,var(--ui-accent) 42%,var(--ui-border));background:var(--ui-raised);color:var(--ui-text)}
+.selection-quote-close{display:grid;place-items:center;width:22px;height:22px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--ui-muted);cursor:pointer;flex-shrink:0}
+.selection-quote-close:hover{background:var(--ui-hover);color:var(--ui-text)}
+.is-bookmark-trigger{border-color:color-mix(in srgb,var(--ui-accent) 30%,var(--ui-border));color:var(--ui-accent)}
+.event-link.is-bookmarked{border-color:color-mix(in srgb,var(--ui-accent) 36%,var(--ui-border));background:var(--ui-accent-soft);color:var(--ui-accent);font-weight:600}
+:global(.studio-bookmark-popper.el-popper){--el-bg-color-overlay:var(--ui-surface);border-color:var(--ui-border);border-radius:10px;background:var(--ui-surface);box-shadow:var(--ui-shadow);padding:10px}
+:global(.studio-bookmark-popper .bookmark-popover-body){display:grid;gap:8px;max-height:360px;overflow-y:auto}
+:global(.studio-bookmark-popper .bookmark-popover-head){display:flex;align-items:center;justify-content:space-between;font-size:12px;color:var(--ui-text)}
+:global(.studio-bookmark-popper .bookmark-popover-head small){color:var(--ui-muted);font-family:var(--mono);font-size:11px}
+:global(.studio-bookmark-popper .bookmark-filter-input){width:100%;height:26px;padding:0 8px;border:1px solid var(--ui-border);border-radius:6px;background:var(--ui-raised);color:var(--ui-text);font:400 11.5px/1 var(--sans);outline:none}
+:global(.studio-bookmark-popper .bookmark-filter-input:focus){border-color:var(--ui-accent);background:var(--ui-surface)}
+:global(.studio-bookmark-popper .bookmark-group){display:grid;gap:4px}
+:global(.studio-bookmark-popper .bookmark-group header){font:600 10.5px/1.3 var(--sans);color:var(--ui-muted)}
+:global(.studio-bookmark-popper .bookmark-row){display:flex;align-items:center;gap:6px;padding:5px 7px;border:1px solid color-mix(in srgb,var(--ui-border) 75%,transparent);border-radius:7px;background:var(--ui-raised)}
+:global(.studio-bookmark-popper .bookmark-main-btn){flex:1;min-width:0;display:flex;align-items:center;gap:6px;padding:0;border:0;background:transparent;color:var(--ui-text);text-align:left;cursor:pointer}
+:global(.studio-bookmark-popper .bookmark-main-btn:hover .bookmark-excerpt){color:var(--ui-accent)}
+:global(.studio-bookmark-popper .bookmark-turn-badge){flex-shrink:0;padding:1px 4px;border-radius:4px;border:1px solid var(--ui-border);background:var(--ui-surface);color:var(--ui-accent);font:600 10px/1.2 var(--mono)}
+:global(.studio-bookmark-popper .bookmark-cross-info){flex:1;min-width:0;display:grid;gap:2px}
+:global(.studio-bookmark-popper .bookmark-cross-info small){overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ui-muted);font:500 10.5px/1.2 var(--sans)}
+:global(.studio-bookmark-popper .bookmark-excerpt){overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ui-text);font-size:11.5px;line-height:1.35}
+:global(.studio-bookmark-popper .bookmark-row-actions){display:inline-flex;align-items:center;gap:2px;flex-shrink:0}
+:global(.studio-bookmark-popper .bookmark-row-actions button){display:grid;place-items:center;width:22px;height:22px;padding:0;border:1px solid transparent;border-radius:5px;background:transparent;color:var(--ui-secondary);cursor:pointer}
+:global(.studio-bookmark-popper .bookmark-row-actions button:hover){border-color:var(--ui-border);background:var(--ui-surface);color:var(--ui-text)}
+:global(.studio-bookmark-popper .bookmark-row-actions button.is-remove:hover){color:var(--ui-danger,#dc2626)}
+:global(.studio-bookmark-popper .bookmark-empty){margin:0;padding:8px 0;text-align:center;color:var(--ui-muted);font-size:11.5px}
+@media(max-width:1440px){.workspace-context{display:none}.message-search{width:154px}}
+@media(max-width:1600px){.conversation-header{flex-wrap:wrap;gap:6px 10px;padding:6px 16px}.conversation-actions{flex-wrap:wrap;gap:4px;max-width:100%}.conversation-context{flex-wrap:wrap;padding:4px 16px}.message-search{min-width:136px}}
 </style>

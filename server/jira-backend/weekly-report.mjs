@@ -3,6 +3,8 @@
  * 调度、内容生成和状态归一化保持为纯函数，服务端只负责读取真实来源并持久化结果。
  */
 
+import { isJiraIssueDone } from "../../shared/jira-status.mjs";
+
 export const DEFAULT_WEEKLY_REPORT_SETTINGS = Object.freeze({
   enabled: false,
   weekday: 5,
@@ -105,7 +107,7 @@ function scheduleTouchesRange(issue, range) {
 }
 
 function issueDone(issue) {
-  return /已完成|完成|关闭|done|closed/i.test(`${issue.status || ""} ${issue.statusCategory || ""}`);
+  return isJiraIssueDone(issue);
 }
 
 function issueBlocked(issue) {

@@ -11,7 +11,7 @@ Execute the full evidence-to-delivery workflow. Keep code, Confluence, Jira, bro
 
 Load and follow these skills before acting:
 
-1. `delivery-gate-docs` for the current S2a prompt and `tech-design.md` template.
+1. `frontend-tech-solution` for the frontend document format and current template. Use `delivery-gate-docs` only for applicable formal gate requirements.
 2. `confluence-markdown-publish` for Markdown-preserving Confluence publication.
 3. `jira-task-compliance` for titles, descriptions, hierarchy, duplicate checks, and Fix Version verification.
 4. Project Vue skills when the target repository contains Vue code. Project instructions override generic Vue recommendations.
@@ -24,7 +24,7 @@ Load and follow these skills before acting:
 - Confirm the repository path, branch, dirty worktree, project rules, and whether the user requested design only or also implementation.
 - Do not modify product code when the user requested only a technical design and Jira tasks.
 - Do not commit, push, deploy, or change Jira/Confluence beyond the requested artifacts.
-- Publish the technical design and coverage matrix to Confluence/Jira or keep them as local evidence. Never stage, commit, or push generated Markdown, screenshots, diagrams, exports, or other design artifacts to the product repository.
+- Keep the design and its requirement coverage together in one document by default. Publish or retain it locally within the authorized delivery scope. Never stage, commit, or push generated Markdown, screenshots, diagrams, exports, or other design artifacts to the product repository.
 
 ### 2. Collect authoritative inputs
 
@@ -44,8 +44,7 @@ Load and follow these skills before acting:
 
 ### 4. Generate the technical design
 
-- Use the current AI Delivery Kit S2a prompt and `tech-design.md` template.
-- Include metadata, a summary under 200 Chinese characters, requirement mapping, complete impact scope, detailed design, API contracts, frontend states, observability, differences, risks, tests, tasks, rollback, coverage matrix, and unsigned G2a review.
+- Apply the template selected by `frontend-tech-solution`. Put requirement mapping, implementation details, API evidence, risks, tests, and applicable rollout or rollback considerations in the template’s existing sections. Record G2a status in the delivery evidence when required.
 - Assign local US/AC/EX/NFR IDs when the PRD lacks IDs and label them as document trace IDs.
 - Target 100% coverage of the available PRD content with zero unexplained gaps. Coverage does not prove implementation or acceptance.
 - For exports, specify column order, source fields, types, null handling, constant values, leading-zero preservation, currency/amount formatting, pagination, cancellation, and partial-file behavior.

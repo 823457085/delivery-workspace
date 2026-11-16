@@ -1,14 +1,14 @@
 <script setup lang="ts">
-import { computed, nextTick, shallowRef, watch } from 'vue';
+import { computed, defineAsyncComponent, nextTick, shallowRef, watch } from 'vue';
 import { agentProviderLabels, type AgentRun, type AgentRuntimeHealth } from '../../../shared/agent-runtime';
 import { groupExecutionProgress, type GroupRoom } from '../../../shared/agent-group-chat';
 import type { AdvancedTeamTask } from './team-api';
 import AgentAvatar from './AgentAvatar.vue';
-import AgentExecutionPanel from './AgentExecutionPanel.vue';
-import AgentGroupDeliveryPanel from './AgentGroupDeliveryPanel.vue';
-import AgentRunDetails from './AgentRunDetails.vue';
 import AgentSidePanel from './AgentSidePanel.vue';
-import AgentTeamProgress from './AgentTeamProgress.vue';
+const AgentExecutionPanel = defineAsyncComponent(() => import('./AgentExecutionPanel.vue'));
+const AgentGroupDeliveryPanel = defineAsyncComponent(() => import('./AgentGroupDeliveryPanel.vue'));
+const AgentRunDetails = defineAsyncComponent(() => import('./AgentRunDetails.vue'));
+const AgentTeamProgress = defineAsyncComponent(() => import('./AgentTeamProgress.vue'));
 import { buildGroupChatConversation } from './group-chat-conversation';
 import { groupChatPresentation } from './group-chat-progress';
 import { groupChatSummaries } from './group-chat-summary';
@@ -26,6 +26,8 @@ const props = defineProps<{
   runtimes: AgentRuntimeHealth[];
   streamStatus: 'connecting' | 'connected' | 'reconnecting';
   visible?: boolean;
+  workspacePathOverride?: string;
+  queueSummary?: string;
 }>();
 const emit = defineEmits<{ collapse: []; compose: [text: string] }>();
 const sidePanel = shallowRef<InstanceType<typeof AgentSidePanel>>();
@@ -68,10 +70,10 @@ defineExpose({ inspect });
 <template>
   <section class="group-details-panel">
   <AgentSidePanel :key="room?.id || 'empty'" ref="sidePanel" class="group-details-content" compact :delivery-count-override="0" delivery-label="产物" :default-tab="room?.source ? 'delivery' : 'execution'" :conversation="conversation" :conversations="conversation ? [conversation] : []"
-    :context="context" :loading="loading" :workspace-path="room?.workspacePath || ''" :provider="conversation?.latest.provider || 'codex'"
-    :stream-status="streamStatus" :status-override="panelStatus" @collapse="emit('collapse')" @compose="emit('compose', $event)">
+    :context="context" :loading="loading" :workspace-path="room?.workspacePath || workspacePathOverride || ''" :provider="conversation?.latest.provider || 'codex'"
+    :queue-label="queueSummary" :stream-status="streamStatus" :status-override="panelStatus" @collapse="emit('collapse')" @compose="emit('compose', $event)">
     <template v-if="$slots['project-launch']" #project-launch><slot name="project-launch" /></template>
-    <template #execution>
+    <template v-if="room" #execution>
       <AgentExecutionPanel compact collapsible-runs :visible="visible" :conversation="conversation" :team-task="currentTask" :team-tasks="tasks" :run-label="runLabel" @inspect="inspect" />
     </template>
     <template #workflow>
@@ -94,7 +96,7 @@ defineExpose({ inspect });
     </template>
     <template #delivery><AgentGroupDeliveryPanel :room="room" :runs="ownedRuns" :tasks="tasks" :active="visible" @inspect="inspect" /></template>
   </AgentSidePanel>
-  <el-drawer v-model="detailOpen" :title="selectedRun ? `执行记录 · ${runLabel(selectedRun)}` : '执行记录'" size="min(760px, 94vw)" class="hub-drawer" destroy-on-close>
+  <el-drawer v-if="detailOpen" v-model="detailOpen" :title="selectedRun ? `执行记录 · ${runLabel(selectedRun)}` : '执行记录'" size="min(760px, 94vw)" class="hub-drawer" append-to-body destroy-on-close>
     <AgentRunDetails v-if="selectedRun" :run="selectedRun" :runtimes="runtimes" :team-task="selectedTask" />
     <template #footer><el-button @click="selectedRunId = ''">关闭</el-button></template>
   </el-drawer>

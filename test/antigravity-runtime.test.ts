@@ -42,9 +42,57 @@ test('Antigravity health distinguishes an explicit login failure from network or
     await assert.rejects(fs.access(f.marker), { code: 'ENOENT' });
   }
 });
+test('Antigravity retries a transient eligibility check and only reuses recently verified readiness for transport errors', async t => {
+  const f = await fixture(t, 'auth-health-rolling');
+  const adapter = createAntigravityAdapter(f.binary);
+  const state = (value: string) => fs.writeFile(path.join(f.directory, 'health-state'), value);
+  await state('network-once');
+  assert.equal((await adapter.health()).ready, true);
+  await state('network');
+  const fallback = await adapter.health(true);
+  assert.equal(fallback.ready, true);
+  assert.equal(fallback.defaultModel, 'test-medium');
+  assert.match(fallback.message, /最近验证/);
+  assert.doesNotMatch(JSON.stringify(fallback), /private\.invalid/);
+  await state('unavailable');
+  const missingCatalog = await adapter.health(true);
+  assert.equal(missingCatalog.ready, true);
+  assert.match(missingCatalog.message, /模型配置.*最近验证/);
+  await state('denied');
+  assert.match((await adapter.health(true)).message, /登录不可用/);
+  await state('network');
+  assert.equal((await adapter.health(true)).ready, false);
+  await state('ready');
+  assert.equal((await adapter.health(true)).ready, true);
+  adapter.invalidateHealth?.();
+  await state('unavailable');
+  const cold = await adapter.health(true);
+  assert.equal(cold.ready, false);
+  assert.match(cold.message, /暂未读取到账号模型配置/);
+});
 test('Antigravity parses tab catalog, retains labels and rejects invented fallback', () => {
   assert.deepEqual(antigravityModels('Fetching available models...\na\tL12\na\tDuplicate\nbad text\n'), [{ id: 'a', label: 'L12' }]);
   assert.throws(() => antigravityModels(''), /模型/);
+});
+test('Antigravity retries network eligibility failure before init once without replaying a submitted turn', async t => {
+  for (const scenario of ['startup-network-once', 'startup-network-always']) {
+    const f = await fixture(t);
+    const adapter = createAntigravityAdapter(f.binary);
+    const sessions: string[] = [];
+    const execution = adapter.execute({ ...f.context, resumeSessionId: 'antigravity-test-session',
+      run: { ...f.context.run, objective: scenario }, onSession: id => { sessions.push(id); } });
+    if (scenario === 'startup-network-once') {
+      assert.equal(await execution, '你好 Antigravity');
+      assert.deepEqual(sessions, ['antigravity-test-session']);
+    } else {
+      await assert.rejects(execution, /网络连接异常/);
+      assert.deepEqual(sessions, []);
+    }
+    const calls = (await fs.readFile(path.join(f.directory, 'auth-invocations.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0].content, calls[1].content);
+    assert.equal(calls[1].args[calls[1].args.indexOf('--conversation') + 1], 'antigravity-test-session');
+  }
 });
 test('Antigravity per-run permissions isolate workspace commands and preserve readonly/full access', () => {
   for (const mode of ['ask', 'plan'] as const) {
@@ -367,7 +415,8 @@ test('Antigravity only classifies explicit authentication failures; paths and st
     });
     if (objective === 'success-exit-auth-noise') assert.equal(output.at(-1), '已完成回复');
   }
-  for (const [objective, expected] of [['auth-failure-code', /认证凭证失效/], ['network-failure', /网络连接异常/]] as const) {
+  for (const [objective, expected] of [['auth-failure-code', /认证凭证失效/], ['network-failure', /网络连接异常/],
+    ['terminal-network-address', /网络连接异常/]] as const) {
     const f = await fixture(t);
     await assert.rejects(createAntigravityAdapter(f.binary).execute({ ...f.context, run: { ...f.context.run, objective } }), expected);
   }
@@ -504,7 +553,7 @@ function protobufField(field: number, content: Buffer) {
   return Buffer.concat([varint(field * 8 + 2), varint(content.length), content]);
 }
 async function historyFixture(t: TestContext, options: { missing?: boolean; invalidIndices?: boolean; noError?: boolean; twoErrors?: boolean;
-  session?: string; historyGap?: boolean; sqlite?: 'quota' | 'auth' | 'raw' | 'wrong-session' } = {}) {
+  session?: string; historyGap?: boolean; sqlite?: 'quota' | 'auth' | 'raw' | 'network' | 'wrong-session' } = {}) {
   const f = await fixture(t);
   const session = options.session || 'history-native-session';
   const nativeRoot = path.join(f.directory, 'native');
@@ -522,8 +571,11 @@ async function historyFixture(t: TestContext, options: { missing?: boolean; inva
   if (options.sqlite) {
     await fs.mkdir(path.dirname(database), { recursive: true });
     const oldError = options.sqlite === 'auth' ? 'UNAUTHENTICATED: historical authentication failed'
-      : 'Individual quota reached. Try again in 149h6m8s.';
-    const rawError = options.sqlite === 'raw' ? 'UNAUTHENTICATED (code 401): historical credential error' : oldError;
+      : options.sqlite === 'network' ? 'There was a network issue connecting to the server, please try again.'
+        : 'Individual quota reached. Try again in 149h6m8s.';
+    const rawError = options.sqlite === 'raw' ? 'UNAUTHENTICATED (code 401): historical credential error'
+      : options.sqlite === 'network' ? 'agent executor error: generating and executing: request failed: Post "https://test.invalid/model": EOF'
+        : oldError;
     const payload = protobufField(24, protobufField(3, Buffer.concat([
       protobufField(1, Buffer.from(oldError)), protobufField(2, Buffer.from(rawError)),
       protobufField(3, Buffer.from('PRIVATE_HEADERS_MUST_NOT_BE_PUBLISHED')),
@@ -579,6 +631,41 @@ test('Antigravity historical-error compatibility rejects new errors, incomplete 
     const f = await historyFixture(child);
     await assert.rejects(f.execute(objective), /Antigravity/);
   });
+});
+
+test('Antigravity verifies a recovered model network retry in both new and resumed turns', async t => {
+  const resumed = await historyFixture(t, { sqlite: 'quota' });
+  assert.equal(await resumed.execute('transport-stream-retry'), '检查开始。\n网络恢复后完成。');
+  const edited = await historyFixture(t, { sqlite: 'quota' });
+  assert.equal(await edited.execute('transport-edit-recovered'), '检查开始。\n网络恢复后完成。');
+
+  const fresh = await fixture(t);
+  const adapter = createAntigravityAdapter(fresh.binary, undefined, path.join(fresh.directory, 'native'));
+  const diagnostics: string[] = [];
+  const result = await adapter.execute({ ...fresh.context, run: { ...fresh.context.run, objective: 'transport-recover' },
+    onEvent: (type, message) => { if (type === 'lifecycle') diagnostics.push(message); } });
+  assert.equal(result, '检查开始。\n网络恢复后完成。');
+  assert.deepEqual(diagnostics, ['已核实本轮完整结束；CLI 结束记录中的网络错误已核对']);
+});
+
+test('Antigravity confirms a completed turn after a recovered edit when the CLI repeats the prior terminal network error', async t => {
+  for (const objective of ['transport-edit-prior-network', 'transport-edit-prior-network-raw']) {
+    const f = await historyFixture(t, { sqlite: 'network' });
+    assert.equal(await f.execute(objective), '检查开始。\n网络恢复后完成。');
+  }
+  const unmatched = await historyFixture(t, { sqlite: 'quota' });
+  await assert.rejects(unmatched.execute('transport-edit-prior-network'), /网络连接异常/);
+  const unrelatedEdit = await historyFixture(t, { sqlite: 'network' });
+  await assert.rejects(unrelatedEdit.execute('transport-edit-prior-network-other-file'), /网络连接异常/);
+});
+
+test('Antigravity keeps unverified network ERROR results failed even when there is a visible reply', async t => {
+  for (const objective of ['transport-terminal-error', 'transport-tool-error', 'transport-edit-other-file', 'transport-mismatch', 'transport-exit2']) {
+    await t.test(objective, async child => {
+      const f = await historyFixture(child, { sqlite: 'quota' });
+      await assert.rejects(f.execute(objective), /Antigravity CLI/);
+    });
+  }
 });
 
 test('Antigravity historical-error compatibility requires unchanged native history and exact evidence for this submitted turn', async t => {

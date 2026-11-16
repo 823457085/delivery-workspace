@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import {computed,inject,ref,shallowRef,watch,onBeforeUnmount} from 'vue';
-import {ElMessage,ElMessageBox} from 'element-plus';
-import {ExternalLink,Star,Paperclip,ChevronDown,RefreshCw} from '@lucide/vue';
+import {ElMessage} from 'element-plus';
+import {ExternalLink,Star,Paperclip,ChevronDown,RefreshCw,Copy,GitBranch,Sparkles} from '@lucide/vue';
 import type {JiraIssue} from '../../../shared/hub';
 import type {JiraIssueDetail,JiraField,JiraPerson,JiraComment} from '../../../shared/jira-issue';
 import {safeUrl,dateTime,day} from '../../shared/format';
+import {formatIssueMarkdownLink,suggestIssueBranchName} from '../task-calendar/task-triage-studio';
 import StatusPill from '../../shared/ui/StatusPill.vue';
 import QueryState from '../../shared/ui/QueryState.vue';
 import TaskDelivery from '../workbench/TaskDelivery.vue';
@@ -86,22 +87,34 @@ async function submit() {
  else if(action==='link')await run(action,{typeId:selectedId.value,other:String(extra.value.other||'').trim().toUpperCase(),direction:extra.value.direction||'outward'});
  else if(action==='worklog'){const started=new Date(extra.value.started);if(!Number.isFinite(started.getTime())){ElMessage.warning('请选择工时开始时间');return;}await run(action,{...extra.value,started:started.toISOString().replace('Z','+0000')});}
 }
-async function uploadFile(event:Event){const input=event.target as HTMLInputElement,file=input.files?.[0];input.value='';if(!file)return;if(file.size>10*1024*1024){ElMessage.warning('请选择不超过 10 MB 的附件');return;}try{await ElMessageBox.confirm(`上传“${file.name}”到 ${key.value}？`,'确认上传',{confirmButtonText:'上传',cancelButtonText:'取消'});}catch{return;}await run('attachment',{},file);}
+async function uploadFile(event:Event){const input=event.target as HTMLInputElement,file=input.files?.[0];input.value='';if(!file)return;if(file.size>10*1024*1024){ElMessage.warning('请选择不超过 10 MB 的附件');return;}await run('attachment',{},file);}
 const worklogs=shallowRef<{total:number;items:any[]}>();
 async function showWorklogs(){tab.value='worklog';try{worklogs.value=await api('/options?action=worklog');}catch(cause){ElMessage.error((cause as Error).message);}}
 async function loadComments(){if(!detail.value)return;try{const result=await api<{comments:JiraComment[];total:number;next:number}>(`/comments?start=${detail.value.commentNext}`);detail.value={...detail.value,comments:[...detail.value.comments,...result.comments],commentNext:result.next,commentTotal:result.total};}catch(cause){ElMessage.error((cause as Error).message);}}
 function inspect(key:string){emit('inspect',key);}
+const suggestedBranch=computed(()=>suggestIssueBranchName(key.value,detail.value?.type||props.issue?.issueType||''));
+async function copyIssueText(value:string,label:string){
+ if(!value)return;
+ try{await navigator.clipboard.writeText(value);ElMessage.success(`已复制${label}`);}
+ catch{ElMessage.error('浏览器未允许复制');}
+}
 watch([visible,key],([open])=>{controller?.abort();controller=new AbortController();operation.value='';worklogs.value=undefined;detail.value=undefined;error.value=null;if(open){tab.value='details';void refresh();}},{immediate:true});
 </script>
 <template>
 <el-drawer v-model="visible" class="jira-issue-drawer" size="min(1180px, 100vw)" append-to-body destroy-on-close :close-on-click-modal="!busy" :close-on-press-escape="!busy" :show-close="!busy">
  <template #header="{ titleId }">
   <div :id="titleId" class="issue-heading">
-   <a :href="safeUrl(detail?.url || issue?.url)" target="_blank" rel="noopener noreferrer">{{key}} <ExternalLink :size="12"/></a>
+   <div class="issue-heading-meta">
+    <a :href="safeUrl(detail?.url || issue?.url)" target="_blank" rel="noopener noreferrer">{{key}} <ExternalLink :size="12"/></a>
+    <button type="button" class="issue-copy-pill" :title="`复制单号 ${key}`" @click="copyIssueText(key,'单号')"><Copy :size="11"/><span>复制单号</span></button>
+    <button v-if="suggestedBranch" type="button" class="issue-copy-pill" :title="`复制推荐分支名 ${suggestedBranch}`" @click="copyIssueText(suggestedBranch,'推荐分支')"><GitBranch :size="11"/><span>{{suggestedBranch}}</span></button>
+    <button type="button" class="issue-copy-pill" title="复制 Markdown 标题链接" @click="copyIssueText(formatIssueMarkdownLink({key,summary:detail?.summary||issue?.summary,url:detail?.url||issue?.url}),' Markdown 引用')"><Copy :size="11"/><span>Markdown</span></button>
+   </div>
    <h2 v-if="detail?.summary || issue?.key === key">{{detail?.summary || issue?.summary}}</h2>
   </div>
  </template>
  <div class="issue-toolbar">
+  <el-button v-if="workspace" type="primary" plain @click="visible=false;workspace.compose(jiraQuickPrompt({key}))"><Sparkles :size="13"/><span>带入 AI 会话</span></el-button>
   <el-button :disabled="disabled || !right('EDIT_ISSUES')" :title="right('EDIT_ISSUES')?'':'当前账号没有编辑权限'" @click="open('edit')">编辑</el-button>
   <el-dropdown trigger="click" :disabled="disabled || !right('TRANSITION_ISSUES') || !detail?.transitions.length" @command="(id:string)=>open('transition',id)"><el-button :disabled="disabled || !right('TRANSITION_ISSUES') || !detail?.transitions.length">{{detail?.status || issue?.status || '切换状态'}} <ChevronDown :size="13"/></el-button><template #dropdown><el-dropdown-menu><el-dropdown-item v-for="item in detail?.transitions" :key="item.id" :command="item.id">{{item.name}}</el-dropdown-item></el-dropdown-menu></template></el-dropdown>
   <el-button :disabled="disabled || !right('ASSIGN_ISSUES')" @click="open('assign')">指派</el-button>
@@ -147,6 +160,8 @@ watch([visible,key],([open])=>{controller?.abort();controller=new AbortControlle
 <style scoped>
 :global(.jira-issue-drawer.el-drawer) {
   --el-drawer-padding-primary: clamp(14px, 2vw, 22px);
+  color: var(--ui-text);
+  background: var(--ui-bg);
 }
 :global(.jira-issue-drawer .el-drawer__header) {
   flex: none;
@@ -177,11 +192,18 @@ watch([visible,key],([open])=>{controller?.abort();controller=new AbortControlle
 }
 .issue-main :deep(.el-empty){padding:12px 0;align-items:flex-start}.issue-main :deep(.el-empty__image){display:none}.issue-main :deep(.el-empty__description){margin:0}
 .issue-heading{flex:1;min-width:0}
-.issue-heading>a{display:inline-flex;align-items:center;gap:6px;color:var(--ui-accent);font-size:12px}
-.issue-heading h2{margin:4px 0 0;font:600 18px/1.45 var(--sans,sans-serif);color:var(--ui-text);overflow-wrap:anywhere}
-.issue-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:0 0 18px;border-bottom:1px solid var(--ui-divider)}.issue-toolbar .el-button+.el-button{margin:0}.watch-button{display:flex;align-items:center;gap:6px;margin-left:auto;border:0;border-radius:5px;padding:7px 9px;background:transparent;color:var(--ui-secondary);font-size:12px;cursor:pointer}.watching{color:var(--ui-accent);background:var(--ui-accent-soft)}
-.issue-layout{display:grid;grid-template-columns:minmax(0,1fr) 250px;gap:30px}.issue-main{min-width:0}.issue-facts{min-width:0;padding:24px 0 20px 24px;border-left:1px solid var(--ui-divider)}.issue-facts dl{margin:20px 0}.issue-facts dl>div{display:grid;gap:5px;margin-bottom:19px}.issue-facts dt{font-size:12px;color:var(--ui-muted)}.issue-facts dd{margin:0;color:var(--ui-text);font-size:13px;line-height:1.7;overflow-wrap:anywhere}.issue-facts>a{display:flex;align-items:center;gap:5px;margin-top:20px;color:var(--ui-accent);font-size:12px}
-.issue-section{padding:16px 0 24px;border-bottom:1px solid var(--ui-divider)}.issue-section h3,.section-actions h3{margin:0 0 15px;font-size:14px;font-weight:600;color:var(--ui-text)}.issue-section>header,.section-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}.issue-section>header h3{margin:0}.issue-section h3 small{margin-left:6px;color:var(--ui-muted);font-weight:400}.empty-line{margin:12px 0;color:var(--ui-muted);font-size:12px;line-height:1.8}
+.issue-heading-meta{display:flex;align-items:center;flex-wrap:wrap;gap:6px}
+.issue-heading-meta>a{display:inline-flex;align-items:center;gap:5px;color:var(--ui-accent);font:600 12px/18px var(--mono,monospace);text-decoration:none}
+.issue-heading-meta>a:hover{text-decoration:underline}
+.issue-copy-pill{display:inline-flex;align-items:center;gap:4px;height:21px;padding:0 7px;border:1px solid var(--ui-border);border-radius:5px;background:var(--ui-surface);color:var(--ui-secondary);font:500 11px/1 var(--mono,monospace);cursor:pointer}
+.issue-copy-pill:hover{border-color:var(--ui-accent);color:var(--ui-accent)}
+:global(:root[data-theme='acid']) .issue-copy-pill{border-radius:0!important}
+.issue-heading h2{margin:5px 0 0;font:600 15.5px/1.4 var(--sans,sans-serif);letter-spacing:-0.015em;color:var(--ui-text);overflow-wrap:anywhere}
+.issue-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:6px;padding:0 0 12px;border-bottom:1px solid var(--ui-divider)}
+.issue-toolbar :deep(.el-button:not(.is-text)){min-height:28px;height:28px;padding:0 10px;font-size:12px;border-radius:6px}
+.issue-toolbar .el-button+.el-button{margin:0}.watch-button{display:inline-flex;align-items:center;gap:5px;margin-left:auto;min-height:28px;border:1px solid transparent;border-radius:6px;padding:0 9px;background:transparent;color:var(--ui-secondary);font-size:12px;cursor:pointer}.watching{color:var(--ui-accent);background:var(--ui-accent-soft);border-color:color-mix(in srgb,var(--ui-accent) 22%,transparent)}
+.issue-layout{display:grid;grid-template-columns:minmax(0,1fr) 264px;gap:22px}.issue-main{min-width:0}.issue-main :deep(a){text-underline-offset:3px;text-decoration-color:color-mix(in srgb,var(--ui-accent) 38%,transparent)}.issue-facts{min-width:0;padding:14px 0 16px 18px;border-left:1px solid var(--ui-divider)}.issue-facts dl{margin:14px 0}.issue-facts dl>div{display:grid;grid-template-columns:68px minmax(0,1fr);align-items:baseline;gap:8px;padding:4px 0;margin:0;border-bottom:1px solid color-mix(in srgb,var(--ui-divider) 65%,transparent)}.issue-facts dl>div:last-child{border-bottom:0}.issue-facts dt{font-size:11.5px;color:var(--ui-muted)}.issue-facts dd{margin:0;color:var(--ui-text);font-size:12.5px;line-height:1.5;overflow-wrap:anywhere}.issue-facts>a{display:inline-flex;align-items:center;gap:5px;margin-top:10px;margin-left:12px;color:var(--ui-secondary);font-size:12px;text-decoration:none}.issue-facts>a:hover{color:var(--ui-accent)}
+.issue-section{padding:12px 0 16px;border-bottom:1px solid var(--ui-divider)}.issue-section h3,.section-actions h3{margin:0 0 10px;font-size:13.5px;font-weight:600;color:var(--ui-text)}.issue-section>header,.section-actions{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}.issue-section>header h3{margin:0}.issue-section h3 small{margin-left:6px;color:var(--ui-muted);font-weight:400}.empty-line{margin:8px 0;color:var(--ui-muted);font-size:12px;line-height:1.6}
 .attachment-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:9px}.attachment-list>a{display:flex;gap:9px;align-items:flex-start;padding:12px;border:1px solid var(--ui-border);border-radius:7px;font-size:12px;color:var(--ui-accent)}.attachment-list small{display:block;margin-top:5px;color:var(--ui-muted);font-size:11px}
 .relation-row{display:flex;gap:10px;align-items:center;width:100%;padding:12px 0;border:0;border-bottom:1px solid var(--ui-divider);background:transparent;text-align:left;cursor:pointer;font-size:12px;color:var(--ui-secondary)}.relation-row strong{flex:none;color:var(--ui-accent);font-weight:500}.relation-row>span:not(.status-pill){min-width:0;overflow-wrap:anywhere}.relation-row>.status-pill{margin-left:auto}
 .comment{padding:18px 0;border-bottom:1px solid var(--ui-divider)}.comment>header{display:flex;gap:14px;align-items:center;margin-bottom:12px;font-size:12px}.comment time{color:var(--ui-muted);font-size:11px}.comment p{font-size:13px;line-height:1.8;color:var(--ui-secondary)}.form-context{font-size:13px;color:var(--ui-secondary)}.jira-datetime{width:100%;padding:8px;border:1px solid var(--ui-border);border-radius:5px;font:inherit;color:var(--ui-text);background:var(--ui-surface)}

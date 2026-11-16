@@ -1,9 +1,9 @@
 # 产研测 AI 交付门禁 · Confluence 宣贯（一页纸）
 
 > **版本**：AI Delivery Kit **v1.0.0**（初版）  
-> **Confluence**：[宣贯一页纸](https://confluence.example.com/spaces/TEAM/pages/1002/)（TEAM · 示例 ID 1002）  
+> **Confluence**：[宣贯一页纸](https://confluence.hahabianli.com/spaces/SOP/pages/33746028/)（SOP · ID 33746028）  
 > **权威源**：`ai-delivery-kit/` · [README.md](../README.md)  
-> **试点清单**：[pilot-90day-checklist.md](./pilot-90day-checklist.md) · [Confluence](https://confluence.example.com/spaces/TEAM/pages/1003/)
+> **试点清单**：[pilot-90day-checklist.md](./pilot-90day-checklist.md) · [Confluence](https://confluence.hahabianli.com/spaces/SOP/pages/33746029/)
 
 ---
 

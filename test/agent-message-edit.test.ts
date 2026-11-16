@@ -8,16 +8,18 @@ import { randomUUID } from 'node:crypto';
 import { agentExecutionPrompt, createAgentRuntimeService, type AgentRuntimeAdapter } from '../server/agent-runtime.js';
 import type { AgentRun } from '../shared/agent-runtime.js';
 
-async function fixture(provider: 'codex' | 'cursor' = 'codex', firstSession = true) {
+async function fixture(provider: 'codex' | 'cursor' | 'antigravity' = 'codex', firstSession = true) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'delivery-message-edit-'));
   const executions: { run: AgentRun; session: string; prompt: string; finish: () => void }[] = [];
   let firstConversationId = '';
+  let healthChecks = 0;
   const attachment = { id: '11111111-1111-4111-8111-111111111111', name: 'screen.png', mimeType: 'image/png' as const, size: 1,
     url: '/api/agent-runtimes/attachments/11111111-1111-4111-8111-111111111111' };
-  const adapter: AgentRuntimeAdapter = { id: provider, health: async () => ({
-    provider, label: provider, binary: '/mock', version: 'test', authenticated: true, ready: true, message: '',
-    modes: ['ask'], models: [{ id: 'test', label: 'test' }], defaultModel: 'test', writable: false, checkedAt: '',
-  }), execute: context => new Promise((resolve, reject) => {
+  const adapter: AgentRuntimeAdapter = { id: provider, health: async () => {
+    healthChecks += 1;
+    return { provider, label: provider, binary: '/mock', version: 'test', authenticated: true, ready: true, message: '',
+      modes: ['ask'], models: [{ id: 'test', label: 'test' }], defaultModel: 'test', writable: false, checkedAt: '' };
+  }, execute: context => new Promise((resolve, reject) => {
     firstConversationId ||= context.run.conversationId || context.run.id;
     const sessionId = context.resumeSessionId || ((context.run.conversationId || context.run.id) === firstConversationId
       ? 'session-kept' : `session-${context.run.conversationId || context.run.id}`);
@@ -35,7 +37,7 @@ async function fixture(provider: 'codex' | 'cursor' = 'codex', firstSession = tr
   const service = await createAgentRuntimeService(directory, options);
   const start = () => service.start({ provider, mode: 'ask', model: 'test', objective: '原要求', workspacePath: directory, attachmentIds: [attachment.id],
     ...(provider === 'codex' ? { serviceTier: 'default' as const } : {}) });
-  return { directory, executions, attachment, options, service, start,
+  return { directory, executions, attachment, options, service, start, healthChecks: () => healthChecks,
     close: async () => { await service.close(); await fs.rm(directory, { recursive: true, force: true }); } };
 }
 
@@ -44,7 +46,7 @@ async function waitFor(check: () => boolean) {
   assert.ok(check(), '等待状态变更超时');
 }
 
-for (const provider of ['codex', 'cursor'] as const) {
+for (const provider of ['codex', 'cursor', 'antigravity'] as const) {
   test(`${provider} 暂停等待退出，保存保留原结果及附件，修订先于排队消息执行`, { timeout: 10000 }, async () => {
     const f = await fixture(provider);
     try {
@@ -62,7 +64,15 @@ for (const provider of ['codex', 'cursor'] as const) {
       assert.equal(f.executions.length, 1);
       assert.equal(queued.status, 'queued');
       if (provider === 'cursor') await assert.rejects(f.service.revise(original.id, '新要求', '/wrong'), /信任确认/);
+      const checksBeforeSave = f.healthChecks();
       const next = await f.service.revise(original.id, '修订后的要求', provider === 'cursor' ? f.directory : undefined);
+      assert.equal(next.status, 'queued', '保存回执先于 CLI 续跑');
+      assert.equal(f.healthChecks(), checksBeforeSave, '沿用已经核实的同一执行器');
+      assert.equal(f.executions.length, 1);
+      const saved: AgentRun[] = JSON.parse(await fs.readFile(path.join(f.directory, 'agent-runs.json'), 'utf8'));
+      assert.equal(saved.find(run => run.id === original.id)?.pausedForEdit, false);
+      assert.equal(saved.find(run => run.id === next.id)?.revisesRunId, original.id);
+      assert.equal(saved.find(run => run.id === queued.id)?.parentRunId, next.id);
       await waitFor(() => f.executions.length === 2);
       assert.equal(next.objective, '修订后的要求');
       assert.equal(next.revisesRunId, original.id);
@@ -200,5 +210,26 @@ test('编辑排队消息先暂停当前执行；空内容拒绝后保持暂停�
     await waitFor(() => f.executions.length === 3);
     assert.equal(revised.sessionId, 'session-kept');
     assert.equal(revised.parentRunId, queued.id);
+  } finally { await f.close(); }
+});
+
+
+test('修订归档失败时保持原消息暂停并保留队列顺序', { timeout: 10000 }, async () => {
+  const f = await fixture('antigravity');
+  try {
+    const original = await f.start();
+    await waitFor(() => f.executions.length === 1);
+    const following = await f.service.resume(original.id, '下一条消息');
+    await f.service.pauseForEdit(original.id);
+    const archive = path.join(f.directory, 'agent-user-context');
+    const [file] = await fs.readdir(archive);
+    assert.ok(file);
+    await fs.writeFile(path.join(archive, file), 'invalid');
+    await assert.rejects(f.service.revise(original.id, '修订内容'), /用户原话记录保存失败/);
+    const saved: AgentRun[] = JSON.parse(await fs.readFile(path.join(f.directory, 'agent-runs.json'), 'utf8'));
+    assert.equal(saved.find(run => run.id === original.id)?.pausedForEdit, true);
+    assert.equal(saved.find(run => run.id === following.id)?.parentRunId, original.id);
+    assert.equal(saved.find(run => run.revisesRunId === original.id)?.status, 'failed');
+    assert.equal(f.executions.length, 1);
   } finally { await f.close(); }
 });

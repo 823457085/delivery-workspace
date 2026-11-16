@@ -31,7 +31,7 @@ function download() {
 </script>
 
 <template>
-  <el-button link type="primary" @click="show">查看草稿</el-button>
+  <el-button size="small" @click="show">查看草稿</el-button>
   <el-dialog v-model="open" :title="draft.title" width="min(760px, calc(100vw - 32px))" align-center append-to-body destroy-on-close>
     <AgentMarkdown class="report-draft-content" :source="draft.content" />
     <template #footer>

@@ -4,7 +4,7 @@ AI Delivery Kit is the company-level source of truth for AI-assisted product, de
 
 ## Current Baseline
 
-- The target Git repository is `git@git.example.com:team/ai-delivery-kit.git`.
+- The target Git repository is `git@gitlab.hahabianli.com:raytheon-middleware/ai-delivery-kit.git`.
 - Package root is flat: `kit.yaml`, `core/`, `artifacts/`, `prompts/`, `skills/`, `adapters/`, `governance/`, `tests/`, and `install.sh` are at repository root.
 - Package contains `core/`, `artifacts/templates/`, `prompts/`, `skills/`, `adapters/`, `governance/`, `install.sh`, and `tests/validate-package.sh`.
 - Codex and Cursor adapters exist and can write workspace-level guidance.

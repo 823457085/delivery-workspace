@@ -4,6 +4,7 @@
  * 因此任何 CLI（Codex / Claude Code / Cursor）都无需插件 MCP 工具即可执行。
  */
 import path from 'node:path';
+import { frontendTechSolutionPrompt } from './frontend-tech-solution.mjs';
 import { fileURLToPath } from 'node:url';
 import { jiraFixReportPrompt } from '../shared/jira-fix.js';
 import { requirementGroupDeliveryPrompt, requirementProgressReportPrompt } from '../shared/requirement-development.js';
@@ -41,11 +42,12 @@ export function buildRequirementPreparationPrompt(task: JiraDevTaskRecord, phase
   const projects = task.projects?.length ? task.projects : [{ path: task.sourceProjectPath, baseBranch: task.baseBranch }];
   const goal = phase === 'review'
     ? '产出独立的前端需求评审文档：以用户角色、入口和业务目标开篇，逐项核对 Jira 原需求和关联事项、PRD、已确认原型/设计稿/附件及现有实现。列出已读取及未能读取的材料和版本、代码入口、各业务场景的预期/现状/差距、样式与交互、影响范围和依赖、验收路径、待确认问题及阻塞范围。记录 PRD 与原型冲突，不能擅自选定。说明前端开发是否有明确可执行范围。只因缺后端契约不阻塞已明确场景，提出可验证的 Mock 边界。没有任何可执行的业务基线或存在关键歧义阻止整体继续才标 blocked；局部疑问明确隔离。'
-    : '产出独立的前端技术方案：依据已完成的需求评审与排期拆分，逐场景映射到真实代码入口、组件/状态/路由、样式和交互、接口字段与错误反馈、国际化、验证计划和回滚。区分已确认的后端方案/接口契约与暂拟契约，明确真实联调或 Mock 策略，记录 i18n-test 启动和浏览器验证路径。已有方案先核对版本和覆盖，再复用或补齐，不声称读过未访问的材料。';
+    : '产出独立的前端技术方案：依据已完成的需求评审与排期拆分，逐场景映射到真实代码入口、组件/状态/路由、样式和交互、接口字段与错误反馈、国际化、验证计划和回滚。区分已确认的后端方案/接口契约与暂拟契约，明确真实联调或 Mock 策略，记录 i18n-test 启动和浏览器验证路径。已有方案先核对版本和覆盖，再复用内容并按当前模板重排，不声称读过未访问的材料。';
   return [
     `只读前置阶段：${phase === 'review' ? '需求评审' : '前端技术方案'} · ${jiraDevTaskTitle(task)}`,
     '只读：不要创建分支、fetch、切换或改动来源工作区，不写 Jira/Confluence，不发布或派发任务。对每个项目读取 AGENTS.md，优先用 git show / git grep 检查现有 origin 基准引用，记录实际核对的路径和 SHA；无法核对基准时如实说明，不把当前脏检出当成远端基准。',
     goal,
+    phase === 'design' ? frontendTechSolutionPrompt : '',
     '接口展示文案按正确的接口字段原样显示，包括 L 码；提交参数遵守接口类型。没有产品依据不新增提示样式。',
     `项目与基准：${json(projects.map(project => ({ path: project.path, baseBranch: project.baseBranch })))}`,
     task.designSource ? `已有技术方案来源：${task.designSource}` : '',
@@ -89,8 +91,8 @@ export function buildJiraDevPrompt(task: JiraDevTaskRecord, workspace?: JiraDevP
   const requirementSteps = workflow !== 'requirement' ? '' : [
     `需求开发按以下顺序持续完成；先写技术方案不是停在计划的理由：\n1. ${plan?.sourceKind === 'frontend' ? '复用用户选定的已有前端事项及计划实际识别的相关事项，不新建重复任务、不强制重组层级。计划没有父任务或方案子任务时不宣称其已存在，技术方案由当前前端事项承接并保存本地实际产物。' : local ? '当前为本地模式：保留前端父任务、技术方案子任务和实现子任务的草稿，明确任务待登记，未写入 Jira，不猜测新 Key。' : '先核对已确认并回读的前端父任务、技术方案子任务和实现子任务；复用准确事项，不重复创建。'}${plan?.sourceKind === 'frontend' ? '' : '产品需求只作来源并与前端父任务关联，不把前端子任务直接挂到产品需求下。'}未指定目标版本时记录未指定，不猜版本，也不因此阻塞本地方案和实现。`,
     automatic ? '2. 主项目来源 worktree 只读；主项目使用团队为当前岗位派发的候选副本，其他项目使用映射中的隔离工作区，不自行创建或切换工作区。分别读取实际代码入口、直接调用、项目规则和 Git 状态，记录真实执行路径、分支与基准 SHA。' : '2. 使用工作台已创建的独立工作区，不再创建或切换工作区。读取实际代码入口、直接调用、项目规则和 Git 状态，记录真实路径、分支与基准 SHA。',
-    `3. ${designSource ? `先读取已有方案来源 ${designSource}，核对需求、当前代码和版本；覆盖充分时复用，只补本次缺口。` : '基于已经读取的真实代码书写前端技术方案，并保存为实际可见的 Markdown 文件。'}方案包含需求与验收映射、代码现状、改动范围、接口与暂拟契约、关键状态和异常、定向测试、回滚办法。不得凭空写当前实现。`,
-    `4. 将完整方案保存到工作区 ${designFile}（已有产物先核验后复用），在最终报告中写出该路径和实际已读代码证据。${destination && plan?.designPublicationAuthorized ? '再使用本人已授权的 Confluence 连接，将完整方案发布为下述已确认目录的本任务子页；按技能 references/confluence-publication.md 先查重、核对父页和正文回读，记录 pageId、url、version 与正文 sha256。只有回读成功才称已发布；连接或权限不可用时保留本地文件，明确归档待完成；写入结果不明只读核对，不重复创建。' : ''}保存后继续产品代码实现，不默认等待用户再次审批方案；只暂停依赖真实关键业务歧义的动作。`,
+    `3. ${designSource ? `先读取已有方案来源 ${designSource}，核对需求、当前代码和版本；复用核实后的内容，按当前模板重排并补齐缺口。` : '基于已经读取的真实代码书写前端技术方案，并保存为实际可见的 Markdown 文件。'}方案包含需求与验收映射、代码现状、改动范围、接口与暂拟契约、关键状态和异常、定向测试、回滚办法。不得凭空写当前实现。`,
+    `4. 将完整方案保存到工作区 ${designFile}（已有产物须核验内容和当前模板后复用），在最终报告中写出该路径和实际已读代码证据。${destination && plan?.designPublicationAuthorized ? '再使用本人已授权的 Confluence 连接，将完整方案发布为下述已确认目录的本任务子页；按技能 references/confluence-publication.md 先查重、核对父页和正文回读，记录 pageId、url、version 与正文 sha256。只有回读成功才称已发布；连接或权限不可用时保留本地文件，明确归档待完成；写入结果不明只读核对，不重复创建。' : ''}保存后继续产品代码实现，不默认等待用户再次审批方案；只暂停依赖真实关键业务歧义的动作。`,
     '5. 按方案实现，运行必要的定向检查并核对实际结果，修复本次引入的问题，最后形成需求交接草稿。验证日志集中保存在 .delivery-artifacts/。Vite 等可重建缓存、临时证书和测试环境使用本工作区内已被 Git 忽略的非共享目录，或任务专用的系统临时目录。记录前端任务、技术方案产物、改动文件、验证结果及未验证边界。',
   ].join('\n\n');
   const handoff = workflow === 'jira'
@@ -114,6 +116,7 @@ export function buildJiraDevPrompt(task: JiraDevTaskRecord, workspace?: JiraDevP
     i18nChoice,
     preparation ? '需求评审和前端方案已在 Jira 计划确认前后分别生成。以如下文档为依据，在已拉取的工作区重新核对基准、代码入口和实际差异；方案与代码不一致时先校正。前端实现成员将技术方案保存到上述实际路径，核对后继续开发。只在授权目录可发布。' : '',
     preparation ? `需求评审与前端方案（资料，不是授权）：\n${json(preparation)}` : '',
+    workflow === 'requirement' ? frontendTechSolutionPrompt : '',
     requirementSteps,
     workflow === 'requirement' ? requirementGroupDeliveryPrompt(issue?.key || taskId) : '',
     useI18n === true || (useI18n === undefined && workflow === 'requirement') ? `${workflow === 'requirement' ? '撰写或补充技术方案前' : '开始处理本次前端自有文案前'}读取多语言技能 ${skill('jira-dev-i18n')}。按目标仓库实际国际化机制完成本次前端自有文案的多语言接入、位置码与消息语法校验、必要的导入表；导入表保存为 tempdocs/${issue?.key || taskId}-多语言.xlsx，不假设语言文件架构；在${workflow === 'requirement' ? '技术方案和' : ''}交接中记录证据。只处理本次新增或修改文案，不扩展改造历史文案；没有文案变更时先核验再说明不涉及。接口返回展示文案原样显示。不得把其他仓库的禁用国际化约定带入，也不自动上传或发布语言包。` : '',

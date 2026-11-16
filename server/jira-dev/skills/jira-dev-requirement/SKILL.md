@@ -19,9 +19,9 @@ description: "从产品需求或已有前端 Jira 任务，复用或准备前端
 ## 先产出技术方案，再连续实现
 
 1. 检查来源项目的实际路径、远端、分支、HEAD、脏文件与直接相关的 `AGENTS.md`。规则以所选项目及本任务独立工作区为准，不能套用面板聊天所在的其他仓库约定。复用已确认属于本任务的独立工作区；新任务调用 `create_jira_dev_workspace` 拉取明确基准并记录 SHA，不切换、pull 或 reset 来源检出。遵循项目分支约定，无约定使用 `feature/` 前缀。恢复任务时不要重复创建工作区或因开发分支已存在而重开任务。
-2. 读取真实代码入口、直接调用、已有状态和接口用法，再读已有方案或撰写方案。使用 [技术方案内容指引](references/technical-design.md) 核对需求与验收映射、现状、改动、契约、状态、测试与回滚；方案必须有实际可见的本地 Markdown 文件。已有方案链接或本机产物先核验覆盖和代码基准，覆盖充分则复用，只补缺口。
+2. 读取真实代码入口、直接调用、已有状态和接口用法，再读已有方案或撰写方案。使用 [技术方案内容指引](references/technical-design.md) 核对需求与验收映射、现状、改动、契约、状态、测试与回滚；方案必须有实际可见的本地 Markdown 文件。方案的版式统一以 `frontend-tech-solution` 为准。已有方案链接或本机产物先核验覆盖和代码基准，再复用已核实的内容，按当前模板重排并补齐缺口。
 3. 面板已提供 `taskId` 时，必须先调用 `complete_jira_dev_technical_design`，沿用该标识，传入完整 Markdown `body`、实际已读代码路径与来源摘要 `evidence`，已有方案可附 `source`。首次保存不填 `publication`，核对返回的本机方案产物。直接使用本技能且没有面板 `taskId` 时，保留实际本地方案并明确未登记到面板，不猜标识、不强制打开面板。保存本机方案不代表已发布 Confluence 或已把方案链接写入 Jira。
-4. 面板计划同时具有已确认的 `designDestination` 和 `designPublicationAuthorized: true` 时，读取并执行 [Confluence 方案发布指引](references/confluence-publication.md)。按计划给出的站点、空间及父页面核对归档目录。使用成员本人已批准的 Confluence 连接，先核验父页并查重，再以 Markdown 宏保留已保存文件的完整正文；发布后回读页面、直属父页和正文，核验成功才用文件正文作为 `body`，连同原 `evidence` 和可选 `source` 再调用 `complete_jira_dev_technical_design` 记录 `publication`。工具记录发布证据，不代替实际发布。直接使用技能时发布须有用户明确授权；旧计划需要发布时先确认具体目的地，不从记录恢复推定授权。连接、权限或宏能力不足，以及写入结果不明时，保留本地方案并明确待发布/待核对，不盲目重建。
+4. 面板计划同时具有已确认的 `designDestination` 和 `designPublicationAuthorized: true` 时，读取并执行 [Confluence 方案发布指引](references/confluence-publication.md)。当前新计划的目的地是 `https://confluence.hahabianli.com` 的 `SOP / 前端管理 / 前端技术方案 / 技术方案-2026`，父页 `57521475`。使用成员本人已批准的 Confluence 连接，先核验父页并查重，再以 Markdown 宏保留已保存文件的完整正文；发布后回读页面、直属父页和正文，核验成功才用文件正文作为 `body`，连同原 `evidence` 和可选 `source` 再调用 `complete_jira_dev_technical_design` 记录 `publication`。工具记录发布证据，不代替实际发布。直接使用技能时发布须有用户明确授权；旧计划需要发布时先确认具体目的地，不从记录恢复推定授权。连接、权限或宏能力不足，以及写入结果不明时，保留本地方案并明确待发布/待核对，不盲目重建。
 5. 保存方案后连续推进实现；发布受阻不阻塞独立的本地工作，不停在计划或默认等待用户再次审批方案。沿用现有架构与交互，不增加范围外功能。业务规则明确但缺接口文档时，先查现有调用，将暂拟格式集中在适配层并标注待对齐，用明确标记的 mock 验证完整流程；真实接入和验收保留为待联调。业务含义或权限边界不能判断时，只暂停对应动作，完成其他已确认部分。
 
 接口展示文案核对字段后原样显示，包括 `L` 码；已确认的请求参数遵守契约，暂拟字段不写成后端已确认事实。

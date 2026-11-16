@@ -1,3 +1,5 @@
+import { isJiraIssueDone } from '../../shared/jira-status.mjs';
+
 export function dateTime(value?: string | number | null) {
   if (!value) return '—';
   const date = new Date(value);
@@ -8,7 +10,7 @@ export function day(value?: string | null) { return value ? value.slice(0, 10) :
 export function safeUrl(value?: string) {
   try { const url = new URL(value || ''); return ['http:', 'https:'].includes(url.protocol) ? url.href : undefined; } catch { return undefined; }
 }
-export function isDone(issue: { status: string; statusCategory: string }) { return /done|完成|关闭|resolved|closed/i.test(`${issue.status} ${issue.statusCategory}`); }
+export function isDone(issue: { status: string; statusCategory: string }) { return isJiraIssueDone(issue); }
 export function searchMatches(value: unknown, query: string) { return !query.trim() || JSON.stringify(value).toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()); }
 export function countBy<T>(items: T[], key: (item: T) => string) {
   const counts = new Map<string, number>();

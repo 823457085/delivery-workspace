@@ -27,6 +27,6 @@ onBeforeUnmount(() => observer?.disconnect());
 <template><div ref="viewport" class="workspace-panel-content" @scroll="record" @wheel.passive="interact" @pointerdown="interact" @keydown="interact"><div ref="content" class="workspace-page-body"><slot /></div></div></template>
 
 <style scoped>
-.workspace-panel-content{flex:1;min-height:0;overflow:auto;padding:20px}
-.workspace-panel-content:deep(.automation-panel){height:auto;max-width:960px;margin:0 auto;padding:20px;border-radius:10px}
+.workspace-panel-content{flex:1;min-height:0;overflow:auto;padding:24px}
+.workspace-panel-content:deep(.automation-panel){height:auto;max-width:960px;margin:0 auto;padding:24px;border-radius:16px}
 </style>

@@ -50,7 +50,7 @@ function readPage(raw: unknown): Page {
 export function createAgentRemoteDeliveryConfluence(
   read: (resource: string) => Promise<Response>,
   write: (resource: string, method: 'POST' | 'PUT', body: unknown) => Promise<Response>,
-  configuredSite = process.env.CONFLUENCE_BASE_URL || 'https://confluence.example.invalid',
+  configuredSite = process.env.CONFLUENCE_BASE_URL || 'https://confluence.hahabianli.com',
 ) {
   const site = normalizeSite(configuredSite);
   const get = async (id: string) => readPage(await json(await read(`content/${id}?expand=space,version,ancestors,body.storage`)));

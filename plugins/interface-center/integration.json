@@ -1,0 +1,28 @@
+{
+  "id": "interface-center",
+  "name": "接口联调中心",
+  "description": "接口文档解析、请求调试、Mock 对比与联调反馈沉淀",
+  "local": true,
+  "prefix": "INTERFACE_CENTER",
+  "capabilities": [],
+  "section": {
+    "id": "integration",
+    "label": "接口联调",
+    "shortLabel": "联调",
+    "icon": "code"
+  },
+  "views": [
+    {
+      "id": "interfaces",
+      "label": "接口联调中心",
+      "path": "/interfaces",
+      "section": "integration",
+      "component": "panel"
+    }
+  ],
+  "sourceKeys": [],
+  "apiPrefixes": [
+    "/api/interface-center"
+  ],
+  "apiPaths": []
+}

@@ -3,6 +3,7 @@ export interface WorkspaceBuild {
   builtAt: string;
   backendSourceHash: string;
   buildSourceHash?: string;
+  frontendSourceHash?: string;
   development: boolean;
 }
 
@@ -21,6 +22,7 @@ export function isWorkspaceBuild(value: unknown): value is WorkspaceBuild {
     && typeof build.builtAt === 'string' && Number.isFinite(Date.parse(build.builtAt))
     && typeof build.backendSourceHash === 'string' && /^[a-f0-9]{64}$/.test(build.backendSourceHash)
     && (build.buildSourceHash === undefined || typeof build.buildSourceHash === 'string' && /^[a-f0-9]{64}$/.test(build.buildSourceHash))
+    && (build.frontendSourceHash === undefined || typeof build.frontendSourceHash === 'string' && /^[a-f0-9]{64}$/.test(build.frontendSourceHash))
     && typeof build.development === 'boolean';
 }
 

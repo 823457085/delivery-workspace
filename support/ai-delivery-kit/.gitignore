@@ -1,0 +1,12 @@
+.DS_Store
+*.swp
+*~
+scripts/.cf-*
+scripts/.mcp-*
+.cursor/
+.gocache/
+.gotmp/
+.screenshots/
+/coverage/
+playwright-report/
+test-results/

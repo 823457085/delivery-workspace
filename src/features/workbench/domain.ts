@@ -7,6 +7,7 @@ import { deliveryAcceptanceStatus, type DeliveryAcceptanceRecord, type DeliveryA
 import { jiraIssueKey, type JiraFixRecord } from '../../../shared/jira-fix';
 import { groupRunStatus, groupProgressText, type GroupExecutionProgress } from '../../../shared/agent-group-chat';
 import { plannedOn } from '../../shared/task-schedule';
+import { isJiraIssueDone } from '../../../shared/jira-status.mjs';
 import { agentRunProjectPath, buildAgentConversations } from '../agent-workbench/conversation';
 
 export interface DeliveryRecord {
@@ -80,7 +81,7 @@ export function reconcileDeliveryRecords(records: DeliveryRecord[], issues: Jira
     const agentStatus = options.runtimeKnown === false ? undefined : record.groupProgress ? groupRunStatus(record.groupProgress) : latest?.status;
     const active = ['running', 'queued'].includes(agentStatus || '') ? agentStatus : undefined;
     const done = linked.length > 0 && linked.length === record.issueKeys.length
-      && linked.every(issue => /^(done|完成|已完成|关闭|已关闭|resolved|closed)$/i.test(issue.statusCategory) || /^(done|完成|已完成|关闭|已关闭|resolved|closed)$/i.test(issue.status));
+      && linked.every(issue => isJiraIssueDone(issue));
     const launchStatus = !latest && record.sourceKind === 'launch' && record.sourceKnown !== false
       ? ['failed', 'uncertain'].includes(record.status) ? 'blocked' : ['preparing', 'starting'].includes(record.status) ? 'pending' : undefined : undefined;
     const currentStatus = record.groupProgress && options.runtimeKnown !== false
@@ -173,7 +174,7 @@ export function deliveryRecordCount(records: DeliveryRecord[], filter: DeliveryR
   return records.filter(record => recordMatchesFilter(record, filter)).length;
 }
 export function plannedToday(issue: JiraIssue, today: string) {
-  if (/done|完成|关闭|resolved|closed/i.test(`${issue.status} ${issue.statusCategory}`)) return false;
+  if (isJiraIssueDone(issue)) return false;
   return plannedOn(issue, today);
 }
 export function localDay(date = new Date()) {
@@ -202,7 +203,7 @@ export function deliveryRecords(automation?: AutomationData, design?: ExecutionD
     if (!session || (!session.threadId && !session.clientThreadId && !session.result && !session.error)) continue;
     records.push({ id: `catchup:${item.id}`, source: '追平执行', issueKeys: keys(session.jiraKey), title: item.title,
       status: session.status, threadId: session.threadId, clientThreadId: session.clientThreadId, workspacePath: session.workspacePath, branch: session.branch,
-      updatedAt: session.updatedAt, result: session.result, error: session.error, detailPath: `/catchup/execution?requirement=${encodeURIComponent(item.id)}`, links: [] });
+      updatedAt: session.updatedAt, result: session.result, error: session.error, detailPath: `/delivery/queue?requirement=${encodeURIComponent(item.id)}`, links: [] });
   }
   for (const item of merge?.items || []) {
     const run = item.pipeline;
@@ -210,7 +211,7 @@ export function deliveryRecords(automation?: AutomationData, design?: ExecutionD
     records.push({ id: `merge:${item.requirementId}`, source: '合入审核', issueKeys: keys(item.jiraKey), title: item.title,
       status: item.status, threadId: run.threadId, clientThreadId: run.clientThreadId, workspacePath: item.sessionWorkspacePath || item.deliveryWorkspacePath, branch: item.sourceBranch,
       updatedAt: run.updatedAt, result: run.result || run.evidence?.summary || '', error: run.error,
-      detailPath: `/catchup/merge?requirement=${encodeURIComponent(item.requirementId)}`, links: item.mrUrl ? [{ label: '合并请求', url: item.mrUrl }] : [] });
+      detailPath: `/delivery/queue?requirement=${encodeURIComponent(item.requirementId)}`, links: item.mrUrl ? [{ label: '合并请求', url: item.mrUrl }] : [] });
   }
   return records.sort((a, b) => (Date.parse(b.updatedAt) || 0) - (Date.parse(a.updatedAt) || 0));
 }

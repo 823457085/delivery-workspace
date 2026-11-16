@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /** 交付与连接设置：集中管理 Jira 连接、本地项目扫描目录、多平台 Agent 模型默认值、CLI 队列与自动交付策略。 */
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import type { AutomationData, AutomationProjectPreview, AutomationProjectProfile, AutomationSettings, ProjectsData } from '../../../shared/hub';
@@ -13,19 +13,31 @@ import StatusPill from '../../shared/ui/StatusPill.vue';
 import { emptyProjectProfile, projectProfileError, selectProfileProject, validDeliverySettings } from './domain';
 import { requestProjectPreview } from './project-preview';
 import { projectRoutingLabel } from '../auto-delivery/plan-list';
-import CliExecutorCard from './CliExecutorCard.vue';
-import AgentModelDefaultsCard from './AgentModelDefaultsCard.vue';
 import ShareConnectionCard from './ShareConnectionCard.vue';
-import IntegrationPluginsCard from './IntegrationPluginsCard.vue';
-import CustomPluginManager from '../custom-plugins/CustomPluginManager.vue';
-import WorkspaceReportsCard from './WorkspaceReportsCard.vue';
+import ChromeConnectionCard from '../browser-connection/ChromeConnectionCard.vue';
+
+const CliExecutorCard = defineAsyncComponent(() => import('./CliExecutorCard.vue'));
+const AgentModelDefaultsCard = defineAsyncComponent(() => import('./AgentModelDefaultsCard.vue'));
+const IntegrationPluginsCard = defineAsyncComponent(() => import('./IntegrationPluginsCard.vue'));
+const CustomPluginManager = defineAsyncComponent(() => import('../custom-plugins/CustomPluginManager.vue'));
+const WorkspaceReportsCard = defineAsyncComponent(() => import('./WorkspaceReportsCard.vue'));
+const WorkspaceStorageCard = defineAsyncComponent(() => import('./WorkspaceStorageCard.vue'));
 
 const integrations = useIntegrationPlugins();
 const route = useRoute(), router = useRouter();
 const settingsRoot = ref<HTMLElement>();
 const settingsTabPosition = shallowRef<'top' | 'left'>('top');
 let settingsResize: ResizeObserver | undefined;
+function onSettingsKeydown(event: KeyboardEvent) {
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
+    if (dirty.value) {
+      event.preventDefault();
+      if (valid.value && !saving.value) void save();
+    }
+  }
+}
 onMounted(() => {
+  window.addEventListener('keydown', onSettingsKeydown);
   if (!settingsRoot.value) return;
   settingsResize = new ResizeObserver(([entry]) => {
     const { width, height } = entry.contentRect;
@@ -33,20 +45,23 @@ onMounted(() => {
   });
   settingsResize.observe(settingsRoot.value);
 });
-onBeforeUnmount(() => settingsResize?.disconnect());
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onSettingsKeydown);
+  settingsResize?.disconnect();
+});
 const settingsTabs = ['connections', 'plugins', 'models', 'automation', 'reports', 'runtime'];
 const activeTab = computed({
   get: () => typeof route.query.settingsTab === 'string' && settingsTabs.includes(route.query.settingsTab) ? route.query.settingsTab : 'connections',
   set: value => { void router.replace({ query: { ...route.query, settingsTab: value } }); },
 });
 
+const projectEditorOpen = shallowRef(false);
 const query = useSource<AutomationData>('automation');
-const projects = useSource<ProjectsData>('projects');
+const projects = useSource<ProjectsData>('projects', {}, false, { active: projectEditorOpen });
 const { data, error, isPending, isFetching } = query;
 const form = ref<AutomationSettings>();
 const dirty = shallowRef(false);
 const saving = shallowRef(false);
-const projectEditorOpen = shallowRef(false);
 const projectDraft = ref<AutomationProjectProfile>();
 const actions = useSourceActions();
 const projectPreview = shallowRef<AutomationProjectPreview>();
@@ -169,6 +184,7 @@ async function save() {
       payload,
       '确认保存自动交付设置',
       effects,
+      { skipConfirm: !approvalPending.value },
     );
     if (ok) {
       dirty.value = false;
@@ -183,11 +199,33 @@ async function save() {
 <template>
   <div ref="settingsRoot" class="delivery-settings">
     <PageHeading title="连接与策略设置" description="按连接、执行、自动交付与汇报分别管理；切换分栏会保留未保存的内容。" :loading="isFetching" @refresh="query.refetch()" />
+    <section v-if="data" class="settings-readiness-strip" aria-label="交付策略态势摘要">
+      <button type="button" class="settings-readiness-card" :class="{ 'is-active': (form?.enabled ?? data.settings.enabled) }" @click="activeTab = 'automation'">
+        <span>自动巡检引擎</span>
+        <strong>{{ (form?.enabled ?? data.settings.enabled) ? '已启用' : '已暂停' }}</strong>
+        <small>下次巡检 {{ dateTime(data.nextRun) }}</small>
+      </button>
+      <button type="button" class="settings-readiness-card" @click="activeTab = 'automation'">
+        <span>路由绑定项目</span>
+        <strong>{{ form?.projectProfiles?.length ?? data.settings.projectProfiles?.length ?? 0 }} 个仓库</strong>
+        <small>单轮上限 {{ (form?.maxDispatchPerRun ?? data.settings.maxDispatchPerRun) || '不限制' }}</small>
+      </button>
+      <button type="button" class="settings-readiness-card" @click="activeTab = 'runtime'">
+        <span>每日巡检窗口</span>
+        <strong>{{ ((form?.dailyTimes?.length ? form.dailyTimes : data.settings.dailyTimes) || []).join(' · ') || '—' }}</strong>
+        <small>{{ (form?.startStatus ?? data.settings.startStatus) || '开始' }} → {{ (form?.completedStatus ?? data.settings.completedStatus) || '完成' }}</small>
+      </button>
+      <button type="button" class="settings-readiness-card" :class="{ 'is-dirty': dirty }" @click="activeTab = 'automation'">
+        <span>策略同步状态</span>
+        <strong>{{ dirty ? '有未保存更改' : '已同步本机' }}</strong>
+        <small>{{ dirty ? '支持 ⌘S 快速保存自动交付策略' : `浏览器 ${data.settings.browser || '默认'}` }}</small>
+      </button>
+    </section>
     <el-tabs v-model="activeTab" :tab-position="settingsTabPosition" class="settings-tabs" aria-label="设置分类">
-      <el-tab-pane label="连接与项目" name="connections" tabindex="0"><ShareConnectionCard /></el-tab-pane>
-      <el-tab-pane label="接入插件" name="plugins" tabindex="0"><IntegrationPluginsCard /><CustomPluginManager /></el-tab-pane>
-      <el-tab-pane label="模型与执行" name="models" tabindex="0"><AgentModelDefaultsCard /><CliExecutorCard /></el-tab-pane>
-      <el-tab-pane label="自动交付" name="automation" tabindex="0"><p v-if="!integrations.capability('issues.read')" role="status">任务提供者未接入或不可用。原策略保留，相关巡检与派发已暂停，请先在插件管理中恢复连接。</p>
+      <el-tab-pane label="连接与项目" name="connections" tabindex="0"><ChromeConnectionCard :active="activeTab === 'connections'" /><ShareConnectionCard /></el-tab-pane>
+      <el-tab-pane label="接入插件" name="plugins" lazy tabindex="0"><IntegrationPluginsCard /><CustomPluginManager /></el-tab-pane>
+      <el-tab-pane label="模型与执行" name="models" lazy tabindex="0"><AgentModelDefaultsCard /><CliExecutorCard /></el-tab-pane>
+      <el-tab-pane label="自动交付" name="automation" lazy tabindex="0"><p v-if="!integrations.capability('issues.read')" role="status">任务提供者未接入或不可用。原策略保留，相关巡检与派发已暂停，请先在插件管理中恢复连接。</p>
         <QueryState :loading="isPending" :error="error" :has-data="!!data && !!form" @retry="query.refetch()">
           <div v-if="form && data" class="automation-settings">
             <div class="surface">
@@ -300,29 +338,63 @@ async function save() {
           </div>
         </QueryState>
       </el-tab-pane>
-      <el-tab-pane label="自动汇报" name="reports" tabindex="0"><WorkspaceReportsCard /></el-tab-pane>
-      <el-tab-pane label="运行状态" name="runtime" tabindex="0">
+      <el-tab-pane label="自动汇报" name="reports" lazy tabindex="0"><WorkspaceReportsCard /></el-tab-pane>
+      <el-tab-pane label="状态与存储" name="runtime" lazy tabindex="0">
         <QueryState :loading="isPending" :error="error" :has-data="!!data" @retry="query.refetch()">
           <div v-if="data">
             <section class="surface">
               <div class="surface-header"><h2>当前运行环境状态</h2></div>
-              <div class="surface-body">
-                <dl class="settings-facts">
-                  <dt>下次自动巡检</dt>
-                  <dd>{{ dateTime(data.nextRun) }}</dd>
-                  <dt>验证浏览器</dt>
-                  <dd>{{ data.settings.browser || '未配置' }}</dd>
-                  <dt>已配置交付项目</dt>
-                  <dd v-if="!data.settings.projectProfiles?.length">未配置</dd>
-                  <dd v-for="profile in data.settings.projectProfiles || []" :key="profile.id"><strong>{{ profile.name }}</strong><br>{{ profile.repositoryUrl }}<br>{{ profile.runtimeEnvironment }} · {{ profile.runtimeCommand }} · {{ profile.targetBranch }}</dd>
-                </dl>
+              <div class="surface-body runtime-status-body">
+                <div class="runtime-summary-strip">
+                  <div class="runtime-summary-tile">
+                    <span>下次自动巡检</span>
+                    <strong>{{ dateTime(data.nextRun) }}</strong>
+                  </div>
+                  <div class="runtime-summary-tile">
+                    <span>验证浏览器</span>
+                    <strong>{{ data.settings.browser || '未配置' }}</strong>
+                  </div>
+                  <div class="runtime-summary-tile">
+                    <span>已配置交付项目</span>
+                    <strong>{{ data.settings.projectProfiles?.length || 0 }} 个项目</strong>
+                  </div>
+                </div>
+                <div v-if="data.settings.projectProfiles?.length" class="runtime-profiles-section">
+                  <div class="runtime-profiles-label">已配置交付项目明细</div>
+                  <div class="runtime-profiles-grid">
+                    <article v-for="profile in data.settings.projectProfiles" :key="profile.id" class="runtime-profile-card">
+                      <div class="runtime-profile-head">
+                        <strong>{{ profile.name }}</strong>
+                        <span class="runtime-profile-branch">{{ profile.targetBranch }}</span>
+                      </div>
+                      <p class="runtime-profile-repo" :title="profile.repositoryUrl">{{ profile.repositoryUrl }}</p>
+                      <p class="runtime-profile-meta">{{ profile.runtimeEnvironment }} · <code>{{ profile.runtimeCommand }}</code></p>
+                    </article>
+                  </div>
+                </div>
+                <p v-else class="row-secondary">尚未配置交付项目路由规则。</p>
               </div>
             </section>
+            <WorkspaceStorageCard v-if="activeTab === 'runtime'" />
             <p class="settings-boundary">凭据和自动交付开关保存在当前工作台本机目录；此处显示已保存的运行配置。</p>
           </div>
         </QueryState>
       </el-tab-pane>
     </el-tabs>
+    <div v-if="dirty" class="settings-unsaved-bar" role="status" aria-live="polite">
+      <div class="settings-unsaved-info">
+        <span class="settings-unsaved-dot" />
+        <div>
+          <strong>检测到未保存的自动交付策略更改</strong>
+          <span class="settings-unsaved-sub">{{ !valid ? '请先修正表单中的校验项后再保存' : '切换分栏不会丢失草稿 · 支持 ⌘S 快速保存' }}</span>
+        </div>
+      </div>
+      <div class="settings-unsaved-actions">
+        <el-button v-if="activeTab !== 'automation'" size="small" @click="activeTab = 'automation'">查看修改项</el-button>
+        <el-button size="small" :disabled="saving" @click="reset">放弃修改</el-button>
+        <el-button size="small" type="primary" :disabled="!valid" :loading="saving" @click="save">保存交付设置 (⌘S)</el-button>
+      </div>
+    </div>
     <el-drawer v-model="projectEditorOpen" title="项目配置" size="min(760px, 100vw)" class="hub-drawer project-profile-drawer" append-to-body destroy-on-close>
       <el-form v-if="projectDraft" class="settings-form project-editor-form" label-position="top" :disabled="saving" @submit.prevent="applyProject">
         <el-form-item label="选择已有本机项目"><el-select :model-value="projectDraft.localPath" filterable clearable :loading="projects.isFetching.value" aria-label="项目配置 选择已有本机项目" placeholder="选择项目，填入名称、仓库和路径" @change="chooseProject(projectDraft, $event)"><el-option v-for="project in projects.data.value?.projects || []" :key="project.path" :value="project.path" :label="`${project.displayName || project.projectName || project.folderName} · ${project.displayPath || project.path}`" /></el-select></el-form-item>
@@ -393,8 +465,10 @@ async function save() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 18px;
-  margin-bottom: 23px;
+  gap: 16px;
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--ui-divider);
 }
 .settings-switch > div {
   min-width: 0;
@@ -404,13 +478,13 @@ async function save() {
 }
 .settings-switch strong {
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 550;
 }
 .settings-switch p {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--ui-muted);
-  line-height: 1.8;
-  margin: 7px 0 0;
+  line-height: 1.55;
+  margin: 3px 0 0;
 }
 :deep(.settings-form .el-form-item__label) {
   font-size: 12px;
@@ -439,23 +513,112 @@ async function save() {
   padding-top: 22px;
   margin-top: 10px;
 }
-.settings-facts {
-  margin: 0;
+.runtime-status-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
 }
-.settings-facts dt {
-  font-size: 11px;
+.runtime-summary-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.runtime-summary-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm, 6px);
+  background: var(--ui-surface);
+}
+.runtime-summary-tile span {
+  font-size: 11.5px;
   color: var(--ui-muted);
-  margin-top: 17px;
 }
-.settings-facts dt:first-child {
-  margin-top: 0;
+.runtime-summary-tile strong {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ui-ink);
+  font-variant-numeric: tabular-nums;
 }
-.settings-facts dd {
-  font-size: 12px;
+.runtime-profiles-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.runtime-profiles-label {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--ui-muted);
+}
+.runtime-profiles-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 10px;
+}
+.runtime-profile-card {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm, 6px);
+  background: var(--ui-surface);
+}
+.runtime-profile-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+.runtime-profile-head strong {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ui-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.runtime-profile-branch {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--ui-border);
+  background: var(--ui-raised);
   color: var(--ui-secondary);
-  line-height: 1.9;
-  overflow-wrap: anywhere;
-  margin: 7px 0 0;
+  font-family: var(--ui-font-mono);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.runtime-profile-repo {
+  margin: 0;
+  font-family: var(--ui-font-mono);
+  font-size: 11.5px;
+  color: var(--ui-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.runtime-profile-meta {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--ui-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.runtime-profile-meta code {
+  font-family: var(--ui-font-mono);
+  font-size: 11px;
+  color: var(--ui-ink);
+}
+@media (max-width: 720px) {
+  .runtime-summary-strip {
+    grid-template-columns: 1fr;
+  }
 }
 @container workspace-page (max-width: 1000px) {
 }
@@ -481,6 +644,133 @@ async function save() {
   }
   .settings-actions {
     flex-wrap: wrap;
+  }
+}
+.settings-readiness-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.settings-readiness-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm, 6px);
+  background: var(--ui-surface);
+  color: var(--ui-text);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 140ms ease, background-color 140ms ease;
+}
+.settings-readiness-card:hover {
+  border-color: color-mix(in srgb, var(--ui-text) 20%, var(--ui-border));
+  background: color-mix(in srgb, var(--ui-raised) 50%, var(--ui-surface));
+}
+.settings-readiness-card span {
+  font-size: 11px;
+  color: var(--ui-muted);
+}
+.settings-readiness-card strong {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ui-ink);
+  font-variant-numeric: tabular-nums;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-readiness-card.is-active strong {
+  color: var(--ui-success, #16a34a);
+}
+.settings-readiness-card.is-dirty {
+  border-color: color-mix(in srgb, var(--ui-warning, #d97706) 45%, var(--ui-border));
+  background: color-mix(in srgb, var(--ui-warning, #d97706) 7%, var(--ui-surface));
+}
+.settings-readiness-card.is-dirty strong {
+  color: var(--ui-warning, #d97706);
+}
+.settings-readiness-card small {
+  font-size: 11px;
+  color: var(--ui-muted);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-unsaved-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  margin-top: 10px;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--ui-accent) 42%, var(--ui-border));
+  border-radius: var(--ui-radius-sm, 8px);
+  background: color-mix(in srgb, var(--ui-accent) 8%, var(--ui-surface));
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.08);
+}
+.settings-unsaved-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.settings-unsaved-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  background: var(--ui-warning, #d97706);
+}
+.settings-unsaved-info strong {
+  display: block;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ui-text);
+}
+.settings-unsaved-sub {
+  display: block;
+  font-size: 11.5px;
+  color: var(--ui-muted);
+}
+.settings-unsaved-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.settings-unsaved-actions :deep(.el-button) {
+  margin: 0;
+}
+:global(.project-profile-drawer.el-drawer) {
+  color: var(--ui-text);
+  background: var(--ui-bg);
+}
+:global(.project-profile-drawer .el-drawer__header) {
+  color: var(--ui-text);
+}
+:global(html[data-ui-skin="acid"]) .settings-readiness-card,
+:global(html[data-ui-skin="acid"]) .settings-unsaved-bar,
+:global(html[data-ui-skin="acid"]) .runtime-summary-tile,
+:global(html[data-ui-skin="acid"]) .runtime-profile-card,
+:global(html[data-ui-skin="acid"]) .runtime-profile-branch {
+  border-radius: 0;
+}
+@media (max-width: 860px) {
+  .settings-readiness-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 520px) {
+  .settings-readiness-strip {
+    grid-template-columns: 1fr;
   }
 }
 </style>

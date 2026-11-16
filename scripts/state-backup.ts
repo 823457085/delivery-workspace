@@ -4,13 +4,13 @@ import { createStateBackupStore } from '../server/state-backup.js';
 
 const usage = `用法：pnpm exec tsx scripts/state-backup.ts <snapshot|list|verify|restore> [状态相对路径] [备份编号|latest] [--data-dir 路径] [--port 5199]
 snapshot：逐文件校验并备份；list：只显示备份元数据；verify：校验 SHA256 和状态结构；restore：仅离线恢复，保留当前原件。
-默认数据目录为 DELIVERY_DATA_DIR 或项目 .data。端口应与 PORT 一致；恢复不启动任务。`;
+默认数据目录为 DELIVERY_DATA_DIR 或项目 .local/data。端口应与 PORT 一致；恢复不启动任务。`;
 try {
   const args = process.argv.slice(2);
   if (!args.length || args.includes('--help')) { console.log(usage); }
   else {
     const positional: string[] = [];
-    let directory = process.env.DELIVERY_DATA_DIR || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../.data');
+    let directory = process.env.DELIVERY_DATA_DIR || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../.local/data');
     let port = Number(process.env.PORT || 5199);
     for (let index = 0; index < args.length; index++) {
       const value = args[index];

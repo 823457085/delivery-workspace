@@ -46,8 +46,13 @@ const launchText = computed(() => {
 <template>
   <el-dialog v-model="open" title="确认本次任务" width="min(860px, 94vw)" class="jira-dev-preview" :close-on-click-modal="false" align-center append-to-body>
     <div v-if="task" class="preview-body">
-      <p class="preview-meta">使用多语言位置编码：{{ task.useI18n === false ? '关闭' : '开启' }} · 执行：{{ runtimeSummary }}</p>
-      <p v-for="project in projects" :key="project.path" class="preview-meta">项目：{{ project.path }} · 基准 origin/{{ project.baseBranch }} → {{ project.branchName }}<template v-if="project.workspacePath"><br>工作区：{{ project.workspacePath }}</template></p>
+      <div class="preview-meta-bar">
+        <span class="preview-chip">{{ task.useI18n === false ? '多语言编码：关闭' : '多语言编码：开启' }}</span>
+        <span class="preview-chip">{{ runtimeSummary }}</span>
+      </div>
+      <div class="preview-projects">
+        <p v-for="project in projects" :key="project.path" class="preview-project-card"><strong>{{ project.path.split('/').filter(Boolean).at(-1) || project.path }}</strong><code>origin/{{ project.baseBranch }} → {{ project.branchName }}</code><small v-if="project.workspacePath">工作区：{{ project.workspacePath }}</small></p>
+      </div>
       <section v-if="requirementGroup" class="plan" aria-label="研发前置文档">
         <article v-for="phase in (['review', 'design'] as const)" :key="phase" class="plan-item">
           <strong>{{ jiraDevRequirementLabels[phase] }}</strong>
@@ -125,14 +130,23 @@ const launchText = computed(() => {
   .preview-runtime :deep(.runtime-picker > .el-select){width:100%}
 }
 .preview-meta,.plan-line,.plan-status,.muted,.status,.launch{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;line-height:1.7}
-.muted,.preview-meta{color:var(--ui-secondary)}.plan-status,.status{color:var(--ui-accent)}.danger{color:var(--ui-danger)}
+.preview-meta-bar{display:flex;flex-wrap:wrap;gap:8px}
+.preview-chip{padding:3px 10px;border:1px solid var(--ui-border);border-radius:999px;background:var(--ui-raised);color:var(--ui-text);font-size:12px;font-weight:500}
+.preview-projects{display:grid;gap:6px}
+.preview-project-card{display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px;margin:0;padding:8px 12px;border:1px solid var(--ui-border);border-radius:8px;background:var(--ui-surface);font-size:12px}
+.preview-project-card strong{color:var(--ui-text)}
+.preview-project-card code{padding:1px 6px;border-radius:5px;background:var(--ui-accent-soft);color:var(--ui-accent);font:11px/16px var(--mono)}
+.preview-project-card small{flex-basis:100%;color:var(--ui-muted);font:11px var(--mono)}
+.muted,.preview-meta{color:var(--ui-secondary)}.plan-status,.status{padding:8px 12px;border-radius:8px;background:var(--ui-accent-soft);color:var(--ui-accent);font-weight:500}.danger{color:var(--ui-danger)}
 .plan{display:flex;flex-direction:column;gap:10px;padding:14px;border:1px solid var(--ui-border);border-radius:10px;background:var(--ui-raised)}
 .development-selection{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
 .development-selection :deep(.el-select){flex:1 1 260px;min-width:0}
 .development-selection :deep(.el-button){margin:0}
-.stages{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:0;padding-left:18px;font-size:12px;color:var(--ui-secondary)}
-.plan-item{display:flex;flex-direction:column;gap:6px;padding:12px;border:1px solid var(--ui-border);border-radius:8px;background:var(--ui-surface)}
+.stages{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin:0;padding:0;list-style:none;counter-reset:stage-step;font-size:12px;color:var(--ui-text)}
+.stages li{display:flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid var(--ui-border);border-radius:8px;background:var(--ui-surface);font-weight:500;counter-increment:stage-step}
+.stages li::before{content:counter(stage-step,decimal-leading-zero);display:inline-grid;place-items:center;width:20px;height:20px;flex-shrink:0;border-radius:5px;background:var(--ui-accent-soft);color:var(--ui-accent);font:600 10px/1 var(--mono)}
+.plan-item{display:flex;flex-direction:column;gap:6px;padding:12px 14px;border:1px solid var(--ui-border);border-radius:9px;background:var(--ui-surface)}
 .plan-item p{margin:0;white-space:pre-wrap;font-size:12px}.plan-description{max-height:360px;overflow:auto;margin:8px 0 0}
-summary{cursor:pointer;font-size:13px;color:var(--ui-secondary)}.prompt :deep(textarea){font:12px/1.6 var(--mono)}
+summary{cursor:pointer;font-size:13px;color:var(--ui-accent);font-weight:500}.prompt :deep(textarea){font:12px/1.6 var(--mono)}
 @media(max-width:720px){.stages{grid-template-columns:1fr 1fr}}
 </style>

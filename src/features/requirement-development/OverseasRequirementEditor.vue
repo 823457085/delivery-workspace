@@ -66,7 +66,7 @@ async function save() {
 </script>
 
 <template>
-  <el-drawer :model-value="true" :title="item.revision || item.executionIds.length ? '编辑需求' : '新建海外需求'" size="min(760px, 100vw)"
+  <el-drawer :model-value="true" :title="item.revision || item.executionIds.length ? '编辑需求' : '新建海外需求'" size="min(760px, 100vw)" append-to-body
     :close-on-click-modal="false" :close-on-press-escape="!saving && !reading" :show-close="!saving && !reading" @close="emit('close')">
     <el-form label-position="top" class="requirement-editor" :disabled="saving || reading" @submit.prevent="save">
       <div class="source-row"><el-form-item label="Jira Key / 链接（可选）"><el-input v-model="source" placeholder="Jira Key 或完整事项链接" maxlength="2000" @change="applySource" /></el-form-item><el-button :loading="reading" :disabled="!source.trim()" @click="readIssue">读取 Jira</el-button></div>

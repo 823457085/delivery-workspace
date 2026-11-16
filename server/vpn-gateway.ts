@@ -4,6 +4,7 @@
  */
 import os from 'node:os';
 import { isIPv4 } from 'node:net';
+import { resolveWorkspaceServicePort } from './http-security.js';
 import { createLanGateway } from './lan-gateway.js';
 
 function privateIPv4(address: string): boolean {
@@ -27,12 +28,16 @@ export function vpnGatewayConfig(env = process.env, interfaces = os.networkInter
 
 export async function startVpnGateway() {
   const { network, clients } = vpnGatewayConfig();
-  const server = createLanGateway(network, 5199, clients);
+  const servicePort = resolveWorkspaceServicePort();
+  const server = createLanGateway(network, servicePort, clients, {
+    readOnly: process.env.DELIVERY_GATEWAY_READ_ONLY === '1',
+    writeToken: process.env.DELIVERY_GATEWAY_WRITE_TOKEN || '',
+  });
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
-    server.listen(5199, network.address, () => { server.off('error', reject); resolve(); });
+    server.listen(servicePort, network.address, () => { server.off('error', reject); resolve(); });
   });
-  console.log(`Delivery VPN: http://${network.address}:5199/agent（仅指定 VPN 设备可访问）`);
+  console.log(`Delivery VPN: http://${network.address}:${servicePort}/agent（仅指定 VPN 设备可访问）`);
   const stop = () => { server.closeAllConnections(); server.close(); };
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);

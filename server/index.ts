@@ -1,10 +1,18 @@
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { promisify } from 'node:util';
+import { gzip } from 'node:zlib';
 import fs from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
+import {
+  applySecurityResponseHeaders,
+  isAllowedLocalHostHeader,
+  isExactJsonContentType,
+  readUtf8JsonBody,
+} from './http-security.js';
 import { createService } from './service.js';
 import { proxySource } from './source-proxy.js';
 import { createSourceBackend } from './source-backend.js';
@@ -19,15 +27,19 @@ import { createAgentUsageStore } from './agent-usage.js';
 import { createAgentTeamGovernance } from './agent-team-governance.js';
 import { createAgentTeamRoutes } from './agent-team-routes.js';
 import { createAgentRuntimeService } from './agent-runtime.js';
+import { createBrowserConnection } from './browser-connection.js';
+import { createBrowserConnectionRoute } from './browser-connection-route.js';
+import { chromeRelayPrefix } from './chrome-cdp-relay.js';
 import { createCursorAccountsService } from './cursor-accounts.js';
 import { createCursorAccountsRoute } from './cursor-accounts-route.js';
 import { createDesktopAccountsService, createDesktopAccountsRoute, DesktopAccountError } from './desktop-accounts.js';
 import { accountProviders, type AccountProvider } from '../shared/cursor-accounts.js';
 import { agentAccessSchema, agentAttachmentIdsSchema, agentReasoningSchema, agentServiceTierSchema, agentStartSchema, agentCustomModelSchema } from './agent-runtime-input.js';
-import { createAgentRuntimeStream } from './agent-runtime-stream.js';
+import { browserAgentRun, createAgentRuntimeStream } from './agent-runtime-stream.js';
 import { createAgentAttachmentStore } from './agent-attachments.js';
-import { isAgentImageAttachment, maxAgentAttachmentBytes } from '../shared/agent-runtime.js';
+import { isAgentImageAttachment, maxAgentAttachmentBytes, type AgentRun } from '../shared/agent-runtime.js';
 import { listCodexSkills } from './codex-skills.js';
+import { parseMentionGroundingQuery, searchWorkspaceMentionGrounding } from './workspace-mention-grounding.js';
 import { createWorkspacePickerRoute } from './workspace-picker.js';
 import { createWorkspaceAppRoute, createWorkspaceTerminalRoute, openWorkspaceCursor } from './workspace-terminal.js';
 import { createIntegrationStore } from './api-integration.js';
@@ -57,8 +69,6 @@ import { createCustomPluginRoutes } from './plugins/custom-routes.js';
 import { createPluginJira } from './plugins/host-jira.js';
 import { createSystemCatalog, createSystemCatalogRoutes } from './system-catalog.js';
 import { createInterfaceCenter, createInterfaceCenterRoutes } from './interface-center.js';
-import { createGoLearningService } from './go-learning.js';
-import { createGoLearningRoutes } from './go-learning-routes.js';
 import { createRefactorControl } from './refactor-control.js';
 import { createRequirementDevelopmentService } from './requirement-development.js';
 import { createJiraFixService } from './jira-fix.js';
@@ -76,8 +86,10 @@ import { createDeliveryAcceptanceStore } from './delivery-acceptance.js';
 import { createDeliveryAcceptanceSourceResolver } from './delivery-acceptance-source.js';
 import type { JiraDevScanPreview, MergeData } from '../shared/hub.js';
 import { createWorkspaceVersionReader, workspaceStaticCacheControl } from './workspace-version.js';
+import { serveWorkspaceStaticAsset } from './static-assets.js';
 import { ensureWorkspaceBuild } from './workspace-build.js';
 import { createWorkspaceRestart, createWorkspaceRestartRoute, isPm2ManagedWorkspace, restartTaskActive as activeStatus } from './workspace-restart.js';
+import { createStorageGovernance, createStorageGovernanceRoutes } from './storage-governance.js';
 import { createJenkinsDeployments } from './jenkins-deployments.js';
 import { createJenkinsDeploymentsRoute } from './jenkins-deployments-route.js';
 import { createYunxiaoDeployments } from './yunxiao-deployments.js';
@@ -90,11 +102,20 @@ import {
   readProjectCode,
   saveProjectCode,
   readProjectDiff,
+  readProjectStashDiff,
+  readProjectCommitDetail,
   executeProjectGitAction,
   readShareConfig,
   updateShareConfig,
 } from './project-git.js';
-import { listProjectMergeRequests, prepareProjectMergeRequest, createProjectMergeRequest, updateProjectMergeRequestTitle } from './project-merge-request.js';
+import {
+  listProjectMergeRequests,
+  prepareProjectMergeRequest,
+  reconcileProjectMergeRequest,
+  createProjectMergeRequest,
+  updateProjectMergeRequestTitle,
+  updateProjectMergeRequestDescription,
+} from './project-merge-request.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const distDirectory = path.resolve(process.env.DELIVERY_DIST_DIR || path.join(root, 'dist'));
@@ -119,39 +140,123 @@ if (!process.argv.includes('--dev')) {
     console.error(startupBuildError);
   }
 }
+const activeSseResponses = new Set<http.ServerResponse>();
+function trackSse(response: http.ServerResponse) {
+  activeSseResponses.add(response);
+  response.once('close', () => activeSseResponses.delete(response));
+}
+function closeActiveSseStreams() {
+  for (const response of activeSseResponses) {
+    try { if (!response.destroyed) response.end(); } catch { /* 忽略已关闭连接 */ }
+  }
+  activeSseResponses.clear();
+}
 const stateBackup = await createStateBackupStore(dataDirectory);
-const initialBackup = await stateBackup.snapshot();
-for (const entry of initialBackup.entries.filter(entry => entry.status === 'failed')) console.error(`关键状态备份失败：${entry.path}：${entry.error}`);
-const stopStateBackup = startPeriodicStateBackup(stateBackup);
+let initialBackupTask: Promise<void> | undefined;
+function scheduleInitialStateBackup() {
+  if (initialBackupTask) return;
+  initialBackupTask = (async () => {
+    if (await stateBackup.hasRecentCleanSnapshot(45_000)) return;
+    const initialBackup = await stateBackup.snapshot();
+    for (const entry of initialBackup.entries.filter(entry => entry.status === 'failed')) {
+      console.error(`关键状态备份失败：${entry.path}：${entry.error}`);
+    }
+  })().catch(error => console.error('启动状态备份检查失败：', error instanceof Error ? error.message : String(error)));
+}
+const stopPeriodicBackup = startPeriodicStateBackup(stateBackup);
+const stopStateBackup = async () => { await stopPeriodicBackup(); await initialBackupTask; };
 const sourceBackend = await createSourceBackend(port);
-const service = await createService(dataDirectory, {
-  model: process.env.DELIVERY_MODEL || undefined,
-  readSource: () => sourceBackend.readMergePlan(false),
-});
-const designExecutor = await createDesignExecutor(path.join(dataDirectory, 'design-executor'));
-const cliQueue = await createCliQueue(dataDirectory);
-const agentAttachments = await createAgentAttachmentStore(path.join(dataDirectory, 'agent-runtimes', 'attachments'));
-const agentNotes = await createAgentNoteStore(path.join(dataDirectory, 'agent-notes'));
-const integrationRuntime = createIntegrationRuntime({ directory: dataDirectory, source: sourceBackend, port, json, body });
-const systemCatalog = await createSystemCatalog(path.join(dataDirectory, 'system-catalog'), sourceBackend.confluenceReadRequest, undefined, sourceBackend.readLocalProjects);
+const integrationCatalog = await loadIntegrationCatalog();
+const [
+  service,
+  designExecutor,
+  cliQueue,
+  agentAttachments,
+  agentNotes,
+  systemCatalog,
+  interfaceCenter,
+  agentUsage,
+  workspaceTodos,
+] = await Promise.all([
+  createService(dataDirectory, {
+    model: process.env.DELIVERY_MODEL || undefined,
+    readSource: () => sourceBackend.readMergePlan(false),
+  }),
+  createDesignExecutor(path.join(dataDirectory, 'design-executor')),
+  createCliQueue(dataDirectory),
+  createAgentAttachmentStore(path.join(dataDirectory, 'agent-runtimes', 'attachments')),
+  createAgentNoteStore(path.join(dataDirectory, 'agent-notes')),
+  createSystemCatalog(path.join(dataDirectory, 'system-catalog'), sourceBackend.confluenceReadRequest, undefined, sourceBackend.readLocalProjects),
+  createInterfaceCenter(path.join(dataDirectory, 'interface-center')),
+  createAgentUsageStore(path.join(dataDirectory, 'agent-runtimes'), { writeJson: stateBackup.writeJson }),
+  createWorkspaceTodos(path.join(dataDirectory, 'workspace-todos')),
+]);
+const integrationRuntime = createIntegrationRuntime({ root, directory: dataDirectory, source: sourceBackend, port, json, body });
 const systemCatalogRoutes = createSystemCatalogRoutes(systemCatalog, { json, body, port });
-const interfaceCenter = await createInterfaceCenter(path.join(dataDirectory, 'interface-center'));
 const interfaceCenterRoutes = createInterfaceCenterRoutes(interfaceCenter, { json, body, port });
-const goLearning = await createGoLearningService(path.join(dataDirectory, 'go-learning'), { rootDir: root });
-const goLearningRoutes = createGoLearningRoutes(goLearning, { json, body, port });
 const agentTranslate = createAgentTranslateService();
-// 团队流程派发前读取 Claude 额度，用尽时改用 Codex；需在运行时服务创建（及其启动恢复）之前就绪。
-const readClaudeUsage = createClaudeUsageReader();
-const agentUsage = await createAgentUsageStore(path.join(dataDirectory, 'agent-runtimes'), { writeJson: stateBackup.writeJson });
-const workspaceTodos = await createWorkspaceTodos(path.join(dataDirectory, 'workspace-todos'));
+const browserConnection = createBrowserConnection({ rootDirectory: root });
+const browserConnectionRoute = createBrowserConnectionRoute(browserConnection, { json, body, port });
+// 团队流程派发前读取各执行器额度，账号切换时以 runtimeStatusVersion 隔离缓存，防止旧账号空额度阻塞新账号。
+let currentRuntimeStatusVersion = () => 0;
+function versionedUsageReader<T extends { available: boolean; checkedAt: string; message?: string }>(
+  reader: (force?: boolean, contextKey?: string) => Promise<T>,
+  staleFallback: (checkedAt: string) => T,
+) {
+  return async (force = false): Promise<T> => {
+    const version = currentRuntimeStatusVersion();
+    const usage = await reader(force, String(version));
+    return version === currentRuntimeStatusVersion() ? usage : staleFallback(new Date().toISOString());
+  };
+}
+const codexUsageReader = createCodexUsageReader();
+const claudeUsageReader = createClaudeUsageReader();
+const cursorUsageReader = createCursorUsageReader();
+const readAntigravityUsage = createAntigravityUsageReader();
+const readCodexUsage = versionedUsageReader(codexUsageReader, checkedAt => ({
+  available: false, checkedAt, errorKind: 'unavailable' as const, message: '账号状态已变化，请刷新额度',
+}));
+const readClaudeUsage = versionedUsageReader(claudeUsageReader, checkedAt => ({
+  available: false, checkedAt, message: '账号状态已变化，请刷新额度',
+}));
+const readCursorUsage = versionedUsageReader(cursorUsageReader, checkedAt => ({
+  available: false, checkedAt, message: '账号状态已变化，请刷新额度',
+}));
+async function readAntigravityGateUsage(force = false) {
+  const version = currentRuntimeStatusVersion();
+  const usage = await readAntigravityUsage(force, String(version));
+  if (version !== currentRuntimeStatusVersion() || !usage.available || usage.stale) {
+    return { available: false, checkedAt: usage.checkedAt, message: usage.message || '额度暂不可用' };
+  }
+  const activeBuckets = usage.groups.flatMap(group => group.buckets).filter(bucket => !bucket.disabled);
+  if (!activeBuckets.length) return { available: false, checkedAt: usage.checkedAt };
+  const maxRemaining = Math.max(...activeBuckets.map(bucket => bucket.remainingPercent));
+  return {
+    available: true,
+    checkedAt: usage.checkedAt,
+    primary: {
+      usedPercent: Math.max(0, Math.min(100, 100 - maxRemaining)),
+      remainingPercent: maxRemaining,
+      windowDurationMins: null,
+      resetsAt: null,
+    },
+  };
+}
+const providerUsageReaders = {
+  codex: readCodexUsage,
+  claude: readClaudeUsage,
+  cursor: readCursorUsage,
+  antigravity: readAntigravityGateUsage,
+};
 const customPluginsDirectory = path.join(dataDirectory, 'custom-plugins');
 const customPlugins = await createCustomPluginRuntime(customPluginsDirectory, workspaceTodos);
 const pluginJira = await createPluginJira(customPluginsDirectory, customPlugins, sourceBackend.jiraIssueRequest);
 const agentRuntimes = await createAgentRuntimeService(path.join(dataDirectory, 'agent-runtimes'), {
   browserRootDirectory: root,
+  chromeTaskEndpoint: () => browserConnection.taskEndpoint(port),
   workspaceSnapshotExclusions: [dataDirectory, path.join(root, '.local', 'logs'),
     ...(process.env.DELIVERY_SOURCE_DATA_DIR ? [process.env.DELIVERY_SOURCE_DATA_DIR] : [])],
-  readProviderUsage: { claude: readClaudeUsage },
+  readProviderUsage: providerUsageReaders,
   onFinalized: run => agentUsage.upsert({ runId: run.id, workflowId: run.team?.taskId.replace(/^(?:draft|opinion):/, '') || run.task?.workflow?.id, profileId: run.team?.profileId || run.task?.profileId,
     provider: run.provider, model: run.model, createdAt: run.createdAt, completedAt: run.updatedAt, round: run.task?.workflow?.round, usage: run.usage! }).then(() => {}),
   stateBackup,
@@ -161,10 +266,14 @@ const agentRuntimes = await createAgentRuntimeService(path.join(dataDirectory, '
   resolveAttachments: agentAttachments.resolve,
   removeAttachments: agentAttachments.remove,
 });
+currentRuntimeStatusVersion = () => agentRuntimes.runtimeStatusVersion();
 const customPluginRoutes = createCustomPluginRoutes(customPlugins, pluginJira, {
   json, body, port,
   examples: [
     { name: '待办事项', directory: path.join(root, 'plugins/todos') },
+    { name: '轻量需求台账', directory: path.join(root, 'plugins/requirement-ledger') },
+    { name: '发版检查清单', directory: path.join(root, 'plugins/release-checklist') },
+    { name: '缺陷复盘台账', directory: path.join(root, 'plugins/bug-retrospective') },
     { name: '项目备忘示例', directory: path.join(root, 'plugins/example-notes') },
   ],
   citations: reference => agentRuntimes.knowledgeCitations(reference),
@@ -256,21 +365,23 @@ const jiraFixHandoff = await createJiraFixHandoffService(path.join(dataDirectory
   const group = groupChat?.jiraExecution(id);
   return record ? { record, run: jiraRuntime.findJiraFix(id), history: group ? group.runs.map(run => ({ objective: run.objective, result: run.result, status: run.status })) : agentRuntimes.jiraFixResults(id) } : undefined;
 }, createJiraHandoffClient(sourceBackend.jiraFixHandoffRequest), undefined, agentRuntimes);
-const integrationCatalog = await loadIntegrationCatalog();
-const integration = await createIntegrationStore(dataDirectory, integrationCatalog);
-const apexBffReview = await createApexBffReviewStore(dataDirectory, integrationCatalog);
-const wecomIntegration = await createWecomIntegration(dataDirectory, { catalog: integrationCatalog });
+const [integration, apexBffReview, wecomIntegration, overseasRequirements, reportBot] = await Promise.all([
+  createIntegrationStore(dataDirectory, integrationCatalog),
+  createApexBffReviewStore(dataDirectory, integrationCatalog),
+  createWecomIntegration(dataDirectory, { catalog: integrationCatalog }),
+  createOverseasRequirements(path.join(dataDirectory, 'overseas-requirements'),
+    id => requirementDevelopment.list().some(record => record.id === id)),
+  createWecomIntegration(path.join(dataDirectory, 'workspace-reports'), {
+    configFile: path.join(dataDirectory, 'workspace-reports', 'bot.json'),
+    catalog: integrationCatalog,
+  }),
+]);
 const integrationPlugins = await createPluginStore({
+  port,
   wecomConfig: () => wecomIntegration.config(),
   legacyProbe: id => id === 'jira'
     ? sourceBackend.jiraIssueRequest('myself')
     : sourceBackend.confluenceReadRequest('user/current'),
-});
-const overseasRequirements = await createOverseasRequirements(path.join(dataDirectory, 'overseas-requirements'),
-  id => requirementDevelopment.list().some(record => record.id === id));
-const reportBot = await createWecomIntegration(path.join(dataDirectory, 'workspace-reports'), {
-  configFile: path.join(dataDirectory, 'workspace-reports', 'bot.json'),
-  catalog: integrationCatalog,
 });
 const workspaceReports = await createWorkspaceReports(path.join(dataDirectory, 'workspace-reports'), {
   bots: { integration: wecomIntegration, dedicated: reportBot },
@@ -299,23 +410,11 @@ const projectLaunch = createProjectLaunch(path.join(dataDirectory, 'project-laun
 const projectLaunchRoutes = createProjectLaunchRoutes(projectLaunch, { json, body, port });
 const workspaceReportRoutes = createWorkspaceReportRoutes(workspaceReports, { json, body, port });
 
-const codexUsageReader = createCodexUsageReader();
-async function readCodexUsage(force = false) {
-  const version = agentRuntimes.runtimeStatusVersion();
-  const usage = await codexUsageReader(force, String(version));
-  // 团队派发也会读取额度，账号切换期间的旧结果不能用于新账号的门禁。
-  return version === agentRuntimes.runtimeStatusVersion() ? usage : {
-    available: false, checkedAt: new Date().toISOString(), errorKind: 'unavailable' as const,
-    message: '账号状态已变化，请刷新额度',
-  };
-}
 const readCodexPlanUsage = createCodexPlanUsageReader();
-const readCursorUsage = createCursorUsageReader();
-const readAntigravityUsage = createAntigravityUsageReader();
 agentTeams = await createAgentTeamService(path.join(dataDirectory, 'agent-runtimes'), agentRuntimes, {
   writeJson: stateBackup.writeJson, readAcceptance: deliveryAcceptance.get,
   readLegacyAcceptanceSource: resolveLegacyAcceptance,
-  readProviderUsage: { codex: readCodexUsage, claude: readClaudeUsage, cursor: readCursorUsage },
+  readProviderUsage: providerUsageReaders,
   readWorkspaceCandidates: async () => {
     const local = await sourceBackend.readLocalProjects().catch(() => undefined);
     return [root, ...(local?.projects || []).map(project => project.path)];
@@ -323,12 +422,42 @@ agentTeams = await createAgentTeamService(path.join(dataDirectory, 'agent-runtim
 });
 const teamGovernance = await createAgentTeamGovernance(path.join(dataDirectory, 'agent-runtimes'), agentRuntimes, agentTeams, {
   usageStore: agentUsage, writeJson: stateBackup.writeJson,
-  readProviderUsage: { codex: readCodexUsage, claude: readClaudeUsage, cursor: readCursorUsage },
+  readProviderUsage: providerUsageReaders,
 });
-const teamRoutes = createAgentTeamRoutes(agentTeams, teamGovernance, agentUsage, { json, body, port });
+const teamRoutes = createAgentTeamRoutes(agentTeams, teamGovernance, agentUsage, { json, body, port, trackSse });
 groupChat = await createAgentGroupChat(path.join(dataDirectory, 'agent-runtimes'), agentRuntimes, { profiles: () => agentTeams!.profiles.read(), automatic: agentTeams, writeJson: stateBackup.writeJson,
-  readProviderUsage: { codex: readCodexUsage, claude: readClaudeUsage, cursor: readCursorUsage },
+  readProviderUsage: providerUsageReaders,
   onJiraCompleted: async taskId => { await jiraDev.synchronizeGroup(taskId); jiraDevAutomation?.refresh(taskId); } });
+const storageGovernance = createStorageGovernance(path.join(dataDirectory, 'agent-runtimes'), {
+  dataDirectory,
+  activeTaskIds: () => agentTeams?.storageIndex().activeTaskIds || new Set(),
+  knownTaskIds: () => agentTeams?.storageIndex().knownTaskIds || new Set(),
+  activeRunIds: () => {
+    const ids = new Set(agentRuntimes.activeRunIds());
+    for (const id of groupChat?.verificationIndex().activeRunIds || []) ids.add(id);
+    return ids;
+  },
+  activeWorkspacePaths: () => {
+    const paths = new Set(agentRuntimes.activeWorkspacePaths());
+    for (const ws of agentTeams?.storageIndex().activeWorkspacePaths || []) paths.add(ws);
+    return paths;
+  },
+  knownWorkspacePaths: () => {
+    const paths = new Set(agentRuntimes.knownWorkspacePaths());
+    for (const ws of agentTeams?.storageIndex().knownWorkspacePaths || []) paths.add(ws);
+    return paths;
+  },
+  knownGroupVerifications: () => groupChat?.verificationIndex().completed || new Map(),
+  finishedTeamWorkspaces: () => [
+    ...(agentTeams?.storageIndex().finishedTeamWorkspaces || []),
+    ...agentRuntimes.finishedIsolatedWorkspaces(),
+  ],
+  sourceCandidates: async () => {
+    const local = await sourceBackend.readLocalProjects().catch(() => undefined);
+    return [root, ...(local?.projects || []).map(project => project.path)];
+  },
+});
+const storageGovernanceRoutes = createStorageGovernanceRoutes(storageGovernance, { json, body, port });
 const jiraDevConnection = createConnectionSettings({ dataDirectory: path.join(dataDirectory, 'jira-dev') });
 jiraDevAutomation = await createJiraDevAutomation({
   directory: path.join(dataDirectory, 'jira-dev', 'automation-delivery'),
@@ -476,9 +605,15 @@ async function restartBlockers() {
 const workspaceRestart = createWorkspaceRestart({
   available: () => isPm2ManagedWorkspace(root), prepare: () => agentRuntimes.prepareWorkspaceRestart(),
   update: process.argv.includes('--dev') ? undefined : async () => {
-    const { backend } = await readVersion();
+    const [{ backend }, plugins] = await Promise.all([readVersion(), integrationPlugins.list()]);
+    const pluginNeedsRestart = plugins.some(plugin => plugin.restartRequired);
     const next = await ensureWorkspaceBuild(root, distDirectory, { ...workspaceBuildOptions, prepareOnly: true });
-    if (next.build.backendSourceHash !== backend.sourceHash) return 'restart';
+    if (next.build.backendSourceHash !== backend.sourceHash || pluginNeedsRestart) {
+      if (next.rebuilt && next.build.backendSourceHash === backend.sourceHash) {
+        await ensureWorkspaceBuild(root, distDirectory, { ...workspaceBuildOptions, backendSourceHash: backend.sourceHash });
+      }
+      return 'restart';
+    }
     if (!next.rebuilt) return 'current';
     await ensureWorkspaceBuild(root, distDirectory, { ...workspaceBuildOptions, backendSourceHash: backend.sourceHash });
     return 'refresh';
@@ -488,6 +623,7 @@ const workspaceRestart = createWorkspaceRestart({
     const backup = await stateBackup.snapshot();
     if (backup.entries.some(entry => entry.status === 'failed')) throw new Error('关键状态备份失败，未执行重启，请检查本机存储。');
     if ((await restartBlockers()).length) throw new Error('任务状态发生变化，未执行重启，请重试。');
+    closeActiveSseStreams();
     await shutdown();
   },
 });
@@ -501,17 +637,40 @@ refactorControl = await createRefactorControl(root, path.join(dataDirectory, 're
 });
 
 async function body(request: http.IncomingMessage, limit = 300_000): Promise<unknown> {
-  let text = '';
-  for await (const chunk of request) { text += chunk; if (text.length > limit) throw new Error('请求内容过大'); }
-  return JSON.parse(text || '{}');
+  return readUtf8JsonBody(request, limit);
 }
 function json(response: http.ServerResponse, code: number, value: unknown) {
   response.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
   response.end(JSON.stringify(value));
 }
 
+const gzipJson = promisify(gzip);
+async function sendAgentSnapshot(request: http.IncomingMessage, response: http.ServerResponse, snapshot: ReturnType<typeof agentRuntimes.snapshot>) {
+  const visible = { ...snapshot, runs: snapshot.runs.map(browserAgentRun) };
+  response.setHeader('Vary', 'Accept-Encoding');
+  const encodings = (request.headers['accept-encoding'] || '').split(',');
+  const acceptsGzip = encodings.some(encoding => {
+    const [name, quality] = encoding.trim().toLowerCase().split(';');
+    return name.trim() === 'gzip' && (!quality || Number(quality.split('=')[1]) > 0);
+  });
+  if (acceptsGzip) {
+    const compressed = await gzipJson(JSON.stringify(visible), { level: 1 });
+    response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Encoding': 'gzip' });
+    response.end(compressed);
+  } else json(response, 200, visible);
+}
+
+function sendAcceptedRun(response: http.ServerResponse, run: AgentRun) {
+  response.setHeader('X-Agent-Revision', agentRuntimes.revision());
+  json(response, 202, browserAgentRun(run));
+}
+
 const server = http.createServer(async (request, response) => {
+  applySecurityResponseHeaders(response);
   const url = new URL(request.url ?? '/', `http://127.0.0.1:${port}`);
+  if (url.pathname.startsWith('/api/') && !isAllowedLocalHostHeader(request.headers.host, port)) {
+    json(response, 403, { message: '仅接受本机看板请求' }); return;
+  }
   if (workspaceRestart.isRestarting() && url.pathname.startsWith('/api/')
     && !['/api/health', '/api/workspace/restart'].includes(url.pathname)) {
     json(response, 503, { message: '后端正在重启，请等待连接恢复后重试。' }); return;
@@ -528,7 +687,7 @@ const server = http.createServer(async (request, response) => {
       if (await customPluginRoutes(request, response, url)) return;
       if (await systemCatalogRoutes(request, response, url)) return;
       if (await interfaceCenterRoutes(request, response, url)) return;
-      if (await goLearningRoutes(request, response, url)) return;
+      if (await browserConnectionRoute(request, response, url)) return;
       if (await integrationRuntime.route(request, response, url)) return;
       if (url.pathname === '/api/workspace/select') { await workspacePicker(request, response, port); return; }
       if (url.pathname === '/api/workspace/terminal') { await workspaceTerminal(request, response, port); return; }
@@ -575,24 +734,40 @@ const server = http.createServer(async (request, response) => {
         if (request.method === 'GET' && url.pathname === '/api/projects/git/diff') {
           json(response, 200, await readProjectDiff(url.searchParams.get('path') || '', url.searchParams.get('file') || '', url.searchParams.get('staged') === 'true')); return;
         }
-        if (request.method === 'POST' && ['/api/projects/git/merge-request/list', '/api/projects/git/merge-request/prepare', '/api/projects/git/merge-request/create', '/api/projects/git/merge-request/title'].includes(url.pathname)) {
+        if (request.method === 'GET' && url.pathname === '/api/projects/git/stash-diff') {
+          json(response, 200, await readProjectStashDiff(url.searchParams.get('path') || '', url.searchParams.get('stash') || '')); return;
+        }
+        if (request.method === 'GET' && url.pathname === '/api/projects/git/commit-detail') {
+          json(response, 200, await readProjectCommitDetail(url.searchParams.get('path') || '', url.searchParams.get('sha') || '')); return;
+        }
+        if (request.method === 'POST' && ['/api/projects/git/merge-request/list', '/api/projects/git/merge-request/prepare', '/api/projects/git/merge-request/reconcile', '/api/projects/git/merge-request/create', '/api/projects/git/merge-request/title', '/api/projects/git/merge-request/description'].includes(url.pathname)) {
           if (![`http://localhost:${port}`, `http://127.0.0.1:${port}`].includes(request.headers.origin || '')) { json(response, 403, { message: '请求来源不匹配' }); return; }
-          if (url.pathname.endsWith('/title') && request.headers['x-delivery-confirmed'] !== 'yes') {
-            json(response, 403, { message: '请在合并请求列表确认修改标题' }); return;
+          if ((url.pathname.endsWith('/title') || url.pathname.endsWith('/description') || url.pathname.endsWith('/reconcile')) && request.headers['x-delivery-confirmed'] !== 'yes') {
+            json(response, 403, {
+              message: url.pathname.endsWith('/reconcile')
+                ? '请在合并请求面板确认执行平台核对'
+                : url.pathname.endsWith('/description')
+                  ? '请在合并请求列表确认同步变更摘要'
+                  : '请在合并请求列表确认修改标题',
+            });
+            return;
           }
           const input = (await body(request)) as Record<string, unknown>;
           const operation = url.pathname.endsWith('/list') ? listProjectMergeRequests
             : url.pathname.endsWith('/title') ? updateProjectMergeRequestTitle
+            : url.pathname.endsWith('/description') ? updateProjectMergeRequestDescription
+            : url.pathname.endsWith('/reconcile') ? reconcileProjectMergeRequest
             : url.pathname.endsWith('/create') ? createProjectMergeRequest : prepareProjectMergeRequest;
           json(response, 200, await operation(input, { dataDirectory })); return;
         }
         if (request.method === 'POST' && url.pathname === '/api/projects/git/action') {
           if (![`http://localhost:${port}`, `http://127.0.0.1:${port}`].includes(request.headers.origin || '')) { json(response, 403, { message: '请求来源不匹配' }); return; }
           const input = (await body(request)) as Record<string, unknown>;
-          if (input.action === 'discard' && typeof input.path === 'string') {
+          const readOnlyOrRemoteMetaActions = new Set(['merge-preview', 'test-remote', 'fetch', 'connect', 'update-remote']);
+          if (!readOnlyOrRemoteMetaActions.has(String(input.action)) && typeof input.path === 'string') {
             const repo = await readProjectGitSnapshot(input.path);
             if (!repo.isGit) { json(response, 400, { message: '当前目录不是可用的 Git 仓库。' }); return; }
-            json(response, 200, await agentRuntimes.withTeamWorkspace(repo.directory, `git-discard:${randomUUID()}`,
+            json(response, 200, await agentRuntimes.withTeamWorkspace(repo.directory, `git-worktree:${randomUUID()}`,
               () => executeProjectGitAction({ ...input, path: repo.directory }, sourceBackend)));
           } else json(response, 200, await executeProjectGitAction(input, sourceBackend));
           return;
@@ -602,11 +777,13 @@ const server = http.createServer(async (request, response) => {
       if (url.pathname === '/api/ports' || url.pathname === '/api/ports/action') {
         if (![`localhost:${port}`, `127.0.0.1:${port}`].includes(request.headers.host || '')) { json(response, 403, { message: '仅接受本机看板请求' }); return; }
         if (request.method === 'GET' && url.pathname === '/api/ports') {
-          json(response, 200, await scanListeningPorts(parsePortList(url.searchParams.get('ports')), { readProjects: sourceBackend.readLocalProjects, root, dataDir: dataDirectory, selfPort: port })); return;
+          json(response, 200, await scanListeningPorts(parsePortList(url.searchParams.get('ports')), { readProjects: sourceBackend.readLocalProjects, root, dataDir: dataDirectory, selfPort: port, dedupe: true })); return;
         }
         if (request.method === 'POST') {
           const origin = request.headers.origin;
-          if (origin && ![`http://localhost:${port}`, `http://127.0.0.1:${port}`].includes(origin)) { json(response, 403, { message: '请求来源不匹配' }); return; }
+          // 端口动作可启动本机命令：只接受本机回环连接，并要求浏览器同源 Origin（局域网网关转发或无来源请求一律拒绝）。
+          if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(request.socket.remoteAddress || '')
+            || !origin || ![`http://localhost:${port}`, `http://127.0.0.1:${port}`].includes(origin)) { json(response, 403, { message: '请求来源不匹配' }); return; }
           if (!request.headers['content-type']?.includes('application/json')) { json(response, 415, { message: '请发送 JSON' }); return; }
           const payload = (await body(request)) as PortActionRequest;
           json(response, 200, await executePortAction(payload, {
@@ -623,9 +800,48 @@ const server = http.createServer(async (request, response) => {
       if (request.method === 'POST') {
         const origin = request.headers.origin;
         if (origin && ![`http://localhost:${port}`, `http://127.0.0.1:${port}`].includes(origin)) { json(response, 403, { message: '请求来源不匹配' }); return; }
-        if (!request.headers['content-type']?.includes('application/json')) { json(response, 415, { message: '请发送 JSON' }); return; }
+        if (!isExactJsonContentType(request.headers['content-type'])) { json(response, 415, { message: '请发送 JSON' }); return; }
       }
       if (url.pathname === '/api/workspace/restart') { await workspaceRestartRoute(request, response, port); return; }
+      if (await storageGovernanceRoutes(request, response, url)) return;
+      if (request.method === 'GET' && url.pathname === '/api/workspace/events') {
+        if (![`localhost:${port}`, `127.0.0.1:${port}`].includes(request.headers.host || '')) { json(response, 403, { message: '仅接受本机看板请求' }); return; }
+        if (url.searchParams.get('probe') === '1') { json(response, 200, { ok: true }); return; }
+        response.writeHead(200, {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+          'Cache-Control': 'no-cache, no-transform',
+          Connection: 'keep-alive',
+          'X-Accel-Buffering': 'no',
+        });
+        trackSse(response);
+        const writeEnvelope = (channelUrl: string, event: string, data: string, id?: string) => {
+          if (response.destroyed) return;
+          response.write(`event: envelope\ndata: ${JSON.stringify({ url: channelUrl, event, data, ...(id ? { id } : {}) })}\n\n`);
+        };
+        writeEnvelope('/api/agent-runtimes/events?updates=runs', 'ready', JSON.stringify({ revision: agentRuntimes.revision() }));
+        writeEnvelope('/api/agent-runtimes/team-tasks/events', 'ready', JSON.stringify({ revision: agentTeams!.revision() }));
+        writeEnvelope('/api/workflow/events', 'ready', JSON.stringify({ revision: service.revision() }));
+        const runtimeStream = createAgentRuntimeStream(frame => {
+          const match = /^id:\s*([^\n]+)\nevent:\s*([^\n]+)\ndata:\s*([\s\S]+?)\n\n$/.exec(frame);
+          if (match) writeEnvelope('/api/agent-runtimes/events?updates=runs', match[2]!, match[3]!, match[1]!);
+        }, true);
+        const unsubRuntimes = agentRuntimes.subscribe(runtimeStream.update);
+        const unsubTeams = agentTeams!.subscribe(event => {
+          writeEnvelope('/api/agent-runtimes/team-tasks/events', event.type, JSON.stringify(event), String(event.eventId));
+        });
+        const unsubWorkflow = service.subscribe(eventRevision => {
+          writeEnvelope('/api/workflow/events', 'refresh', JSON.stringify({ revision: eventRevision }), String(eventRevision));
+        });
+        const heartbeat = setInterval(() => { if (!response.destroyed) response.write(': keepalive\n\n'); }, 15_000);
+        request.on('close', () => {
+          clearInterval(heartbeat);
+          runtimeStream.close();
+          unsubRuntimes();
+          unsubTeams();
+          unsubWorkflow();
+        });
+        return;
+      }
       if (request.method === 'GET' && url.pathname === '/api/workspace/workbench-dismissals') {
         if (![`localhost:${port}`, `127.0.0.1:${port}`].includes(request.headers.host || '')) { json(response, 403, { message: '仅接受本机看板请求' }); return; }
         const stored = await fs.readFile(path.join(dataDirectory, 'workbench-dismissals.json'), 'utf8').catch((error: NodeJS.ErrnoException) => {
@@ -676,7 +892,6 @@ const server = http.createServer(async (request, response) => {
         json(response, 405, { message: '请求方法不支持' }); return;
       }
       if (url.pathname === '/api/integration-catalog' && request.method === 'GET') {
-        if (![`localhost:${port}`, `127.0.0.1:${port}`].includes(request.headers.host || '')) { json(response, 403, { message: '仅接受本机看板请求' }); return; }
         json(response, 200, integrationCatalog); return;
       }
       if (url.pathname === '/api/apex-bff-review') {
@@ -802,7 +1017,13 @@ const server = http.createServer(async (request, response) => {
           }
           const handlers: Record<string, (input: unknown) => Promise<unknown>> = { 'requirement-prepare': jiraDev.prepareRequirementDocument, issue: jiraDev.readIssue, versions: jiraDev.versions, scan: jiraDev.scan,
             'project-status': jiraDev.projectStatus, preferences: jiraDev.preferences, 'preferences/save': jiraDev.savePreferences,
-            prepare: jiraDev.prepare, apply: jiraDev.apply, check: jiraDev.check, start: jiraDev.start, task: jiraDev.task };
+            prepare: jiraDev.prepare, apply: jiraDev.apply, check: jiraDev.check, start: jiraDev.start, task: jiraDev.task,
+            'automation-reconcile': async input => {
+              if (!jiraDevAutomation) throw new Error('自动交付服务尚未就绪');
+              const automationDelivery = await jiraDevAutomation.reconcile(input);
+              const taskId = (input as { taskId?: string })?.taskId;
+              return taskId ? await jiraDev.task({ taskId }) : { automationDelivery };
+            } };
           if (request.method === 'POST' && handlers[action]) { json(response, 200, await handlers[action](await body(request))); return; }
           json(response, 404, { message: 'Jira 研发接口不存在' }); return;
         }
@@ -826,6 +1047,10 @@ const server = http.createServer(async (request, response) => {
         const statusChange = url.pathname.match(/^\/api\/agent-runtimes\/jira-fix\/([0-9a-f-]{36})\/handoff\/status$/);
         if (statusChange && request.method === 'POST') {
           json(response, 200, await jiraFixHandoff.applyStatus(statusChange[1], await body(request))); return;
+        }
+        const reconcileHandoff = url.pathname.match(/^\/api\/agent-runtimes\/jira-fix\/([0-9a-f-]{36})\/handoff\/reconcile$/);
+        if (reconcileHandoff && request.method === 'POST') {
+          json(response, 200, await jiraFixHandoff.reconcile(reconcileHandoff[1], await body(request))); return;
         }
         const handoff = url.pathname.match(/^\/api\/agent-runtimes\/jira-fix\/([0-9a-f-]{36})\/handoff$/);
         if (handoff) {
@@ -899,7 +1124,7 @@ const server = http.createServer(async (request, response) => {
           json(response, 200, { deleted: true }); return;
         }
         if (request.method === 'GET' && url.pathname === '/api/agent-runtimes' && url.searchParams.get('status') === '0') {
-          json(response, 200, agentRuntimes.snapshot()); return;
+          await sendAgentSnapshot(request, response, agentRuntimes.snapshot()); return;
         }
         if (request.method === 'GET' && (url.pathname === '/api/agent-runtimes' || url.pathname === '/api/agent-runtimes/status')) {
           const force = url.searchParams.get('refresh') === '1';
@@ -914,11 +1139,14 @@ const server = http.createServer(async (request, response) => {
             checkedAt: codexUsage.checkedAt,
             message: codexUsage.message?.includes('API 密钥') ? '当前 API 密钥未返回可读取的 API 额度' : 'API 额度暂不可用',
           }, cursorUsage, claudeUsage, antigravityUsage });
-          json(response, 200, url.pathname.endsWith('/status') ? status : { ...agentRuntimes.snapshot(), ...status }); return;
+          if (url.pathname.endsWith('/status')) json(response, 200, status);
+          else await sendAgentSnapshot(request, response, { ...agentRuntimes.snapshot(), ...status });
+          return;
         }
         if (request.method === 'GET' && url.pathname === '/api/agent-runtimes/events') {
           response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform',
             Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+          trackSse(response);
           const currentRevision = agentRuntimes.revision();
           response.write(`id: ${currentRevision}\nevent: ready\ndata: ${JSON.stringify({ revision: currentRevision })}\n\n`);
           const lastRevision = Number(request.headers['last-event-id'] || 0);
@@ -942,7 +1170,7 @@ const server = http.createServer(async (request, response) => {
         const resumeCodexSession = url.pathname.match(/^\/api\/agent-runtimes\/codex-sessions\/([0-9a-f-]{36})\/resume$/);
         if (request.method === 'POST' && resumeCodexSession) {
           const input = agentResumeSchema.parse(await body(request));
-          json(response, 202, await agentRuntimes.resumeCodexSession(resumeCodexSession[1], input.objective, input.model,
+          sendAcceptedRun(response, await agentRuntimes.resumeCodexSession(resumeCodexSession[1], input.objective, input.model,
             input.reasoningEffort, input.attachmentIds, input.accessMode, input.serviceTier)); return;
         }
         const removeCodexSession = url.pathname.match(/^\/api\/agent-runtimes\/codex-sessions\/([0-9a-f-]{36})\/delete$/);
@@ -958,9 +1186,21 @@ const server = http.createServer(async (request, response) => {
         if (request.method === 'GET' && url.pathname === '/api/agent-runtimes/mentions') {
           const input = z.object({ workspacePath: z.string().trim().min(1).max(1000), provider: z.enum(['codex', 'cursor', 'claude', 'kiro', 'antigravity']),
             q: z.string().trim().max(200).default('') }).parse(Object.fromEntries(url.searchParams));
-          const files = await agentRuntimes.workspaceFiles(input.workspacePath, input.q);
-          const skills = input.provider === 'codex' ? await listCodexSkills(files.workspacePath, input.q) : [];
-          json(response, 200, { ...files, skills }); return;
+          const parsedMention = parseMentionGroundingQuery(input.q);
+          const effectiveFileQuery = parsedMention.scope === 'all' ? input.q : parsedMention.term;
+          const files = await agentRuntimes.workspaceFiles(input.workspacePath, effectiveFileQuery);
+          const [skills, grounding] = await Promise.all([
+            input.provider === 'codex' && parsedMention.scope === 'all' ? listCodexSkills(files.workspacePath, input.q) : [],
+            searchWorkspaceMentionGrounding(files.workspacePath, input.q),
+          ]);
+          json(response, 200, {
+            workspacePath: files.workspacePath,
+            files: parsedMention.scope === 'all' ? files.files : [],
+            skills,
+            folders: grounding.folders,
+            symbols: grounding.symbols,
+          });
+          return;
         }
         if (request.method === 'GET' && url.pathname === '/api/agent-runtimes/knowledge') {
           const input = z.object({ workspacePath: z.string().trim().min(1).max(1000), provider: z.enum(['codex', 'cursor', 'claude', 'kiro', 'antigravity']),
@@ -985,7 +1225,7 @@ const server = http.createServer(async (request, response) => {
           json(response, 200, await agentRuntimes.removeCustomModel(agentModel[1])); return;
         }
         if (request.method === 'POST' && url.pathname === '/api/agent-runtimes/runs') {
-          json(response, 202, await agentRuntimes.start(agentStartSchema.parse(await body(request)))); return;
+          sendAcceptedRun(response, await agentRuntimes.start(agentStartSchema.parse(await body(request)))); return;
         }
         if (request.method === 'POST' && url.pathname === '/api/agent-runtimes/conversation-ids/migrate') {
           const input = z.object({ assignments: z.array(z.object({ runId: z.string().uuid(), conversationId: z.string().uuid(),
@@ -1012,6 +1252,11 @@ const server = http.createServer(async (request, response) => {
         if (request.method === 'POST' && decideAgentWorkflow) {
           const input = agentWorkflowDecisionSchema.parse(await body(request));
           json(response, 200, await agentRuntimes.decideWorkflow(decideAgentWorkflow[1], input.action, input.requestId)); return;
+        }
+        const previewAgentFile = url.pathname.match(/^\/api\/agent-runtimes\/runs\/([0-9a-f-]{36})\/preview-file$/);
+        if (request.method === 'GET' && previewAgentFile) {
+          const input = z.object({ path: z.string().min(1).max(2000) }).strict().parse(Object.fromEntries(url.searchParams));
+          json(response, 200, await agentRuntimes.previewChangedFile(previewAgentFile[1], input.path)); return;
         }
         const downloadAgentFile = url.pathname.match(/^\/api\/agent-runtimes\/runs\/([0-9a-f-]{36})\/download-file$/);
         if (request.method === 'GET' && downloadAgentFile) {
@@ -1061,7 +1306,7 @@ const server = http.createServer(async (request, response) => {
             json(response, 202, await agentRuntimes.fork(id, input.objective, input.model, input.reasoningEffort, input.attachmentIds, input.serviceTier)); return;
           }
           const input = agentContinueSchema.parse(await body(request));
-          json(response, 202, await agentRuntimes.resume(id, input.objective, input.model, input.reasoningEffort, input.attachmentIds, input.accessMode,
+          sendAcceptedRun(response, await agentRuntimes.resume(id, input.objective, input.model, input.reasoningEffort, input.attachmentIds, input.accessMode,
             input.queuePlacement, input.serviceTier, input.mode)); return;
         }
         if (request.method === 'POST' && url.pathname === '/api/agent-runtimes/conversations/delete-batch') {
@@ -1106,6 +1351,7 @@ const server = http.createServer(async (request, response) => {
       if (request.method === 'GET' && url.pathname === '/api/workflow/events') {
         response.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform',
           Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+        trackSse(response);
         const currentRevision = service.revision();
         response.write(`id: ${currentRevision}\nevent: ready\ndata: ${JSON.stringify({ revision: currentRevision })}\n\n`);
         const lastRevision = Number(request.headers['last-event-id'] || 0);
@@ -1134,16 +1380,11 @@ const server = http.createServer(async (request, response) => {
     }
     if (sourceBackend.handles(url.pathname)) { await sourceBackend.dispatch(request, response, `${url.pathname}${url.search}`); return; }
     if (vite) { vite.middlewares(request, response); return; }
-    const relative = decodeURIComponent(url.pathname).replace(/^\/+/, '');
-    const file = path.resolve(distDirectory, relative || 'index.html');
-    if (!file.startsWith(`${distDirectory}${path.sep}`)) { response.writeHead(404); response.end(); return; }
-    try {
-      const spa = !path.extname(relative);
-      const content = await fs.readFile(spa ? path.join(distDirectory, 'index.html') : file);
-      const mime: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
-      response.writeHead(200, { 'Content-Type': spa ? mime['.html'] : mime[path.extname(file)] ?? 'application/octet-stream',
-        'Cache-Control': workspaceStaticCacheControl(spa ? 'index.html' : relative) }); response.end(content);
-    } catch { response.writeHead(404); response.end('Not found'); }
+    await serveWorkspaceStaticAsset(request, response, {
+      distDirectory,
+      pathname: url.pathname,
+      cacheControl: workspaceStaticCacheControl,
+    });
   } catch (error) {
     const status = error && typeof error === 'object' && 'statusCode' in error && [404, 409].includes(Number(error.statusCode)) ? Number(error.statusCode) : 400;
     json(response, status, { message: error instanceof z.ZodError ? '输入格式不正确' : error instanceof Error ? error.message : String(error) });
@@ -1151,27 +1392,36 @@ const server = http.createServer(async (request, response) => {
     if (mutation) pendingMutations--;
   }
 });
+server.on('upgrade', (request, socket, head) => {
+  if (request.url?.startsWith(chromeRelayPrefix)) browserConnection.upgrade(request, socket, head, port);
+  else socket.destroy();
+});
 server.listen(port, '127.0.0.1', () => {
   if (process.env.DELIVERY_SCHEDULER_DISABLED !== '1') sourceBackend.start();
-workspaceReports.start();
+  workspaceReports.start();
   if (process.env.DELIVERY_SCHEDULER_DISABLED !== '1') projectWorkspaces.start();
+  setTimeout(scheduleInitialStateBackup, 500).unref();
   console.log(`Delivery Workspace: http://localhost:${port} · unified backend · Mastra lab /lab`);
 });
 let shutdownTask: Promise<void> | undefined;
 function shutdown() {
   return shutdownTask ??= (async () => {
-  workspaceRestart.close();
+    workspaceRestart.close();
+    closeActiveSseStreams();
+    server.close();
+    server.closeIdleConnections?.();
+    server.closeAllConnections?.();
+    await browserConnection.disconnect();
     unsubscribeJiraDevRuns(); unsubscribeJiraDevTeams();
     await jiraDevAutomation?.close();
-  await projectLaunch.close();
-  await projectWorkspaces.close();
-  await remoteDelivery.close();
-  await systemCatalog.close();
-  await interfaceCenter.close();
-  server.close();
-  await pluginJira.close();
-  await customPlugins.close();
-  await workspaceReports.close(); await groupChat?.close(); await refactorControl.close(workspaceRestart.isRestarting()); await refactorWorkspace.close(); await agentTeams?.close(); await teamGovernance.close(); sourceBackend.close(); await Promise.all(Object.values(accountServices).map(accounts => accounts.close())); await stopStateBackup(); await Promise.all([requirementDevelopment.close(), deliveryAcceptance.close(), jiraFix.close(), jiraFixHandoff.close(), jiraDev.close()]); await Promise.all([cliQueue.close(), agentRuntimes.close(), designExecutor.close(), integration.close(), integrationRuntime.close(), apexBffReview.close(), wecomIntegration.close(), reportBot.close(), deployments.close(), yunxiaoDeployments.close()]); await vite?.close(); await agentUsage.close(); await service.close(); await stateBackup.close(); await releaseStateLease(); process.exit(0);
+    await projectLaunch.close();
+    await projectWorkspaces.close();
+    await remoteDelivery.close();
+    await systemCatalog.close();
+    await interfaceCenter.close();
+    await pluginJira.close();
+    await customPlugins.close();
+    await workspaceReports.close(); await groupChat?.close(); await refactorControl.close(workspaceRestart.isRestarting()); await refactorWorkspace.close(); await agentTeams?.close(); await teamGovernance.close(); sourceBackend.close(); await Promise.all(Object.values(accountServices).map(accounts => accounts.close())); await stopStateBackup(); await Promise.all([requirementDevelopment.close(), deliveryAcceptance.close(), jiraFix.close(), jiraFixHandoff.close(), jiraDev.close()]); await Promise.all([cliQueue.close(), agentRuntimes.close(), designExecutor.close(), integration.close(), integrationRuntime.close(), apexBffReview.close(), wecomIntegration.close(), reportBot.close(), deployments.close(), yunxiaoDeployments.close()]); await vite?.close(); await agentUsage.close(); await service.close(); await stateBackup.close(); await releaseStateLease(); process.exit(0);
   })();
 }
 for (const signal of ['SIGTERM', 'SIGINT'] as const) process.once(signal, () => { void shutdown(); });

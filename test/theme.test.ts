@@ -2,12 +2,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { CUSTOM_THEME_STORAGE_KEY, DEFAULT_CUSTOM_THEME, normalizeCustomTheme, readCustomTheme, saveCustomTheme } from '../src/shared/theme/customTheme';
+import {
+  CUSTOM_THEME_STORAGE_KEY,
+  DEFAULT_CUSTOM_THEME,
+  inferWallpaperMimeType,
+  isSupportedWallpaperFile,
+  normalizeCustomTheme,
+  normalizeWallpaperRecord,
+  readCustomTheme,
+  saveCustomTheme,
+} from '../src/shared/theme/customTheme';
+import { designMdMeta, designMdThemes } from '../src/shared/theme/designMd';
 import { normalizeTheme, resolveTheme, readTheme, saveTheme, THEME_STORAGE_KEY, themeOptions } from '../src/shared/theme/theme';
 
 test('known preferences resolve, including the previous GitHub theme pair', () => {
   for (const option of themeOptions) assert.equal(normalizeTheme(option.id), option.id);
-  for (const value of [null, undefined, '', 'pink', {}, 1]) assert.equal(normalizeTheme(value), 'bento');
+  for (const value of [null, undefined, '', 'pink', {}, 1]) assert.equal(normalizeTheme(value), 'acid');
   assert.equal(normalizeTheme('github'), 'bento');
   assert.equal(normalizeTheme('github-dark'), 'bento-dark');
 });
@@ -22,24 +32,43 @@ test('system follows OS preference, explicit skins never change with the OS', ()
 test('theme round trips through the dedicated local storage key', () => {
   const entries = new Map<string, string>();
   const storage = { getItem: (key: string) => entries.get(key) ?? null, setItem: (key: string, value: string) => { entries.set(key, value); } };
-  assert.equal(readTheme(storage), 'bento');
+  assert.equal(readTheme(storage), 'acid');
   assert.equal(saveTheme(storage, 'forest'), true);
   assert.equal(entries.get(THEME_STORAGE_KEY), 'forest');
   assert.equal(readTheme(storage), 'forest');
 });
 test('denied browser storage does not break rendering or switching', () => {
   const storage = { getItem(): string { throw new Error('denied'); }, setItem() { throw new Error('denied'); } };
-  assert.equal(readTheme(storage), 'bento');
+  assert.equal(readTheme(storage), 'acid');
   assert.equal(saveTheme(storage, 'night'), false);
 });
-test('默认使用 Bento 浅色，Bento 深色与其他旧预设仍可选择', () => {
+test('默认使用 Acid 酸性荧光主题，Cinematic Video Hero、Immersive Photo、Holy Grail 与其他旧预设仍可选择', () => {
   const fallback = readTheme({ getItem: () => null });
-  assert.equal(fallback, 'bento');
-  assert.equal(themeOptions.find(option => option.id === resolveTheme(fallback, false))?.dark, false);
+  assert.equal(fallback, 'acid');
+  assert.equal(themeOptions.find(option => option.id === resolveTheme(fallback, false))?.dark, true);
+  const cinematic = themeOptions.find(option => option.id === resolveTheme('cinematic-video-hero', false));
+  assert.equal(cinematic?.dark, true);
+  assert.deepEqual(cinematic?.colors, ['#05060a', '#141821', '#e4c063']);
+  const immersive = themeOptions.find(option => option.id === resolveTheme('immersive-photo', false));
+  assert.equal(immersive?.dark, true);
+  assert.deepEqual(immersive?.colors, ['#0c0d10', '#1a1c22', '#e8b04b']);
+  assert.equal(themeOptions.find(option => option.id === resolveTheme('holy-grail', false))?.dark, false);
+  assert.equal(themeOptions.find(option => option.id === resolveTheme('bento', false))?.dark, false);
   assert.equal(themeOptions.find(option => option.id === resolveTheme('bento-dark', false))?.dark, true);
   assert.equal(themeOptions.find(option => option.id === resolveTheme('studio', false))?.dark, true);
   assert.equal(themeOptions.find(option => option.id === resolveTheme('split', true))?.dark, false);
-  assert.equal(THEME_STORAGE_KEY, 'delivery-workspace.theme.v1');
+  assert.equal(themeOptions.find(option => option.id === resolveTheme('linear', false))?.dark, true);
+  assert.equal(themeOptions.find(option => option.id === resolveTheme('vercel', true))?.dark, false);
+  assert.equal(themeOptions.find(option => option.id === resolveTheme('raycast', false))?.dark, true);
+  assert.equal(themeOptions.find(option => option.id === resolveTheme('cursor', true))?.dark, false);
+  assert.equal(themeOptions.find(option => option.id === resolveTheme('supabase', true))?.dark, false);
+  assert.equal(themeOptions.find(option => option.id === resolveTheme('supabase-dark', false))?.dark, true);
+  for (const id of Object.keys(designMdThemes)) {
+    assert.ok(designMdMeta(id)?.layout);
+    assert.ok(designMdMeta(id)?.footer);
+  }
+  assert.equal(designMdMeta('acid'), null);
+  assert.equal(THEME_STORAGE_KEY, 'delivery-workspace.theme.v2');
 });
 test('custom theme validates colors and clamps wallpaper and message transparency', () => {
   assert.deepEqual(normalizeCustomTheme({ accent: 'red', background: '#123456', messageOpacity: 10, overlay: 120, position: 'left', wallpaperName: 'demo.png' }), {
@@ -55,6 +84,23 @@ test('custom theme validates colors and clamps wallpaper and message transparenc
   assert.equal(saveCustomTheme(storage, custom), true);
   assert.ok(entries.has(CUSTOM_THEME_STORAGE_KEY));
   assert.deepEqual(readCustomTheme(storage), custom);
+});
+
+test('custom wallpaper helpers support macOS empty MIME files and WebKit ArrayBuffer records', async () => {
+  assert.equal(inferWallpaperMimeType('wall.heic', ''), 'image/heic');
+  assert.equal(inferWallpaperMimeType('scene.AVIF', ''), 'image/avif');
+  assert.equal(inferWallpaperMimeType('photo.webp', 'image/webp'), 'image/webp');
+  assert.equal(isSupportedWallpaperFile({ name: 'macos-wallpaper.heic', type: '' }), true);
+  assert.equal(isSupportedWallpaperFile({ name: 'archive.zip', type: '' }), false);
+
+  const rawBytes = new Uint8Array([137, 80, 78, 71]);
+  const fromBuffer = normalizeWallpaperRecord({ data: rawBytes.buffer.slice(0), type: 'image/png' });
+  assert.ok(fromBuffer instanceof Blob);
+  assert.equal(fromBuffer.type, 'image/png');
+  assert.deepEqual(new Uint8Array(await fromBuffer.arrayBuffer()), rawBytes);
+
+  const legacyBlob = new Blob([rawBytes], { type: 'image/webp' });
+  assert.equal(normalizeWallpaperRecord(legacyBlob), legacyBlob);
 });
 
 const css = readFileSync(new URL('../src/app/themes.css', import.meta.url), 'utf8');
@@ -91,7 +137,9 @@ for (const name of themeOptions.map((option) => option.id).filter((id) => id !==
     assert.ok(block, `missing ${name} palette`);
     const colors = Object.fromEntries([...block.matchAll(/--ui-([\w-]+):\s*(#[\da-f]+)/g)].map((match) => [match[1], match[2]]));
     const pairs = [['text', 'surface'], ['muted', 'surface'], ['muted', 'raised'], ['accent', 'surface'], ['success', 'success-bg'], ['warning', 'warning-bg'], ['danger', 'danger-bg'], ['nav-muted', 'nav'], ['on-primary', 'primary']];
-    if (name === 'obsidian' || name === 'studio') pairs.push(['user-message-text', 'user-message-bg'], ['user-message-muted', 'user-message-bg']);
+    if (name === 'obsidian' || name === 'studio' || designMdMeta(name)) {
+      pairs.push(['user-message-text', 'user-message-bg'], ['user-message-muted', 'user-message-bg']);
+    }
     if (name === 'studio') pairs.push(['secondary', 'surface'], ['muted', 'hover'], ['accent', 'nav-selected'], ['on-primary', 'primary-hover'],
       ['on-primary', 'success'], ['on-primary', 'warning'], ['on-primary', 'danger'], ['on-primary', 'secondary']);
     for (const [fg, bg] of pairs) {

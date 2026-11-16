@@ -181,5 +181,53 @@ export function useJiraFixHandoff(refresh: () => Promise<unknown>) {
     } catch (cause) { error.value = cause instanceof Error ? cause.message : '提交结果未知，请重新打开交接核对，不要重复提交'; }
     finally { submitting.value = false; await refresh(); }
   }
-  return { open, loading, submitting, generating, applyingStatus, canApplyStatus, applyStatus, feedback, generate, error, record, context, form, transitionFields, dateFields, locked, canSubmit, show, close, submit };
+  async function reconcile(target: 'status' | 'handoff', commentOutcome?: 'posted' | 'not_posted') {
+    if (!context.value || !record.value || loading.value || submitting.value || applyingStatus.value || generating.value) return;
+    const current = context.value, id = record.value.id;
+    try {
+      const promptText = target === 'status'
+        ? `系统将重新回读 ${current.issue.key} 在 Jira 的实时状态并解除“不确定”锁定，期间不会自动重发任何流转请求。是否继续？`
+        : commentOutcome === 'posted'
+          ? `确认已在 Jira 核实 ${current.issue.key} 的交接评论已发布？系统将标记评论完成、回读状态与指派人，并解锁剩余步骤。`
+          : commentOutcome === 'not_posted'
+            ? `确认已在 Jira 核实 ${current.issue.key} 的交接评论尚未发布？系统将解除锁定，随后可点击“重试剩余步骤”补发。`
+            : `系统将重新回读 ${current.issue.key} 的实时状态与指派人并解除“不确定”锁定，不会自动重复执行已完成步骤。是否继续？`;
+      await ElMessageBox.confirm(promptText, '人工核对并解锁', {
+        type: 'warning',
+        confirmButtonText: '确认核对并解锁',
+        cancelButtonText: '取消',
+        closeOnClickModal: false,
+      });
+    } catch { return; }
+    submitting.value = true; error.value = '';
+    try {
+      const response = await fetch(`/api/agent-runtimes/jira-fix/${id}/handoff/reconcile`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Delivery-Confirmed': 'yes' },
+        body: JSON.stringify({
+          runId: current.runId,
+          target,
+          ...(commentOutcome ? { commentOutcome } : {}),
+          confirmed: true,
+          authorization: 'reconcile-jira-handoff',
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || '核对解锁失败');
+      const refreshed = await fetch(`/api/agent-runtimes/jira-fix/${id}/handoff`);
+      if (refreshed.ok) context.value = await refreshed.json();
+      else context.value = { ...current, ...(result.statusChange ? { statusChange: result.statusChange } : {}), ...(result.handoff ? { handoff: result.handoff } : {}) };
+      if (context.value?.handoff?.status === 'completed' || result.statusChange?.status === 'completed') {
+        ElMessage.success('已回读确认远端目标达成');
+      } else {
+        ElMessage.success('已完成人工核对并解除锁定');
+      }
+    } catch (cause) {
+      error.value = cause instanceof Error ? cause.message : '核对解锁失败';
+    } finally {
+      submitting.value = false;
+      await refresh();
+    }
+  }
+  return { open, loading, submitting, generating, applyingStatus, canApplyStatus, applyStatus, feedback, generate, error, record, context, form, transitionFields, dateFields, locked, statusUncertain, canSubmit, show, close, submit, reconcile };
 }

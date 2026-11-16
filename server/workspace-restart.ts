@@ -20,10 +20,8 @@ export function matchesPm2Workspace(root: string, item: Pm2WorkspaceProcess, pid
   // The share launcher initializes its own configuration/data, then owns this backend child.
   // Its exit follows the backend's exit, allowing PM2 to restart the same isolated share instance.
   const args = Array.isArray(config.args) ? config.args : config.args ? [config.args] : [];
-  return item.pid === parentPid && (
-    config.pm_exec_path === path.join(root, 'delivery.mjs') && args.length === 1 && args[0] === 'start'
-    || config.pm_exec_path === path.join(root, 'scripts/start.mjs') && !args.length
-  );
+  return item.pid === parentPid && config.pm_exec_path === path.join(root, 'delivery.mjs')
+    && args.length === 1 && args[0] === 'start';
 }
 export function restartTaskActive(status?: string, includePending = true) {
   return ['queued', 'dispatching', 'dispatched', 'running', 'draining', ...(includePending ? ['pending'] : [])].includes(status?.toLowerCase() || '');
@@ -98,7 +96,7 @@ export function createWorkspaceRestart(options: Options) {
           return;
         }
       } else current.message = '任务已空闲，正在确认后端可以安全重启。';
-      if (!closed) timer = setTimeout(tick, options.intervalMs ?? 5000).unref();
+      if (!closed) timer = setTimeout(tick, options.intervalMs ?? 400).unref();
     } catch (error) {
       release?.(); release = undefined;
       current = { ...current, status: 'failed', message: error instanceof Error ? error.message : '重启检查失败，请重试。' };

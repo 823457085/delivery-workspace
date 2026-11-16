@@ -13,7 +13,7 @@ test('jira-dev sync rejects manifests not signed by the plugin key and leaves fi
   const before = await readdir(jiraDevDirectory);
   const { privateKey } = generateKeyPairSync('ed25519');
   const payload = Buffer.from(JSON.stringify({ plugin: 'jira-dev-workbench', version: '9.0.0', publishedAt: '2026-10-24T00:00:00Z', notes: [],
-    download: { url: 'https://jira-dev-workbench-updates.demo-user230.chatgpt.site/x.zip', sha256: 'a'.repeat(64), size: 10 }, installation: { releaseRoot: 'r', pluginDirectory: 'p' } }));
+    download: { url: 'https://jira-dev-workbench-updates.lizirui230.chatgpt.site/x.zip', sha256: 'a'.repeat(64), size: 10 }, installation: { releaseRoot: 'r', pluginDirectory: 'p' } }));
   const envelope = JSON.stringify({ payload: payload.toString('base64'), signature: sign(null, payload, privateKey).toString('base64') });
   const fetchImpl = (async () => new Response(envelope)) as typeof fetch;
   const sync = createJiraDevSync({ jiraDevDirectory, dataDirectory: path.join(root, 'data'), pluginSource: path.join(root, 'missing'), fetchImpl });

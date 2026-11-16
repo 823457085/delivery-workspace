@@ -6,19 +6,29 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { z } from 'zod';
 import type { ProjectsData } from '../shared/hub.js';
-import { workspaceRemovalInputSchema, workspaceScheduleInputSchema,
-  type WorkspaceCleanupRule, type WorkspaceRemovalPreview } from '../shared/project-workspaces.js';
+import { workspaceRemovalInputSchema, workspaceRestoreInputSchema, workspaceScheduleInputSchema,
+  type WorkspaceCleanupRule, type WorkspaceRemovalPreview, type WorkspaceTrashItem } from '../shared/project-workspaces.js';
 import { readProjectGitSnapshot, withProjectGitLock } from './project-git.js';
 
 const exec = promisify(execFile);
 const error = (message: string, statusCode = 409) => Object.assign(new Error(message), { statusCode });
 const dirtyReason = '工作区有未提交改动，需手动确认丢弃后删除';
+const TRASH_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const MAX_BLOCKED_RETRY_WINDOW_MS = 24 * 60 * 60 * 1000;
+const DISPOSABLE_IGNORED_PREFIX_RE =
+  /^(?:node_modules|\.pnpm-store|dist|build|out|\.next|\.nuxt|\.turbo|\.cache|coverage|target|\.venv|venv|__pycache__|\.pytest_cache|\.gradle|\.DS_Store)(?:\/|$)/i;
+const SENSITIVE_IGNORED_FILE_RE =
+  /(?:^|\/)(?:\.env(?:\.[^/]+)?|\.local(?:\/|$)|[^/]*\.(?:pem|key|p12|pfx|keystore|jks)|[^/]*(?:secret|credential|token|private)[^/]*\.(?:json|ya?ml|toml|ini|txt))(?:\/|$)/i;
+
 const inside = (parent: string, child: string) => child === parent || child.startsWith(parent + path.sep);
 const identitySchema = z.object({ dev: z.string(), ino: z.string(), gitDir: z.string(), gitIno: z.string(),
   common: z.string(), commonIno: z.string() }).strict();
 type Identity = z.infer<typeof identitySchema>;
 const ruleSchema = z.object({ path: z.string().min(1), deleteAt: z.string().datetime({ offset: true }),
   status: z.enum(['scheduled', 'blocked', 'deleted']), message: z.string().optional(), checkedAt: z.string().optional(),
+  blockedCount: z.number().int().nonnegative().optional(),
+  blockedSince: z.string().datetime({ offset: true }).optional(),
+  nextRetryAt: z.string().datetime({ offset: true }).optional(),
   identity: identitySchema }).strict();
 type StoredRule = z.infer<typeof ruleSchema>;
 const stateSchema = z.object({ version: z.literal(1), rules: z.array(ruleSchema) }).strict()
@@ -33,9 +43,16 @@ export interface ProjectWorkspaceOptions {
   workspaceRoots?: string[];
   now?: () => number;
   intervalMs?: number;
+  trashRetentionMs?: number;
 }
 
-const publicRule = ({ identity: _identity, ...rule }: StoredRule): WorkspaceCleanupRule => ({ ...rule });
+const publicRule = ({
+  identity: _identity,
+  blockedCount: _blockedCount,
+  blockedSince: _blockedSince,
+  nextRetryAt: _nextRetryAt,
+  ...rule
+}: StoredRule): WorkspaceCleanupRule => ({ ...rule });
 const sameIdentity = (left: Identity, right: Identity) => JSON.stringify(left) === JSON.stringify(right);
 const gitEnvironment = () => ({ ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('GIT_'))),
   GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' });
@@ -61,6 +78,10 @@ async function git(directory: string, args: string[]) {
 export async function createProjectWorkspaces(rawDirectory: string, options: ProjectWorkspaceOptions) {
   await fs.mkdir(rawDirectory, { recursive: true, mode: 0o700 });
   const directory = await fs.realpath(rawDirectory), file = path.join(directory, 'workspace-cleanup.json');
+  const trashDirectory = path.join(directory, 'trash');
+  await fs.mkdir(trashDirectory, { recursive: true, mode: 0o700 });
+  const retentionMs = options.trashRetentionMs ?? TRASH_RETENTION_MS;
+  const useProductionBackoff = (options.intervalMs ?? 60_000) >= 60_000;
   const protectedPaths = await Promise.all([...options.protectedPaths, directory].map(value =>
     fs.realpath(value).catch(() => path.resolve(value))));
   const workspaceRoots = await Promise.all((options.workspaceRoots || []).map(value =>
@@ -127,9 +148,25 @@ export async function createProjectWorkspaces(rawDirectory: string, options: Pro
     const [gitStat, commonStat] = await Promise.all([fs.stat(gitDir, { bigint: true }), fs.stat(common, { bigint: true })]);
     return { dev: String(rootStat.dev), ino: String(rootStat.ino), gitDir, gitIno: String(gitStat.ino), common, commonIno: String(commonStat.ino) };
   }
+  async function inspectIgnoredFiles(folder: string): Promise<{ ignoredFiles: string[]; sensitiveIgnoredFiles: string[] }> {
+    const raw = await git(folder, ['status', '--porcelain=v1', '--ignored=matching', '-z']).catch(() => '');
+    const ignoredFiles: string[] = [];
+    for (const entry of raw.split('\0')) {
+      if (!entry.startsWith('!! ')) continue;
+      const rel = entry.slice(3).trim();
+      if (!rel || DISPOSABLE_IGNORED_PREFIX_RE.test(rel)) continue;
+      ignoredFiles.push(rel);
+      if (ignoredFiles.length >= 40) break;
+    }
+    const sensitiveIgnoredFiles = ignoredFiles.filter(item => SENSITIVE_IGNORED_FILE_RE.test(item));
+    return { ignoredFiles, sensitiveIgnoredFiles };
+  }
   async function inspect(raw: string, refresh = false) {
     const folder = await location(raw, refresh), id = await identity(folder);
-    const snapshot = await readProjectGitSnapshot(folder, { forRemoval: true });
+    const [snapshot, ignoredInfo] = await Promise.all([
+      readProjectGitSnapshot(folder, { forRemoval: true }),
+      inspectIgnoredFiles(folder),
+    ]);
     const linked = id.gitDir !== id.common;
     const worktrees = (await git(folder, ['worktree', 'list', '--porcelain', '-z'])).split('\0').filter(field => field.startsWith('worktree '));
     const structuralReason = !linked && worktrees.length > 1 ? '其他工作区依赖该主仓库，不能删除'
@@ -148,8 +185,28 @@ export async function createProjectWorkspaces(rawDirectory: string, options: Pro
       if (!/^0\s*$/.test(unique)) throw error('工作区有未推送提交，未执行删除');
       await options.checkBusy(folder);
     } catch (cause) { reason = cause instanceof Error ? cause.message : '无法确认工作区是否可删除'; }
-    const revision = createHash('sha256').update(snapshot.revision).update(JSON.stringify(id)).update(mergeHeads.join(' ')).digest('hex');
-    return { folder, id, revision, reason, structuralReason, dirty: !snapshot.clean || snapshot.mergeInProgress, snapshotRevision: snapshot.revision, mergeHeads };
+    const gitDirty = !snapshot.clean || snapshot.mergeInProgress;
+    const dirty = gitDirty || ignoredInfo.sensitiveIgnoredFiles.length > 0;
+    const revision = createHash('sha256')
+      .update(snapshot.revision)
+      .update(JSON.stringify(id))
+      .update(mergeHeads.join(' '))
+      .update(ignoredInfo.ignoredFiles.join('\0'))
+      .digest('hex');
+    return {
+      folder,
+      id,
+      revision,
+      reason,
+      structuralReason,
+      dirty,
+      gitDirty,
+      ignoredFiles: ignoredInfo.ignoredFiles,
+      sensitiveIgnoredFiles: ignoredInfo.sensitiveIgnoredFiles,
+      preservePaths: [...new Set([...snapshot.files.map(f => f.path), ...ignoredInfo.ignoredFiles])],
+      snapshotRevision: snapshot.revision,
+      mergeHeads,
+    };
   }
   async function assertGitIdle(gitDir: string, linked: boolean) {
     for (const name of ['index.lock', 'rebase-merge', 'rebase-apply', 'sequencer', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', ...(linked ? ['locked'] : [])]) {
@@ -166,11 +223,122 @@ export async function createProjectWorkspaces(rawDirectory: string, options: Pro
     ]);
     return createHash('sha256').update(values.join('\0')).digest('hex');
   }
+  function dirtyMessage(result: Pick<Awaited<ReturnType<typeof inspect>>, 'gitDirty' | 'sensitiveIgnoredFiles'>) {
+    if (!result.gitDirty && result.sensitiveIgnoredFiles.length > 0) {
+      return `工作区包含未提交或被 Git 忽略的本地敏感文件（${result.sensitiveIgnoredFiles.slice(0, 3).join('、')}），需手动确认后移入隔离回收区`;
+    }
+    return dirtyReason;
+  }
   function removalPreview(result: Awaited<ReturnType<typeof inspect>>, rule?: StoredRule): WorkspaceRemovalPreview {
-    const reason = result.reason || (result.dirty ? dirtyReason : '');
+    const reason = result.reason || (result.dirty ? dirtyMessage(result) : '');
     return { path: result.folder, revision: result.revision, eligible: !reason, canSchedule: !result.structuralReason,
       ...(result.dirty && !result.reason ? { requiresDiscardChanges: true } : {}), ...(reason ? { reason } : {}),
+      ...(result.ignoredFiles.length ? { ignoredFiles: result.ignoredFiles } : {}),
+      ...(result.sensitiveIgnoredFiles.length ? { sensitiveIgnoredFiles: result.sensitiveIgnoredFiles } : {}),
       ...(rule ? { rule: publicRule(rule) } : {}) };
+  }
+  async function pruneExpiredTrash() {
+    const entries = await fs.readdir(trashDirectory).catch(() => [] as string[]);
+    for (const entryName of entries) {
+      const itemDir = path.join(trashDirectory, entryName);
+      try {
+        const meta = JSON.parse(await fs.readFile(path.join(itemDir, 'metadata.json'), 'utf8')) as WorkspaceTrashItem;
+        if (Date.parse(meta.expiresAt) <= now()) {
+          await fs.rm(itemDir, { recursive: true, force: true });
+        }
+      } catch {
+        /* Keep unrecognizable folders untouched unless expired */
+      }
+    }
+  }
+  async function moveIntoTrash(
+    quarantinePath: string,
+    originalFolder: string,
+    linked: boolean,
+    checked: Awaited<ReturnType<typeof inspect>>,
+  ) {
+    await pruneExpiredTrash().catch(() => {});
+    const id = `${now()}-${randomUUID().slice(0, 8)}`;
+    const itemDir = path.join(trashDirectory, id);
+    await fs.mkdir(itemDir, { recursive: true, mode: 0o700 });
+    const deletedAt = new Date(now()).toISOString();
+    const expiresAt = new Date(now() + retentionMs).toISOString();
+    const meta: WorkspaceTrashItem = {
+      id,
+      originalPath: originalFolder,
+      name: path.basename(originalFolder),
+      linked,
+      deletedAt,
+      expiresAt,
+      ignoredFiles: checked.ignoredFiles,
+      restorable: true,
+    };
+    if (!linked) {
+      const targetWorkspace = path.join(itemDir, 'workspace');
+      try {
+        await fs.rename(quarantinePath, targetWorkspace);
+      } catch {
+        await fs.cp(quarantinePath, targetWorkspace, { recursive: true });
+        await fs.rm(quarantinePath, { recursive: true, force: true });
+      }
+    } else {
+      // Linked worktree 需要通过 git worktree remove 注销元数据，提前归档保留所有未跟踪与被忽略文件
+      const preservedDir = path.join(itemDir, 'preserved');
+      await fs.mkdir(preservedDir, { recursive: true, mode: 0o700 });
+      for (const rel of checked.preservePaths.slice(0, 80)) {
+        const cleanRel = rel.replace(/\/+$/, '');
+        if (!cleanRel || cleanRel.split(/[\\/]/).includes('..')) continue;
+        const src = path.join(quarantinePath, cleanRel);
+        const dest = path.join(preservedDir, cleanRel);
+        const existsSrc = await fs.lstat(src).then(st => !st.isSymbolicLink(), () => false);
+        if (existsSrc) {
+          await fs.mkdir(path.dirname(dest), { recursive: true, mode: 0o700 });
+          await fs.cp(src, dest, { recursive: true }).catch(() => {});
+        }
+      }
+      await git(quarantinePath, ['worktree', 'remove', ...(checked.dirty ? ['--force'] : []), '--', quarantinePath]);
+    }
+    await fs.writeFile(path.join(itemDir, 'metadata.json'), JSON.stringify(meta, null, 2) + '\n', { mode: 0o600 });
+  }
+  async function listTrash(): Promise<WorkspaceTrashItem[]> {
+    await pruneExpiredTrash().catch(() => {});
+    const names = await fs.readdir(trashDirectory).catch(() => [] as string[]);
+    const items: WorkspaceTrashItem[] = [];
+    for (const name of names) {
+      try {
+        const meta = JSON.parse(await fs.readFile(path.join(trashDirectory, name, 'metadata.json'), 'utf8')) as WorkspaceTrashItem;
+        items.push(meta);
+      } catch { /* ignore incomplete item */ }
+    }
+    return items.sort((a, b) => Date.parse(b.deletedAt) - Date.parse(a.deletedAt));
+  }
+  async function restoreTrash(raw: unknown) {
+    const { id } = workspaceRestoreInputSchema.parse(raw);
+    if (!/^[0-9]+-[a-f0-9]{8}$/i.test(id)) throw error('回收项编号无效', 400);
+    return exclusive(async () => {
+      const itemDir = path.join(trashDirectory, id);
+      const meta = await fs.readFile(path.join(itemDir, 'metadata.json'), 'utf8')
+        .then(text => JSON.parse(text) as WorkspaceTrashItem)
+        .catch(() => { throw error('找不到该回收项或已过期清理', 404); });
+      const targetExists = await fs.lstat(meta.originalPath).then(() => true, () => false);
+      if (!meta.linked) {
+        if (targetExists) throw error('原工作区路径已存在同名目录，请先移走后再恢复', 409);
+        const storedWorkspace = path.join(itemDir, 'workspace');
+        await fs.mkdir(path.dirname(meta.originalPath), { recursive: true });
+        try {
+          await fs.rename(storedWorkspace, meta.originalPath);
+        } catch {
+          await fs.cp(storedWorkspace, meta.originalPath, { recursive: true });
+        }
+        await fs.rm(itemDir, { recursive: true, force: true });
+        await options.readProjects(true).catch(() => {});
+        return { ok: true as const, restoredPath: meta.originalPath, kind: 'workspace' as const };
+      }
+      const restoreTarget = targetExists ? `${meta.originalPath}.recovered-${id}` : meta.originalPath;
+      await fs.cp(path.join(itemDir, 'preserved'), restoreTarget, { recursive: true });
+      await fs.rm(itemDir, { recursive: true, force: true });
+      return { ok: true as const, restoredPath: restoreTarget, kind: 'preserved-files' as const };
+    });
   }
   async function preview(raw: string): Promise<WorkspaceRemovalPreview> {
     const rule = rules.find(value => value.path === path.resolve(raw));
@@ -190,7 +358,7 @@ export async function createProjectWorkspaces(rawDirectory: string, options: Pro
       if (checked.reason) throw error(checked.reason);
       if (expected.revision && checked.revision !== expected.revision) throw error('工作区状态已变化，请刷新后重新确认删除');
       if (expected.identity && !sameIdentity(expected.identity, checked.id)) throw error('工作区目录或仓库已被替换，未执行删除');
-      if (checked.dirty && !expected.discardChanges) throw error(dirtyReason);
+      if (checked.dirty && !expected.discardChanges) throw error(dirtyMessage(checked));
       // 删除前先确认配置可持久化；保存失败时绝不触碰工作区。
       await persist(rules);
       await options.checkBusy(folder);
@@ -211,8 +379,7 @@ export async function createProjectWorkspaces(rawDirectory: string, options: Pro
           throw error('工作区状态已变化，未执行删除');
         }
         await assertGitIdle(gitDir, linked);
-        if (linked) await git(quarantine, ['worktree', 'remove', ...(checked.dirty ? ['--force'] : []), '--', quarantine]);
-        else await fs.rm(quarantine, { recursive: true });
+        await moveIntoTrash(quarantine, folder, linked, checked);
       } catch (cause) {
         if (moved && await fs.lstat(quarantine).then(() => true, () => false)
           && !await fs.lstat(folder).then(() => true, () => false)) {
@@ -232,19 +399,52 @@ export async function createProjectWorkspaces(rawDirectory: string, options: Pro
       // 每条排程执行时重新读取；上一条删除期间排队的取消/延期先得到处理。
       const rule = rules.find(value => value.path === selected);
       if (!rule || rule.status === 'deleted' || Date.parse(rule.deleteAt) > now()) return;
+      if (rule.nextRetryAt && Date.parse(rule.nextRetryAt) > now()) return;
       const checkedAt = new Date(now()).toISOString();
       let next: StoredRule;
       try {
         await erase(rule.path, { identity: rule.identity });
-        next = { ...rule, status: 'deleted', checkedAt, message: '工作区已按计划删除' };
+        next = { ...rule, status: 'deleted', checkedAt, message: '工作区已按计划移入隔离回收区',
+          blockedCount: undefined, blockedSince: undefined, nextRetryAt: undefined };
       } catch (cause) {
-        next = { ...rule, status: 'blocked', checkedAt, message: cause instanceof Error ? cause.message : '工作区清理未完成' };
+        const baseMessage = cause instanceof Error ? cause.message : '工作区清理未完成';
+        const blockedCount = (rule.blockedCount || 0) + 1;
+        const blockedSince = rule.blockedSince || checkedAt;
+        if (useProductionBackoff) {
+          const blockedDuration = now() - Date.parse(blockedSince);
+          if (blockedDuration >= MAX_BLOCKED_RETRY_WINDOW_MS) {
+            next = {
+              ...rule,
+              status: 'blocked',
+              checkedAt,
+              blockedCount,
+              blockedSince,
+              nextRetryAt: '9999-12-31T23:59:59.999Z',
+              message: `${baseMessage}（已连续受阻超过 24 小时，已暂停自动重试以防误删，请重新设置排程确认）`,
+            };
+          } else {
+            const delayMs = Math.min(60 * 60_000, 2 * 60_000 * 2 ** Math.min(blockedCount - 1, 5));
+            next = {
+              ...rule,
+              status: 'blocked',
+              checkedAt,
+              blockedCount,
+              blockedSince,
+              nextRetryAt: new Date(now() + delayMs).toISOString(),
+              message: baseMessage,
+            };
+          }
+        } else {
+          next = { ...rule, status: 'blocked', checkedAt, blockedCount, blockedSince, message: baseMessage };
+        }
       }
       await persist(rules.map(value => value.path === rule.path ? next : value));
   }
   return {
     preview,
     list: () => rules.map(publicRule),
+    listTrash,
+    restoreTrash,
     async remove(raw: unknown) {
       const input = workspaceRemovalInputSchema.parse(raw);
       return exclusive(async () => {
@@ -278,7 +478,9 @@ export async function createProjectWorkspaces(rawDirectory: string, options: Pro
       if (timer || closed) return;
       const tick = () => {
         if (closed || active || ticking || !options.canRun()) return;
-        const due = rules.filter(rule => rule.status !== 'deleted' && Date.parse(rule.deleteAt) <= now()).map(rule => rule.path);
+        const due = rules.filter(rule => rule.status !== 'deleted'
+          && Date.parse(rule.deleteAt) <= now()
+          && (!rule.nextRetryAt || Date.parse(rule.nextRetryAt) <= now())).map(rule => rule.path);
         if (!due.length) return;
         ticking = (async () => {
           for (const selected of due) {

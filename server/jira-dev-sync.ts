@@ -9,6 +9,7 @@
 import { createHash, createPublicKey, verify } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { cp, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -84,7 +85,7 @@ with zipfile.ZipFile(archive) as z:
 
 export function createJiraDevSync(options: { jiraDevDirectory?: string; dataDirectory: string; pluginSource?: string; fetchImpl?: typeof fetch; now?: () => Date }) {
   const jiraDevDirectory = options.jiraDevDirectory || path.join(path.dirname(fileURLToPath(import.meta.url)), 'jira-dev');
-  const pluginSource = options.pluginSource || process.env.JIRA_DEV_PLUGIN_SOURCE || '';
+  const pluginSource = options.pluginSource || process.env.JIRA_DEV_PLUGIN_SOURCE || path.join(homedir(), 'Documents/Codex/2026-10-14/jira-dev-workbench-plugin');
   const fetchImpl = options.fetchImpl || fetch, now = options.now || (() => new Date());
   const stateFile = path.join(jiraDevDirectory, 'sync-state.json');
   const syncRoot = path.join(options.dataDirectory, 'jira-dev', 'sync');
@@ -122,7 +123,6 @@ export function createJiraDevSync(options: { jiraDevDirectory?: string; dataDire
 
   /** 本机插件源码：只在版本与目标一致时提供代码模块，含新增的相对依赖。 */
   async function sourceModules(version: string) {
-    if (!pluginSource) return { available: false as const, reason: '请在本机配置 JIRA_DEV_PLUGIN_SOURCE' };
     const packageFile = path.join(pluginSource, 'package.json');
     if (!await exists(packageFile)) return { available: false as const, reason: `未找到本机插件源码（${pluginSource}）` };
     const sourceVersion = String(JSON.parse(await readFile(packageFile, 'utf8')).version || '');

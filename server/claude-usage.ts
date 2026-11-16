@@ -90,19 +90,36 @@ function requestClaudeUsage(binary: string, timeoutMs = 10_000): Promise<AgentUs
   });
 }
 
-export function createClaudeUsageReader(binary = claudeBinary, ttlMs = 60_000) {
+export interface ClaudeUsageReaderOptions {
+  request?: (binary: string) => Promise<AgentUsageLimits>;
+  now?: () => number;
+}
+
+export function createClaudeUsageReader(binary = claudeBinary, ttlMs = 60_000, options: ClaudeUsageReaderOptions = {}) {
+  const clock = options.now || Date.now;
+  const request = options.request || requestClaudeUsage;
   let cached: { expiresAt: number; value: AgentUsageLimits } | undefined;
   let pending: Promise<AgentUsageLimits> | undefined;
-  return async (force = false) => {
-    if (!force && cached && cached.expiresAt > Date.now()) return cached.value;
+  let context = '';
+  let generation = 0;
+  return async (force = false, contextKey = '') => {
+    if (contextKey !== context) {
+      context = contextKey;
+      generation += 1;
+      cached = undefined;
+      pending = undefined;
+    }
+    if (!force && cached && cached.expiresAt > clock()) return cached.value;
     if (pending) return pending;
-    pending = requestClaudeUsage(binary)
-      .catch((): AgentUsageLimits => ({ available: false, checkedAt: new Date().toISOString(), message: '额度暂不可用' }))
+    const requestedGeneration = generation;
+    const work = request(binary)
+      .catch((): AgentUsageLimits => ({ available: false, checkedAt: new Date(clock()).toISOString(), message: '额度暂不可用' }))
       .then((value) => {
-        cached = { expiresAt: Date.now() + ttlMs, value };
+        if (generation === requestedGeneration) cached = { expiresAt: clock() + ttlMs, value };
         return value;
       })
-      .finally(() => { pending = undefined; });
-    return pending;
+      .finally(() => { if (generation === requestedGeneration) pending = undefined; });
+    pending = work;
+    return work;
   };
 }

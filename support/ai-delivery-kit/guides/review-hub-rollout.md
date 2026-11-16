@@ -9,7 +9,7 @@ This checklist keeps AI Delivery Kit and AI Delivery Hub aligned during the curr
 Current target repository:
 
 ```text
-git@git.example.com:team/ai-delivery-kit.git
+git@gitlab.hahabianli.com:raytheon-middleware/ai-delivery-kit.git
 ```
 
 The package root is the repository root:
@@ -59,7 +59,7 @@ review_hub:
     kit_path: "ai-delivery-kit"
   gate_engine:
     kit_repo:
-      repo: "https://git.example.com/team/ai-delivery-kit.git"
+      repo: "https://gitlab.hahabianli.com/raytheon-middleware/ai-delivery-kit.git"
       ref: "main"
       path: "."
       target_path: "ai-delivery-kit"
@@ -76,7 +76,7 @@ Acceptance:
 Required user flow:
 
 ```bash
-./ai-delivery-bridge pair --url https://delivery.example.com --code <pair_code>
+./ai-delivery-bridge pair --url https://openspec-agent-test.hahavending.com --code <pair_code>
 ./ai-delivery-bridge doctor
 ./ai-delivery-bridge run
 ```

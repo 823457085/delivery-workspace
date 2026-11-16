@@ -191,19 +191,40 @@ async function requestCursorUsage(readToken: () => Promise<string | null>) {
   return normalizeCursorUsage(period.value, plan.status === 'fulfilled' ? plan.value : undefined);
 }
 
-export function createCursorUsageReader(readToken: () => Promise<string | null> = readCursorAccessToken, ttlMs = 60_000) {
+export interface CursorUsageReaderOptions {
+  request?: (readToken: () => Promise<string | null>) => Promise<AgentUsageLimits>;
+  now?: () => number;
+}
+
+export function createCursorUsageReader(
+  readToken: () => Promise<string | null> = readCursorAccessToken,
+  ttlMs = 60_000,
+  options: CursorUsageReaderOptions = {},
+) {
+  const clock = options.now || Date.now;
+  const request = options.request || requestCursorUsage;
   let cached: { expiresAt: number; value: AgentUsageLimits } | undefined;
   let pending: Promise<AgentUsageLimits> | undefined;
-  return async (force = false) => {
-    if (!force && cached && cached.expiresAt > Date.now()) return cached.value;
+  let context = '';
+  let generation = 0;
+  return async (force = false, contextKey = '') => {
+    if (contextKey !== context) {
+      context = contextKey;
+      generation += 1;
+      cached = undefined;
+      pending = undefined;
+    }
+    if (!force && cached && cached.expiresAt > clock()) return cached.value;
     if (pending) return pending;
-    pending = requestCursorUsage(readToken)
-      .catch((): AgentUsageLimits => ({ available: false, checkedAt: new Date().toISOString(), message: '额度暂不可用' }))
+    const requestedGeneration = generation;
+    const work = request(readToken)
+      .catch((): AgentUsageLimits => ({ available: false, checkedAt: new Date(clock()).toISOString(), message: '额度暂不可用' }))
       .then((value) => {
-        cached = { expiresAt: Date.now() + ttlMs, value };
+        if (generation === requestedGeneration) cached = { expiresAt: clock() + ttlMs, value };
         return value;
       })
-      .finally(() => { pending = undefined; });
-    return pending;
+      .finally(() => { if (generation === requestedGeneration) pending = undefined; });
+    pending = work;
+    return work;
   };
 }

@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import { catchupAdminExclusionReason } from "./catchup-admin-scope.mjs";
-import { sourceDataRoot, gitBinary } from "./config.mjs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
@@ -14,10 +14,10 @@ import { mutateCatchupDispatchRegistryFile } from "./catchup-dispatch.mjs";
  * 上层分别处理。所有 registry 写入与 dispatcher 共用同一把锁，避免丢失线程状态。
  */
 
-export const DEFAULT_CATCHUP_SOURCE_REPOSITORY = process.env.APEX_CATCHUP_SOURCE_REPOSITORY || "";
-export const DEFAULT_CATCHUP_REQUIREMENTS_ROOT = path.join(sourceDataRoot, "workspaces", "requirements");
-export const DEFAULT_CATCHUP_SESSIONS_ROOT = path.join(sourceDataRoot, "sessions");
-export const DEFAULT_CATCHUP_BASE_SHA = process.env.APEX_CATCHUP_BASE_SHA || "";
+export const DEFAULT_CATCHUP_SOURCE_REPOSITORY = path.join(homedir(), "Desktop", "apex admin", "admin");
+export const DEFAULT_CATCHUP_REQUIREMENTS_ROOT = path.join(homedir(), "Desktop", "APEX重构追平", "requirements");
+export const DEFAULT_CATCHUP_SESSIONS_ROOT = path.join(homedir(), "Desktop", "APEX重构追平", "sessions");
+export const DEFAULT_CATCHUP_BASE_SHA = "0f162a1acbfc6a89b849773eec6f38be44801d52";
 export const DEFAULT_CATCHUP_RUNTIME_SUPPORT_SOURCE = "";
 export const CATCHUP_RUNTIME_SUPPORT_FILES = Object.freeze([
   ".env.dev",
@@ -50,7 +50,7 @@ function fail(code, message) {
 }
 
 async function defaultRunGit(args, { cwd }) {
-  const { stdout } = await execFileAsync(gitBinary, args, {
+  const { stdout } = await execFileAsync("/usr/bin/git", args, {
     cwd,
     encoding: "utf8",
     maxBuffer: 4 * 1024 * 1024,
@@ -207,7 +207,10 @@ function requirementDocumentPath(catchupDataRoot, requirement) {
   const directory = domainDirectories.get(requirement.businessDomain);
   if (!directory) return "";
   return path.resolve(
-    process.env.APEX_CATCHUP_DOCUMENTS_ROOT || path.join(catchupDataRoot, "docs"),
+    catchupDataRoot,
+    "..",
+    "..",
+    "APEX功能追平",
     "01-需求明细",
     directory,
     `${requirement.id}.md`
@@ -329,7 +332,6 @@ export async function provisionCatchupSessions({
   realpath = fs.realpath,
   mutateRegistry = mutateCatchupDispatchRegistryFile
 }) {
-  if (!sourceRepository || !/^[0-9a-f]{40}$/i.test(baseSha)) fail("SOURCE_REPOSITORY_UNCONFIGURED", "请配置 APEX_CATCHUP_SOURCE_REPOSITORY 和完整的 APEX_CATCHUP_BASE_SHA");
   const requirementsById = new Map((requirements || []).map((item) => [item.id, item]));
   const requested = [...new Set(requirementIds || [])];
   const excluded = requested.find(catchupAdminExclusionReason);

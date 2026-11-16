@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/vue-query';
 import { ElMessage } from 'element-plus';
 import type { AgentAttachment } from '../../../shared/agent-runtime';
 import { createRequestId } from '../requirement-development/request-id';
+import { openSharedEventSource } from '../../shared/sse/sharedEventSource';
 import { answerTeamMessage, decideTeamTask, readTeamRoom, readTeamTasks, sendTeamChat, type TeamRoom, type TeamChatRequest, type TeamChatResponse, type TeamDecision } from './team-api';
 import { isChatTask, teamChatActiveStates, teamChatRequestKey, teamQuestionReply } from './team-chat';
 
@@ -10,14 +11,17 @@ import { isChatTask, teamChatActiveStates, teamChatRequestKey, teamQuestionReply
 export function useAgentTeamChat(conversationId: () => string) {
   const client = useQueryClient(), changing = shallowRef(''), scope = ['agent-team-chat'];
   const attachments = shallowRef<Record<string, AgentAttachment>>({});
-  const tasksQuery = useQuery({ queryKey: [...scope, 'tasks'], retry: false, refetchInterval: 3000,
+  const streamConnected = shallowRef(false);
+  const tasksQuery = useQuery({ queryKey: [...scope, 'tasks'], staleTime: 15_000, retry: false,
+    refetchInterval: () => streamConnected.value ? 60_000 : 15_000,
     queryFn: ({ signal }) => readTeamTasks(signal) });
   const allTasks = computed(() => (tasksQuery.data.value || []).filter(isChatTask));
   const tasks = computed(() => allTasks.value.filter(task => task.parentConversationId === conversationId())
     .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt)));
   const latestTask = computed(() => tasks.value.at(-1));
-  const roomQuery = useQuery({ queryKey: computed(() => [...scope, 'room', latestTask.value?.id || '']),
-    enabled: computed(() => !!latestTask.value?.id), retry: false, refetchInterval: 3000,
+  const roomQuery = useQuery<TeamRoom>({ queryKey: computed(() => [...scope, 'room', latestTask.value?.id || '']),
+    enabled: computed(() => !!latestTask.value?.id), retry: false,
+    refetchInterval: query => teamChatActiveStates.has(query.state.data?.task.state || latestTask.value?.state || 'completed') ? 3000 : false,
     queryFn: ({ signal }) => readTeamRoom(latestTask.value!.id, signal) });
   const room = computed(() => roomQuery.data.value?.task.id === latestTask.value?.id ? roomQuery.data.value : undefined);
   const task = computed(() => room.value?.task || latestTask.value);
@@ -29,8 +33,15 @@ export function useAgentTeamChat(conversationId: () => string) {
   }
   onMounted(() => {
     if (typeof EventSource === 'undefined') return;
-    source = new EventSource('/api/agent-runtimes/team-tasks/events');
-    for (const type of ['ready', 'workflow.updated', 'workflow.message', 'workflow.intent', 'workflow.decision']) source.addEventListener(type, refresh);
+    source = openSharedEventSource('/api/agent-runtimes/team-tasks/events');
+    let ready = false;
+    source.addEventListener('ready', () => {
+      streamConnected.value = true;
+      if (ready) refresh();
+      ready = true;
+    });
+    source.addEventListener('error', () => { streamConnected.value = false; });
+    for (const type of ['workflow.updated', 'workflow.message', 'workflow.intent', 'workflow.decision']) source.addEventListener(type, refresh);
   });
   onUnmounted(() => { source?.close(); if (timer) clearTimeout(timer); void client.cancelQueries({ queryKey: scope }); });
   const requestIds = new Map<string, string>();
@@ -77,6 +88,6 @@ export function useAgentTeamChat(conversationId: () => string) {
     finally { changing.value = ''; }
   }
   return { allTasks, tasks, task, room, active, changing, attachments, send, decide, command, answer, refresh,
-    refetch: () => tasksQuery.refetch(),
+    refetch: () => tasksQuery.refetch({ cancelRefetch: false }),
     error: computed(() => tasksQuery.error.value || roomQuery.error.value) };
 }

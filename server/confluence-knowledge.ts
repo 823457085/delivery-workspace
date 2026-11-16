@@ -27,7 +27,7 @@ export function confluenceText(html: string) {
 }
 
 export async function createConfluenceKnowledge(directory: string, request: (resource: string) => Promise<Response>,
-  baseUrl = process.env.CONFLUENCE_BASE_URL || 'https://confluence.example.invalid') {
+  baseUrl = process.env.CONFLUENCE_BASE_URL || 'https://confluence.hahabianli.com') {
   const base = new URL(baseUrl);
   if (!['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash) throw new Error('Confluence 站点配置无效');
   const site = base.href.replace(/\/+$/, '');

@@ -493,3 +493,26 @@ test('群聊已持久化且尚未产生首个运行时也打开关联群聊，�
     assert.equal(context.state.previewOpen.value, false);
   } finally { context.close(); }
 });
+
+test('直接启动会话跳过多余预览窗一步进入工作台，需确认建单时自动回落预览核对', async () => {
+  const direct = taskFixture({ form: { projectPath: '/fixture/web', baseBranch: 'master', branchName: 'feature/fast', details: '直接启动需求' } });
+  try {
+    await new Promise<void>(resolve => setImmediate(resolve));
+    direct.responses.set('prepare', { ...direct.preview, plan: { status: 'local', sourceKind: 'product', items: [] } });
+    direct.responses.set('apply', { ...direct.preview, plan: { status: 'applied', sourceKind: 'product', items: [] } });
+    direct.responses.set('start', { ...direct.preview, plan: { status: 'applied', sourceKind: 'product', items: [] }, launch: { status: 'started', runId: 'fast-run-1', conversationId: 'fast-conv-1' } });
+    await direct.state.quickStart({ provider: 'codex', model: '', reasoningEffort: '', accessMode: 'workspace', collaborationMode: 'single' });
+    assert.equal(direct.state.previewOpen.value, false, '无需人工确认远端建单时不弹预览窗');
+    assert.deepEqual(direct.requests.map(item => item.action), ['prepare', 'start']);
+    assert.deepEqual(direct.opened, ['fast-conv-1']);
+  } finally { direct.close(); }
+
+  const needsConfirm = taskFixture({ form: { projectPath: '/fixture/web', baseBranch: 'master', branchName: 'feature/confirm', details: '需核对建单' } });
+  try {
+    await new Promise<void>(resolve => setImmediate(resolve));
+    needsConfirm.responses.set('prepare', { ...needsConfirm.preview, plan: { status: 'ready', requiresConfirmation: true, sourceKind: 'product', items: [] } });
+    await needsConfirm.state.quickStart({ provider: 'codex', model: '', reasoningEffort: '', accessMode: 'workspace', collaborationMode: 'single' });
+    assert.equal(needsConfirm.state.previewOpen.value, true, '需要远端建单确认时自动打开预览窗供核对');
+    assert.deepEqual(needsConfirm.requests.map(item => item.action), ['prepare']);
+  } finally { needsConfirm.close(); }
+});

@@ -1,12 +1,29 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { hasConflictMarkers } from '../shared/project-code.js';
+import { buildSingleHunkPatch, parseUnifiedDiffHunks } from '../shared/git-hunk-patch.js';
 import { verificationArtifactDirectory } from './agent-workflow.js';
+import {
+  analyzeUnifiedDiff,
+  buildSmartCommitMessage,
+  isSensitiveCommitPath,
+  scanDiffHygieneIssues,
+  summarizeDiffTriage,
+  type DiffHygieneWarning,
+  type MergeDiffTriageSummary,
+} from './pr-review-intelligence.js';
+import { scanWorktreeConflicts } from './worktree-conflict-radar.js';
+import { analyzeRepoBlastRadius } from './repo-blast-radius.js';
+import {
+  draftCategorizedReleaseNotes,
+  evaluateDeliveryReadinessScorecard,
+  type DeliveryReadinessScorecard,
+} from '../shared/delivery-readiness-scorecard.js';
 import type { SourceBackend } from './source-backend.js';
 
 const exec = promisify(execFile);
@@ -28,7 +45,7 @@ async function gitRaw(directory: string, args: string[], timeout = 30_000): Prom
   const { stdout } = await exec('git', ['-c', 'core.hooksPath=/dev/null', '-C', directory, ...args], {
     timeout,
     maxBuffer: 8 * 1024 * 1024,
-    env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_EDITOR: 'true', GIT_MERGE_AUTOEDIT: 'no' },
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0', GIT_EDITOR: 'true', GIT_MERGE_AUTOEDIT: 'no' },
   });
   return stdout;
 }
@@ -46,6 +63,40 @@ async function runGit(directory: string, args: string[], timeout = 30_000): Prom
     throw Object.assign(fail(redact(err.killed ? 'Git 操作超时，请刷新仓库状态后查看实际结果。' : err.stderr || err.stdout || 'Git 操作未完成。').slice(0, 5000), 409),
       { gitPushRejected: args[0] === 'push' && !err.killed && /Authentication failed|HTTP Basic: Access denied|requested URL returned error: (?:401|403)|Permission denied \(publickey\)|Repository not found|\[rejected\]|\[remote rejected\]/i.test(`${err.stderr || ''}\n${err.stdout || ''}`) });
   }
+}
+
+async function runGitStdin(directory: string, args: string[], stdinText: string, timeout = 30_000): Promise<string> {
+  return await new Promise<string>((resolve, reject) => {
+    const child = spawn('git', ['-C', directory, ...args], {
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_EDITOR: 'true', GIT_MERGE_AUTOEDIT: 'no' },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    let killedByTimeout = false;
+    const timer = setTimeout(() => {
+      killedByTimeout = true;
+      child.kill('SIGKILL');
+    }, timeout);
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      reject(fail(redact(err.message || 'Git 操作未完成。').slice(0, 5000), 409));
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code === 0) {
+        resolve(stdout || stderr);
+        return;
+      }
+      reject(fail(redact(killedByTimeout ? 'Git 操作超时，请刷新仓库状态后查看实际结果。' : stderr || stdout || 'Git 操作未完成。').slice(0, 5000), 409));
+    });
+    child.stdin.on('error', () => {});
+    child.stdin.end(stdinText, 'utf8');
+  });
 }
 
 async function resolveDirectory(value: unknown): Promise<string> {
@@ -124,6 +175,37 @@ export interface ProjectGitCommitItem {
   date: string;
 }
 
+export interface ProjectGitCommitFileStat {
+  path: string;
+  status: string;
+  additions: number | null;
+  deletions: number | null;
+  binary: boolean;
+}
+
+export interface ProjectGitCommitDetail {
+  sha: string;
+  parents: string[];
+  author: string;
+  email: string;
+  date: string;
+  subject: string;
+  body: string;
+  files: ProjectGitCommitFileStat[];
+  filesTruncated: boolean;
+  patch: string;
+  patchTruncated: boolean;
+}
+
+export interface ProjectGitStashItem {
+  ref: string;
+  index: number;
+  sha: string;
+  branch: string;
+  subject: string;
+  date: string;
+}
+
 export interface ProjectGitMergePreview {
   sourceRef: string;
   sourceName: string;
@@ -142,6 +224,19 @@ export interface ProjectGitMergePreview {
   filesTruncated: boolean;
   totals: { files: number; additions: number; deletions: number; binaryFiles: number };
   branchDiff: { files: { path: string; status: string }[]; total: number };
+  triage?: MergeDiffTriageSummary;
+  scorecard?: DeliveryReadinessScorecard;
+  releaseNotesMarkdown?: string;
+}
+
+export interface ProjectGitCommitAssist {
+  scope: 'staged' | 'unstaged' | 'clean';
+  fileCount: number;
+  suggestedSubject: string;
+  suggestedBody: string;
+  suggestedMessage: string;
+  hygieneWarnings: DiffHygieneWarning[];
+  triage?: MergeDiffTriageSummary;
 }
 
 export interface ProjectGitSnapshot {
@@ -167,6 +262,8 @@ export interface ProjectGitSnapshot {
   branches: ProjectGitBranchItem[];
   remotes: ProjectGitRemoteItem[];
   mergeInProgress: boolean;
+  sequencerState?: 'merge' | 'rebase' | 'cherry-pick' | 'revert' | null;
+  stashes: ProjectGitStashItem[];
   log: ProjectGitCommitItem[];
   revision: string;
 }
@@ -263,6 +360,31 @@ async function ensureNewLocalBranchName(directory: string, branch: string, branc
   }
 }
 
+function parseStatusEntries(statusOut: string) {
+  const entries = statusOut.split('\0');
+  const files: ProjectGitFileItem[] = [];
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    if (!entry) continue;
+    const code = entry.slice(0, 2);
+    const conflict = ['DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU'].includes(code);
+    const item: ProjectGitFileItem = {
+      status: code.trim(),
+      path: entry.slice(3),
+      staged: !conflict && code[0] !== ' ' && code[0] !== '?',
+      unstaged: !conflict && code[1] !== ' ' && code[1] !== '?',
+      untracked: code === '??',
+      conflict,
+    };
+    if (/[RC]/.test(code)) {
+      item.originalPath = entries[i + 1];
+      i++;
+    }
+    files.push(item);
+  }
+  return files;
+}
+
 export async function readProjectGitSnapshot(rawDirectory: string, options: { forRemoval?: boolean; forDelivery?: boolean } = {}): Promise<ProjectGitSnapshot> {
   let directory = await resolveDirectory(rawDirectory);
   let isGit = false;
@@ -291,47 +413,47 @@ export async function readProjectGitSnapshot(rawDirectory: string, options: { fo
       branches: [],
       remotes: [],
       mergeInProgress: false,
+      sequencerState: null as 'merge' | 'rebase' | 'cherry-pick' | 'revert' | null,
+      stashes: [],
       log: [],
       revision: '',
     };
   }
 
-  const [statusOut, branchOut, headOut, upstreamOut, divergenceOut, refsOut, namesOut, historyOut, mergeOut, indexOut, worktreesOut] = await Promise.all([
+  const [statusOut, branchOut, headOut, upstreamOut, divergenceOut, refsOut, namesOut, historyOut, mergeOut, indexOut, worktreesOut, stashOut, gitDirOut] = await Promise.all([
     gitRaw(directory, ['status', '--porcelain=v1', '-z', '--untracked-files=all',
       ...(options.forDelivery ? ['--', `:(top,exclude,literal)${verificationArtifactDirectory}`] : [])]),
     gitRaw(directory, ['symbolic-ref', '--quiet', '--short', 'HEAD']).catch(() => ''),
     gitRaw(directory, ['rev-parse', '--verify', 'HEAD']).catch(() => ''),
     gitRaw(directory, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}']).catch(() => ''),
     gitRaw(directory, ['rev-list', '--left-right', '--count', 'HEAD...@{upstream}']).catch(() => ''),
-    runGit(directory, ['for-each-ref', '--format=%(refname)%00%(objectname)%00%(upstream:short)%00%(HEAD)%00%(upstream:remotename)%00%(upstream:remoteref)', 'refs/heads', 'refs/remotes']),
-    runGit(directory, ['remote']),
-    runGit(directory, ['log', '-30', '--format=%H%x00%s%x00%an%x00%aI']).catch(() => ''),
-    runGit(directory, ['rev-parse', '--verify', 'MERGE_HEAD']).catch(() => ''),
-    runGit(directory, ['ls-files', '--stage', '-z']),
+    gitRaw(directory, ['for-each-ref', '--format=%(refname)%00%(objectname)%00%(upstream:short)%00%(HEAD)%00%(upstream:remotename)%00%(upstream:remoteref)', 'refs/heads', 'refs/remotes']),
+    gitRaw(directory, ['remote']),
+    gitRaw(directory, ['log', '-30', '--format=%H%x00%s%x00%an%x00%aI']).catch(() => ''),
+    gitRaw(directory, ['rev-parse', '--verify', 'MERGE_HEAD']).catch(() => ''),
+    gitRaw(directory, ['ls-files', '--stage', '-z']),
     gitRaw(directory, ['worktree', 'list', '--porcelain', '-z']),
+    gitRaw(directory, ['log', '-g', '-30', '--format=%gd%x00%H%x00%gs%x00%aI', 'refs/stash']).catch(() => ''),
+    gitRaw(directory, ['rev-parse', '--path-format=absolute', '--git-dir']).catch(() => ''),
   ]);
 
-  const entries = statusOut.split('\0');
-  const files: ProjectGitFileItem[] = [];
-  for (let i = 0; i < entries.length; i++) {
-    const entry = entries[i];
-    if (!entry) continue;
-    const code = entry.slice(0, 2);
-    const conflict = ['DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU'].includes(code);
-    const item: ProjectGitFileItem = {
-      status: code.trim(),
-      path: entry.slice(3),
-      staged: !conflict && code[0] !== ' ' && code[0] !== '?',
-      unstaged: !conflict && code[1] !== ' ' && code[1] !== '?',
-      untracked: code === '??',
-      conflict,
-    };
-    if (/[RC]/.test(code)) {
-      item.originalPath = entries[i + 1];
-      i++;
-    }
-    files.push(item);
+  const gitDir = gitDirOut.trim();
+  const existsInGitDir = async (sub: string) =>
+    gitDir ? fs.access(path.join(gitDir, sub)).then(() => true, () => false) : false;
+  let sequencerState: 'merge' | 'rebase' | 'cherry-pick' | 'revert' | null = mergeOut.trim() ? 'merge' : null;
+  if (!sequencerState && gitDir) {
+    const [rebaseMerge, rebaseApply, cherryPickHead, revertHead] = await Promise.all([
+      existsInGitDir('rebase-merge'),
+      existsInGitDir('rebase-apply'),
+      existsInGitDir('CHERRY_PICK_HEAD'),
+      existsInGitDir('REVERT_HEAD'),
+    ]);
+    if (rebaseMerge || rebaseApply) sequencerState = 'rebase';
+    else if (cherryPickHead) sequencerState = 'cherry-pick';
+    else if (revertHead) sequencerState = 'revert';
   }
+
+  const files = parseStatusEntries(statusOut);
 
   const [ahead, behind] = divergenceOut.trim().split(/\s+/).map(Number);
   const upstream = upstreamOut.trim();
@@ -443,6 +565,24 @@ export async function readProjectGitSnapshot(rawDirectory: string, options: { fo
     branches,
     remotes,
     mergeInProgress: Boolean(mergeOut.trim()),
+    sequencerState,
+    stashes: stashOut
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((line, idx) => {
+        const [ref = `stash@{${idx}}`, sha = '', rawSubject = '', date = ''] = line.split('\0');
+        const idxMatch = /^stash@\{(\d+)\}$/.exec(ref);
+        const branchMatch = /^(?:WIP on|On) ([^:]+):\s*(.*)$/.exec(rawSubject);
+        return {
+          ref,
+          index: idxMatch ? Number.parseInt(idxMatch[1]!, 10) : idx,
+          sha,
+          branch: branchMatch ? branchMatch[1]!.trim() : '',
+          subject: (branchMatch ? branchMatch[2] : rawSubject)?.trim() || rawSubject,
+          date,
+        };
+      }),
     log: historyOut
       .trim()
       .split('\n')
@@ -499,9 +639,14 @@ export async function readProjectCode(rawDirectory: string, relative: string) {
 
 export async function readProjectDiff(rawDirectory: string, file: string, staged: boolean) {
   validateRelativePath(file, false);
-  const snapshot = await readProjectGitSnapshot(rawDirectory);
-  const directory = snapshot.directory;
-  const item = snapshot.files.find((f) => f.path === file);
+  // 查看单个文件差异只需一次状态查询，不再读取分支、远端、日志等完整快照。
+  const selected = await resolveDirectory(rawDirectory);
+  const root = await gitRaw(selected, ['rev-parse', '--show-toplevel']).catch(() => {
+    throw fail('当前目录不是可用的 Git 仓库。');
+  });
+  const directory = await fs.realpath(root.replace(/\r?\n$/, ''));
+  const item = parseStatusEntries(await gitRaw(directory, ['status', '--porcelain=v1', '-z', '--untracked-files=all']))
+    .find((f) => f.path === file);
   if (!item) throw fail('当前文件没有待提交改动。');
   if (item.untracked) {
     const code = await readProjectCode(directory, file);
@@ -521,7 +666,98 @@ export async function readProjectDiff(rawDirectory: string, file: string, staged
   return { patch: patch.slice(0, 512 * 1024), truncated: patch.length > 512 * 1024 };
 }
 
+export async function readProjectStashDiff(rawDirectory: string, stashRef: string) {
+  const cleanRef = typeof stashRef === 'string' ? stashRef.trim() : '';
+  if (!/^stash@\{\d{1,3}\}$/.test(cleanRef)) {
+    throw fail('请选择有效的 Git 贮藏条目。');
+  }
+  const selected = await resolveDirectory(rawDirectory);
+  const root = await gitRaw(selected, ['rev-parse', '--show-toplevel']).catch(() => {
+    throw fail('当前目录不是可用的 Git 仓库。');
+  });
+  const directory = await fs.realpath(root.replace(/\r?\n$/, ''));
+  const sha = (await gitRaw(directory, ['rev-parse', '--verify', `${cleanRef}^{commit}`]).catch(() => '')).trim();
+  if (!sha) {
+    throw fail('所选贮藏条目不存在或已被移除，请刷新后重试。', 404);
+  }
+  const patch = await gitRaw(
+    directory,
+    ['stash', 'show', '--include-untracked', '-p', '--no-ext-diff', '--no-textconv', '--no-color', cleanRef],
+  ).catch(() =>
+    runGit(directory, ['stash', 'show', '-p', '--no-ext-diff', '--no-textconv', '--no-color', cleanRef]),
+  );
+  return { ref: cleanRef, sha, patch: patch.slice(0, 512 * 1024), truncated: patch.length > 512 * 1024 };
+}
+
+export async function readProjectCommitDetail(rawDirectory: string, rawSha: string): Promise<ProjectGitCommitDetail> {
+  const cleanSha = typeof rawSha === 'string' ? rawSha.trim() : '';
+  if (!/^[0-9a-f]{7,40}$/i.test(cleanSha)) {
+    throw fail('请选择有效的提交哈希（SHA）。');
+  }
+  const selected = await resolveDirectory(rawDirectory);
+  const root = await gitRaw(selected, ['rev-parse', '--show-toplevel']).catch(() => {
+    throw fail('当前目录不是可用的 Git 仓库。');
+  });
+  const directory = await fs.realpath(root.replace(/\r?\n$/, ''));
+  const sha = (await gitRaw(directory, ['rev-parse', '--verify', `${cleanSha}^{commit}`]).catch(() => '')).trim();
+  if (!sha) {
+    throw fail('所选提交不存在或不在当前仓库中。', 404);
+  }
+
+  const [metaRaw, numstatOut, statusOut, patchOut] = await Promise.all([
+    gitRaw(directory, ['show', '-s', '--format=%H%x00%P%x00%an%x00%ae%x00%aI%x00%s%x00%b', sha]),
+    gitRaw(directory, ['diff-tree', '--root', '--no-commit-id', '--no-renames', '--numstat', '-z', sha]),
+    gitRaw(directory, ['diff-tree', '--root', '--no-commit-id', '--no-renames', '--name-status', '-z', sha]),
+    gitRaw(directory, ['show', '--root', '--format=', '--no-ext-diff', '--no-textconv', '--no-color', '--find-renames', '--unified=3', sha]),
+  ]);
+
+  const [fullSha = sha, parentsRaw = '', author = '', email = '', date = '', subject = '', bodyRaw = ''] = metaRaw.split('\0');
+  const parents = parentsRaw.trim() ? parentsRaw.trim().split(/\s+/) : [];
+
+  const statusMap = new Map<string, string>();
+  const statusTokens = statusOut.split('\0');
+  for (let i = 0; i + 1 < statusTokens.length; i += 2) {
+    const st = statusTokens[i]!.trim();
+    const fp = statusTokens[i + 1]!;
+    if (fp) statusMap.set(fp, st || 'M');
+  }
+
+  const allFiles: ProjectGitCommitFileStat[] = numstatOut
+    .split('\0')
+    .filter(Boolean)
+    .map((record) => {
+      const firstTab = record.indexOf('\t');
+      const secondTab = record.indexOf('\t', firstTab + 1);
+      const addStr = record.slice(0, firstTab);
+      const delStr = record.slice(firstTab + 1, secondTab);
+      const filePath = record.slice(secondTab + 1);
+      return {
+        path: filePath,
+        status: statusMap.get(filePath) || 'M',
+        additions: addStr === '-' ? null : Number(addStr),
+        deletions: delStr === '-' ? null : Number(delStr),
+        binary: addStr === '-' || delStr === '-',
+      };
+    });
+
+  const maxPatch = 512 * 1024;
+  return {
+    sha: fullSha.trim() || sha,
+    parents,
+    author,
+    email,
+    date,
+    subject,
+    body: bodyRaw.trim(),
+    files: allFiles.slice(0, 120),
+    filesTruncated: allFiles.length > 120,
+    patch: patchOut.slice(0, maxPatch),
+    patchTruncated: patchOut.length > maxPatch,
+  };
+}
+
 const repoLocks = new Set<string>();
+const indexOnlyActions = new Set(['stage', 'unstage', 'stage-all', 'unstage-all', 'stage-hunk', 'unstage-hunk', 'resolve-conflict', 'stash-drop', 'test-remote']);
 
 /** 工作区清理与编辑、分支、提交等操作共用同一仓库锁。 */
 export async function withProjectGitLock<T>(directory: string, action: () => Promise<T>): Promise<T> {
@@ -619,23 +855,153 @@ async function readMergePreview(current: ProjectGitSnapshot, source: ProjectGitB
   for (let i = 0; i + 1 < branchEntries.length; i += 2) {
     branchFiles.push({ status: branchEntries[i], path: branchEntries[i + 1] });
   }
+  const patchOut = ahead > 0 && files.length > 0
+    ? await gitRaw(directory, ['diff', '--no-ext-diff', '--no-textconv', '--find-renames', '--unified=2', mergeBase, sourceSha, '--', '.', ':(exclude).delivery-artifacts'], 15_000).catch(() => '')
+    : '';
+  const triage = patchOut ? summarizeDiffTriage(analyzeUnifiedDiff(patchOut)) : undefined;
+  const commitItems = commitsOut.trim().split('\n').filter(Boolean).map(record => {
+    const [sha, subject, author, date] = record.split('\0');
+    return { sha, subject, author, date };
+  });
+  const totals = {
+    files: files.length,
+    additions: files.reduce((sum, file) => sum + (file.additions || 0), 0),
+    deletions: files.reduce((sum, file) => sum + (file.deletions || 0), 0),
+    binaryFiles: files.filter(file => file.binary).length,
+  };
+  let scorecard: DeliveryReadinessScorecard | undefined;
+  let releaseNotesMarkdown: string | undefined;
+  if (ahead > 0) {
+    const hygieneWarnings = patchOut ? scanDiffHygieneIssues(patchOut) : [];
+    const blastRadius = patchOut
+      ? await analyzeRepoBlastRadius(directory, patchOut).catch(() => undefined)
+      : undefined;
+    scorecard = evaluateDeliveryReadinessScorecard({
+      totals,
+      sourceFiles: triage?.sourceFiles,
+      testFiles: triage?.testFiles,
+      generatedFiles: triage?.generatedFiles,
+      missingTestsWarning: triage?.missingTestsWarning,
+      largeDiffTriggered: triage?.largeDiffTriggered,
+      behindTargetCommits: behind,
+      canFastForward: ahead > 0 && behind === 0,
+      triageRisks: triage?.risks,
+      hygieneWarnings,
+      blastRadius,
+    });
+    releaseNotesMarkdown = draftCategorizedReleaseNotes({
+      sourceBranch: source.name,
+      targetBranch: current.branch,
+      commits: commitItems,
+      files: branchFiles,
+      triageRisks: triage?.risks,
+      breakingExports: blastRadius?.touchedExports,
+    }).markdown;
+  }
   return {
     sourceRef: source.ref, sourceName: source.name, sourceSha,
     targetRef: `refs/heads/${current.branch}`, targetName: current.branch, targetSha, mergeBase,
     ahead, behind, alreadyMerged: ahead === 0, canFastForward: ahead > 0 && behind === 0,
-    commits: commitsOut.trim().split('\n').filter(Boolean).map(record => {
-      const [sha, subject, author, date] = record.split('\0');
-      return { sha, subject, author, date };
-    }),
+    commits: commitItems,
     commitsTruncated: ahead > 100,
     files: files.slice(0, 100), filesTruncated: files.length > 100,
     branchDiff: { files: branchFiles.slice(0, 100), total: branchFiles.length },
-    totals: {
-      files: files.length,
-      additions: files.reduce((sum, file) => sum + (file.additions || 0), 0),
-      deletions: files.reduce((sum, file) => sum + (file.deletions || 0), 0),
-      binaryFiles: files.filter(file => file.binary).length,
-    },
+    ...(triage ? { triage } : {}),
+    ...(scorecard ? { scorecard } : {}),
+    ...(releaseNotesMarkdown ? { releaseNotesMarkdown } : {}),
+    totals,
+  };
+}
+
+export async function synthesizeUntrackedFilesPatch(directory: string, relativePaths: string[], maxFiles = 12): Promise<string> {
+  const blocks: string[] = [];
+  for (const relPath of relativePaths.slice(0, maxFiles)) {
+    const normalized = relPath.replace(/\\/g, '/').replace(/^\/+/, '');
+    if (
+      !normalized
+      || normalized.includes('\0')
+      || isSensitiveCommitPath(normalized)
+      || normalized.split('/').some(seg => seg === '..' || seg === '.git' || hiddenDirectories.has(seg))
+    ) {
+      continue;
+    }
+    const target = path.resolve(directory, normalized);
+    if (!inside(directory, target)) continue;
+    const stat = await fs.lstat(target).catch(() => null);
+    if (!stat || stat.isSymbolicLink() || !stat.isFile() || stat.size <= 0 || stat.size > 64 * 1024) continue;
+    const realTarget = await fs.realpath(target).catch(() => '');
+    if (!realTarget || !inside(directory, realTarget)) continue;
+    const buf = await fs.readFile(realTarget).catch(() => null);
+    if (!buf || buf.subarray(0, 4096).includes(0)) continue;
+    const lines = buf.toString('utf8').replace(/\r\n/g, '\n').replace(/\n$/, '').split('\n');
+    blocks.push([
+      `diff --git a/${normalized} b/${normalized}`,
+      'new file mode 100644',
+      '--- /dev/null',
+      `+++ b/${normalized}`,
+      `@@ -0,0 +1,${lines.length} @@`,
+      ...lines.map(line => `+${line}`),
+    ].join('\n'));
+  }
+  return blocks.join('\n');
+}
+
+async function readCommitAssist(current: ProjectGitSnapshot): Promise<ProjectGitCommitAssist> {
+  const directory = current.directory;
+  const isUserFile = (filePath: string) =>
+    filePath !== verificationArtifactDirectory && !filePath.startsWith(`${verificationArtifactDirectory}/`);
+  const staged = current.files.filter(file => !file.conflict && file.staged && isUserFile(file.path));
+  const unstaged = current.files.filter(file => !file.conflict && (file.unstaged || file.untracked) && isUserFile(file.path));
+
+  if (!staged.length && !unstaged.length) {
+    const suggestion = buildSmartCommitMessage({ files: [], branch: current.branch });
+    return {
+      scope: 'clean',
+      fileCount: 0,
+      suggestedSubject: suggestion.subject,
+      suggestedBody: suggestion.body,
+      suggestedMessage: suggestion.fullMessage,
+      hygieneWarnings: [],
+    };
+  }
+
+  const scope = staged.length > 0 ? 'staged' : 'unstaged';
+  const targetFiles = scope === 'staged' ? staged : unstaged;
+  let patch = '';
+  if (scope === 'staged') {
+    patch = await gitRaw(
+      directory,
+      ['diff', '--cached', '--no-ext-diff', '--no-textconv', '--find-renames', '--unified=2', '--', '.', `:(exclude)${verificationArtifactDirectory}`],
+      15_000,
+    ).catch(() => '');
+  } else {
+    const [trackedPatch, untrackedPatch] = await Promise.all([
+      gitRaw(
+        directory,
+        ['diff', '--no-ext-diff', '--no-textconv', '--find-renames', '--unified=2', '--', '.', `:(exclude)${verificationArtifactDirectory}`],
+        15_000,
+      ).catch(() => ''),
+      synthesizeUntrackedFilesPatch(directory, targetFiles.filter(file => file.untracked).map(file => file.path)),
+    ]);
+    patch = [trackedPatch.trimEnd(), untrackedPatch.trimEnd()].filter(Boolean).join('\n');
+  }
+
+  const hygieneWarnings = scanDiffHygieneIssues(patch, targetFiles.map(file => file.path));
+  const triage = patch ? summarizeDiffTriage(analyzeUnifiedDiff(patch)) : undefined;
+  const suggestion = buildSmartCommitMessage({
+    patch,
+    files: targetFiles.map(file => ({ path: file.path, status: file.status })),
+    branch: current.branch,
+  });
+
+  return {
+    scope,
+    fileCount: targetFiles.length,
+    suggestedSubject: suggestion.subject,
+    suggestedBody: suggestion.body,
+    suggestedMessage: suggestion.fullMessage,
+    hygieneWarnings,
+    ...(triage ? { triage } : {}),
   };
 }
 
@@ -678,6 +1044,16 @@ async function executeProjectGitActionInner(
     throw fail('当前目录不是可用的 Git 仓库。');
   });
   const directory = await fs.realpath(root.replace(/\r?\n$/, ''));
+  if (action === 'commit-assist') {
+    const current = await readProjectGitSnapshot(directory);
+    if (!current.available || !current.isGit) throw fail('当前目录不是可用的 Git 仓库。');
+    return { ok: true, snapshot: current, assist: await readCommitAssist(current) };
+  }
+  if (action === 'worktree-radar') {
+    const current = await readProjectGitSnapshot(directory);
+    if (!current.available || !current.isGit) throw fail('当前目录不是可用的 Git 仓库。');
+    return { ok: true, snapshot: current, radar: await scanWorktreeConflicts(directory) };
+  }
   const common = (await runGit(directory, ['rev-parse', '--path-format=absolute', '--git-common-dir'])).trim();
   if (repoLocks.has(common)) throw fail('该仓库有 Git 操作正在执行，请稍后再试。', 409);
   repoLocks.add(common);
@@ -690,8 +1066,8 @@ async function executeProjectGitActionInner(
     }
 
     const ensureClean = () => {
-      if (!current.clean || current.mergeInProgress) {
-        throw fail('请先提交当前改动或处理合并，再执行此操作。', 409);
+      if (!current.clean || current.mergeInProgress || current.sequencerState) {
+        throw fail('请先提交当前改动或处理进行中的合并/变基/摘取，再执行此操作。', 409);
       }
     };
     const ensureRemote = () => {
@@ -739,6 +1115,60 @@ async function executeProjectGitActionInner(
         if (!indexed || indexed.startsWith('160000 ')) throw fail('此改动不是可恢复的单个文件。', 409);
         output = await runGit(directory, ['--literal-pathspecs', 'restore', '--worktree', '--', file]);
       }
+    } else if (action === 'stage-hunk' || action === 'unstage-hunk' || action === 'discard-hunk') {
+      if (action === 'discard-hunk' && (input.confirmed !== true || typeof input.revision !== 'string' || !input.revision)) {
+        throw fail('请从当前差异视图确认要丢弃的变更块。');
+      }
+      if (current.mergeInProgress || current.counts.conflicts) {
+        throw fail('合并或解决冲突期间请使用整文件操作。', 409);
+      }
+      const file = typeof input.file === 'string' ? validateRelativePath(input.file, false) : '';
+      const expectStaged = action === 'unstage-hunk';
+      const item = current.files.find(
+        candidate => candidate.path === file
+          && !candidate.conflict
+          && !candidate.untracked
+          && !candidate.originalPath
+          && (expectStaged ? candidate.staged : candidate.unstaged),
+      );
+      if (!file || !item) {
+        throw fail('当前文件状态已变化或不支持按块操作，请刷新后重试。', 409);
+      }
+      if (action === 'discard-hunk') {
+        const target = path.resolve(directory, file);
+        const stat = await fs.lstat(target).catch((error: NodeJS.ErrnoException) => {
+          if (error.code !== 'ENOENT') throw error;
+        });
+        if (!stat || !stat.isFile()) throw fail('只能按块丢弃普通文本文件的改动。', 409);
+        const indexed = (await gitRaw(directory, ['--literal-pathspecs', 'ls-files', '--stage', '-z', '--', file]))
+          .split('\0').find(entry => entry.slice(entry.indexOf('\t') + 1) === file);
+        if (!indexed || indexed.startsWith('160000 ')) throw fail('此改动不是可按块恢复的单个文件。', 409);
+      }
+      const hunkIndex = typeof input.hunkIndex === 'number' ? input.hunkIndex : Number.NaN;
+      const livePatch = await runGit(directory, [
+        '--literal-pathspecs',
+        'diff',
+        '--no-ext-diff',
+        '--no-textconv',
+        '--no-color',
+        ...(expectStaged ? ['--cached'] : []),
+        '--',
+        file,
+      ]);
+      const parsed = parseUnifiedDiffHunks(livePatch);
+      if (!parsed.canStageIndividualHunks || !Number.isInteger(hunkIndex) || hunkIndex < 0 || hunkIndex >= parsed.hunks.length) {
+        throw fail('所选变更块不存在或当前文件不支持按块操作，请刷新差异视图。', 409);
+      }
+      if (typeof input.hunkHeader === 'string' && input.hunkHeader && parsed.hunks[hunkIndex]!.header !== input.hunkHeader) {
+        throw fail('文件变更块位置已变化，请刷新后重新选择。', 409);
+      }
+      const singlePatch = buildSingleHunkPatch(parsed, hunkIndex);
+      const applyArgs = action === 'stage-hunk'
+        ? ['apply', '--cached', '--unidiff-zero', '-']
+        : action === 'unstage-hunk'
+          ? ['apply', '--cached', '--reverse', '--unidiff-zero', '-']
+          : ['apply', '--reverse', '--unidiff-zero', '-'];
+      output = await runGitStdin(directory, applyArgs, singlePatch);
     } else if (action === 'stage' || action === 'unstage') {
       const rawFiles = Array.isArray(input.files) ? input.files.map(String) : [];
       if (!rawFiles.length || rawFiles.length > 200 || rawFiles.some((f) => !current.files.some((item) => item.path === f))) {
@@ -773,6 +1203,65 @@ async function executeProjectGitActionInner(
       output = current.head
         ? await runGit(directory, ['restore', '--staged', '.'])
         : await runGit(directory, ['rm', '-r', '--cached', '-f', '--', '.']);
+    } else if (action === 'stash-push') {
+      if (!current.head) throw fail('当前仓库尚无初始提交，请先完成首次提交后再使用贮藏功能。', 409);
+      if (current.mergeInProgress || current.counts.conflicts) {
+        throw fail('请先完成或中止合并冲突处理，再执行贮藏。', 409);
+      }
+      const mode = input.mode === 'staged' ? 'staged' : input.mode === 'keep-index' ? 'keep-index' : 'all';
+      if (mode === 'staged' && !current.counts.staged) {
+        throw fail('当前没有已暂存的改动可供贮藏。');
+      }
+      if (mode !== 'staged' && current.clean) {
+        throw fail('当前工作区干净，没有可贮藏的改动。');
+      }
+      const rawMessage = typeof input.message === 'string'
+        ? input.message.replace(/[\r\n\0]+/g, ' ').trim().slice(0, 240)
+        : '';
+      const modeFlags = mode === 'staged'
+        ? ['--staged']
+        : mode === 'keep-index'
+          ? ['--include-untracked', '--keep-index']
+          : ['--include-untracked'];
+      output = await runGit(
+        directory,
+        ['stash', 'push', ...modeFlags, ...(rawMessage ? ['-m', rawMessage] : [])],
+      );
+    } else if (action === 'stash-apply' || action === 'stash-pop' || action === 'stash-drop') {
+      const rawStash = typeof input.stash === 'string'
+        ? input.stash
+        : typeof input.stashRef === 'string'
+          ? input.stashRef
+          : '';
+      const stashRef = rawStash.trim();
+      if (!/^stash@\{\d{1,3}\}$/.test(stashRef)) {
+        throw fail('请选择有效的 Git 贮藏条目。');
+      }
+      const targetStash = current.stashes.find(item => item.ref === stashRef);
+      if (!targetStash) {
+        throw fail('所选贮藏条目不存在，请刷新后重试。', 409);
+      }
+      if (typeof input.stashSha === 'string' && input.stashSha && targetStash.sha !== input.stashSha) {
+        throw fail('贮藏栈顺序已变化，请刷新后重新选择。', 409);
+      }
+      if (action === 'stash-drop') {
+        if (input.confirmed !== true || typeof input.stashSha !== 'string' || !input.stashSha) {
+          throw fail('请在贮藏列表中确认要删除的条目。');
+        }
+        output = await runGit(directory, ['stash', 'drop', stashRef]);
+      } else {
+        if (current.mergeInProgress || current.counts.conflicts) {
+          throw fail('当前存在未解决的冲突，请先处理后再恢复贮藏。', 409);
+        }
+        try {
+          output = await runGit(directory, ['stash', action === 'stash-pop' ? 'pop' : 'apply', stashRef]);
+        } catch (error) {
+          const snapshot = await readProjectGitSnapshot(directory).catch(() => undefined);
+          if (!snapshot?.counts.conflicts) throw error;
+          await sourceBackend.readLocalProjects(true).catch(() => {});
+          return { ok: true, outcome: 'merge-conflicts', snapshot };
+        }
+      }
     } else if (action === 'commit') {
       if (current.truncated) throw fail('改动列表超过展示上限，请先缩小本次改动范围后再提交。');
       if (current.counts.conflicts) throw fail('请先解决冲突，再提交。', 409);
@@ -843,9 +1332,83 @@ async function executeProjectGitActionInner(
         await sourceBackend.readLocalProjects(true).catch(() => {});
         return { ok: true, outcome: 'merge-conflicts', snapshot };
       }
-    } else if (action === 'abort-merge') {
-      if (!current.mergeInProgress) throw fail('当前没有进行中的合并。');
-      output = await runGit(directory, ['merge', '--abort']);
+    } else if (action === 'abort-merge' || action === 'abort-sequencer') {
+      const seq = current.sequencerState || (current.mergeInProgress ? 'merge' : null);
+      if (!seq) throw fail('当前没有进行中的合并、变基或摘取操作。');
+      output = await runGit(directory, [seq, '--abort']);
+    } else if (action === 'resolve-conflict') {
+      if (input.confirmed !== true) {
+        throw fail('请确认要对冲突文件应用的解决策略。');
+      }
+      const file = typeof input.file === 'string' ? validateRelativePath(input.file, false) : '';
+      const item = current.files.find(candidate => candidate.path === file && candidate.conflict);
+      if (!file || !item) {
+        throw fail('该文件当前不处于未解决的冲突状态，请刷新后核对。', 409);
+      }
+      const strategy = typeof input.strategy === 'string' ? input.strategy.trim() : '';
+      if (!['ours', 'theirs', 'delete'].includes(strategy)) {
+        throw fail('冲突解决策略必须是 ours（采用当前分支）、theirs（采用传入分支）或 delete（删除文件）。');
+      }
+      if (strategy === 'delete') {
+        output = await runGit(directory, ['--literal-pathspecs', 'rm', '-f', '--', file]);
+      } else {
+        const stageSlot = strategy === 'ours' ? '2' : '3';
+        const stageEntries = (await gitRaw(directory, ['--literal-pathspecs', 'ls-files', '--stage', '-z', '--', file]))
+          .split('\0')
+          .filter(Boolean);
+        const hasChosenStage = stageEntries.some((entry) => {
+          const tabIdx = entry.indexOf('\t');
+          if (tabIdx < 0 || entry.slice(tabIdx + 1) !== file) return false;
+          const parts = entry.slice(0, tabIdx).trim().split(/\s+/);
+          return parts[2] === stageSlot;
+        });
+        if (!hasChosenStage) {
+          // 删改冲突（modify/delete）中所选一侧删除了该文件，直接执行 git rm 标记解决
+          output = await runGit(directory, ['--literal-pathspecs', 'rm', '-f', '--', file]);
+        } else {
+          output = await runGit(directory, ['--literal-pathspecs', 'checkout', `--${strategy}`, '--', file]);
+          output += await runGit(directory, ['--literal-pathspecs', 'add', '--', file]);
+        }
+      }
+    } else if (action === 'revert-commit' || action === 'cherry-pick') {
+      ensureClean();
+      if (action === 'revert-commit' && input.confirmed !== true) {
+        throw fail('请在提交记录中确认要回滚的提交。');
+      }
+      const rawSha = typeof input.sha === 'string' ? input.sha.trim() : '';
+      if (!/^[0-9a-f]{7,40}$/i.test(rawSha)) {
+        throw fail('请输入有效的提交哈希（7–40 位十六进制 SHA）。');
+      }
+      const targetSha = (await gitRaw(directory, ['rev-parse', '--verify', `${rawSha}^{commit}`]).catch(() => '')).trim();
+      if (!targetSha) {
+        throw fail('未找到该提交，请先 Fetch 远端或核对 SHA。', 404);
+      }
+      const revTokens = (await gitRaw(directory, ['rev-list', '--parents', '-n', '1', targetSha])).trim().split(/\s+/);
+      const parents = revTokens.slice(1);
+      if (parents.length > 1) {
+        throw fail('该提交是合并提交（含多个父提交），为避免选错主线，请在终端使用 -m 1 参数处理。', 409);
+      }
+      if (action === 'cherry-pick' && targetSha === current.head) {
+        throw fail('该提交已是当前分支最新提交，无需重复摘取。', 409);
+      }
+      try {
+        output = await runGit(
+          directory,
+          action === 'revert-commit' ? ['revert', '--no-edit', targetSha] : ['cherry-pick', targetSha],
+          60_000,
+        );
+      } catch (error) {
+        const porcelain = await gitRaw(directory, ['status', '--porcelain=v1', '-z']).catch(() => '');
+        const conflictPaths = parseStatusEntries(porcelain).filter(f => f.conflict).map(f => f.path);
+        await gitRaw(directory, [action === 'revert-commit' ? 'revert' : 'cherry-pick', '--abort']).catch(() => {});
+        if (conflictPaths.length > 0) {
+          throw fail(
+            `${action === 'revert-commit' ? '回滚该提交' : '摘取该提交'}时与当前分支产生代码冲突（涉及：${conflictPaths.slice(0, 5).join('、')}），已自动中止并恢复干净工作区。`,
+            409,
+          );
+        }
+        throw error;
+      }
     } else if (action === 'fetch') {
       const remote = ensureRemote();
       if (input.branches === undefined) {
@@ -948,7 +1511,9 @@ async function executeProjectGitActionInner(
       throw fail('不支持该 Git 操作。');
     }
 
-    await sourceBackend.readLocalProjects(true).catch(() => {});
+    // 暂存类操作只改索引或单个文件，不影响项目列表的分支信息；全盘项目重扫放到后台，不再占用仓库锁和接口耗时。
+    if (indexOnlyActions.has(action)) void sourceBackend.readLocalProjects(true).catch(() => {});
+    else await sourceBackend.readLocalProjects(true).catch(() => {});
     return {
       ok: true,
       output: redact(output).slice(0, 10_000),
@@ -972,7 +1537,20 @@ function getConfiguredRoots(): string[] {
   return [...new Set(roots.map((item) => path.resolve(item)))];
 }
 
+export function sanitizeEnvLineValue(key: string, value: string): string {
+  if (!/^[A-Z][A-Z0-9_]{0,120}$/.test(key)) {
+    throw fail('配置项键名格式无效。');
+  }
+  if (/[\r\n\0]/.test(value)) {
+    throw fail(`配置项 ${key} 不能包含换行符或空字符。`);
+  }
+  return value;
+}
+
 async function persistEnvUpdates(updates: Record<string, string | undefined>) {
+  for (const [key, val] of Object.entries(updates)) {
+    if (val !== undefined) sanitizeEnvLineValue(key, val);
+  }
   const envFile = getEnvFilePath();
   let content = '';
   try {
@@ -997,7 +1575,14 @@ async function persistEnvUpdates(updates: Record<string, string | undefined>) {
     }
   }
   await fs.mkdir(path.dirname(envFile), { recursive: true, mode: 0o700 });
-  await fs.writeFile(envFile, `${nextLines.filter((line, idx, arr) => idx < arr.length - 1 || line !== '').join('\n')}\n`, { mode: 0o600 });
+  const tmpFile = `${envFile}.${process.pid}.tmp`;
+  await fs.writeFile(
+    tmpFile,
+    `${nextLines.filter((line, idx, arr) => idx < arr.length - 1 || line !== '').join('\n')}\n`,
+    { mode: 0o600 },
+  );
+  await fs.chmod(tmpFile, 0o600).catch(() => {});
+  await fs.rename(tmpFile, envFile);
 }
 
 async function addProjectRootToEnv(directory: string) {
@@ -1017,20 +1602,12 @@ export function readShareConfig() {
     || process.env.JIRA_KEYCHAIN_SERVICE,
   );
   return {
-    jiraBaseUrl: (process.env.JIRA_BASE_URL || '').replace(/\/+$/, ''),
+    jiraBaseUrl: (process.env.JIRA_BASE_URL || 'https://jira.hahabianli.com').replace(/\/+$/, ''),
     jiraUsername: process.env.JIRA_USERNAME || '',
     hasJiraToken,
     projectRoots: getConfiguredRoots(),
     credentialsFile: getEnvFilePath(),
   };
-}
-
-function shareJiraOrigin(value: string) {
-  const parsed = URL.parse(value);
-  if (!parsed || !['https:', 'http:'].includes(parsed.protocol) || parsed.username || parsed.password) {
-    throw fail('请输入有效的 Jira 地址（例如 https://jira.example.com）。');
-  }
-  return parsed.origin;
 }
 
 export async function updateShareConfig(
@@ -1072,15 +1649,20 @@ export async function updateShareConfig(
   if (action === 'test-jira') {
     const rawUrl = typeof input.jiraBaseUrl === 'string' && input.jiraBaseUrl.trim()
       ? input.jiraBaseUrl.trim()
-      : process.env.JIRA_BASE_URL || '';
-    const baseUrl = shareJiraOrigin(rawUrl);
-    const useSavedAuth = baseUrl === URL.parse(process.env.JIRA_BASE_URL || '')?.origin;
-    const username = typeof input.jiraUsername === 'string' ? input.jiraUsername.trim() : (useSavedAuth ? process.env.JIRA_USERNAME || '' : '');
+      : process.env.JIRA_BASE_URL || 'https://jira.hahabianli.com';
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(rawUrl);
+    } catch {
+      throw fail('请输入有效的 Jira 地址（例如 https://jira.example.com）。');
+    }
+    const baseUrl = parsedUrl.origin;
+    const username = typeof input.jiraUsername === 'string' ? input.jiraUsername.trim() : (process.env.JIRA_USERNAME || '');
     const token = typeof input.jiraApiToken === 'string' && input.jiraApiToken.trim()
       ? input.jiraApiToken.trim()
-      : (useSavedAuth ? process.env.JIRA_API_TOKEN || '' : '');
+      : (process.env.JIRA_API_TOKEN || '');
 
-    let authorization = useSavedAuth ? process.env.JIRA_AUTH_HEADER || '' : '';
+    let authorization = process.env.JIRA_AUTH_HEADER || '';
     if (token) {
       authorization = username
         ? `Basic ${Buffer.from(`${username}:${token}`).toString('base64')}`
@@ -1090,7 +1672,7 @@ export async function updateShareConfig(
 
     const response = await fetch(`${baseUrl}/rest/api/2/myself`, {
       headers: { Authorization: authorization, Accept: 'application/json' },
-      redirect: 'error', signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(15_000),
     }).catch((error: Error) => {
       throw fail(`连接 Jira 失败：${error.message}`);
     });
@@ -1107,15 +1689,13 @@ export async function updateShareConfig(
 
   const updates: Record<string, string | undefined> = {};
   if (typeof input.jiraBaseUrl === 'string' && input.jiraBaseUrl.trim()) {
-    const nextOrigin = shareJiraOrigin(input.jiraBaseUrl.trim());
-    if (nextOrigin !== URL.parse(process.env.JIRA_BASE_URL || '')?.origin) {
-      for (const key of ['JIRA_USERNAME', 'JIRA_API_TOKEN', 'JIRA_AUTH_HEADER', 'JIRA_COOKIE', 'JIRA_KEYCHAIN_SERVICE', 'JIRA_KEYCHAIN_ACCOUNT']) {
-        delete process.env[key];
-        updates[key] = '';
-      }
+    try {
+      const parsed = new URL(input.jiraBaseUrl.trim());
+      process.env.JIRA_BASE_URL = parsed.origin;
+      updates.JIRA_BASE_URL = parsed.origin;
+    } catch {
+      throw fail('请输入有效的 Jira 地址（例如 https://jira.example.com）。');
     }
-    process.env.JIRA_BASE_URL = nextOrigin;
-    updates.JIRA_BASE_URL = nextOrigin;
   }
   if (typeof input.jiraUsername === 'string') {
     process.env.JIRA_USERNAME = input.jiraUsername.trim();

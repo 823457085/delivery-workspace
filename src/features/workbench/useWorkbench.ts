@@ -15,11 +15,11 @@ export function useWorkbench(options: { applyDismissals?: boolean } = {}) {
   const design = useDesignExecutor().query;
   const issues = useSource<IssueResponse>('issues', { allTime: 'true', includeSubtasks: 'true', includeDone: 'true', maxResults: '5000' }, true);
   const runtime = useAgentRuntimeSnapshot();
-  const requirements = useQuery({ queryKey: ['requirement-development'], retry: false,
+  const requirements = useQuery({ queryKey: ['requirement-development'], retry: false, refetchIntervalInBackground: false,
     queryFn: ({ signal }) => readLaunchRecords('requirement-development', signal), refetchInterval: 15_000 });
-  const fixes = useQuery({ queryKey: ['jira-fix'], retry: false,
+  const fixes = useQuery({ queryKey: ['jira-fix'], retry: false, refetchIntervalInBackground: false,
     queryFn: ({ signal }) => readLaunchRecords('jira-fix', signal), refetchInterval: 15_000 });
-  const acceptance = useQuery({ queryKey: deliveryAcceptanceQueryKey, retry: false,
+  const acceptance = useQuery({ queryKey: deliveryAcceptanceQueryKey, retry: false, refetchIntervalInBackground: false,
     queryFn: ({ signal }) => readDeliveryAcceptances(signal), refetchInterval: 15_000 });
   const dismissals = useQuery({
     queryKey: ['workbench-dismissals'],

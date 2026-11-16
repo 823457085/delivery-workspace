@@ -6,7 +6,7 @@ import type { AgentRun } from '../shared/agent-runtime';
 
 const record = { id: 'job:1', issueKeys: ['GBP-1'], status: 'blocked', threadId: 'thread-1', result: '', error: '历史失败', links: [] } as unknown as DeliveryRecord;
 const done = { key: 'GBP-1', status: '已完成', statusCategory: 'Done' } as JiraIssue;
-const run = (status: AgentRun['status'], sessionId = 'thread-1') => ({ id: 'run-1', objective: '测试任务', sessionId, status, updatedAt: '2026-09-23T10:00:00Z' }) as AgentRun;
+const run = (status: AgentRun['status'], sessionId = 'thread-1') => ({ id: 'run-1', sessionId, status, updatedAt: '2026-09-23T10:00:00Z' }) as AgentRun;
 
 test('Jira 完成后移出待办但保留历史失败证据', () => {
   const [item] = reconcileDeliveryRecords([record], [done], []);

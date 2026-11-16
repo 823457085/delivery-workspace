@@ -65,8 +65,27 @@ async function saveState(state: PortMonitorState, dataDir?: string, root?: strin
   const file = stateFilePath(dataDir, root);
   if (!file) return;
   try {
-    await fs.mkdir(path.dirname(file), { recursive: true });
-    await fs.writeFile(file, JSON.stringify(state, null, 2) + '\n', 'utf8');
+    await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+    // 含敏感令牌的原始命令行仅驻留当前进程内存，磁盘状态文件仅持久化脱敏命令并强制 0600 权限（修复 P1-20）。
+    const persisted: PortMonitorState = {
+      managerPorts: state.managerPorts,
+      stoppedServices: state.stoppedServices.map((entry) => {
+        const raw = entry.rawCommand || '';
+        const redactedRaw = raw ? redactCommand(raw) : '';
+        const safeRaw = raw && raw === redactedRaw ? raw : undefined;
+        const cleanEntry: PersistedStoppedEntry = {
+          ...entry,
+          command: redactCommand(entry.command || raw),
+        };
+        if (safeRaw) cleanEntry.rawCommand = safeRaw;
+        else delete cleanEntry.rawCommand;
+        return cleanEntry;
+      }),
+    };
+    const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+    await fs.writeFile(tmp, JSON.stringify(persisted, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+    await fs.chmod(tmp, 0o600).catch(() => {});
+    await fs.rename(tmp, file);
   } catch {
     /* Ignore write failures in read-only test fixtures */
   }
@@ -293,8 +312,20 @@ async function git(cwd: string, args: string[]) {
     .then(result => result.stdout.trim()).catch(() => '');
 }
 
+export function matchInventoryProject(cwd: string, projects: LocalProject[]): PortProject | undefined {
+  const direct = projects.find(project => project.path === cwd);
+  if (!direct || direct.detached || !direct.branch) return;
+  return {
+    name: direct.displayName || direct.projectName || path.basename(cwd),
+    workspacePath: direct.path,
+    branch: direct.branch,
+  };
+}
+
 async function readProject(cwd: string, projects: LocalProject[], deliveryRoot?: string): Promise<PortProject | undefined> {
   if (!path.isAbsolute(cwd) || cwd === path.parse(cwd).root) return;
+  const cached = matchInventoryProject(cwd, projects);
+  if (cached) return cached;
   const workspacePath = await git(cwd, ['rev-parse', '--show-toplevel']);
   if (workspacePath) {
     const [branch, remote] = await Promise.all([git(workspacePath, ['branch', '--show-current']), git(workspacePath, ['config', '--get', 'remote.origin.url'])]);
@@ -321,13 +352,24 @@ function serviceName(commandText: string, fallback: string, delivery: boolean) {
   return [...commandText.matchAll(/([^\s/]+\.(?:mjs|cjs|js|ts|py|php))(?=\s|$)/g)].at(-1)?.[1] || fallback;
 }
 
+const inflightPortScans = new Map<string, Promise<PortSnapshot>>();
+
 export async function scanListeningPorts(requestedPorts: number[] = [], options: {
   readProjects?: () => Promise<{ projects: LocalProject[] }>;
   root?: string;
   dataDir?: string;
   selfPort?: number;
-  launched?: { cwd: string; listeners: { pid: number; port: number }[] };
+  dedupe?: boolean;
 } = {}): Promise<PortSnapshot> {
+  if (options.dedupe) {
+    const key = `${[...new Set(requestedPorts)].sort((a, b) => a - b).join(',')}|${options.root || ''}|${options.dataDir || ''}|${options.selfPort || ''}`;
+    const existing = inflightPortScans.get(key);
+    if (existing) return existing;
+    const pending = scanListeningPorts(requestedPorts, { ...options, dedupe: false })
+      .finally(() => { if (inflightPortScans.get(key) === pending) inflightPortScans.delete(key); });
+    inflightPortScans.set(key, pending);
+    return pending;
+  }
   const state = await loadState(options.dataDir, options.root);
   const rawListeners = parseLsofListeners(await command('lsof', ['-nP', '-iTCP', '-sTCP:LISTEN', '-Fpcn']));
   const uniqueListeners = [...new Map(rawListeners.map(listener => [`${listener.pid}:${listener.address}:${listener.port}`, listener])).values()];
@@ -364,11 +406,7 @@ export async function scanListeningPorts(requestedPorts: number[] = [], options:
     const service = isProjectService(listener.process, actualCommand);
     // 独立 Node 预览目录可能不含 Git/package.json，只接纳从该目录启动的本地脚本。
     const localScript = [actualCommand, launchCommand].some(value => value.includes(`${cwd}/`) && /\.(?:mjs|cjs|js|ts|py|php)(?:\s|$)/.test(value));
-    const detectedProject = service ? projects.get(cwd) || (localScript ? { name: path.basename(cwd), workspacePath: cwd, branch: '' } : undefined) : undefined;
-    const launched = options.launched;
-    // The launch probe already verified ownership even when OS process metadata is incomplete.
-    const project = detectedProject || (launched?.listeners.some(item => item.pid === listener.pid && item.port === listener.port)
-      ? { name: path.basename(launched.cwd), workspacePath: launched.cwd, branch: '' } : undefined);
+    const project = service ? projects.get(cwd) || (localScript ? { name: path.basename(cwd), workspacePath: cwd, branch: '' } : undefined) : undefined;
     const serviceCommand = /\bname=/.test(actualCommand) && launchCommand ? launchCommand : actualCommand;
     return {
       ...listener,
@@ -511,6 +549,38 @@ function belongsToTarget(pid: number, target: ServiceTarget, runtime: ActionRunt
   return false;
 }
 
+/**
+ * 独立进程终止/重启前复核实时监听归属与命令行身份（修复 P0-5）：
+ * 防止目标进程退出后 PID 被系统复用导致误杀其他进程，或通过伪造 PID 越权终止非监听进程。
+ */
+export function verifyPortActionTargetPid(
+  pid: number,
+  port: number,
+  runtime: Pick<ActionRuntime, 'listeners' | 'processes'>,
+  expectedCommand?: string,
+): PortListener | ParsedListener {
+  const activeListeners = runtime.listeners.filter(
+    item => belongsToTarget(item.pid, { pid }, runtime as ActionRuntime) && (!port || item.port === port),
+  );
+  if (!activeListeners.length) {
+    throw new Error(
+      port > 0
+        ? `目标进程 PID ${pid} 当前未监听端口 ${port}（可能已退出或 PID 已被复用），请刷新端口状态后重试`
+        : `目标进程 PID ${pid} 当前未监听任何端口，请刷新端口状态后重试`,
+    );
+  }
+  const proc = runtime.processes.get(pid);
+  const cleanExpected = expectedCommand?.trim();
+  if (cleanExpected && proc) {
+    const actualRedacted = redactCommand(proc.rawCommand).trim();
+    const expectedRedacted = redactCommand(cleanExpected).trim();
+    if (actualRedacted && expectedRedacted && actualRedacted !== expectedRedacted) {
+      throw new Error(`目标进程 PID ${pid} 的实际命令行已变化，拒绝终止或重启以防误伤新进程，请刷新后重试`);
+    }
+  }
+  return activeListeners[0]!;
+}
+
 function targetPm2(runtime: ActionRuntime, manager: string) {
   const matches = runtime.pm2.filter(item => item.name === manager);
   if (matches.length !== 1) throw new Error(matches.length ? `PM2 服务名称 ${manager} 不唯一，请先确认目标服务` : `找不到 PM2 服务 ${manager}`);
@@ -544,7 +614,7 @@ async function waitForService(ports: number[], target: ServiceTarget, timeoutMs 
     const own = runtime.listeners.filter(item => belongsToTarget(item.pid, target, runtime));
     const expected = [...new Set([...ports, ...own.map(item => item.port)])];
     assertPortsFree(expected, runtime, target);
-    if (expected.length && expected.every(port => own.some(item => item.port === port))) return own;
+    if (expected.length && expected.every(port => own.some(item => item.port === port))) return;
     if (target.pid && !isPidAlive(target.pid)) {
       throw new Error('启动进程已退出，未确认目标端口监听');
     }
@@ -597,7 +667,7 @@ async function spawnDetachedShell(rawCommand: string, cwd: string, port?: number
 async function startStandalone(rawCommand: string, cwd: string, ports: number[], port?: number) {
   const pid = await spawnDetachedShell(rawCommand, cwd, port);
   try {
-    return await waitForService(ports, { pid });
+    await waitForService(ports, { pid });
   } catch (error) {
     // 只清理本次创建的独立进程组，避免启动失败留下后台进程。
     try { process.kill(-pid, 'SIGTERM'); } catch { /* 进程已退出 */ }
@@ -660,6 +730,7 @@ async function runPortAction(req: PortActionRequest, options: PortActionOptions)
       return { ok: true, message: `已关闭 PM2 服务 ${manager}`, snapshot };
     }
     if (!pid) throw new Error('缺少目标进程 PID，无法关闭服务');
+    verifyPortActionTargetPid(pid, port, runtime, req.command);
     const processes = parsePsProcesses(await command('ps', ['-axo', 'pid=,ppid=,user=,command=']));
     const procInfo = processes.get(pid);
     const cwdOut = await command('lsof', ['-nP', '-a', '-d', 'cwd', '-p', String(pid), '-Fpn']).catch(() => '');
@@ -747,11 +818,15 @@ async function runPortAction(req: PortActionRequest, options: PortActionOptions)
       return { ok: true, message: `已重启 PM2 服务 ${manager}`, snapshot };
     }
     if (pid > 1) {
+      const matchedListener = verifyPortActionTargetPid(pid, port, runtime, req.command);
       const processes = parsePsProcesses(await command('ps', ['-axo', 'pid=,ppid=,user=,command=']));
       const procInfo = processes.get(pid);
       const cwdOut = await command('lsof', ['-nP', '-a', '-d', 'cwd', '-p', String(pid), '-Fpn']).catch(() => '');
       const resolvedCwd = parseLsofCwds(cwdOut).get(pid) || req.cwd || '';
       const rawCommand = procInfo?.rawCommand || req.command || '';
+      if (!isProjectService(matchedListener.process, rawCommand)) {
+        throw new Error('非项目进程（如桌面客户端、浏览器或底层数据库）不支持通过工作台自动重启，以免丢失环境参数；如需重开请使用原应用或终端');
+      }
       if (!resolvedCwd || resolvedCwd === '—' || !existsSync(resolvedCwd) || !rawCommand.trim()) {
         throw new Error('无法读取该独立进程的启动目录或命令，无法自动重启');
       }
@@ -780,6 +855,7 @@ async function runPortAction(req: PortActionRequest, options: PortActionOptions)
       return { ok: true, message: `已停止并从 PM2 删除服务 ${manager}`, snapshot };
     }
     if (pid > 1) {
+      verifyPortActionTargetPid(pid, port, runtime, req.command);
       await terminatePid(pid, 1500);
       await waitForTargetStopped(targetPids);
     }
@@ -809,8 +885,8 @@ async function runPortAction(req: PortActionRequest, options: PortActionOptions)
       const snapshot = await scanListeningPorts(options.requestedPorts || [], options);
       return { ok: true, message: `已通过 PM2 开启服务 ${pm2Name}`, snapshot };
     }
-    const listeners = await startStandalone(rawCommand, targetCwd, expectedPorts, port);
-    const snapshot = await scanListeningPorts(options.requestedPorts || [], { ...options, launched: { cwd: targetCwd, listeners } });
+    await startStandalone(rawCommand, targetCwd, expectedPorts, port);
+    const snapshot = await scanListeningPorts(options.requestedPorts || [], options);
     return { ok: true, message: `已在后台开启服务${port ? `（端口 ${port}）` : ''}`, snapshot };
   }
 

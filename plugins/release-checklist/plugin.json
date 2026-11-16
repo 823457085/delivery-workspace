@@ -1,0 +1,36 @@
+{
+  "apiVersion": 1,
+  "hostApi": 1,
+  "id": "release-checklist",
+  "name": "发版检查清单",
+  "version": "1.1.0",
+  "description": "发布前配置变更、SQL/环境变量核对、回滚演练勾选与流水线链接清单，支持一键引用到 Agent 做上线前风险复核。",
+  "permissions": ["storage.read", "storage.write", "jira.read", "conversation.context"],
+  "page": { "title": "发版检查清单", "kind": "records" },
+  "records": {
+    "storage": "private",
+    "resourceType": "release",
+    "fields": [
+      { "key": "title", "label": "发版批次 / 服务名称", "type": "text", "required": true, "maxLength": 200 },
+      { "key": "releaseDate", "label": "计划发版日期", "type": "date" },
+      { "key": "env", "label": "目标环境", "type": "select", "default": "prod", "options": [
+        { "value": "staging", "label": "预发 / UAT" },
+        { "value": "gray", "label": "灰度环境" },
+        { "value": "prod", "label": "生产环境" }
+      ] },
+      { "key": "status", "label": "核对状态", "type": "select", "default": "pending", "options": [
+        { "value": "pending", "label": "待核对" },
+        { "value": "ready", "label": "可发版" },
+        { "value": "done", "label": "已发布验证" }
+      ] },
+      { "key": "rollbackVerified", "label": "回滚预案已核验", "type": "checkbox", "default": "false" },
+      { "key": "pipelineUrl", "label": "流水线 / MR 链接", "type": "url", "maxLength": 500 },
+      { "key": "tags", "label": "变更风险标签", "type": "tags", "maxLength": 400 },
+      { "key": "details", "label": "配置变更与回滚预案", "type": "textarea", "maxLength": 8000 }
+    ]
+  },
+  "commands": [
+    { "id": "cite", "label": "交给 Agent 复核风险", "action": "conversation.context" },
+    { "id": "link-jira", "label": "关联发版 Jira", "action": "jira.link" }
+  ]
+}

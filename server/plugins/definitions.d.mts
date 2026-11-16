@@ -1,4 +1,4 @@
-export interface PluginDefinition { id: string; name: string; description: string; capabilities: string[]; prefix: string; probe?: string; sourceKeys: string[]; apiPrefixes: string[]; apiPaths: string[] }
+export interface PluginDefinition { id: string; name: string; description: string; capabilities: string[]; prefix: string; probe?: string; local?: boolean; localPort?: number; sourceKeys: string[]; apiPrefixes: string[]; apiPaths: string[] }
 export const pluginDefinitions: PluginDefinition[];
 export function definition(id: string): PluginDefinition;
 export function pluginBaseUrl(id: 'jira' | 'confluence' | 'wecom', env?: NodeJS.ProcessEnv): string;

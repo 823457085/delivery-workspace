@@ -17,9 +17,11 @@ const i18nStatus = { ready: '已生成', blocked: '受阻', not_applicable: '不
 </script>
 
 <template>
-  <section class="group-result-summary" aria-label="本轮结果与下一步">
-    <p class="result-conclusion">{{ view.headline }}</p>
-    <p v-if="view.overview" class="result-overview">{{ view.overview }}</p>
+  <section class="group-result-summary" :data-summary-status="summary.status" aria-label="本轮结果与下一步">
+    <div class="result-hero">
+      <p class="result-conclusion">{{ view.headline }}</p>
+      <p v-if="view.overview" class="result-overview">{{ view.overview }}</p>
+    </div>
     <section v-if="view.requirement" class="result-summary-points requirement-results" aria-label="需求交付结果">
       <p class="result-overview"><strong>业务目标：</strong>{{ view.requirement.goal }}</p>
       <p v-if="view.requirement.issueKey">研发事项：
@@ -106,7 +108,7 @@ const i18nStatus = { ready: '已生成', blocked: '受阻', not_applicable: '不
         </li>
       </ol>
     </section>
-    <section v-if="view.blockers.length" class="result-summary-points" aria-label="当前待处理项">
+    <section v-if="view.blockers.length" class="result-summary-points result-blockers-card" aria-label="当前待处理项">
       <h3>当前待处理项</h3>
       <ul>
         <li v-for="blocker in view.blockers" :key="`${blocker.name}:${blocker.text}`">
@@ -173,33 +175,43 @@ const i18nStatus = { ready: '已生成', blocked: '受阻', not_applicable: '不
 </template>
 
 <style scoped>
-.group-result-summary{min-width:0;max-width:100%;font-family:var(--sans);font-size:15px;line-height:1.8;color:var(--agent-text);overflow-wrap:anywhere}
-.result-conclusion{margin:0 0 16px;font-weight:600;font-size:16px;color:var(--agent-text);line-height:1.6}
-.result-overview{margin:0 0 16px;color:var(--agent-text);line-height:1.8}
-.result-summary-points{margin:18px 0 22px;padding:0;border:0;background:transparent}
-.requirement-results{padding:12px 14px;border:1px solid var(--agent-border);border-radius:10px;background:color-mix(in srgb,var(--agent-panel-strong) 65%,transparent)}
-.requirement-results p{margin:8px 0;white-space:pre-wrap}
-.requirement-results a{color:var(--agent-accent);text-underline-offset:3px}
+.group-result-summary{display:grid;gap:12px;min-width:0;max-width:100%;font-family:var(--sans);font-size:14px;line-height:22px;color:var(--agent-text);overflow-wrap:anywhere}
+.result-hero{display:grid;gap:6px;padding:12px 14px;border:1px solid color-mix(in srgb,var(--agent-accent) 26%,var(--agent-border));border-radius:10px;background:color-mix(in srgb,var(--agent-accent) 8%,var(--agent-panel-strong))}
+.group-result-summary[data-summary-status="returned"] .result-hero{border-color:color-mix(in srgb,var(--ui-success,#16a34a) 32%,var(--agent-border));background:color-mix(in srgb,var(--ui-success,#16a34a) 8%,var(--agent-panel-strong))}
+.group-result-summary[data-summary-status="blocked"] .result-hero{border-color:color-mix(in srgb,var(--ui-danger,#dc2626) 36%,var(--agent-border));background:color-mix(in srgb,var(--ui-danger,#dc2626) 8%,var(--agent-panel-strong))}
+.result-conclusion{margin:0;font-weight:600;font-size:15px;color:var(--agent-text);line-height:22px}
+.result-overview{margin:0;color:var(--agent-secondary);line-height:22px}
+.result-summary-points{margin:0;padding:12px 14px;border:1px solid var(--agent-border);border-radius:10px;background:color-mix(in srgb,var(--agent-panel-strong) 72%,transparent)}
+.result-blockers-card{border-color:color-mix(in srgb,var(--ui-warning,#d97706) 38%,var(--agent-border));background:color-mix(in srgb,var(--ui-warning,#d97706) 8%,var(--agent-panel-strong))}
+.requirement-results{padding:14px 16px;border:1px solid var(--agent-border);border-radius:10px;background:color-mix(in srgb,var(--agent-panel-strong) 75%,transparent)}
+.requirement-results p{margin:6px 0;white-space:pre-wrap}
+.requirement-results a{color:var(--agent-accent);font-weight:500;text-underline-offset:3px}
 .requirement-results a:hover{text-decoration:underline}
-.result-summary-points ol,.result-summary-points ul{margin:10px 0;padding-left:24px}
-.result-summary-points li{margin:14px 0}
+.result-summary-points ol,.result-summary-points ul{margin:8px 0 0;padding-left:20px}
+.result-summary-points li{margin:8px 0}
 .result-summary-points li>strong{color:var(--agent-text);font-weight:600}
-.result-summary-points li>p{margin:6px 0 0;color:var(--agent-secondary);line-height:1.8}
-.result-stage-record{margin:6px 0 0}.result-stage-record>summary{width:fit-content;cursor:pointer;color:var(--agent-muted);font-size:13px}.result-stage-record>summary:hover{color:var(--agent-text)}.result-stage-record[open]>summary{margin-bottom:8px}.result-stage-record p{color:var(--agent-secondary)}
-.result-next-step{margin:20px 0}.result-next-step>strong{margin-right:10px;color:var(--agent-text);font-weight:600}
-.group-result-summary h3{margin:24px 0 10px;color:var(--agent-text);font-size:15px;font-weight:600;line-height:1.6}
+.result-summary-points li>p{margin:4px 0 0;color:var(--agent-secondary);line-height:20px}
+.result-stage-record{margin:6px 0 0}.result-stage-record>summary{width:fit-content;cursor:pointer;color:var(--agent-accent);font-size:12px}.result-stage-record>summary:hover{text-decoration:underline}.result-stage-record[open]>summary{margin-bottom:6px}.result-stage-record p{color:var(--agent-secondary)}
+.result-next-step{margin:0;padding:10px 14px;border-left:3px solid var(--agent-accent);border-radius:0 8px 8px 0;background:color-mix(in srgb,var(--agent-accent) 8%,var(--agent-panel-strong));font-size:13px;line-height:20px}.result-next-step>strong{margin-right:8px;color:var(--agent-accent);font-weight:600}
+.group-result-summary h3{margin:14px 0 8px;color:var(--agent-text);font-size:13px;font-weight:600;line-height:20px}
 .group-result-summary section>h3:first-child{margin-top:0}
-.result-issues ol,.result-full ol,.result-full ul{padding-left:20px}.result-issues li,.result-issue-detail{margin:12px 0}.result-issues li>strong,.result-issue-detail>strong{color:var(--agent-text);font-weight:600}.result-issues p,.result-full p{margin:4px 0}.result-issue-action>span{color:var(--agent-text);font-weight:500}.result-more,.result-source-label{color:var(--agent-muted);font-size:12px}.result-issue-detail b{font-weight:500}.result-explanation{margin:12px 0}
-.result-checks{margin:16px 0}.result-checks>div{display:flex;align-items:baseline;flex-wrap:wrap;gap:8px 18px;padding:8px 0;border-bottom:1px solid var(--agent-border)}.result-checks dt{color:var(--agent-text);font-weight:500}.result-checks dd{margin:0}
-.result-full{margin-top:24px;padding-top:16px;border-top:1px solid var(--agent-border);font-size:14px}.result-full>summary{color:var(--agent-accent);cursor:pointer;font-weight:500;font-size:13px}.result-full[open]>summary{margin-bottom:18px}
-.result-roles ul{list-style:none;padding-left:0;margin:8px 0}
-.result-role-item{padding:10px 0;border-top:1px solid var(--agent-border)}
-.result-role-head{display:flex;align-items:baseline;flex-wrap:wrap;gap:8px;margin-bottom:4px}
+.result-issues{padding:12px 14px;border:1px solid color-mix(in srgb,var(--ui-warning,#d97706) 32%,var(--agent-border));border-radius:10px;background:color-mix(in srgb,var(--ui-warning,#d97706) 6%,var(--agent-panel-strong))}
+.result-issues ol,.result-full ol,.result-full ul{margin:6px 0 0;padding-left:20px}.result-issues li,.result-issue-detail{margin:10px 0}.result-issues li>strong,.result-issue-detail>strong{color:var(--agent-text);font-weight:600}.result-issues p,.result-full p{margin:3px 0;color:var(--agent-secondary)}.result-issue-action>span{color:var(--agent-text);font-weight:500}.result-more,.result-source-label{color:var(--agent-muted);font-size:12px}.result-issue-detail b{color:var(--agent-text);font-weight:500}.result-explanation{margin:0;padding:10px 12px;border-radius:8px;background:var(--agent-raised);color:var(--agent-secondary);font-size:13px}
+.result-checks{display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:8px;margin:0}
+.result-checks>div{display:grid;gap:3px;padding:8px 11px;border:1px solid var(--agent-border);border-radius:8px;background:color-mix(in srgb,var(--agent-raised) 55%,var(--agent-panel-strong))}
+.result-checks dt{color:var(--agent-muted);font-size:11px;font-weight:500;line-height:16px}
+.result-checks dd{margin:0;color:var(--agent-text);font-size:13px;font-weight:600;line-height:18px}
+.result-full{margin-top:4px;padding:10px 12px;border:1px solid var(--agent-border);border-radius:10px;background:color-mix(in srgb,var(--agent-raised) 38%,transparent);font-size:13px}.result-full>summary{color:var(--agent-accent);cursor:pointer;font-weight:500;font-size:12px;user-select:none}.result-full[open]>summary{margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--agent-border)}
+.result-roles ul{display:grid;gap:8px;list-style:none;padding-left:0;margin:8px 0}
+.result-role-item{padding:10px 12px;border:1px solid var(--agent-border);border-radius:8px;background:var(--agent-panel-strong)}
+.result-role-head{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:4px}
 .result-role-head strong{color:var(--agent-text);font-weight:600}
-.result-role-badge{font-size:11px;color:var(--agent-muted)}
-.result-role-badge[data-state="failed"],.result-role-badge[data-state="blocked"]{color:var(--ui-danger,var(--el-color-danger))}
+.result-role-badge{padding:1px 7px;border-radius:999px;background:var(--agent-raised);font-size:11px;color:var(--agent-secondary)}
+.result-role-badge[data-state="completed"]{background:color-mix(in srgb,var(--ui-success,#16a34a) 14%,transparent);color:var(--ui-success,#16a34a)}
+.result-role-badge[data-state="failed"],.result-role-badge[data-state="blocked"]{background:color-mix(in srgb,var(--ui-danger,#dc2626) 14%,transparent);color:var(--ui-danger,var(--el-color-danger))}
 .result-role-head button{margin-left:auto}
-.result-raw-delivery{margin-top:10px}
-.result-raw-delivery>summary{color:var(--agent-muted);cursor:pointer}
-.group-result-summary button{padding:0;border:0;background:transparent;color:var(--agent-accent);font:inherit;font-size:12px;cursor:pointer}
+.result-raw-delivery{margin-top:10px;padding-top:8px;border-top:1px dashed var(--agent-border)}
+.result-raw-delivery>summary{color:var(--agent-muted);cursor:pointer;font-size:12px}
+.group-result-summary button{padding:2px 6px;border:0;border-radius:5px;background:transparent;color:var(--agent-accent);font:inherit;font-size:12px;cursor:pointer}
+.group-result-summary button:hover{background:var(--agent-raised)}
 </style>

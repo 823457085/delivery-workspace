@@ -26,7 +26,7 @@ function select(command: unknown) {
 </template>
 
 <style scoped>
-.translate-toggle{display:flex;align-items:center;gap:4px;height:30px;padding:0 7px;border:1px solid transparent;border-radius:7px;background:transparent;color:var(--agent-muted);font-size:10px;cursor:pointer}
+.translate-toggle{display:flex;align-items:center;gap:4px;height:28px;padding:0 8px;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--agent-muted);font-size:11px;font-weight:500;cursor:pointer;transition:background-color 140ms ease,border-color 140ms ease,color 140ms ease}
 .translate-toggle:hover{background:var(--agent-panel-strong);color:var(--agent-text)}
-.translate-toggle.active{border-color:color-mix(in srgb,var(--agent-accent) 45%,var(--agent-border));background:color-mix(in srgb,var(--agent-accent) 12%,var(--agent-panel-strong));color:var(--agent-accent)}
+.translate-toggle.active{border-color:var(--agent-border);background:var(--agent-raised);color:var(--agent-text)}
 </style>

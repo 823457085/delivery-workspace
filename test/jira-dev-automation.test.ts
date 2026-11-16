@@ -136,3 +136,35 @@ test('Jira 修复只推进当前验证版本，验证后改动及撤销授权都
     assert.deepEqual(f.calls, ['start']);
   } finally { await automation.close(); await fs.rm(f.directory, { recursive: true, force: true }); }
 });
+
+test('自动交付步骤异常中断进入 uncertain 后支持人工核对确认生效或解锁重试，核对本身不触发远端写请求', async () => {
+  const f = await fixture(true, 'requirement');
+  f.settings.jiraDevAutomationApproved = true;
+  const originalMr = f.options.mergeRequest;
+  f.options.mergeRequest = async () => { throw Object.assign(new Error('gateway timeout'), { uncertain: true }); };
+  const automation = await createJiraDevAutomation(f.options);
+  try {
+    await automation.prepare(f.task, f.launch);
+    await automation.activate(f.task, f.launch);
+    await idle(automation);
+    await fs.writeFile(path.join(f.worktree, 'src.ts'), 'export const value = 3;\n');
+    await git(f.worktree, 'commit', '-am', 'TEST-123: 验证');
+    const head = (await git(f.worktree, 'rev-parse', 'HEAD')).stdout.trim();
+    await f.finish(report(head), 'run-uncertain');
+    automation.refresh(taskId);
+    await idle(automation);
+    assert.equal(automation.status(taskId)?.mergeRequest?.status, 'uncertain');
+    assert.deepEqual(f.calls, ['start']);
+
+    // 人工确认远端未创建后解锁，期间不自动触发任何写操作
+    const unlocked = await automation.reconcile({ taskId, step: 'mergeRequest', outcome: 'not_applied', confirmed: true });
+    assert.equal(unlocked.mergeRequest?.status, 'blocked');
+    assert.deepEqual(f.calls, ['start']);
+
+    // 恢复正常 MR 接口后显式刷新即可推进剩余 MR + 完成流转
+    f.options.mergeRequest = originalMr;
+    automation.refresh(taskId);
+    await idle(automation);
+    assert.deepEqual(f.calls, ['start', 'mr', 'complete']);
+  } finally { await automation.close(); await fs.rm(f.directory, { recursive: true, force: true }); }
+});

@@ -34,7 +34,7 @@ if mode=='status-conflicts':
   row[17]='2026-10-29 复测结果：'+('复测不通过' if status=='复测通过' else '复测通过')
 if mode=='notes-fallback':
  rows[2][2]=''
-for row,reporter in zip(rows[1:],['示例用户','L_REPORTER_001','示例成员','示例用户','示例成员']):
+for row,reporter in zip(rows[1:],['李子锐','L_REPORTER_001','梁士龙','李子锐','梁士龙']):
  row[4]=reporter
  while len(row)<19:row.append('')
  row[18]='人员全名-'+reporter
@@ -126,7 +126,7 @@ test('提出人原文和L码完整保留，重复人员表头按主字段优先�
   for (const mode of ['normal', 'reporter-primary-last', ...['提出人员', '提出人(人员)', '提出人（人员）'].map(header => `reporter-alias:${header}`)]) {
     const f = await fixture(mode);
     try {
-      assert.deepEqual((await f.inspect()).sheets[0].rows.map((row: any) => row.reporter), ['示例用户', 'L_REPORTER_001', '示例成员', '示例用户', '示例成员']);
+      assert.deepEqual((await f.inspect()).sheets[0].rows.map((row: any) => row.reporter), ['李子锐', 'L_REPORTER_001', '梁士龙', '李子锐', '梁士龙']);
     } finally { await f.cleanup(); }
   }
 });

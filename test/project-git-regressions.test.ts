@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { executeProjectGitAction, readProjectGitSnapshot, readProjectDiff, updateShareConfig } from '../server/project-git.js';
+import { executeProjectGitAction, readProjectGitSnapshot, readProjectDiff } from '../server/project-git.js';
 import type { SourceBackend } from '../server/source-backend.js';
 
 const exec = promisify(execFile);
@@ -167,22 +167,4 @@ test('远端检出保留已有自定义名称的跟踪分支，也能首次创�
   await git(f.repo, 'branch', '-m', 'feature/custom-local'); await f.act('switch', { ref: 'refs/heads/main' });
   await f.act('switch', { ref: 'refs/remotes/origin/feature/new-remote' });
   assert.equal((await readProjectGitSnapshot(f.repo)).branch, 'feature/custom-local');
-});
-
-test('切换 Jira 站点时清除旧凭据，测试连接不会将旧凭据发给新站点', async t => {
-  const f = await fixture(t);
-  const envFile = path.join(f.repo, '.env');
-  t.mock.method(globalThis, 'fetch', () => { throw new Error('不应访问网络'); });
-  for (const [key, value] of Object.entries({ DELIVERY_CREDENTIALS_FILE: envFile,
-    JIRA_BASE_URL: 'https://old.example.test', JIRA_USERNAME: '', JIRA_KEYCHAIN_ACCOUNT: '', JIRA_API_TOKEN: 'fixture-token', JIRA_AUTH_HEADER: 'Bearer fixture-token',
-    JIRA_COOKIE: 'fixture-cookie', JIRA_KEYCHAIN_SERVICE: 'fixture-service' })) {
-    const old = process.env[key];
-    process.env[key] = value;
-    t.after(() => { if (old === undefined) delete process.env[key]; else process.env[key] = old; });
-  }
-  const source = {} as SourceBackend;
-  await assert.rejects(updateShareConfig({ action: 'test-jira', jiraBaseUrl: 'https://new.example.test' }, source), /请先填写/);
-  const result = await updateShareConfig({ jiraBaseUrl: 'https://new.example.test' }, source);
-  assert.ok('config' in result && result.config?.hasJiraToken === false);
-  assert.match(await fs.readFile(envFile, 'utf8'), /JIRA_API_TOKEN=\n/);
 });

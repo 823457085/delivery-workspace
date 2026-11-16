@@ -115,7 +115,7 @@ export function createJenkinsClient(credentials: JenkinsCredentials, fetcher: ty
         headers: { ...init.headers, Authorization: `Basic ${Buffer.from(`${credentials.username}:${credentials.token}`).toString('base64')}` } });
     } catch { throw new Error(init.method === 'POST' ? '构建提交连接中断，结果待确认；请先到 Jenkins 核对，不要重复发布' : 'Jenkins 连接失败或超时'); }
     if (response.status >= 300 && response.status < 400) throw new Error('Jenkins 返回重定向，请核对配置的 HTTPS 地址');
-    if (!response.ok) throw new Error(`Jenkins 请求失败（HTTP ${response.status}），请核对账号权限和任务`);
+    if (!response.ok) throw Object.assign(new Error(`Jenkins 请求失败（HTTP ${response.status}），请核对账号权限和任务`), { httpStatus: response.status });
     return response;
   }
   async function json(suffix: string): Promise<Record<string, unknown>> {

@@ -19,18 +19,18 @@ const plan = { category: 'design', jobId: job.id, issue: { key: input.issueKey, 
   assignee: 'Test', startDate: input.jiraStartDate, endDate: input.jiraEndDate, parent: { key: 'APEX-122' } } } as PlanItem;
 const data = { jobs: [job], plan: [plan] } as AutomationData;
 
-test('request form leaves the publication directory unset until configured', () => {
+test('request form defaults to the verified skill delivery directory without changing historical inputs', () => {
   const fresh = createRequestInput();
-  assert.equal(fresh.confluenceParentUrl, '');
+  assert.equal(fresh.confluenceParentUrl, 'https://confluence.hahabianli.com/pages/viewpage.action?pageId=33726439');
   assert.equal(emptyInput().confluenceParentUrl, '');
   assert.equal(buildDesignCards(data)[0].input.confluenceParentUrl, '');
   assert.equal(fresh.workspacePath, '');
   assert.equal(fresh.branch, '');
   fresh.confluenceParentUrl = '';
-  assert.equal(createRequestInput().confluenceParentUrl, '');
+  assert.ok(createRequestInput().confluenceParentUrl);
 });
 
-test('opening a draft normalizes an empty directory and preserves its other inputs', () => {
+test('opening a draft fills only a missing directory and preserves its other inputs', () => {
   const draft = { ...input, confluenceParentUrl: '  ', notes: '保留待决问题' };
   const before = structuredClone(draft);
   const form = createRequestInput(draft);
@@ -41,7 +41,7 @@ test('opening a draft normalizes an empty directory and preserves its other inpu
 test('a custom publication directory survives reopening and persistence without default substitution', () => {
   const form = createRequestInput(input);
   assert.deepEqual(form, input);
-  form.confluenceParentUrl = 'https://confluence.example.test/pages/viewpage.action?pageId=123';
+  form.confluenceParentUrl = 'https://confluence.hahabianli.com/pages/viewpage.action?pageId=123';
   assert.equal(createRequestInput(form).confluenceParentUrl, form.confluenceParentUrl);
   assert.equal(input.confluenceParentUrl, 'https://example.test/parent');
   const record: DesignRecord = { input: form, review: emptyReview(), updatedAt: '', blockedReason: '' };

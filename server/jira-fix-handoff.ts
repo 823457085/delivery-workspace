@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import type { AgentRun } from '../shared/agent-runtime.js';
 import { jiraIssueKey, type JiraFixRecord } from '../shared/jira-fix.js';
 import { jiraFixHandoffInputSchema, jiraFixHandoffComment, type JiraFixHandoffState, type JiraFixHandoffContext,
-  jiraCommentGenerateSchema, jiraCommentDraftSchema, jiraCommentSavedDraftSchema, readJiraHandoffReport, jiraStatusChangeInputSchema, jiraTestingPath, validateJiraTransitionFields, type JiraStatusChangeState, type JiraCommentDraft, type JiraHandoffStep } from '../shared/jira-fix-handoff.js';
+  jiraCommentGenerateSchema, jiraCommentDraftSchema, jiraCommentSavedDraftSchema, readJiraHandoffReport, jiraStatusChangeInputSchema, jiraHandoffReconcileInputSchema, jiraTestingPath, validateJiraTransitionFields, type JiraStatusChangeState, type JiraCommentDraft, type JiraHandoffStep } from '../shared/jira-fix-handoff.js';
 import type { JiraHandoffSource } from './jira-handoff-client.js';
 import { generateJiraComment, type JiraCommentGenerator } from './jira-comment-generator.js';
 
@@ -15,7 +15,7 @@ export async function createJiraFixHandoffService(directory: string,
   runtime?: { subscribe(subscriber: (revision: number, run?: AgentRun, finalized?: boolean) => void): () => void }) {
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
   const states = new Map<string, JiraFixHandoffState>();
-  const pending = new Map<string, Promise<JiraFixHandoffState>>();
+  const pending = new Map<string, Promise<unknown>>();
   const statusPending = new Map<string, Promise<JiraStatusChangeState>>();
   const statusChanges = new Map<string, JiraStatusChangeState[]>();
   const generating = new Map<string, { controller: AbortController; task: Promise<JiraCommentDraft> }>();
@@ -228,7 +228,11 @@ export async function createJiraFixHandoffService(directory: string,
         state!.assigned = true;
       });
       await checkpoint('verify', async () => {
-        const [result, comment] = await Promise.all([source.readIssue(key), source.readComment(key, state!.commentId)]);
+        const manualComment = state!.commentId === 'manual-confirmed';
+        const [result, comment] = await Promise.all([
+          source.readIssue(key),
+          manualComment ? Promise.resolve(jiraFixHandoffComment(input)) : source.readComment(key, state!.commentId),
+        ]);
         state!.result = result;
         if (result.status.id !== input.targetStatusId || result.assignee?.id !== input.reporterId || comment !== jiraFixHandoffComment(input)) {
           throw new Error('Jira 回读与交接目标不一致，请到 Jira 核对；不会重复执行已完成的步骤');
@@ -243,6 +247,55 @@ export async function createJiraFixHandoffService(directory: string,
     }
     await save(id, state);
     return state;
+  }
+  async function reconcileUncertain(id: string, raw: unknown): Promise<{ statusChange?: JiraStatusChangeState; handoff?: JiraFixHandoffState }> {
+    const input = jiraHandoffReconcileInputSchema.parse(raw);
+    const { key } = ready(id, input.runId);
+    if (input.target === 'status') {
+      const last = statusChanges.get(id)?.at(-1);
+      if (!last || last.status !== 'uncertain') throw new Error('当前状态操作无需人工核对解锁');
+      const issue = await source.readIssue(key);
+      last.result = issue;
+      last.inFlightStatusId = undefined;
+      if (issue.status.id === last.input.targetStatusId) {
+        last.status = 'completed';
+        last.error = '';
+      } else {
+        last.status = 'failed';
+        last.error = `已回读确认当前停在“${issue.status.name}”，已解锁状态选择，不会自动重放。`;
+      }
+      last.updatedAt = new Date().toISOString();
+      await saveStatus(id);
+      return { statusChange: last };
+    }
+    const state = states.get(id);
+    if (!state || state.status !== 'uncertain') throw new Error('当前交接记录无需人工核对解锁');
+    const issue = await source.readIssue(key);
+    if (!state.commentId && state.inFlight === 'comment') {
+      if (!input.commentOutcome) throw new Error('请确认交接评论在 Jira 中是否已发布');
+      if (input.commentOutcome === 'posted') {
+        if (input.commentId) {
+          const remoteComment = await source.readComment(key, input.commentId);
+          if (remoteComment !== jiraFixHandoffComment(state.input)) throw new Error('所填评论编号内容与本次交接说明不一致，请核对');
+          state.commentId = input.commentId;
+        } else {
+          state.commentId = 'manual-confirmed';
+        }
+      }
+    }
+    if (issue.status.id === state.input.targetStatusId) state.transitioned = true;
+    if (issue.assignee?.id === state.input.reporterId) state.assigned = true;
+    state.inFlight = undefined;
+    state.result = issue;
+    if (state.commentId && state.transitioned && state.assigned) {
+      state.status = 'completed';
+      state.error = '';
+    } else {
+      state.status = 'failed';
+      state.error = '已完成人工核对并解锁，可点击“重试剩余步骤”继续未完成项。';
+    }
+    await save(id, state);
+    return { handoff: state };
   }
   const unsubscribe = runtime?.subscribe((_revision, run, finalized) => {
     const sourceId = run?.task?.sourceId;
@@ -293,6 +346,14 @@ export async function createJiraFixHandoffService(directory: string,
       if (pending.has(id)) return Promise.reject(new Error('该交接正在提交，请勿重复操作'));
       const task = execute(id, raw).finally(() => pending.delete(id));
       pending.set(id, task); return task;
+    },
+    reconcile(id: string, raw: unknown) {
+      if (pending.has(id) || statusPending.has(id) || generating.has(id) || synchronizing.has(id)) {
+        return Promise.reject(new Error('该事项正在处理，请稍候再核对解锁'));
+      }
+      const task = reconcileUncertain(id, raw).finally(() => pending.delete(id));
+      pending.set(id, task);
+      return task;
     },
     isIdle: () => !pending.size && !statusPending.size && !generating.size && !synchronizing.size,
     close: () => {

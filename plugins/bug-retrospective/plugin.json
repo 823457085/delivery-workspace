@@ -1,0 +1,35 @@
+{
+  "apiVersion": 1,
+  "hostApi": 1,
+  "id": "bug-retrospective",
+  "name": "缺陷复盘台账",
+  "version": "1.1.0",
+  "description": "线上/联调典型缺陷根因、修复 MR 链接、回归测试守卫勾选与根因标签沉淀，可在修复同类问题时直接注入会话上下文。",
+  "permissions": ["storage.read", "storage.write", "jira.read", "conversation.context"],
+  "page": { "title": "缺陷复盘台账", "kind": "records" },
+  "records": {
+    "storage": "private",
+    "resourceType": "retrospective",
+    "fields": [
+      { "key": "title", "label": "缺陷现象摘要", "type": "text", "required": true, "maxLength": 200 },
+      { "key": "severity", "label": "严重等级", "type": "select", "default": "p2", "options": [
+        { "value": "p0", "label": "P0 阻断" },
+        { "value": "p1", "label": "P1 严重" },
+        { "value": "p2", "label": "P2 一般" }
+      ] },
+      { "key": "status", "label": "沉淀状态", "type": "select", "default": "analyzing", "options": [
+        { "value": "analyzing", "label": "定位根因中" },
+        { "value": "guarded", "label": "已补防复发测试" },
+        { "value": "archived", "label": "已归档复用" }
+      ] },
+      { "key": "regressionAdded", "label": "已补自动化回归用例", "type": "checkbox", "default": "false" },
+      { "key": "prUrl", "label": "修复提交 / MR 链接", "type": "url", "maxLength": 500 },
+      { "key": "tags", "label": "根因分类标签", "type": "tags", "maxLength": 400 },
+      { "key": "details", "label": "根因分析与防复发措施", "type": "textarea", "maxLength": 8000 }
+    ]
+  },
+  "commands": [
+    { "id": "cite", "label": "作为经验注入会话", "action": "conversation.context" },
+    { "id": "link-jira", "label": "关联原缺陷 Jira", "action": "jira.link" }
+  ]
+}

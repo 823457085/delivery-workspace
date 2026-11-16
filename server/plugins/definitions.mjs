@@ -2,7 +2,23 @@
 import jira from '../../plugins/jira/integration.json' with { type: 'json' };
 import confluence from '../../plugins/confluence/integration.json' with { type: 'json' };
 import wecom from '../../plugins/wecom/integration.json' with { type: 'json' };
-export const pluginDefinitions = [jira, confluence, wecom];
+import goLearning from '../../plugins/go-learning/integration.json' with { type: 'json' };
+import signHub from '../../plugins/sign-hub/integration.json' with { type: 'json' };
+import shanlian from '../../plugins/shanlian/integration.json' with { type: 'json' };
+import interfaceCenter from '../../plugins/interface-center/integration.json' with { type: 'json' };
+import systemCatalog from '../../plugins/system-catalog/integration.json' with { type: 'json' };
+import portMonitor from '../../plugins/port-monitor/integration.json' with { type: 'json' };
+import deployments from '../../plugins/deployments/integration.json' with { type: 'json' };
+import refactorControl from '../../plugins/refactor-control/integration.json' with { type: 'json' };
+import overseasRequirements from '../../plugins/overseas-requirements/integration.json' with { type: 'json' };
+export const pluginDefinitions = [
+  jira, confluence, wecom, goLearning, signHub, shanlian,
+  interfaceCenter, systemCatalog, portMonitor, deployments, refactorControl, overseasRequirements,
+];
+const defaultBaseUrls = {
+  jira: 'https://jira.hahabianli.com',
+  confluence: 'https://confluence.hahabianli.com',
+};
 
 export function definition(id) {
   const plugin = pluginDefinitions.find(item => item.id === id);
@@ -11,12 +27,7 @@ export function definition(id) {
 }
 export function pluginBaseUrl(id, env = process.env) {
   const { prefix } = definition(id);
-  const value = (env[`${prefix}_BASE_URL`] || '').trim();
-  try {
-    const url = new URL(value);
-    if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) return '';
-    return url.href.replace(/\/+$/, '');
-  } catch { return ''; }
+  return (env[`${prefix}_BASE_URL`] || defaultBaseUrls[id] || '').replace(/\/+$/, '');
 }
 
 export function pluginEnabled(id, env = process.env) {

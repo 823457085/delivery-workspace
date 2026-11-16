@@ -44,8 +44,8 @@ test('APEX 重构项目任务独立展示主任务和子任务，不冒充当前
     subtasks: [{ key: 'GBP-938', summary: '国家区域配置', status: '开发中', statusCategory: '处理中' }] };
   const done = { ...parent, key: 'GBP-548', status: '已完成', statusCategory: '完成', subtasks: [] };
   const child = { ...issue, key: 'GBP-948', summary: '【APEX重构】交付验收', parent: { key: parent.key } };
-  const snapshot: AgentBusinessSnapshot = { issues: [done, child, parent, issue], refactorRepository: 'example-org/admin', projects: {
-    projects: [{ ...project, repository: 'example-org/admin' }], roots: [],
+  const snapshot: AgentBusinessSnapshot = { issues: [done, child, parent, issue], projects: {
+    projects: [{ ...project, repository: 'titan-project/titan-fe-project/ops/admin' }], roots: [],
     directoryCount: 1, durationMs: 1, limited: false, unreadableCount: 0,
   } };
   const context = buildAgentBusinessContext(conversation('检查工作台'), snapshot);
@@ -143,10 +143,9 @@ test('Agent 接口页进度只统计人工审核确认，不使用旧联调状�
     { operationId: 'listAddressFormats', method: 'GET', path: '/admin/v1/system/address-formats', summary: '地址格式', contractStatus: '未标记', stageId: '02', stageTitle: '系统配置' },
   ] };
   const record = { evidence: '真实环境请求与页面回读', blocker: '', confirmedAt: '', updatedAt: '' };
-  const catalog = [{ id: 'fixture-address', path: page.operations[0].path }];
-  const pending = buildAgentBusinessContext(conversation('@接口:settings 检查联调'), { pages: [page], catalog, review: { 'fixture-address': record } });
+  const pending = buildAgentBusinessContext(conversation('@接口:settings 检查联调'), { pages: [page], review: { 'apex-bff-4': record } });
   assert.deepEqual(pending.interfacePage?.progress, { total: 1, confirmed: 0, blocked: 0 });
-  const confirmed = buildAgentBusinessContext(conversation('@接口:settings 检查联调'), { pages: [page], catalog, review: { 'fixture-address': { ...record, confirmedAt: '2026-09-22T00:00:00.000Z' } } });
+  const confirmed = buildAgentBusinessContext(conversation('@接口:settings 检查联调'), { pages: [page], review: { 'apex-bff-4': { ...record, confirmedAt: '2026-09-22T00:00:00.000Z' } } });
   assert.equal(confirmed.interfacePage?.progress?.confirmed, 1);
 });
 

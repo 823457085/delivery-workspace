@@ -12,7 +12,8 @@ interface DocumentSelection { action: 'integrate' | 'retest'; moduleIds: string[
 const emit = defineEmits<{ launch: [selection: DocumentSelection]; changed: []; projects: [] }>();
 const client = useQueryClient();
 const query = useQuery({ queryKey: refactorWorkspaceQueryKey,
-  queryFn: ({ signal }) => refactorWorkspaceRequest<WorkspaceDashboard>('', undefined, signal), refetchInterval: 5_000, retry: false });
+  queryFn: ({ signal }) => refactorWorkspaceRequest<WorkspaceDashboard>('', undefined, signal),
+  refetchIntervalInBackground: false, refetchInterval: 15_000, retry: false });
 const fileInput = useTemplateRef<HTMLInputElement>('fileInput');
 const selectedFile = shallowRef<File>();
 const importProjectId = shallowRef(''), documentId = shallowRef(''), bindProjectId = shallowRef('');

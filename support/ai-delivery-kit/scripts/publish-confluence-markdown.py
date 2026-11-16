@@ -56,10 +56,7 @@ def main() -> int:
 
     page_id = sys.argv[1]
     markdown_file = sys.argv[2]
-    base_url = get_env("CONFLUENCE_BASE_URL").rstrip("/")
-    if not base_url.startswith("https://"):
-        print("Set CONFLUENCE_BASE_URL to your own HTTPS Confluence site.", file=sys.stderr)
-        return 2
+    base_url = get_env("CONFLUENCE_BASE_URL", "https://confluence.hahabianli.com").rstrip("/")
     token = get_env("CONFLUENCE_PAT") or get_env("CONFLUENCE_TOKEN")
 
     if not token:

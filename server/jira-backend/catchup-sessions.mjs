@@ -1,5 +1,5 @@
 import fs from "node:fs/promises";
-import { sourceDataRoot, gitBinary } from "./config.mjs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
@@ -12,7 +12,7 @@ import { CursorDesktopError, openCursorEditor } from "../cursor-desktop.mjs";
  */
 
 export const CATCHUP_REQUIREMENTS_ROOT = process.env.APEX_CATCHUP_REQUIREMENTS_ROOT
-  || path.join(sourceDataRoot, "workspaces", "requirements");
+  || path.join(homedir(), "Desktop", "APEX重构追平", "requirements");
 const execFileAsync = promisify(execFileCallback);
 const requirementIdPattern = /^REQ-(?:CU-)?\d{3}$/;
 
@@ -141,7 +141,7 @@ function toPublicCatchupSession(session, execution) {
 }
 
 async function defaultRunGit(args, options) {
-  const { stdout } = await execFileAsync(gitBinary, args, {
+  const { stdout } = await execFileAsync("/usr/bin/git", args, {
     cwd: options.cwd,
     encoding: "utf8",
     maxBuffer: 64 * 1024,

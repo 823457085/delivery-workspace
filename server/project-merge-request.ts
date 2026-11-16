@@ -6,6 +6,19 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { z } from 'zod';
 import { readProjectGitSnapshot, redact, withProjectGitLock } from './project-git.js';
+import {
+  analyzeUnifiedDiff,
+  buildStructuredMergeRequestDescription,
+  scanDiffHygieneIssues,
+  summarizeDiffTriage,
+  type MergeDiffTriageSummary,
+} from './pr-review-intelligence.js';
+import { analyzeRepoBlastRadius } from './repo-blast-radius.js';
+import {
+  draftCategorizedReleaseNotes,
+  evaluateDeliveryReadinessScorecard,
+  type DeliveryReadinessScorecard,
+} from '../shared/delivery-readiness-scorecard.js';
 
 const exec = promisify(execFile);
 const fail = (message: string, statusCode = 409) => Object.assign(new Error(message), { statusCode });
@@ -25,7 +38,8 @@ export interface ProjectMergeRequestPreparation {
   mode: 'api' | 'browser' | 'unavailable'; provider: string; remote: string;
   sourceBranch: string; targetBranch: string; sourceSha: string; targetSha: string; revision: string;
   repositoryUrl: string; url: string; title: string; description: string; canCreate: boolean;
-  reason?: string; existing?: ProjectMergeRequest;
+  reason?: string; existing?: ProjectMergeRequest; triage?: MergeDiffTriageSummary;
+  scorecard?: DeliveryReadinessScorecard; releaseNotesMarkdown?: string;
 }
 
 async function git(directory: string, args: string[]) {
@@ -52,6 +66,92 @@ async function readRepository(data: z.infer<typeof repositorySchema>) {
   return { snapshot, remote, repository, provider };
 }
 
+async function buildAutoMergeAnalysis(
+  directory: string,
+  sourceBranch: string,
+  targetBranch: string,
+  sourceSha: string,
+  targetSha: string,
+): Promise<{
+  full: string;
+  compact: string;
+  triage?: MergeDiffTriageSummary;
+  scorecard?: DeliveryReadinessScorecard;
+  releaseNotesMarkdown?: string;
+}> {
+  if (!sourceSha || !targetSha || sourceSha === targetSha) return { full: '', compact: '' };
+  try {
+    await exec('git', ['--no-replace-objects', '-C', directory, 'cat-file', '-e', `${sourceSha}^{commit}`], { timeout: 5000 });
+    await exec('git', ['--no-replace-objects', '-C', directory, 'cat-file', '-e', `${targetSha}^{commit}`], { timeout: 5000 });
+    const ancestor = await exec('git', ['--no-replace-objects', '-C', directory, 'merge-base', '--is-ancestor', sourceSha, targetSha], { timeout: 5000 })
+      .then(() => true, () => false);
+    if (ancestor) return { full: '', compact: '' };
+
+    const logResult = await exec(
+      'git',
+      ['--no-replace-objects', '-C', directory, 'log', '--no-merges', '--max-count=30', '--format=%H\t%s', `${targetSha}..${sourceSha}`],
+      { timeout: 10000, maxBuffer: 1024 * 1024 },
+    );
+    const commits = logResult.stdout
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean)
+      .map(line => {
+        const tab = line.indexOf('\t');
+        return tab > 0 ? { sha: line.slice(0, tab), subject: line.slice(tab + 1) } : { sha: line, subject: '' };
+      });
+
+    const patchResult = await exec(
+      'git',
+      ['--no-replace-objects', '-C', directory, 'diff', '--find-renames', '--unified=2', `${targetSha}...${sourceSha}`, '--', '.', ':(exclude).delivery-artifacts'],
+      { timeout: 15000, maxBuffer: 8 * 1024 * 1024 },
+    ).catch(() => ({ stdout: '' }));
+
+    const triage = analyzeUnifiedDiff(patchResult.stdout);
+    const triageSummary = triage.totals.files > 0 ? summarizeDiffTriage(triage) : undefined;
+    const hygieneWarnings = patchResult.stdout ? scanDiffHygieneIssues(patchResult.stdout) : [];
+    const blastRadius = patchResult.stdout
+      ? await analyzeRepoBlastRadius(directory, patchResult.stdout).catch(() => undefined)
+      : undefined;
+    const scorecard = triage.totals.files > 0
+      ? evaluateDeliveryReadinessScorecard({
+        totals: {
+          files: triage.totals.files,
+          additions: triage.totals.additions,
+          deletions: triage.totals.deletions,
+        },
+        sourceFiles: triageSummary?.sourceFiles,
+        testFiles: triageSummary?.testFiles,
+        generatedFiles: triageSummary?.generatedFiles,
+        missingTestsWarning: triageSummary?.missingTestsWarning,
+        largeDiffTriggered: triageSummary?.largeDiffTriggered,
+        triageRisks: triageSummary?.risks,
+        hygieneWarnings,
+        blastRadius,
+      })
+      : undefined;
+    const releaseNotesMarkdown = (commits.length > 0 || triage.totals.files > 0)
+      ? draftCategorizedReleaseNotes({
+        sourceBranch,
+        targetBranch,
+        commits,
+        files: triage.files.map(item => ({ path: item.path, status: item.status })),
+        triageRisks: triageSummary?.risks,
+        breakingExports: blastRadius?.touchedExports,
+      }).markdown
+      : undefined;
+    return {
+      full: buildStructuredMergeRequestDescription({ sourceBranch, targetBranch, commits, triage, mode: 'full' }),
+      compact: buildStructuredMergeRequestDescription({ sourceBranch, targetBranch, commits, triage, mode: 'compact' }),
+      ...(triageSummary ? { triage: triageSummary } : {}),
+      ...(scorecard ? { scorecard } : {}),
+      ...(releaseNotesMarkdown ? { releaseNotesMarkdown } : {}),
+    };
+  } catch {
+    return { full: '', compact: '' };
+  }
+}
+
 async function readSelection(input: unknown) {
   const data = inputSchema.parse(input);
   const { snapshot, remote, repository, provider } = await readRepository(data);
@@ -70,24 +170,32 @@ async function readSelection(input: unknown) {
   const currentIsSource = current?.upstreamRemote === remote.name && current.upstreamRef === `refs/heads/${data.sourceBranch}`
     || snapshot.branch === data.sourceBranch;
   if (currentIsSource && sourceSha !== snapshot.head) throw fail('当前分支与远端源分支提交不一致，请先同步并推送，再创建合并请求。');
+  const autoAnalysis = data.description === undefined
+    ? await buildAutoMergeAnalysis(snapshot.directory, data.sourceBranch, data.targetBranch, sourceSha, targetSha)
+    : { full: data.description, compact: data.description.slice(0, 1100), triage: undefined, scorecard: undefined, releaseNotesMarkdown: undefined };
   const prepared: ProjectMergeRequestPreparation = { mode: provider === 'Codeup' ? 'api' : 'browser', provider,
     remote: remote.name, sourceBranch: data.sourceBranch, targetBranch: data.targetBranch, sourceSha, targetSha,
     revision: snapshot.revision, repositoryUrl: remote.webUrl, url: '',
-    title: data.title || `合并 ${data.sourceBranch} 到 ${data.targetBranch}`, description: data.description || '', canCreate: true };
-  return { data, snapshot, repository, prepared };
+    title: data.title || `合并 ${data.sourceBranch} 到 ${data.targetBranch}`,
+    description: data.description ?? autoAnalysis.full, canCreate: true,
+    ...(autoAnalysis.triage ? { triage: autoAnalysis.triage } : {}),
+    ...(autoAnalysis.scorecard ? { scorecard: autoAnalysis.scorecard } : {}),
+    ...(autoAnalysis.releaseNotesMarkdown ? { releaseNotesMarkdown: autoAnalysis.releaseNotesMarkdown } : {}) };
+  return { data, snapshot, repository, prepared, compactDescription: autoAnalysis.compact };
 }
 
-function browserUrl(info: ProjectMergeRequestPreparation) {
+function browserUrl(info: ProjectMergeRequestPreparation, bodyOverride?: string) {
+  const body = bodyOverride ?? info.description;
   // https://docs.github.com/en/pull-requests/reference/using-query-parameters-to-create-a-pull-request
   if (info.provider === 'GitHub') {
     const url = new URL(`${info.repositoryUrl}/compare/${encodeURIComponent(info.targetBranch)}...${encodeURIComponent(info.sourceBranch)}`);
-    url.search = new URLSearchParams({ quick_pull: '1', title: info.title, body: info.description }).toString();
+    url.search = new URLSearchParams({ quick_pull: '1', title: info.title, body }).toString();
     return url.href;
   }
   const url = new URL(`${info.repositoryUrl}/-/merge_requests/new`);
   url.search = new URLSearchParams({ 'merge_request[source_branch]': info.sourceBranch,
     'merge_request[target_branch]': info.targetBranch, 'merge_request[title]': info.title,
-    'merge_request[description]': info.description }).toString();
+    'merge_request[description]': body }).toString();
   return url.href;
 }
 
@@ -269,6 +377,76 @@ export async function updateProjectMergeRequestTitle(input: unknown, options: Op
   });
 }
 
+export async function updateProjectMergeRequestDescription(input: unknown, options: Options) {
+  const data = inputSchema.extend({
+    id: z.number().int().positive(),
+    repositoryUrl: z.url(),
+  }).parse(input);
+  for (const branch of [data.sourceBranch, data.targetBranch]) {
+    if (branch.startsWith('-') || /[\x00-\x20\x7f]/.test(branch)) throw fail('分支名称格式不正确。');
+  }
+  if (data.sourceBranch === data.targetBranch) throw fail('源分支和目标分支不能相同。');
+  const { snapshot } = await readRepository(data);
+  return withProjectGitLock(snapshot.directory, async () => {
+    const { snapshot: latestSnapshot, remote, repository, provider } = await readRepository(data);
+    if (provider !== 'Codeup' || repository.href !== data.repositoryUrl) throw fail('当前远端已变化，请刷新合并请求列表。');
+    for (const branch of [data.sourceBranch, data.targetBranch]) {
+      await git(latestSnapshot.directory, ['check-ref-format', `refs/heads/${branch}`]);
+    }
+    const client = await codeupClient(repository, options);
+    if (!client) throw fail('请先在云效设置中保存具有合并请求读写权限的个人访问令牌。');
+    const { api, repositoryId } = client;
+
+    let nextDescription = data.description;
+    let triage: MergeDiffTriageSummary | undefined;
+    if (nextDescription === undefined) {
+      const refs = await git(latestSnapshot.directory, ['ls-remote', '--heads', remote.name,
+        `refs/heads/${data.sourceBranch}`, `refs/heads/${data.targetBranch}`]);
+      const heads = new Map(refs.split('\n').map(line => { const [sha, ref] = line.split('\t'); return [ref, sha]; }));
+      const sourceSha = heads.get(`refs/heads/${data.sourceBranch}`);
+      const targetSha = heads.get(`refs/heads/${data.targetBranch}`);
+      if (!sourceSha || !targetSha) throw fail('远端源分支或目标分支不存在，请刷新合并请求列表。');
+      const hasObjects = await exec('git', ['--no-replace-objects', '-C', latestSnapshot.directory, 'cat-file', '-e', `${sourceSha}^{commit}`], { timeout: 5000 })
+        .then(() => exec('git', ['--no-replace-objects', '-C', latestSnapshot.directory, 'cat-file', '-e', `${targetSha}^{commit}`], { timeout: 5000 }))
+        .then(() => true, () => false);
+      if (!hasObjects) throw fail('本机尚未获取该合并请求的最新远端提交，请先点击“获取远端分支”后再同步变更摘要。');
+      const autoAnalysis = await buildAutoMergeAnalysis(latestSnapshot.directory, data.sourceBranch, data.targetBranch, sourceSha, targetSha);
+      if (!autoAnalysis.full.trim()) throw fail('目标分支已包含源分支提交或暂无可生成的变更摘要。');
+      nextDescription = autoAnalysis.full;
+      triage = autoAnalysis.triage;
+    }
+
+    const endpoint = `/repositories/${repositoryId}/changeRequests/${data.id}`;
+    async function readRequest() {
+      const { value } = await api(endpoint);
+      const item = value as CodeupRequestResponse & { description?: unknown };
+      if (item?.localId !== data.id || typeof item.title !== 'string') throw fail('Codeup 返回的合并请求编号或标题无法核对。');
+      return {
+        listed: listedRequest(item, { ...data, title: item.title }, repositoryId),
+        description: typeof item.description === 'string' ? item.description : undefined,
+      };
+    }
+    const current = await readRequest();
+    if (['CLOSED', 'MERGED'].includes(current.listed.state.toUpperCase())) throw fail('合并请求已结束，请刷新列表。');
+    if (current.description === nextDescription) {
+      return { request: current.listed, description: nextDescription, ...(triage ? { triage } : {}) };
+    }
+
+    let result: unknown;
+    try { result = (await api(endpoint, { description: nextDescription }, 'PUT')).value; }
+    catch (error) {
+      if ((error as { rejected?: boolean }).rejected) throw error;
+      throw fail('说明保存结果尚未确认，请到 Codeup 核对后再操作。');
+    }
+    if ((result as { result?: boolean } | null)?.result === false) throw fail('Codeup 未能保存合并请求说明，请刷新后再试。');
+    const updated = await readRequest().catch(() => undefined);
+    if (!updated || (updated.description !== undefined && updated.description !== nextDescription)) {
+      throw fail('说明保存结果尚未确认，请到 Codeup 核对后再操作。');
+    }
+    return { request: updated.listed, description: nextDescription, ...(triage ? { triage } : {}) };
+  });
+}
+
 function pendingFile(info: ProjectMergeRequestPreparation, options: Options) {
   const key = createHash('sha256').update(JSON.stringify([info.repositoryUrl, info.sourceBranch, info.targetBranch])).digest('hex');
   return path.join(options.dataDirectory, 'project-merge-requests', `${key}.json`);
@@ -277,7 +455,7 @@ function pendingFile(info: ProjectMergeRequestPreparation, options: Options) {
 async function prepare(input: unknown, options: Options) {
   const selection = await readSelection(input);
   const info = selection.prepared;
-  if (info.provider !== 'Codeup') { info.url = browserUrl(info); return { ...selection, client: undefined }; }
+  if (info.provider !== 'Codeup') { info.url = browserUrl(info, selection.compactDescription); return { ...selection, client: undefined }; }
   const client = await codeupClient(selection.repository, options);
   if (!client) {
     info.mode = 'unavailable'; info.canCreate = false; info.url = info.repositoryUrl;
@@ -301,6 +479,28 @@ async function prepare(input: unknown, options: Options) {
 
 export async function prepareProjectMergeRequest(input: unknown, options: Options): Promise<ProjectMergeRequestPreparation> {
   return (await prepare(input, options)).prepared;
+}
+
+export async function reconcileProjectMergeRequest(input: unknown, options: Options): Promise<ProjectMergeRequestPreparation> {
+  const data = inputSchema.parse(input);
+  const initial = await readProjectGitSnapshot(data.path);
+  if (!initial.isGit) throw fail('当前目录不是 Git 仓库。');
+  return withProjectGitLock(initial.directory, async () => {
+    const selection = await readSelection(data);
+    const info = selection.prepared;
+    if (info.provider !== 'Codeup') return (await prepare(data, options)).prepared;
+    const client = await codeupClient(selection.repository, options);
+    if (!client) throw fail('请先在云效设置中保存个人访问令牌后再执行核对。');
+    const existing = await findExisting(client, info);
+    await fs.rm(pendingFile(info, options), { force: true });
+    if (existing) {
+      info.existing = existing;
+      info.url = existing.url;
+      info.canCreate = false;
+      return info;
+    }
+    return (await prepare(data, options)).prepared;
+  });
 }
 
 export async function createProjectMergeRequest(input: unknown, options: CreateOptions) {
@@ -328,7 +528,7 @@ export async function createProjectMergeRequest(input: unknown, options: CreateO
     try {
       // https://help.aliyun.com/en/yunxiao/developer-reference/createchangerequest-create-merge-request
       const { value } = await client.api(`/repositories/${client.repositoryId}/changeRequests`, {
-        title: data.title, description: data.description || '', sourceBranch: info.sourceBranch, targetBranch: info.targetBranch,
+        title: data.title, description: data.description !== undefined ? data.description : info.description, sourceBranch: info.sourceBranch, targetBranch: info.targetBranch,
         sourceProjectId: client.repositoryId, targetProjectId: client.repositoryId, triggerAIReviewRun: false,
         ...(reviewerId ? { reviewerUserIds: [reviewerId] } : {}),
       });

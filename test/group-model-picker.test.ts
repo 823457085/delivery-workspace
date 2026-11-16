@@ -73,9 +73,9 @@ function rosterFixture(automatic = false) {
     ] }] } });
   const saved: GroupConfig[] = [], errors: string[] = [];
   const reads: { resolve: (value: GroupChatDashboard) => void; signal?: AbortSignal }[] = [];
-  const globalChanging = shallowRef('');
-  const bindings = { computed, room, props, client, scope, globalChanging, active: shallowRef(true), restarting: shallowRef(false),
-    agentProviderLabels, antigravityModelQuota,
+  const changing = shallowRef('');
+  const active = shallowRef(true), restarting = shallowRef(false), groupSseConnected = shallowRef(false);
+  const bindings = { computed, room, props, client, scope, changing, globalChanging: changing, active, restarting, groupSseConnected, agentProviderLabels, antigravityModelQuota,
     useQuery: (options: Parameters<typeof useQuery>[0]) => useQuery(options, client),
     readGroupDashboard: (signal?: AbortSignal) => new Promise<GroupChatDashboard>(resolve => reads.push({ resolve, signal })),
     saveGroupConfig: async (value: GroupConfig) => { saved.push(structuredClone(value)); return { ...structuredClone(value), revision: value.revision + 1 }; },
@@ -84,7 +84,7 @@ function rosterFixture(automatic = false) {
   const lifetime = effectScope();
   const state = lifetime.run(() => new Function(...Object.keys(bindings), `${code}\nreturn { dashboard, members, quotaProviders, memberBinding, memberUsage, backupModel, persistConfig, modelText };`)
     (...Object.values(bindings)))!;
-  return { state, member, room, originalHistory, props, client, scope, globalChanging, saved, reads, errors,
+  return { state, member, room, originalHistory, props, client, scope, changing, saved, reads, errors,
     close() { lifetime.stop(); client.clear(); } };
 }
 
@@ -120,7 +120,7 @@ test('配置保存回执立即更新主备模型与额度来源，不等待轮�
     assert.equal(f.state.memberUsage(member).primary.remainingPercent, 11);
     f.props.quotas.cursor.primary.remainingPercent = 73;
     assert.equal(f.state.memberUsage(member).primary.remainingPercent, 73, '额度响应更新使用当前配置的提供方');
-    assert.deepEqual(f.saved, [next]); assert.equal(f.globalChanging.value, ''); assert.deepEqual(f.errors, []);
+    assert.deepEqual(f.saved, [next]); assert.equal(f.changing.value, ''); assert.deepEqual(f.errors, []);
     assert.deepEqual(JSON.parse(JSON.stringify(f.room.value)), f.originalHistory);
   } finally { f.close(); }
 });

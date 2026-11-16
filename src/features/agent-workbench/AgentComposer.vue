@@ -12,10 +12,12 @@ import { agentConversationContinuation, agentConversationInsertRun, type AgentCo
 import AgentPromptEditor from './AgentPromptEditor.vue';
 import AgentAccessSelector from './AgentAccessSelector.vue';
 import AgentModelSpeed from './AgentModelSpeed.vue';
+import AgentComposerPreflightBar from './AgentComposerPreflightBar.vue';
 import type { AgentTeamRequest } from './AgentTeamDialog.vue';
 import type { AgentBusinessMention } from './agent-business-context';
 import { codexServiceTier } from './model-speed';
 import { useAgentModelSelection } from './model-selection';
+import { recordSubmittedPrompt } from './useAgentInputHistory';
 import type { AgentAttachmentDraft } from './useAgentAttachments';
 
 const props = defineProps<{ conversation: AgentConversation; runtimes: AgentRuntimeHealth[]; changing: string; running: boolean;
@@ -69,7 +71,6 @@ function setMode(mode: AgentRunMode) {
   if (mode !== 'agent') selectedAccessMode.value = 'workspace';
 }
 const writable = computed(() => composerMode.value === 'agent');
-const modeLabel = computed(() => writable.value ? 'Agent 模式' : composerMode.value === 'plan' ? 'Plan 模式' : 'Ask 模式');
 const canResume = computed(() => !!continuation.value.sessionId || ['queued', 'running'].includes(continuation.value.status));
 const hasContent = computed(() => !!draft.value.trim() || !!attachments.value.length);
 const stoppableRunId = computed(() => props.conversation.runs.find((run) => run.status === 'running')?.id
@@ -164,9 +165,12 @@ function setServiceTier(value: AgentServiceTier) {
 }
 
 function submit(queuePlacement: AgentQueuePlacement = 'append', workflow = false) {
-  if (canSend.value) emit('send', { provider: selectedProvider.value, model: selectedModel.value, reasoningEffort: selectedEffort.value,
-    accessMode: selectedAccessMode.value, queuePlacement, ...(modeChangeAllowed.value ? { mode: composerMode.value } : {}),
-    ...(selectedProvider.value === 'codex' ? { serviceTier: codexServiceTier(runtime.value, selectedModel.value, selectedServiceTier.value) } : {}), workflow });
+  if (canSend.value) {
+    if (typeof recordSubmittedPrompt === 'function') recordSubmittedPrompt(draft.value);
+    emit('send', { provider: selectedProvider.value, model: selectedModel.value, reasoningEffort: selectedEffort.value,
+      accessMode: selectedAccessMode.value, queuePlacement, ...(modeChangeAllowed.value ? { mode: composerMode.value } : {}),
+      ...(selectedProvider.value === 'codex' ? { serviceTier: codexServiceTier(runtime.value, selectedModel.value, selectedServiceTier.value) } : {}), workflow });
+  }
 }
 
 function focusPrompt() { void promptEditor.value?.focusInput(); }
@@ -184,6 +188,13 @@ defineExpose({ focusPrompt, retrySelection });
   <footer class="composer">
     <div class="composer-inner" :class="{ 'options-expanded': optionsExpanded }">
       <button v-if="!automatic" type="button" class="mobile-composer-options" :aria-expanded="optionsExpanded" @click="optionsExpanded = !optionsExpanded">{{ optionsExpanded ? '收起模型设置' : '模型设置' }}</button>
+      <div v-if="questionReply" class="composer-reply" aria-label="当前回复的问题"><span>{{ questionReply.state === 'pending' ? '回复：' : questionReply.state === 'answered' ? '此问题已回答：' : '此问题已过期：' }}{{ questionReply.text }}</span><el-button link size="small" :disabled="!!changing" @click="emit('cancelReply')">取消回复</el-button></div>
+      <AgentComposerPreflightBar v-model:draft="draft" :conversation="conversation" :mode="automatic ? 'agent' : composerMode" :access-mode="selectedAccessMode" />
+      <AgentPromptEditor ref="promptEditor" v-model="draft" v-model:attachments="attachments" class="composer-prompt" :workspace-path="conversation.latest.workspacePath"
+        :attachment-draft="attachmentDraft"
+        :provider="selectedProvider" :modes="automatic ? [] : runtime?.modes || []" :selected-mode="composerMode" mode-locked
+        :business-options="businessOptions" :min-rows="1" :max-rows="6" input-label="会话消息"
+        :placeholder="questionReply ? '回复上面的问题（Enter 发送）' : automatic ? '输入目标或补充要求（Enter 发送）' : switchingProvider ? '输入消息，发送后切换工具继续对话…' : running ? '执行中，发送后自动排队…' : '输入消息，按 Enter 发送（输 / 用快捷指令，输 @ 关联任务、@目录: 或 @符号:）'" submit-on-enter @submit="submit()" />
       <div class="composer-mode collaboration-controls">
         <div class="mode-toolbar">
           <AgentAccessSelector v-model="selectedAccessMode" :mode="automatic ? 'agent' : composerMode" :provider="selectedProvider" :allow-mode-change="modeChangeAllowed" :modes="runtime?.modes" @mode-change="setMode" @selection-change="retrySelectionChanged = true" :access-modes="runtime?.accessModes" :disabled="!!changing" />
@@ -193,25 +204,18 @@ defineExpose({ focusPrompt, retrySelection });
         <el-select v-model="selectedProvider" class="composer-provider" :class="{ switching: switchingProvider }" popper-class="agent-model-popper" size="small" :disabled="!!changing" aria-label="选择执行器">
           <el-option v-for="item in runtimes" :key="item.provider" :value="item.provider" :label="item.label" :disabled="!item.ready || (!modeChangeAllowed && !item.modes.includes(composerMode))" />
         </el-select>
-        <span>{{ modeLabel }}</span>
         <el-select :model-value="modelPicker.model.value" class="composer-model" popper-class="agent-model-popper" size="small" filterable :disabled="!!changing" :empty-values="[null, undefined]" aria-label="选择模型" @update:model-value="setModel"><el-option v-for="model in modelPicker.models.value" :key="model.id || 'default'" :label="model.label" :value="model.id"><span>{{ model.label }}</span><small v-if="model.customId">自定义</small></el-option></el-select>
-        <el-select v-if="modelPicker.efforts.value.length" v-model="modelPicker.effort.value" class="composer-effort" popper-class="agent-model-popper" size="small" :disabled="!!changing" :empty-values="[null, undefined]" :aria-label="`${runtime?.label || '模型'} 推理强度`" @change="saveModelSelection"><el-option v-if="modelPicker.allowDefaultEffort.value" label="Thinking 默认" value="" /><el-option v-for="effort in modelPicker.efforts.value" :key="effort" :label="`Thinking ${effortLabels[effort]}`" :value="effort" /></el-select>
+        <el-select v-if="modelPicker.efforts.value.length" v-model="modelPicker.effort.value" class="composer-effort" popper-class="agent-model-popper" size="small" :disabled="!!changing" :empty-values="[null, undefined]" :aria-label="`${runtime?.label || '模型'} 推理强度`" @change="saveModelSelection"><el-option v-if="modelPicker.allowDefaultEffort.value" label="思考：默认" value="" /><el-option v-for="effort in modelPicker.efforts.value" :key="effort" :label="`思考：${effortLabels[effort]}`" :value="effort" /></el-select>
         <AgentModelSpeed :runtime="runtime" :model="selectedModel" :service-tier="selectedServiceTier" @update:service-tier="setServiceTier" />
         <el-button text size="small" aria-label="管理自定义模型" @click="emit('configureModels')"><Settings2 :size="13" /></el-button>
         </div>
         </div>
       </div>
-      <div v-if="questionReply" class="composer-reply" aria-label="当前回复的问题"><span>{{ questionReply.state === 'pending' ? '回复：' : questionReply.state === 'answered' ? '此问题已回答：' : '此问题已过期：' }}{{ questionReply.text }}</span><el-button link size="small" :disabled="!!changing" @click="emit('cancelReply')">取消回复</el-button></div>
-      <AgentPromptEditor ref="promptEditor" v-model="draft" v-model:attachments="attachments" class="composer-prompt" :workspace-path="conversation.latest.workspacePath"
-        :attachment-draft="attachmentDraft"
-        :provider="selectedProvider" :modes="automatic ? [] : runtime?.modes || []" :selected-mode="composerMode" mode-locked
-        :business-options="businessOptions" :min-rows="3" :max-rows="6" input-label="会话消息"
-        :placeholder="questionReply ? '回复上面的问题（Enter 发送）' : automatic ? '交代目标、补充要求或询问进展…（Enter 发送）' : switchingProvider ? '输入要求，发送后在当前对话切换执行器继续…' : running ? '当前轮执行中；发送后将进入队列' : '继续询问当前会话…（输入 @ 选择业务上下文、模式、Skill 或文件，Enter 发送）'" submit-on-enter @submit="submit()" />
       <div class="composer-footer">
-        <span>{{ questionReply ? questionReply.state === 'pending' ? '发送将回复所选问题' : '取消回复后可继续交代任务' : automatic ? '负责人协调分工，并反馈要求何时生效' : switchingProvider ? running ? '发送后排队，在当前轮结束后切换执行器继续当前对话' : '发送后切换执行器继续当前对话' : running ? hasContent ? canInsertCurrent ? '发送将排队 · 插入补充到当前轮（沿用当前模型与权限）' : '发送后将等待上一轮完成' : '当前轮执行中 · 输入消息后可排队' : writable ? selectedAccessMode === 'full' ? 'Agent 会话 · 可访问本机文件与网络' : 'Agent 会话 · 可修改所选工作区' : '只读会话 · 不修改工作区或外部系统' }}</span>
+        <span class="composer-hint-text">{{ questionReply ? questionReply.state === 'pending' ? '发送将回复所选问题' : '取消回复后可继续交代任务' : automatic ? '负责人协调分工，并反馈要求何时生效' : switchingProvider ? running ? '发送后排队，在当前轮结束后切换执行器继续当前对话' : '发送后切换执行器继续当前对话' : running ? hasContent ? canInsertCurrent ? '发送将排队 · 插入补充到当前轮（沿用当前模型与权限）' : '发送后将等待上一轮完成' : '当前轮执行中 · 输入消息后可排队' : writable ? selectedAccessMode === 'full' ? 'Agent 会话 · 可访问本机文件与网络' : 'Agent 会话 · 可修改所选工作区' : '只读会话 · 不修改工作区或外部系统' }}</span>
         <div class="composer-actions">
           <el-button v-if="running && (automatic || !hasContent)" type="danger" :disabled="!!changing || stopping" :loading="changing === stoppableRunId || stopping" @click="emit('stop')"><CircleStop :size="14" /> {{ automatic ? stopping ? '正在暂停' : '暂停' : '中断' }}</el-button>
-          <template v-if="!running || hasContent"><el-button v-if="!automatic && !switchingProvider && running && canInsertCurrent" :disabled="!canSend" :loading="!!changing" @click="submit('next')">插入</el-button><el-button type="primary" :disabled="!canSend" :loading="!!changing" @click="submit()"><Send :size="14" /> 发送</el-button></template>
+          <template v-if="!running || hasContent"><el-button v-if="!automatic && !switchingProvider && running && canInsertCurrent" :disabled="!canSend" :loading="!!changing" @click="submit('next')">插入</el-button><el-button type="primary" class="send-button" :disabled="!canSend" :loading="!!changing" @click="submit()"><Send :size="14" /> 发送</el-button></template>
         </div>
       </div>
     </div>
@@ -219,21 +223,19 @@ defineExpose({ focusPrompt, retrySelection });
 </template>
 
 <style scoped>
-.composer-reply{grid-column:1/-1;display:flex;align-items:center;gap:12px;margin-bottom:8px;color:var(--agent-muted);font-size:12px}.composer-reply span{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.composer-inner:has(.composer-reply){grid-template-areas:"mode tools" "reply reply" "editor editor" "footer footer"}.composer-reply{grid-area:reply}
-.composer-mode.collaboration-controls { display: grid; gap: 0; }
-.mode-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
-.manual-options { display: grid; grid-template-rows: 0fr; min-width: 0; opacity: 0; visibility: hidden; transition: grid-template-rows 180ms ease, opacity 140ms ease, visibility 180ms; }
+.composer-reply{grid-column:1/-1;grid-area:reply;display:flex;align-items:center;gap:12px;padding:6px 10px;border:1px solid color-mix(in srgb,var(--ui-accent) 28%,var(--ui-border));border-radius:var(--ds-radius-xs,8px);background:var(--ui-accent-soft);color:var(--ui-text);font-size:12px;line-height:16px}.composer-reply span{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.composer-mode.collaboration-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.mode-toolbar { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.manual-options { display: grid; grid-template-rows: 0fr; min-width: 0; opacity: 0; visibility: hidden; transition: grid-template-rows 240ms cubic-bezier(0.22, 1, 0.36, 1), opacity 180ms cubic-bezier(0.22, 1, 0.36, 1), visibility 240ms; }
 .manual-options.expanded { grid-template-rows: 1fr; opacity: 1; visibility: visible; }
 .manual-options-inner { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-height: 0; overflow: hidden; }
-.manual-options.expanded .manual-options-inner { padding-top: 8px; }
 @media (max-width: 760px) {
   .composer .composer-inner .composer-mode.collaboration-controls { display: grid; max-height: none; overflow: visible; }
   .composer .composer-inner:not(.options-expanded) .manual-options { display: none; }
 }
 @media (prefers-reduced-motion: reduce) { .manual-options { transition: none; } }
 .mobile-composer-options{display:none}
-.composer-provider{width:112px;flex-shrink:0}
-.composer{position:relative;padding:12px clamp(26px,4.2vw,64px) 18px;border-top:1px solid #252d3b;background:linear-gradient(180deg,#11151de8,#10131a)}.composer::before{position:absolute;content:"";left:12%;right:12%;top:-28px;height:28px;background:linear-gradient(transparent,#10141ce8);pointer-events:none}.composer-inner{display:grid;grid-template-areas:"mode tools" "editor editor" "footer footer";grid-template-columns:minmax(0,1fr) auto;column-gap:12px;width:min(100%,980px);margin:0 auto;padding:11px 13px 12px;border:1px solid #3a4457;border-radius:14px;background:#181d27;box-shadow:0 16px 44px #0005,0 0 0 1px #ffffff05 inset}.composer-mode{grid-area:mode;display:flex;align-items:center;gap:6px;min-width:0;margin:0 0 9px}.composer-mode>span,.composer-mode>strong{display:inline-flex;align-items:center;height:30px;padding:0 9px;border:1px solid #343d4e;border-radius:7px;background:#202633;font-size:10px;font-weight:560;color:#929caf;white-space:nowrap}.composer-mode>strong{border-color:#5c56a4;background:#2b2945;color:#cdc9ff}.composer-model{width:176px}.composer-effort{width:120px}.composer-mode:deep(.el-select__wrapper){min-height:30px;padding:2px 9px;border:1px solid #514d8b;border-radius:7px;background:#24243a;box-shadow:none}.composer-mode:deep(.el-select__wrapper:hover){border-color:#746bd0}.composer-mode:deep(.el-select__selected-item){font-size:10px;color:#d0cdff}.composer-mode:deep(.el-button){width:30px;height:30px;padding:0;border:1px solid #343d4e;border-radius:7px;color:#b2adff}.composer-mode:deep(.el-button:hover){border-color:#57538a;background:#2c2947}.composer-prompt{display:contents}.composer-prompt:deep(.prompt-tools){grid-area:tools;justify-content:flex-end;align-self:start;gap:4px;margin:0 0 9px}.composer-prompt:deep(.prompt-tools .el-button){height:30px;padding:4px 9px;border:1px solid transparent;border-radius:7px;font-size:10px}.composer-prompt:deep(.prompt-tools .el-button:hover){border-color:#3d4658}.composer-prompt:deep(.prompt-tools .el-button.active){border-color:#5c56a4}.composer-prompt:deep(.tool-divider){height:18px;margin:0 2px}.composer-prompt:deep(.editor-body){grid-area:editor;min-width:0}.composer-footer{grid-area:footer;display:flex;align-items:center;justify-content:space-between;gap:12px;margin:9px 0 0}.composer-footer span{font-size:9px;color:var(--agent-muted)}.composer-actions{display:flex;align-items:center;gap:8px}.composer-footer:deep(.el-button--primary){min-width:88px;height:34px;border:1px solid #9689ff33;border-radius:8px;background:linear-gradient(115deg,#5c62eb,#7b45e9);box-shadow:0 8px 20px #654fe63b}.composer-footer:deep(.el-button--primary:not(.is-disabled):hover){filter:brightness(1.1)}
-@media(max-width:1240px){.composer-inner{grid-template-areas:"mode" "tools" "editor" "footer";grid-template-columns:minmax(0,1fr)}.composer-mode{flex-wrap:wrap}.composer-prompt:deep(.prompt-tools){justify-content:flex-start}}
-@media(max-width:1600px){.composer{padding:12px 18px 16px}.composer-inner{grid-template-areas:"mode" "tools" "editor" "footer";grid-template-columns:minmax(0,1fr)}.composer-mode{flex-wrap:wrap}.composer-model{flex:1 0 150px}.composer-effort{flex:0 0 120px}.composer-prompt:deep(.prompt-tools){justify-content:flex-start}.composer-footer{flex-wrap:wrap}.composer-actions{margin-left:auto;flex-wrap:wrap}}
+.composer-provider{width:auto;min-width:136px;max-width:200px;flex-shrink:0}
+.composer{position:relative;padding:8px clamp(24px,4vw,56px) 18px;border-top:0;background:transparent}.composer-inner{display:grid;grid-template-areas:"tools hint" "editor editor" "mode actions";grid-template-columns:minmax(0,1fr) auto;column-gap:12px;row-gap:8px;width:min(100%,880px);margin:0 auto;padding:12px 16px;border:1px solid color-mix(in srgb,var(--ui-border) 92%,var(--ui-text) 8%);border-radius:var(--ds-radius-lg,16px);background:var(--ui-surface);box-shadow:0 10px 30px -12px var(--ui-shadow-color,rgb(15 23 42 / .12)),0 2px 6px -2px rgb(15 23 42 / .05)}.composer-inner:has(.composer-reply){grid-template-areas:"reply reply" "tools hint" "editor editor" "mode actions"}.composer-inner:has(.composer-preflight){grid-template-areas:"preflight preflight" "tools hint" "editor editor" "mode actions"}.composer-inner:has(.composer-reply):has(.composer-preflight){grid-template-areas:"reply reply" "preflight preflight" "tools hint" "editor editor" "mode actions"}.composer-mode{grid-area:mode;display:flex;align-items:center;flex-wrap:wrap;gap:6px;min-width:0;margin:0;padding-top:2px;border-top:0}.composer-mode>span,.composer-mode>strong{display:inline-flex;align-items:center;height:28px;padding:0 10px;border:1px solid color-mix(in srgb,var(--ui-border) 78%,transparent);border-radius:var(--ds-radius-xs,8px);background:color-mix(in srgb,var(--ui-raised) 72%,var(--ui-surface));font:500 12px/16px var(--sans);color:var(--ui-secondary);white-space:nowrap}.composer-mode>strong{border-color:color-mix(in srgb,var(--ui-accent) 36%,var(--ui-border));background:var(--ui-accent-soft);color:var(--ui-accent)}.composer-model{width:auto;min-width:154px;max-width:224px}.composer-effort{width:auto;min-width:118px;max-width:154px}.composer-mode:deep(.el-select__wrapper){min-height:28px;padding:2px 9px;border:1px solid color-mix(in srgb,var(--ui-border) 78%,transparent);border-radius:var(--ds-radius-xs,8px);background:color-mix(in srgb,var(--ui-raised) 72%,var(--ui-surface));box-shadow:none;transition:border-color 160ms ease,background-color 160ms ease}.composer-mode:deep(.el-select__wrapper:hover){border-color:color-mix(in srgb,var(--ui-accent) 55%,var(--ui-border));background:var(--ui-hover)}.composer-mode:deep(.el-select__selected-item){font:500 12px/16px var(--sans);color:var(--ui-text)}.composer-mode:deep(.el-button){width:28px;height:28px;padding:0;border:1px solid color-mix(in srgb,var(--ui-border) 78%,transparent);border-radius:var(--ds-radius-xs,8px);background:color-mix(in srgb,var(--ui-raised) 72%,var(--ui-surface));color:var(--ui-secondary)}.composer-mode:deep(.el-button:hover){border-color:var(--ui-accent);background:var(--ui-hover);color:var(--ui-accent)}.composer-prompt{display:contents}.composer-prompt:deep(.prompt-tools){grid-area:tools;justify-content:flex-start;align-self:center;gap:4px;margin:0;padding-bottom:0;border-bottom:0}.composer-prompt:deep(.prompt-tools .el-button){height:26px;padding:2px 8px;border:1px solid transparent;border-radius:var(--ds-radius-xs,7px);font:500 12px/16px var(--sans);color:var(--ui-muted)}.composer-prompt:deep(.prompt-tools .el-button:hover){border-color:color-mix(in srgb,var(--ui-border) 80%,transparent);background:var(--ui-raised);color:var(--ui-text)}.composer-prompt:deep(.prompt-tools .el-button.active){border-color:color-mix(in srgb,var(--ui-accent) 42%,var(--ui-border));background:var(--ui-accent-soft);color:var(--ui-accent)}.composer-prompt:deep(.tool-divider){height:14px;margin:0 2px;opacity:.6}.composer-prompt:deep(.editor-body){grid-area:editor;min-width:0}.composer-footer{display:contents}.composer-hint-text{grid-area:hint;align-self:center;justify-self:end;padding-bottom:0;border-bottom:0;font:400 11.5px/16px var(--sans);color:var(--ui-muted);text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:360px;opacity:.85}.composer-actions{grid-area:actions;display:flex;align-items:center;justify-content:flex-end;gap:8px;padding-top:2px;border-top:0}.composer-actions:deep(.el-button--primary){min-width:88px;height:32px;padding:0 16px;border:1px solid var(--ui-primary);border-radius:var(--ds-radius-sm,9px);background:var(--ui-primary);color:var(--ui-on-primary);font-size:13px;font-weight:600;box-shadow:0 2px 6px -1px rgb(0 0 0 / .12);transition:background 180ms cubic-bezier(0.16,1,0.3,1),border-color 180ms cubic-bezier(0.16,1,0.3,1),transform 140ms cubic-bezier(0.16,1,0.3,1),box-shadow 180ms ease}.composer-actions:deep(.el-button--primary:not(.is-disabled):hover){background:var(--ui-primary-hover);border-color:var(--ui-primary-hover);transform:translateY(-1px)}.composer-actions:deep(.el-button--primary:not(.is-disabled):active){transform:scale(0.97)}
+@media(max-width:1180px){.composer-inner{grid-template-areas:"tools tools" "editor editor" "mode actions" "hint hint";grid-template-columns:minmax(0,1fr) auto}.composer-inner:has(.composer-reply){grid-template-areas:"reply reply" "tools tools" "editor editor" "mode actions" "hint hint"}.composer-inner:has(.composer-preflight){grid-template-areas:"preflight preflight" "tools tools" "editor editor" "mode actions" "hint hint"}.composer-inner:has(.composer-reply):has(.composer-preflight){grid-template-areas:"reply reply" "preflight preflight" "tools tools" "editor editor" "mode actions" "hint hint"}.composer-hint-text{justify-self:start;text-align:left;padding-bottom:0;border-bottom:0;max-width:100%}}
 </style>

@@ -14,7 +14,6 @@ import { buildReviewCatalog } from '../src/features/api-integration/review-catal
 import { buildExecutionTasks, currentExecutionProgress, executionIssueDeferral, taskInterfaces, type ExecutionProgress } from '../src/features/integration-execution/execution-plan.js';
 import type { ApexBffReviewState } from '../shared/apex-bff-review.js';
 import type { IntegrationCatalog } from '../shared/integration-catalog.js';
-import { loadIntegrationCatalog } from './integration-catalog.js';
 import type { createAgentTeamService } from './agent-team-service.js';
 import { validateTeamModelChoice } from './agent-profiles.js';
 import type { createAgentGroupChat } from './agent-group-chat.js';
@@ -71,14 +70,13 @@ async function containedFile(root: string, relative: string) {
 
 export async function createRefactorControl(root: string, directory: string, runtime: Runtime, options: {
   allowDispatch?: () => Promise<boolean>; autoDispatch?: boolean;
-  catalog?: IntegrationCatalog;
   teams?: Pick<Awaited<ReturnType<typeof createAgentTeamService>>, 'profiles' | 'list' | 'chat' | 'decide'>;
   groups?: Pick<Awaited<ReturnType<typeof createAgentGroupChat>>, 'dashboard' | 'send' | 'detail' | 'action'>;
+  catalog?: IntegrationCatalog;
   extraModules?: () => Promise<RefactorModule[]>;
   moduleConfig?: (moduleId: string) => { workspacePath: string; baseUrl: string; projectId: string;
     name?: string; startScript?: string; packageManager?: RefactorLocalPlan['packageManager'] } | undefined;
 } = {}) {
-  const catalog = buildReviewCatalog(options.catalog ?? await loadIntegrationCatalog());
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
   const file = path.join(directory, 'state.json');
   let state: StoredState;
@@ -89,9 +87,9 @@ export async function createRefactorControl(root: string, directory: string, run
     configSchema.parse(state.config);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    const plan = await readJson(path.join(root, 'public/integration-runs/execution-plan.json')).catch(() => ({ automation: {} }));
+    const plan = await readJson(path.join(root, 'public/integration-runs/lizirui-plan.json')).catch(() => ({ automation: {} }));
     state = { version: 1, revision: randomUUID(), config: { sourceRoot: root, workspacePath: plan.automation?.workspacePath || root,
-      baseUrl: plan.automation?.baseUrl || 'http://127.0.0.1:6791', environment: plan.automation?.environment || 'DEV', assignee: plan.automation?.assignee || '' }, jobs: [], batches: [] };
+      baseUrl: plan.automation?.baseUrl || 'http://127.0.0.1:6791', environment: plan.automation?.environment || 'DEV', assignee: plan.automation?.assignee || 'lizirui' }, jobs: [], batches: [] };
   }
   let queue = Promise.resolve(), closed = false;
   const localRetests = createLocalRetests(root, path.join(directory, 'local-retests'));
@@ -115,6 +113,7 @@ export async function createRefactorControl(root: string, directory: string, run
   }
   async function source(config = state.config): Promise<RefactorSource> {
     const extraModules = await options.extraModules?.() || [];
+    const catalog = buildReviewCatalog(options.catalog);
     const reviewFile = await fs.access(path.join(config.sourceRoot, '.local/data/apex-bff-review.json')).then(() => path.join(config.sourceRoot, '.local/data/apex-bff-review.json'), () => path.join(config.sourceRoot, '.data/apex-bff-review.json'));
     const records = await readJson(reviewFile).catch(error => {
       if (!extraModules.length || (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;

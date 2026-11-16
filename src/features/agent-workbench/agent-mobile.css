@@ -10,51 +10,52 @@
   .agent-panel.mobile-layout .session-shell { display: flex; flex-direction: column; }
   .agent-panel.mobile-layout .conversation-column,
   .agent-panel.mobile-layout .workbench-column { flex: 1; width: 100%; min-height: 0; }
-  .agent-panel .mobile-agent-toolbar { display: flex; align-items: center; gap: 4px; flex-shrink: 0; padding: 0 10px; border-bottom: 1px solid var(--agent-border); background: var(--agent-panel); }
-  .mobile-agent-toolbar strong { flex: 1; min-width: 0; padding-left: 8px; font-size: 15px; }
-  .mobile-agent-toolbar button { min-height: 44px; padding: 0 10px; border: 0; background: transparent; color: var(--agent-text); font: inherit; font-size: 14px; }
-  .agent-panel .workspace-navigation { flex-shrink: 0; min-height: 44px; gap: 2px; padding: 0 8px; overflow-x: auto; scrollbar-width: none; }
+  .agent-panel .mobile-agent-toolbar { display: flex; align-items: center; gap: 4px; flex-shrink: 0; padding: 0 12px; border-bottom: 1px solid var(--agent-border); background: var(--agent-panel); }
+  .mobile-agent-toolbar strong { flex: 1; min-width: 0; padding-left: 8px; font-size: 16px; line-height: 24px; }
+  .mobile-agent-toolbar button { min-height: 44px; padding: 0 10px; border: 0; border-radius: 8px; background: transparent; color: var(--agent-text); font: inherit; font-size: 14px; line-height: 20px; }
+  .agent-panel .workspace-navigation { flex-shrink: 0; min-height: 44px; gap: 4px; padding: 0 8px; overflow-x: auto; scrollbar-width: none; }
   .agent-panel .workspace-navigation button { flex-shrink: 0; min-height: 44px; padding: 6px 12px; white-space: nowrap; }
   .agent-panel .workspace-panel-content { padding: 12px; }
   .agent-panel .agent-body > .el-alert { left: 8px; right: 8px; }
-  .agent-panel .conversation-header { flex-shrink: 0; min-height: 0; padding: 6px 12px; gap: 4px; }
+  .agent-panel .conversation-header { flex-shrink: 0; min-height: 0; padding: 8px 12px; gap: 4px; }
   .agent-panel .conversation-tabs { flex-wrap: nowrap; overflow-x: auto; width: 100%; }
   .agent-panel .conversation-tabs > * { flex-shrink: 0; }
   .agent-panel .conversation-actions { flex-wrap: nowrap; width: 100%; overflow-x: auto; }
   .agent-panel .conversation-actions > * { flex-shrink: 0; }
-  .agent-panel .conversation-actions .el-button { min-height: 40px; font-size: 12px; }
+  .agent-panel .conversation-actions .el-button { min-height: 40px; font-size: 12px; line-height: 16px; }
   .agent-panel .conversation-actions > .el-button:nth-last-child(-n+2) { display: none; }
   .agent-panel .conversation-context { flex-shrink: 0; min-height: 40px; padding: 4px 12px; gap: 12px; overflow-x: auto; }
   .agent-panel .conversation-context > * { flex: 0 0 auto; }
   .agent-panel .context-block small { display: none; }
-  .agent-panel .context-block strong { font-size: 12px; }
+  .agent-panel .context-block strong { font-size: 12px; line-height: 16px; }
   .agent-panel .branch-context { max-width: 170px; }
   .agent-panel .workspace-context { display: none; }
   .agent-panel .message-viewport { padding: 12px 10px; }
-  .agent-panel .chat-message { gap: 6px; }
-  .agent-panel .message-avatar { width: 26px; height: 26px; }
-  .agent-panel .chat-message > div { max-width: calc(100% - 32px); backdrop-filter: none; }
-  .agent-panel .agent-message > div { width: calc(100% - 32px); padding: 10px 12px; }
-  .agent-panel .user-message > div { padding: 10px 12px; }
-  .agent-panel .chat-message header { flex-wrap: wrap; gap: 6px; }
-  .agent-panel .chat-message p, .agent-panel .agent-markdown { font-size: 15px; overflow-wrap: anywhere; }
+  .agent-panel .chat-message { gap: 8px; }
+  .agent-panel .message-avatar { width: 28px; height: 28px; }
+  .agent-panel .chat-message > div { max-width: 100%; backdrop-filter: none; }
+  .agent-panel .agent-message:not(.team-chat-message) > div { width: 100%; padding: 2px 0; }
+  .agent-panel .agent-message.team-chat-message > div { width: calc(100% - 32px); padding: 8px 10px; }
+  .agent-panel :is(.user-message .user-card, .user-message.team-chat-message > div) { padding: 7px 12px; }
+  .agent-panel .chat-message header { flex-wrap: wrap; gap: 5px; }
+  .agent-panel .chat-message p, .agent-panel .agent-markdown { font-size: 13px; line-height: 1.58; overflow-wrap: anywhere; }
   .agent-panel .message-tools { gap: 6px; }
   .agent-panel .message-copy, .agent-panel .event-link { min-height: 36px; }
   .agent-panel .message-copy { min-width: 36px; }
   .agent-panel .composer { flex-shrink: 0; padding: 6px 8px; }
   .agent-panel .composer-inner { padding: 8px; grid-template-areas: "settings" "mode" "tools" "editor" "footer"; grid-template-columns: minmax(0, 1fr); }
-  .agent-panel .mobile-composer-options { display: block; grid-area: settings; justify-self: start; min-height: 36px; padding: 0 4px; border: 0; background: transparent; color: var(--agent-secondary); font: inherit; font-size: 12px; }
+  .agent-panel .mobile-composer-options { display: block; grid-area: settings; justify-self: start; min-height: 36px; padding: 0 4px; border: 0; background: transparent; color: var(--agent-secondary); font: inherit; font-size: 12px; line-height: 16px; }
   .agent-panel .composer-inner:not(.options-expanded) .composer-mode { display: none; }
   .agent-panel .composer-inner .composer-mode { gap: 8px; margin: 4px 0; max-height: 100px; overflow-y: auto; }
   .agent-panel .composer-mode > span { display: none; }
   .agent-panel .composer .prompt-tools { flex-wrap: nowrap; justify-content: flex-start; overflow-x: auto; margin-bottom: 6px; }
   .agent-panel .prompt-tools > * { flex-shrink: 0; }
-  .agent-panel .composer .prompt-tools .el-button { min-height: 36px; margin-left: 0; padding: 4px 8px; font-size: 12px; }
+  .agent-panel .composer .prompt-tools .el-button { min-height: 36px; margin-left: 0; padding: 4px 8px; font-size: 12px; line-height: 16px; }
   .agent-panel .composer-footer { gap: 6px; margin-top: 6px; }
   .agent-panel .composer-footer > span { display: none; }
   .agent-panel .composer-actions { gap: 8px; }
   .agent-panel .composer-actions .el-button { min-height: 44px; margin-left: 0; }
-  .agent-panel.mobile-layout .prompt-editor .el-textarea__inner { font-size: 16px; line-height: 1.5; max-height: 150px; padding: 10px; }
+  .agent-panel.mobile-layout .prompt-editor .el-textarea__inner { font-size: 16px; line-height: 24px; max-height: 150px; padding: 10px; }
   .agent-panel input, .agent-panel select { font-size: 16px; }
   .agent-panel .mention-picker { max-height: min(280px, 35dvh); }
   .agent-panel .mention-picker button { min-height: 44px; }

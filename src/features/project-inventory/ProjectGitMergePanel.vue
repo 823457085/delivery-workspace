@@ -2,7 +2,25 @@
 import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { dateTime, safeUrl } from '../../shared/format';
-import type { GitCommitItem, GitSnapshot } from './project-git-types';
+import type { DeliveryReadinessScorecard, GitCommitItem, GitSnapshot } from './project-git-types';
+
+interface TriageRiskItem {
+  category: string;
+  label: string;
+  severity: 'high' | 'medium';
+  file: string;
+  line: number | null;
+  reason: string;
+}
+
+interface MergeTriageSummary {
+  sourceFiles: number;
+  testFiles: number;
+  generatedFiles: number;
+  missingTestsWarning: boolean;
+  largeDiffTriggered: boolean;
+  risks: TriageRiskItem[];
+}
 
 interface MergePreview {
   sourceRef: string;
@@ -21,6 +39,9 @@ interface MergePreview {
   filesTruncated: boolean;
   totals: { files: number; additions: number; deletions: number; binaryFiles: number };
   branchDiff?: { files: { path: string; status: string }[]; total: number };
+  triage?: MergeTriageSummary;
+  scorecard?: DeliveryReadinessScorecard;
+  releaseNotesMarkdown?: string;
 }
 
 const branchDiffStatus: Record<string, string> = {
@@ -54,6 +75,9 @@ interface RemoteRequest {
   canCreate: boolean;
   reason?: string;
   existing?: { id: string | number; url: string; title: string; state: string };
+  triage?: MergeTriageSummary;
+  scorecard?: DeliveryReadinessScorecard;
+  releaseNotesMarkdown?: string;
 }
 
 type ListedRequest = Omit<NonNullable<RemoteRequest['existing']>, 'id'> & {
@@ -82,8 +106,9 @@ const creating = shallowRef(false);
 const confirming = shallowRef(false);
 const preparingLocal = shallowRef(false);
 const editingTitle = shallowRef(false);
+const syncingDescription = shallowRef(false);
 const localMergeSection = ref<HTMLElement>();
-const busy = computed(() => props.busy || previewing.value || preparing.value || creating.value || confirming.value || preparingLocal.value || editingTitle.value);
+const busy = computed(() => props.busy || previewing.value || preparing.value || creating.value || confirming.value || preparingLocal.value || editingTitle.value || syncingDescription.value);
 const candidates = computed(() => props.snapshot.branches.filter(branch => !branch.current));
 const strategyLabel = computed(() => ({ ff: '普通合并（可快进时快进）', 'no-ff': '始终创建合并提交', 'ff-only': '仅允许快进' })[strategy.value]);
 const canMerge = computed(() => !!preview.value && !preview.value.alreadyMerged && props.snapshot.clean
@@ -95,6 +120,8 @@ const sourceBranch = shallowRef('');
 const targetBranch = shallowRef('');
 const requestTitle = shallowRef('');
 const requestDescription = shallowRef('');
+const autoFilledTitle = shallowRef('');
+const autoFilledDescription = shallowRef('');
 const prepared = ref<RemoteRequest>();
 const createdRequest = ref<NonNullable<RemoteRequest['existing']>>();
 const resultUncertain = shallowRef(false);
@@ -116,8 +143,8 @@ let requestVersion = 0;
 let listVersion = 0;
 let alive = true;
 
-watch([previewing, preparing, creating, confirming, editingTitle], () =>
-  emit('busy', previewing.value || preparing.value || creating.value || confirming.value || editingTitle.value), { flush: 'sync' });
+watch([previewing, preparing, creating, confirming, editingTitle, syncingDescription], () =>
+  emit('busy', previewing.value || preparing.value || creating.value || confirming.value || editingTitle.value || syncingDescription.value), { flush: 'sync' });
 onBeforeUnmount(() => { alive = false; ++requestVersion; emit('busy', false); });
 watch(sourceRef, () => { preview.value = undefined; }, { flush: 'sync' });
 watch(() => props.snapshot, snapshot => {
@@ -141,6 +168,8 @@ watch(remote, () => {
   targetBranch.value = ['master', 'main', 'pre'].find(name => name !== sourceBranch.value && remoteBranches.value.some(branch => branch.name === name)) || '';
   requestTitle.value = '';
   requestDescription.value = '';
+  autoFilledTitle.value = '';
+  autoFilledDescription.value = '';
 }, { immediate: true, flush: 'sync' });
 watch([sourceBranch, targetBranch], resetRequest, { flush: 'sync' });
 watch(remoteBranches, branches => {
@@ -214,6 +243,50 @@ async function editRequestTitle(request: ListedRequest) {
     ElMessage.error(error instanceof Error ? error.message : '保存标题失败');
     void loadRequestList();
   } finally { editingTitle.value = false; }
+}
+
+async function syncRequestDescription(request: ListedRequest) {
+  if (busy.value || loadingRequests.value) return;
+  const path = props.path, remoteName = remote.value;
+  const selectedRepository = () => props.snapshot.remotes.find(item => item.name === remote.value)?.webUrl;
+  const repositoryUrl = URL.parse(selectedRepository() || '')?.href;
+  if (!repositoryUrl) return;
+  const stillSelected = () => alive && props.path === path && remote.value === remoteName
+    && URL.parse(selectedRepository() || '')?.href === repositoryUrl;
+  confirming.value = true;
+  try {
+    await ElMessageBox.confirm(
+      `根据远端 ${request.sourceBranch} → ${request.targetBranch} 的最新已获取提交，重新生成结构化 Walkthrough 并更新 Codeup 合并请求 #${request.id} 的说明。`,
+      '同步变更摘要',
+      { confirmButtonText: '同步说明', cancelButtonText: '取消', type: 'info' },
+    );
+  } catch { return; }
+  finally { confirming.value = false; }
+  if (!stillSelected() || busy.value) return;
+  syncingDescription.value = true;
+  try {
+    const result: { request: ListedRequest } = await jsonRequest('/api/projects/git/merge-request/description', {
+      path, remote: remoteName, repositoryUrl, id: request.id,
+      sourceBranch: request.sourceBranch, targetBranch: request.targetBranch,
+    }, true);
+    if (!stillSelected()) return;
+    requests.value = requests.value.map(item => item.id === request.id ? { ...item, ...result.request } : item);
+    ElMessage.success('合并请求变更摘要已同步更新');
+  } catch (error) {
+    if (!stillSelected()) return;
+    ElMessage.error(error instanceof Error ? error.message : '同步变更摘要失败');
+    void loadRequestList();
+  } finally { syncingDescription.value = false; }
+}
+
+async function copyWalkthroughDescription() {
+  if (!prepared.value?.description) return;
+  try {
+    await navigator.clipboard.writeText(prepared.value.description);
+    ElMessage.success('已复制完整 Walkthrough 说明，可在代码平台粘贴');
+  } catch {
+    ElMessage.error('复制失败，请检查浏览器剪贴板权限');
+  }
 }
 
 async function prepareLocalRequestMerge(request: ListedRequest) {
@@ -324,6 +397,45 @@ async function abortMerge() {
   if (alive && props.path === path) await props.execute({ action: 'abort-merge' }, '已中止合并');
 }
 
+function applyPreparedDefaults(data: RemoteRequest) {
+  const nextTitle = data.title || `合并 ${sourceBranch.value} 到 ${targetBranch.value}`;
+  const nextDescription = data.description || '';
+  if (!requestTitle.value.trim() || requestTitle.value === autoFilledTitle.value) {
+    requestTitle.value = nextTitle;
+    autoFilledTitle.value = nextTitle;
+  }
+  if (!requestDescription.value.trim() || requestDescription.value === autoFilledDescription.value) {
+    requestDescription.value = nextDescription;
+    autoFilledDescription.value = nextDescription;
+  }
+}
+
+function restoreAutoDescription() {
+  if (!prepared.value?.description) return;
+  requestDescription.value = prepared.value.description;
+  autoFilledDescription.value = prepared.value.description;
+}
+
+function scorecardTagType(level: DeliveryReadinessScorecard['riskLevel']): 'success' | 'warning' | 'danger' {
+  if (level === 'low') return 'success';
+  if (level === 'medium') return 'warning';
+  return 'danger';
+}
+
+function gateIcon(status: 'pass' | 'warn' | 'block'): string {
+  return status === 'pass' ? '✓' : status === 'warn' ? '!' : '✕';
+}
+
+async function copyMarkdownSnippet(content: string | undefined, label: string) {
+  if (!content) return;
+  try {
+    await navigator.clipboard.writeText(content);
+    ElMessage.success(`已复制${label}`);
+  } catch {
+    ElMessage.error(`复制${label}失败，请检查剪贴板权限`);
+  }
+}
+
 async function prepareRequest() {
   if (busy.value || !sourceBranch.value || !targetBranch.value || sourceBranch.value === targetBranch.value) return;
   const version = ++requestVersion;
@@ -336,10 +448,32 @@ async function prepareRequest() {
     if (!alive || version !== requestVersion) return;
     prepared.value = data;
     resultUncertain.value = false;
-    if (!requestTitle.value.trim()) requestTitle.value = data.title || `合并 ${sourceBranch.value} 到 ${targetBranch.value}`;
-    if (!requestDescription.value.trim()) requestDescription.value = data.description || '';
+    applyPreparedDefaults(data);
   } catch (error) {
     if (alive && version === requestVersion) ElMessage.error(error instanceof Error ? error.message : '准备合并请求失败');
+  } finally {
+    if (alive) preparing.value = false;
+  }
+}
+
+async function reconcileRequest() {
+  if (busy.value || !sourceBranch.value || !targetBranch.value || sourceBranch.value === targetBranch.value) return;
+  const version = ++requestVersion;
+  preparing.value = true;
+  try {
+    const data = await jsonRequest('/api/projects/git/merge-request/reconcile', {
+      path: props.path, remote: remote.value, sourceBranch: sourceBranch.value,
+      targetBranch: targetBranch.value, revision: props.snapshot.revision,
+    }, true);
+    if (!alive || version !== requestVersion) return;
+    prepared.value = data;
+    resultUncertain.value = false;
+    if (data.existing) ElMessage.success('已在平台上找到对应合并请求');
+    else ElMessage.success('已核对平台无未结束同名请求，已解除重试锁定');
+    applyPreparedDefaults(data);
+    void loadRequestList();
+  } catch (error) {
+    if (alive && version === requestVersion) ElMessage.error(error instanceof Error ? error.message : '核对合并请求状态失败');
   } finally {
     if (alive) preparing.value = false;
   }
@@ -406,12 +540,13 @@ async function createRequest() {
               <el-tag v-if="row.state" size="small" effect="plain">{{ requestStateLabels[row.state.toUpperCase()] ?? row.state }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="操作" min-width="218">
+          <el-table-column label="操作" min-width="268">
             <template #default="{ row }">
               <div class="merge-actions">
                 <el-button link type="primary" :disabled="busy || !snapshot.clean || snapshot.mergeInProgress"
                   @click="prepareLocalRequestMerge(row)">准备本地合并</el-button>
                 <el-button link type="primary" :disabled="busy || loadingRequests" @click="editRequestTitle(row)">编辑标题</el-button>
+                <el-button link type="primary" :disabled="busy || loadingRequests" @click="syncRequestDescription(row)">同步变更摘要</el-button>
                 <el-link v-if="safeUrl(row.url)" :href="safeUrl(row.url)" target="_blank" rel="noopener noreferrer">在 Codeup 查看</el-link>
               </div>
             </template>
@@ -461,6 +596,60 @@ async function createRequest() {
             <span>{{ preview.alreadyMerged ? '当前分支已包含来源提交' : preview.canFastForward ? '可以快进合并' : '两个分支均有独立提交，需创建合并提交' }}</span>
             <small v-if="preview.ahead > 0 && preview.totals.files === 0">来源分支有待合入的提交记录，文件内容与共同祖先一致。</small>
             <small>来源 {{ preview.sourceSha.slice(0, 8) }} · 当前 {{ preview.targetSha.slice(0, 8) }}</small>
+          </div>
+          <div v-if="preview.scorecard" class="scorecard-banner" :data-risk="preview.scorecard.riskLevel">
+            <div class="scorecard-top">
+              <div class="triage-tags">
+                <el-tag size="small" :type="scorecardTagType(preview.scorecard.riskLevel)" effect="dark">
+                  就绪度 {{ preview.scorecard.readinessScore }}/100 · {{ preview.scorecard.riskLabel }}
+                </el-tag>
+                <span
+                  v-for="gate in preview.scorecard.gates"
+                  :key="gate.id"
+                  class="readiness-gate-pill"
+                  :class="`is-${gate.status}`"
+                  :title="gate.detail"
+                >
+                  <b>{{ gateIcon(gate.status) }}</b> {{ gate.label }}
+                </span>
+              </div>
+              <el-button
+                v-if="preview.releaseNotesMarkdown"
+                size="small"
+                plain
+                @click="copyMarkdownSnippet(preview.releaseNotesMarkdown, '变更发布说明 (Release Notes)')"
+              >
+                复制 Release Notes
+              </el-button>
+            </div>
+            <p class="scorecard-summary">{{ preview.scorecard.summary }}</p>
+            <details v-if="preview.scorecard.factors.length" class="triage-details">
+              <summary>展开查看风险评分明细（共 {{ preview.scorecard.factors.length }} 项，累计风险分 {{ preview.scorecard.riskScore }}）</summary>
+              <ul>
+                <li v-for="factor in preview.scorecard.factors" :key="factor.id">
+                  <strong>[+{{ factor.points }} 分 · {{ factor.label }}]</strong> — {{ factor.detail }}
+                </li>
+              </ul>
+            </details>
+          </div>
+          <div v-if="preview.triage" class="triage-banner">
+            <div class="triage-tags">
+              <el-tag size="small" effect="plain">源码 {{ preview.triage.sourceFiles }} · 测试 {{ preview.triage.testFiles }}<template v-if="preview.triage.generatedFiles"> · 生成物/锁文件 {{ preview.triage.generatedFiles }}</template></el-tag>
+              <el-tag v-if="preview.triage.missingTestsWarning" size="small" type="warning" effect="plain">源码改动未含测试文件</el-tag>
+              <el-tag v-if="preview.triage.largeDiffTriggered" size="small" type="info" effect="plain">大体积变更（建议分组抽样核对）</el-tag>
+              <el-tag v-if="preview.triage.risks.length" size="small" :type="preview.triage.risks.some(r => r.severity === 'high') ? 'danger' : 'warning'" effect="plain">
+                审查关注点 {{ preview.triage.risks.length }}
+              </el-tag>
+            </div>
+            <details v-if="preview.triage.risks.length" class="triage-details">
+              <summary>展开查看静态预筛风险点（{{ preview.triage.risks.length }} 项）</summary>
+              <ul>
+                <li v-for="(risk, idx) in preview.triage.risks" :key="`${risk.file}:${risk.line}:${idx}`">
+                  <strong>[{{ risk.severity === 'high' ? '高关注' : '中关注' }} · {{ risk.label }}]</strong>
+                  <code>{{ risk.file }}{{ risk.line ? `:${risk.line}` : '' }}</code> — {{ risk.reason }}
+                </li>
+              </ul>
+            </details>
           </div>
           <el-tabs class="merge-preview-tabs">
             <el-tab-pane :label="`待合入提交 (${preview.ahead})`">
@@ -521,16 +710,83 @@ async function createRequest() {
       </div>
       <template v-else-if="prepared">
         <p v-if="prepared.reason" class="row-secondary">{{ prepared.reason }}</p>
+        <div v-if="prepared.scorecard" class="scorecard-banner" :data-risk="prepared.scorecard.riskLevel">
+          <div class="scorecard-top">
+            <div class="triage-tags">
+              <el-tag size="small" :type="scorecardTagType(prepared.scorecard.riskLevel)" effect="dark">
+                就绪度 {{ prepared.scorecard.readinessScore }}/100 · {{ prepared.scorecard.riskLabel }}
+              </el-tag>
+              <span
+                v-for="gate in prepared.scorecard.gates"
+                :key="gate.id"
+                class="readiness-gate-pill"
+                :class="`is-${gate.status}`"
+                :title="gate.detail"
+              >
+                <b>{{ gateIcon(gate.status) }}</b> {{ gate.label }}
+              </span>
+            </div>
+            <el-button
+              v-if="prepared.releaseNotesMarkdown"
+              size="small"
+              plain
+              @click="copyMarkdownSnippet(prepared.releaseNotesMarkdown, '变更发布说明 (Release Notes)')"
+            >
+              复制 Release Notes
+            </el-button>
+          </div>
+          <p class="scorecard-summary">{{ prepared.scorecard.summary }}</p>
+          <details v-if="prepared.scorecard.factors.length" class="triage-details">
+            <summary>展开查看提测风险评分明细（共 {{ prepared.scorecard.factors.length }} 项，累计风险分 {{ prepared.scorecard.riskScore }}）</summary>
+            <ul>
+              <li v-for="factor in prepared.scorecard.factors" :key="factor.id">
+                <strong>[+{{ factor.points }} 分 · {{ factor.label }}]</strong> — {{ factor.detail }}
+              </li>
+            </ul>
+          </details>
+        </div>
+        <div v-if="prepared.triage" class="triage-banner">
+          <div class="triage-tags">
+            <el-tag size="small" effect="plain">源码 {{ prepared.triage.sourceFiles }} · 测试 {{ prepared.triage.testFiles }}<template v-if="prepared.triage.generatedFiles"> · 生成物/锁文件 {{ prepared.triage.generatedFiles }}</template></el-tag>
+            <el-tag v-if="prepared.triage.missingTestsWarning" size="small" type="warning" effect="plain">源码改动未含测试文件</el-tag>
+            <el-tag v-if="prepared.triage.risks.length" size="small" :type="prepared.triage.risks.some(r => r.severity === 'high') ? 'danger' : 'warning'" effect="plain">
+              审查关注点 {{ prepared.triage.risks.length }}
+            </el-tag>
+          </div>
+          <details v-if="prepared.triage.risks.length" class="triage-details">
+            <summary>展开查看提测前风险预筛（{{ prepared.triage.risks.length }} 项）</summary>
+            <ul>
+              <li v-for="(risk, idx) in prepared.triage.risks" :key="`${risk.file}:${risk.line}:${idx}`">
+                <strong>[{{ risk.severity === 'high' ? '高关注' : '中关注' }} · {{ risk.label }}]</strong>
+                <code>{{ risk.file }}{{ risk.line ? `:${risk.line}` : '' }}</code> — {{ risk.reason }}
+              </li>
+            </ul>
+          </details>
+        </div>
+        <div v-if="!prepared.canCreate && prepared.reason?.includes('尚未确认')" class="merge-actions">
+          <el-button size="small" :loading="preparing" :disabled="busy" @click="reconcileRequest">已核对平台未创建，解除重试锁定</el-button>
+        </div>
         <template v-if="prepared.mode === 'api' && prepared.canCreate">
           <el-form label-position="top" class="request-details" @submit.prevent="createRequest">
             <el-form-item label="合并请求标题"><el-input v-model="requestTitle" :disabled="busy" maxlength="256" /></el-form-item>
-            <el-form-item label="说明（可选）"><el-input v-model="requestDescription" :disabled="busy" type="textarea" :rows="3" maxlength="10000" /></el-form-item>
+            <el-form-item>
+              <template #label>
+                <span class="description-label">
+                  <span>说明（可选，已自动生成 Walkthrough）</span>
+                  <el-button v-if="prepared.description && requestDescription !== prepared.description" link type="primary" size="small" :disabled="busy" @click="restoreAutoDescription">恢复自动摘要</el-button>
+                </span>
+              </template>
+              <el-input v-model="requestDescription" :disabled="busy" type="textarea" :rows="6" maxlength="10000" />
+            </el-form-item>
             <el-button type="primary" :loading="creating" :disabled="busy || !requestTitle.trim()" @click="createRequest">创建合并请求</el-button>
           </el-form>
         </template>
         <template v-else-if="prepared.mode === 'browser'">
-          <p class="row-secondary">源分支和目标分支已准备好，在 {{ prepared.provider }} 页面填写标题并确认创建。</p>
-          <el-link v-if="safeUrl(prepared.url)" :href="safeUrl(prepared.url)" target="_blank" rel="noopener noreferrer" type="primary">前往平台创建合并请求</el-link>
+          <p class="row-secondary">源分支和目标分支已准备好（跳转链接已附带紧凑摘要），在 {{ prepared.provider }} 页面确认创建。</p>
+          <div class="merge-actions">
+            <el-link v-if="safeUrl(prepared.url)" :href="safeUrl(prepared.url)" target="_blank" rel="noopener noreferrer" type="primary">前往平台创建合并请求</el-link>
+            <el-button v-if="prepared.description" size="small" plain :disabled="busy" @click="copyWalkthroughDescription">复制完整 Walkthrough 说明</el-button>
+          </div>
         </template>
         <el-link v-else-if="prepared.mode === 'unavailable' && safeUrl(prepared.repositoryUrl)" :href="safeUrl(prepared.repositoryUrl)" target="_blank" rel="noopener noreferrer" type="primary">打开代码平台</el-link>
       </template>
@@ -553,8 +809,22 @@ async function createRequest() {
 .merge-actions :deep(.el-button) { margin: 0; }
 .merge-summary { display: flex; flex-direction: column; gap: 6px; margin-top: 16px; font-size: 12px; overflow-wrap: anywhere; }
 .merge-summary small { color: var(--ui-muted); line-height: 1.7; }
+.triage-banner { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; padding: 10px 12px; border: 1px solid var(--el-border-color-lighter, rgba(128,128,128,0.2)); border-radius: 8px; background: color-mix(in srgb, var(--el-fill-color-light, transparent) 55%, transparent); font-size: 12px; }
+.scorecard-banner { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; padding: 10px 12px; border: 1px solid var(--el-border-color-lighter, rgba(128,128,128,0.24)); border-radius: 8px; background: color-mix(in srgb, var(--el-fill-color-lighter, transparent) 72%, transparent); font-size: 12px; }
+.scorecard-banner[data-risk='critical'], .scorecard-banner[data-risk='high'] { border-color: color-mix(in srgb, var(--el-color-danger, #f56c6c) 45%, transparent); }
+.scorecard-banner[data-risk='medium'] { border-color: color-mix(in srgb, var(--el-color-warning, #e6a23c) 45%, transparent); }
+.scorecard-top { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.scorecard-summary { margin: 0; color: var(--ui-muted); line-height: 1.55; }
+.readiness-gate-pill { display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; border-radius: 999px; border: 1px solid var(--el-border-color-lighter, rgba(128,128,128,0.25)); font-size: 11.5px; line-height: 16px; cursor: help; }
+.readiness-gate-pill.is-pass { color: var(--el-color-success, #67c23a); border-color: color-mix(in srgb, var(--el-color-success, #67c23a) 35%, transparent); }
+.readiness-gate-pill.is-warn { color: var(--el-color-warning, #e6a23c); border-color: color-mix(in srgb, var(--el-color-warning, #e6a23c) 40%, transparent); }
+.readiness-gate-pill.is-block { color: var(--el-color-danger, #f56c6c); border-color: color-mix(in srgb, var(--el-color-danger, #f56c6c) 45%, transparent); font-weight: 600; }
+.triage-tags { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.triage-details summary { cursor: pointer; color: var(--ui-muted); font-size: 12px; user-select: none; }
+.triage-details ul { margin: 6px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; line-height: 1.6; overflow-wrap: anywhere; }
 .merge-preview-tabs { margin-top: 10px; }
 .request-details { margin-top: 16px; }
+.description-label { display: inline-flex; align-items: center; gap: 10px; }
 .request-result { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 14px; font-size: 13px; overflow-wrap: anywhere; }
 .request-remote { width: 155px; }
 .request-branches { display: flex; flex-wrap: wrap; column-gap: 12px; margin: 2px 0 0; color: var(--ui-muted); font-size: 12px; overflow-wrap: anywhere; }

@@ -58,7 +58,8 @@ const deliveryGate = computed(() => {
       <header class="task-heading"><strong>当前任务</strong><StatusPill :value="paused ? 'paused' : current.status" /></header>
       <AgentMarkdown class="task-objective" :source="current.objective" />
       <AgentTeamWorkflowCard v-for="workflow in teamWorkflows" :key="workflow.id" :workflow="workflow" :changing="changing"
-        :current-conversation-id="conversation?.id" @decide="(id, action) => emit('decideWorkflow', id, action)" @select="emit('selectAgent', $event)" @accept="emit('accept', $event)" />
+        :current-conversation-id="conversation?.id" :conversations="conversations"
+        @decide="(id, action) => emit('decideWorkflow', id, action)" @select="emit('selectAgent', $event)" @accept="emit('accept', $event)" />
       <section class="task-room" aria-label="任务房间事实">
         <header><strong>任务房间</strong><small>真实运行快照</small></header>
         <dl>

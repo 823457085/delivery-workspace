@@ -77,7 +77,19 @@ function tableSeparator(line: string) {
   return values.length > 0 && values.every((value) => /^:?-{3,}:?$/.test(value));
 }
 
+const MAX_MARKDOWN_CACHE_ENTRIES = 256;
+const MAX_MARKDOWN_CACHE_CHARS = 64_000;
+const parsedMarkdownCache = new Map<string, MarkdownBlock[]>();
+
 export function parseAgentMarkdown(source: string): MarkdownBlock[] {
+  if (source.length <= MAX_MARKDOWN_CACHE_CHARS) {
+    const cached = parsedMarkdownCache.get(source);
+    if (cached) {
+      parsedMarkdownCache.delete(source);
+      parsedMarkdownCache.set(source, cached);
+      return cached;
+    }
+  }
   const lines = source.replace(/\r\n?/g, '\n').split('\n');
   const blocks: MarkdownBlock[] = [];
   let paragraph: string[] = [];
@@ -144,5 +156,12 @@ export function parseAgentMarkdown(source: string): MarkdownBlock[] {
     index++;
   }
   flushParagraph();
+  if (source.length <= MAX_MARKDOWN_CACHE_CHARS) {
+    if (parsedMarkdownCache.size >= MAX_MARKDOWN_CACHE_ENTRIES) {
+      const oldestKey = parsedMarkdownCache.keys().next().value;
+      if (oldestKey !== undefined) parsedMarkdownCache.delete(oldestKey);
+    }
+    parsedMarkdownCache.set(source, blocks);
+  }
   return blocks;
 }

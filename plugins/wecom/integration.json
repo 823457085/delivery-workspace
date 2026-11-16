@@ -6,7 +6,15 @@
     "notifications.send"
   ],
   "prefix": "WECOM",
-  "views": [],
+  "views": [
+    {
+      "id": "messages",
+      "label": "手动群消息",
+      "path": "/messages",
+      "section": "automation",
+      "component": "messages"
+    }
+  ],
   "sourceKeys": [],
   "apiPrefixes": [],
   "apiPaths": []

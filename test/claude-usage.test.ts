@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { normalizeClaudeUsage } from '../server/claude-usage.js';
+import { createClaudeUsageReader, normalizeClaudeUsage } from '../server/claude-usage.js';
 
 test('Claude 额度转换为 5 小时与 7 天剩余百分比且不暴露消费明细', () => {
   const result = normalizeClaudeUsage({
@@ -27,4 +27,29 @@ test('Claude 额度不可用时不当作零额度', () => {
     checkedAt: '2026-10-22T00:00:00.000Z',
     message: '额度暂不可用',
   });
+});
+
+test('Claude 额度读取器按 contextKey 隔离账号切换缓存并忽略旧账号在途响应', async () => {
+  let calls = 0;
+  let releaseOld!: () => void;
+  const oldInFlight = new Promise<void>(resolve => { releaseOld = resolve; });
+  const reader = createClaudeUsageReader('claude', 60_000, {
+    request: async () => {
+      const id = ++calls;
+      if (id === 1) await oldInFlight;
+      return {
+        available: true,
+        checkedAt: `2026-10-22T00:00:0${id}.000Z`,
+        primary: { usedPercent: id === 1 ? 100 : 10, remainingPercent: id === 1 ? 0 : 90, windowDurationMins: 300, resetsAt: null },
+      };
+    },
+  });
+  const firstPending = reader(false, 'account-v1');
+  const switched = await reader(false, 'account-v2');
+  assert.equal(switched.primary?.remainingPercent, 90);
+  releaseOld();
+  await firstPending;
+  const cachedAfterOldResolves = await reader(false, 'account-v2');
+  assert.equal(cachedAfterOldResolves.primary?.remainingPercent, 90);
+  assert.equal(calls, 2);
 });

@@ -31,8 +31,8 @@ export const CATCHUP_DISPATCH_JOB_STATUSES = Object.freeze([
 ]);
 
 export const CATCHUP_DELIVERY_REPOSITORY_URL =
-  process.env.APEX_CATCHUP_GITLAB_PROJECT_URL || "";
-export const CATCHUP_DELIVERY_TARGET_BRANCH = process.env.APEX_CATCHUP_MERGE_TARGET_BRANCH || "";
+  "https://gitlab.hahabianli.com/titan-project/titan-fe-project/ops/admin";
+export const CATCHUP_DELIVERY_TARGET_BRANCH = "feature/sync-demo-apex-master";
 
 const defaultCallbackUrl = `http://127.0.0.1:${process.env.DELIVERY_PORT || process.env.PORT || 5199}/api/automation/catchup/jobs/update`;
 const requirementIdPattern = /^REQ-(?:CU-)?\d{3}$/;

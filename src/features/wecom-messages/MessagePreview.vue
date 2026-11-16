@@ -10,7 +10,7 @@ const emit = defineEmits<{ send: []; configure: [] }>();
 <template>
   <section class="surface preview-panel" v-loading="loading">
     <div class="surface-header"><div><h2><Eye :size="16" /> 发送预览</h2><p>发送前核对目标群与实际正文</p></div><el-tag v-if="preview" size="small" effect="plain">{{ preview.input.msgtype === 'text' ? '纯文本' : 'Markdown' }}</el-tag></div>
-    <div class="preview-destination"><MessageSquareText :size="17" /><div><span>接收群</span><strong>{{ preview?.groupName || groupName || '尚未配置' }}</strong></div><el-button link type="primary" :disabled="sending" @click="emit('configure')">配置</el-button></div>
+    <div class="preview-destination"><MessageSquareText :size="17" /><div><span>接收群</span><strong>{{ preview?.groupName || groupName || '尚未配置' }}</strong></div><el-button size="small" :disabled="sending" @click="emit('configure')">配置</el-button></div>
     <template v-if="preview">
       <div class="preview-content"><AgentMarkdown v-if="preview.input.msgtype !== 'text'"  :source="preview.content" /><pre v-else >{{ preview.content }}</pre></div>
       <div class="preview-footer"><p>{{ preview.bytes }} / {{ preview.limit }} 字节 · 编辑正文或配置后需重新预览</p><el-button type="primary" :disabled="!canSend" :loading="sending" @click="emit('send')"><Send :size="14" /> 确认并推送</el-button><p>点击后将再次确认；机器人接收回执不代表群成员已读。</p></div>

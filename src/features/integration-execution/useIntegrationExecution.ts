@@ -9,7 +9,6 @@ import { agentWorkspaceContext } from '../../shared/agent-workspace-context';
 import { useAgentRuntimeSnapshot } from '../../shared/useAgentRuntimeSnapshot';
 import { agentModelDefaults } from '../../shared/agent-model-defaults';
 import { buildReviewCatalog } from '../api-integration/review-catalog';
-import { readIntegrationCatalog, useIntegrationCatalog } from '../api-integration/useIntegrationCatalog';
 import { activeExecution, buildExecutionTasks, createExecutionInput, currentExecutionProgress, executionIssueDeferral, executionRequest, progressUrl, taskInterfaces,
   type ExecutionPlan, type ExecutionProgress, type ExecutionRequest } from './execution-plan';
 
@@ -37,14 +36,15 @@ const checked = (item: { checkedAt?: string; status: string }) => !!item.checked
 export function useIntegrationExecution() {
   const client = useQueryClient();
   const workspace = inject(agentWorkspaceContext, undefined);
-  const { query: catalogQuery, catalog } = useIntegrationCatalog();
-  const snapshot = useQuery({ queryKey: ['integration-execution-progress'], queryFn: ({ signal }) => readProgress(signal), refetchInterval: 5000, retry: false });
-  const reviews = useQuery({ queryKey: ['apex-bff-review'], queryFn: ({ signal }) => read<ApexBffReviewState>('/api/apex-bff-review', signal), refetchInterval: 5000, retry: false });
+  const catalog = buildReviewCatalog();
   const runtime = useAgentRuntimeSnapshot();
   const sending = shallowRef(false);
   const runs = computed(() => runtime.data.value?.runs.filter(run => executionRequest(run)).sort((a, b) => b.createdAt.localeCompare(a.createdAt)) ?? []);
   const active = computed(() => runs.value.filter(run => ['queued', 'running'].includes(run.status)));
-  const tasks = computed(() => buildExecutionTasks(catalog.value, reviews.data.value ?? {}, snapshot.data.value?.plan.automation.assignee).map(task => {
+  const pollInterval = computed(() => active.value.length ? 3000 : 15_000);
+  const snapshot = useQuery({ queryKey: ['integration-execution-progress'], queryFn: ({ signal }) => readProgress(signal), refetchInterval: pollInterval, refetchIntervalInBackground: false, retry: false });
+  const reviews = useQuery({ queryKey: ['apex-bff-review'], queryFn: ({ signal }) => read<ApexBffReviewState>('/api/apex-bff-review', signal), refetchInterval: pollInterval, refetchIntervalInBackground: false, retry: false });
+  const tasks = computed(() => buildExecutionTasks(catalog, reviews.data.value ?? {}).map(task => {
     const ledger = currentExecutionProgress(snapshot.data.value?.ledgers[task.id]);
     const items = taskInterfaces(task, ledger, reviews.data.value ?? {});
     const executable = items.filter(item => item.category === '本轮联调');
@@ -76,13 +76,13 @@ export function useIntegrationExecution() {
   });
   const progress = { ...snapshot, data: aggregate };
   const metrics = computed(() => [
-    { label: '分配给我的接口', value: interfaces.value.length, note: `全部模块 · ${snapshot.data.value?.plan.automation.assignee || '未配置负责人'}` },
+    { label: '分配给我的接口', value: interfaces.value.length, note: '全部模块 · 李子锐' },
     { label: '暂不联调', value: interfaces.value.length - executableInterfaces.value.length, note: '保留历史结果 · 本轮跳过' },
     { label: '本轮范围已检查', value: executableInterfaces.value.filter(checked).length, note: '包含阻塞与缺测试数据项' },
     { label: '自动检查通过', value: executableInterfaces.value.filter(item => ['已通过', '已修复'].includes(item.status)).length, note: '人工审核仍单独确认' },
     { label: '并行会话', value: active.value.length, note: '每个模块独立执行及回测' },
   ]);
-  async function refresh() { await Promise.all([snapshot.refetch(), reviews.refetch(), runtime.refetch(), catalogQuery.refetch()]); }
+  async function refresh() { await Promise.all([snapshot.refetch(), reviews.refetch(), runtime.refetch()]); }
   function observe(run: AgentRun) {
     client.setQueryData<AgentRuntimeDashboard>(['agent-runtimes'], current => current ? { ...current, runs: [run, ...current.runs.filter(item => item.id !== run.id)] } : current);
     void client.invalidateQueries({ queryKey: ['agent-runtimes'] });
@@ -92,15 +92,15 @@ export function useIntegrationExecution() {
     sending.value = true;
     let started = 0;
     try {
-      const [dashboard, data, records, source] = await Promise.all([
-        read<AgentRuntimeDashboard>('/api/agent-runtimes'), readProgress(), read<ApexBffReviewState>('/api/apex-bff-review'), readIntegrationCatalog(),
+      const [dashboard, data, records] = await Promise.all([
+        read<AgentRuntimeDashboard>('/api/agent-runtimes'), readProgress(), read<ApexBffReviewState>('/api/apex-bff-review'),
       ]);
       const codex = dashboard.runtimes.find(item => item.provider === 'codex');
       if (!codex) throw new Error('Codex 执行器不可用');
-      const scope = buildExecutionTasks(buildReviewCatalog(source), records, data.plan.automation.assignee);
+      const scope = buildExecutionTasks(catalog, records);
       // 同模块去重；不同模块独立原生队列，先派发的任务不会阻塞后续模块。
       for (const request of requests) {
-        const taskId = request.taskId || 'merchant';
+        const taskId = request.taskId || 'merchant-20261009';
         const task = scope.find(item => item.id === taskId);
         if (!task || task.deferred) continue;
         const occupied = activeExecution(dashboard.runs, taskId);
@@ -115,7 +115,7 @@ export function useIntegrationExecution() {
         observe(run);
         started++;
         try {
-          await post(`/api/agent-runtimes/conversations/${run.conversationId || run.id}/title`, { title: request.kind === 'retest' ? `${task.title}回测 · ${request.issueId}` : `${task.title}联调 · ${data.plan.automation.assignee}` });
+          await post(`/api/agent-runtimes/conversations/${run.conversationId || run.id}/title`, { title: request.kind === 'retest' ? `${task.title}回测 · ${request.issueId}` : `${task.title}联调 · 李子锐` });
         } catch (error) { ElMessage.error((error as Error).message); }
       }
       ElMessage.success(started ? `已启动 ${started} 个独立会话，关闭页面后继续执行` : '已显示当前执行进度；没有新增可执行的查询任务');
@@ -131,5 +131,5 @@ export function useIntegrationExecution() {
     catch (error) { ElMessage.error((error as Error).message); }
     finally { sending.value = false; }
   }
-  return { catalogQuery, progress, reviews, runtime, interfaces, tasks, runs, active, metrics, sending, refresh, start, startAll, stop, openRun: workspace?.openRun };
+  return { progress, reviews, runtime, interfaces, tasks, runs, active, metrics, sending, refresh, start, startAll, stop, openRun: workspace?.openRun };
 }

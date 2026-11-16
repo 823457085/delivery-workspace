@@ -97,7 +97,7 @@ test('原文状态、提出人员、处理分类与搜索取交集，空字段�
   const f = fixture();
   try {
     const statuses = ['复测不通过', '复测不通过', '复测通过', 'L1002', '', '复测不通过', '已修复待复测'];
-    const reporters = ['示例用户', '示例成员', '示例用户', '示例用户', '', '示例用户', '示例成员'];
+    const reporters = ['李子锐', '梁士龙', '李子锐', '李子锐', '', '李子锐', '梁士龙'];
     const rows = f.rows.map((row, index) => ({ ...row, sourceStatus: statuses[index], reporter: reporters[index] }));
     f.data.value = { ...f.data.value, documents: [{ ...f.data.value.documents[0], rows }] };
     assert.equal(f.component.sourceStatusOptions.value.length, 5);
@@ -105,7 +105,7 @@ test('原文状态、提出人员、处理分类与搜索取交集，空字段�
     assert.equal(f.component.reporterOptions.value.length, 3);
     f.component.sourceStatusFilter.value = '复测不通过';
     assert.equal(f.component.visibleRows.value.map((row: RefactorDocumentRow) => row.id).join(','), 'first,retry,write');
-    f.component.reporterFilter.value = '示例用户';
+    f.component.reporterFilter.value = '李子锐';
     assert.equal(f.component.visibleRows.value.map((row: RefactorDocumentRow) => row.id).join(','), 'first,write');
     f.component.toggleAll(true);
     assert.equal(f.component.selectedRows.value.map((row: RefactorDocumentRow) => row.id).join(','), 'first');
@@ -148,7 +148,7 @@ test('切换文档清除原文状态和人员筛选，并从新文档生成选�
   try {
     const second = { ...f.data.value.documents[0], id: 'doc-b', rows: [{ ...f.rows[0], id: 'second', sourceStatus: '新原文状态', reporter: '新提出人' }] };
     f.data.value = { ...f.data.value, documents: [...f.data.value.documents, second] };
-    f.component.sourceStatusFilter.value = '复测不通过'; f.component.reporterFilter.value = '示例用户';
+    f.component.sourceStatusFilter.value = '复测不通过'; f.component.reporterFilter.value = '李子锐';
     f.component.stateFilter.value = 'pending_retest'; f.component.search.value = '旧查询'; f.component.selectedIds.value = ['first'];
     f.component.documentId.value = 'doc-b';
     await nextTick();

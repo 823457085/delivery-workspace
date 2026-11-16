@@ -57,34 +57,30 @@ test('浏览器配置隔离并行范围、重试复用持久化目录，不继�
     const { stdout } = await promisify(execFile)('/bin/sh', ['-c', `${fallback} -p 'JSON.stringify([process.env.AGENT_BROWSER_CONFIG, process.env.AGENT_BROWSER_SOCKET_DIR, process.env.AGENT_BROWSER_PROFILE, process.env.AGENT_BROWSER_CDP])'`]);
     assert.deepEqual(JSON.parse(stdout), [configPath, server.env.AGENT_BROWSER_SOCKET_DIR, null, null]);
   }
-  const chromeDebugPortFile = path.join(root, 'DevToolsActivePort');
-  const debugPath = '/devtools/browser/12345678-1234-1234-1234-123456789abc';
-  await fs.writeFile(chromeDebugPortFile, `9222\n${debugPath}\n`);
+  const chromeEndpoint = 'ws://127.0.0.1:5288/api/browser/connection/session/test-ticket';
   const attach = async (scope: string) => {
-    const result = await prepareAgentBrowserRuntime({ rootDirectory: root, scope, chromeDebugPortFile });
+    const result = await prepareAgentBrowserRuntime({ rootDirectory: root, scope, reuseChrome: true, chromeEndpoint });
     assert.ok(result?.config);
     const mcp = result.config['mcp_servers.delivery_browser'] as typeof server;
     return { browser: JSON.parse(await fs.readFile(mcp.env.AGENT_BROWSER_CONFIG!, 'utf8')), instructions: result.instructions };
   };
   const attached = await attach('team/task/verify');
   const anotherTab = await attach('conversation/another');
-  assert.equal(attached.browser.cdp, `ws://127.0.0.1:9222${debugPath}`);
+  assert.equal(attached.browser.cdp, chromeEndpoint);
   assert.equal(anotherTab.browser.cdp, attached.browser.cdp);
   assert.equal(attached.browser.pinTab, true);
   assert.equal(attached.browser.profile, undefined);
   assert.notEqual(attached.browser.session, anotherTab.browser.session);
   assert.notEqual(attached.browser.session, config.session);
   assert.match(attached.instructions, /只操作本任务自动绑定的标签页/);
-  assert.ok(!attached.instructions.includes(debugPath), '调试端点只保存在私有配置内');
-  assert.equal(await fs.readFile(chromeDebugPortFile, 'utf8'), `9222\n${debugPath}\n`);
-  await fs.writeFile(chromeDebugPortFile, '99999\n/devtools/browser/not-a-chrome-endpoint');
-  const invalid = await prepareAgentBrowserRuntime({ rootDirectory: root, scope: 'conversation/waiting', chromeDebugPortFile });
-  assert.equal(invalid?.config, undefined);
-  assert.match(invalid?.instructions || '', /chrome:\/\/inspect\/#remote-debugging/);
-  await fs.unlink(chromeDebugPortFile);
-  const missing = await prepareAgentBrowserRuntime({ rootDirectory: root, scope: 'conversation/waiting', chromeDebugPortFile });
+  assert.ok(!attached.instructions.includes(chromeEndpoint), '调试端点只保存在私有配置内');
+  const reconnected = await prepareAgentBrowserRuntime({ rootDirectory: root, scope: 'team/task/verify',
+    reuseChrome: true, chromeEndpoint: chromeEndpoint + '-new' });
+  assert.notDeepEqual(reconnected?.config, (await prepareAgentBrowserRuntime({ rootDirectory: root, scope: 'team/task/verify',
+    reuseChrome: true, chromeEndpoint }))?.config);
+  const missing = await prepareAgentBrowserRuntime({ rootDirectory: root, scope: 'conversation/waiting', reuseChrome: true });
   assert.equal(missing?.config, undefined);
-  assert.match(missing?.instructions || '', /日常 Chrome 尚未开放远程调试/);
+  assert.match(missing?.instructions || '', /工作台尚未连接日常 Chrome/);
   assert.equal((await fs.readdir(path.dirname(config.profile))).length, 2);
   await assert.rejects(prepareAgentBrowserRuntime({ rootDirectory: root, scope: '' }), /不能为空/);
   process.env.DELIVERY_AGENT_BROWSER_BIN = path.join(root, 'missing-driver');

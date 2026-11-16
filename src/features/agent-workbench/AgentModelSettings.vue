@@ -30,7 +30,7 @@ const canAdd = computed(() => /^[A-Za-z0-9][A-Za-z0-9._:/\[\]=,-]{0,99}$/.test(f
 watch(visible, value => {
   if (value && props.initialProvider) connection.value = props.initialProvider;
   if (!value) form.apiKey = '';
-});
+}, { immediate: true });
 watch(connection, (value, previous) => {
   form.apiKey = '';
   if (value === 'deepseek-nvidia') form.modelId = 'deepseek-ai/deepseek-v4.1-flash';

@@ -28,13 +28,12 @@ Use this skill when a local Markdown document or AI Delivery artifact must be ar
 For deterministic REST publishing, use:
 
 ```bash
-python3 "${AI_DELIVERY_KIT_ROOT:?Set AI_DELIVERY_KIT_ROOT}/scripts/publish-confluence-markdown.py" <page_id> <markdown_file>
+CONFLUENCE_PAT=... python3 ai-delivery-kit/scripts/publish-confluence-markdown.py <page_id> <markdown_file>
 ```
 
-Environment variables:
+Optional variables:
 
-- `CONFLUENCE_BASE_URL`, required: your own Confluence site URL
-- `CONFLUENCE_PAT`, required unless `CONFLUENCE_TOKEN` is set: your own access token
+- `CONFLUENCE_BASE_URL`, default `https://confluence.hahabianli.com`
 - `CONFLUENCE_TOKEN`, alternative to `CONFLUENCE_PAT`
 - `CONFLUENCE_INSECURE_SKIP_VERIFY=true`, only for internal test certificates
 

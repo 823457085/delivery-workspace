@@ -23,5 +23,5 @@ const enabled = computed(() => props.serviceTier === 'priority'
 </template>
 
 <style scoped>
-.agent-model-speed{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;flex-shrink:0;border:1px solid #343d4e;border-radius:7px;background:#202633;color:#929caf;cursor:pointer}.agent-model-speed.enabled{border-color:#579bff45;background:#579bff14;color:#6eafff}.agent-model-speed:focus-visible{outline:2px solid var(--agent-accent);outline-offset:2px}
+.agent-model-speed{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;flex-shrink:0;border:1px solid var(--ui-border);border-radius:8px;background:var(--ui-raised);color:var(--ui-muted);cursor:pointer;transition:background 300ms cubic-bezier(0.22,1,0.36,1),border-color 300ms cubic-bezier(0.22,1,0.36,1),color 300ms cubic-bezier(0.22,1,0.36,1)}.agent-model-speed:hover{border-color:var(--ui-accent);color:var(--ui-text)}.agent-model-speed.enabled{border-color:color-mix(in srgb,var(--ui-accent) 42%,var(--ui-border));background:var(--ui-accent-soft);color:var(--ui-accent)}.agent-model-speed:focus-visible{outline:2px solid var(--ui-accent);outline-offset:2px}
 </style>

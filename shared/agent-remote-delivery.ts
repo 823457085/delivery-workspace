@@ -1,4 +1,5 @@
 /** 群聊结果中的远端交付预览；只有用户确认具体预览后才执行外部写入。 */
+import type { DiffHygieneWarning } from './diff-review-hygiene.js';
 export type RemoteDeliveryKind = 'design' | 'jira' | 'git';
 export interface RemoteDeliveryAttempt {
   id: string; kind: RemoteDeliveryKind; projectId?: string; fingerprint: string;
@@ -8,6 +9,7 @@ export interface RemoteDeliveryAttempt {
 export interface RemoteDeliveryProject {
   id: string; path: string; branch: string; head: string; remote: string; url: string; pushUrl: string;
   files: { path: string; status: string; recommended: boolean }[]; message: string; available: boolean; reason: string;
+  hygieneWarnings?: DiffHygieneWarning[];
 }
 export interface RemoteDeliveryJiraTask {
   key: string; url: string; summary: string; role?: string; action?: string; state?: string;
@@ -29,5 +31,8 @@ export interface RemoteDeliveryPreview {
 }
 export interface RemoteDeliverySubmit {
   requestId: string; fingerprint: string; kind: RemoteDeliveryKind; projectId?: string;
-  files?: string[]; message?: string;
+  files?: string[]; message?: string; confirmHygiene?: boolean;
+}
+export interface RemoteDeliveryReconcile {
+  attemptId: string; resolution: 'retry' | 'completed';
 }

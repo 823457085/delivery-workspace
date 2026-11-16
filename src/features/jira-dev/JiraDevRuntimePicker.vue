@@ -35,7 +35,7 @@ defineProps<{ runtime: ReturnType<typeof useJiraDevRuntime>; disabled?: boolean 
 <style scoped>
 .runtime-picker{display:flex;align-items:center;flex-wrap:wrap;gap:8px;min-width:0}.runtime-label{font-size:12px;color:var(--ui-secondary)}
 .runtime-provider{width:128px}.runtime-model{width:190px}.runtime-effort{width:112px}.runtime-access{width:112px}
-.team-summary{font-size:12px;color:var(--ui-secondary);overflow-wrap:anywhere}.team-summary a{color:var(--ui-accent);margin-left:8px}
+.team-summary{font-size:12px;color:var(--ui-secondary);overflow-wrap:anywhere}.team-summary a{color:var(--ui-secondary);margin-left:8px;text-decoration:underline;text-underline-offset:3px;transition:color 140ms ease}.team-summary a:hover{color:var(--ui-accent)}
 .runtime-unready{margin-left:8px;color:var(--ui-muted)}.runtime-problem{flex-basis:100%;color:var(--ui-warning);font-size:12px}
 @container workspace-page (max-width:560px){
   .runtime-picker{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%}

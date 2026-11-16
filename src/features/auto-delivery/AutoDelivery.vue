@@ -1,10 +1,14 @@
 <script setup lang="ts">
 import { useIntegrationPlugins } from '../../plugins/runtime';
 const integrations = useIntegrationPlugins();
-import AgentMarkdown from '../agent-workbench/AgentMarkdown.vue';
-import JiraDescription from '../jira-issue/JiraDescription.vue';
 /** 执行中心复用已有运行与巡检快照；切换视图和刷新都不触发派发。 */
-import { computed, shallowRef, watch } from 'vue';
+import { computed, defineAsyncComponent, inject, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
+import { agentWorkspaceContext } from '../../shared/agent-workspace-context';
+const AgentMarkdown = defineAsyncComponent(() => import('../agent-workbench/AgentMarkdown.vue'));
+const JiraDescription = defineAsyncComponent(() => import('../jira-issue/JiraDescription.vue'));
+const RecordDrawer = defineAsyncComponent(() => import('../../shared/ui/RecordDrawer.vue'));
+const PlanTable = defineAsyncComponent(() => import('./PlanTable.vue'));
+const RunTable = defineAsyncComponent(() => import('./RunTable.vue'));
 import { useQuery } from '@tanstack/vue-query';
 import { useRoute, useRouter } from 'vue-router';
 import { useWorkspacePanelState } from '../../shared/useWorkspacePanelState';
@@ -19,17 +23,16 @@ import { safeUrl, searchMatches, dateTime } from '../../shared/format';
 import PageHeading from '../../shared/ui/PageHeading.vue';
 import MetricStrip from '../../shared/ui/MetricStrip.vue';
 import QueryState from '../../shared/ui/QueryState.vue';
-import RecordDrawer from '../../shared/ui/RecordDrawer.vue';
 import StatusPill from '../../shared/ui/StatusPill.vue';
 import WorkspaceContextLinks from '../../shared/ui/WorkspaceContextLinks.vue';
 import { deliveryJobQuickPrompt, jiraQuickPrompt } from '../agent-workbench/agent-quick-actions';
-import PlanTable from './PlanTable.vue';
 import ExecutionTable from './ExecutionTable.vue';
-import RunTable from './RunTable.vue';
 const props = defineProps<{ mode: string }>();
 const route = useRoute();
 const router = useRouter();
+const inAgentWorkspace = !!inject(agentWorkspaceContext, undefined);
 const center = shallowRef<HTMLElement>();
+const filterSearchRef = ref<{ focus?: () => void }>();
 type ExecutionTab = 'queue' | 'plan' | 'runs';
 const mode = computed<ExecutionTab>(() => {
   const value = route.query.executionTab || route.query.view || props.mode;
@@ -37,10 +40,10 @@ const mode = computed<ExecutionTab>(() => {
 });
 const query = useSource<AutomationData>('automation');
 const runtime = useAgentRuntimeSnapshot();
-const groupDashboard = useQuery({ queryKey: ['agent-group-chat'], queryFn: ({ signal }) => readGroupDashboard(signal), retry: false,
+const groupDashboard = useQuery({ queryKey: ['agent-group-chat'], queryFn: ({ signal }) => readGroupDashboard(signal), retry: false, refetchIntervalInBackground: false,
   enabled: computed(() => mode.value === 'queue'), refetchInterval: computed(() => mode.value === 'queue' ? 3000 : false) });
-const teamTasks = useQuery({ queryKey: ['agent-team-chat', 'tasks'], queryFn: ({ signal }) => readTeamTasks(signal), retry: false,
-  enabled: computed(() => mode.value === 'queue'), refetchInterval: computed(() => mode.value === 'queue' ? 3000 : false) });
+const teamTasks = useQuery({ queryKey: ['agent-team-chat', 'tasks'], staleTime: 15_000, queryFn: ({ signal }) => readTeamTasks(signal), retry: false, refetchIntervalInBackground: false,
+  enabled: computed(() => mode.value === 'queue'), refetchInterval: computed(() => mode.value === 'queue' ? 15_000 : false) });
 const executionReady = computed(() => !!runtime.data.value && !!groupDashboard.data.value && !!teamTasks.data.value);
 const executionError = computed(() => runtime.error.value || groupDashboard.error.value || teamTasks.error.value);
 const executionPending = computed(() => runtime.isPending.value || groupDashboard.isPending.value || teamTasks.isPending.value);
@@ -63,7 +66,7 @@ const selectedPlan = computed(() => data.value?.plan.find((item) => item.issue.k
 const selectedJob = computed(() => data.value?.jobs.find((item) => item.id === selectedJobId.value));
 const selectedRouting = computed(() => selectedPlan.value?.projectRouting || selectedJob.value?.projectRouting);
 const selectedRun = computed(() => data.value?.runs.find((item) => item.id === selectedRunId.value));
-const tabs: { id: ExecutionTab; label: string }[] = [{ id: 'queue', label: '实际执行' }, { id: 'plan', label: '自动化计划' }, { id: 'runs', label: '巡检日志' }];
+const tabs: { id: ExecutionTab; label: string }[] = [{ id: 'queue', label: '正在执行' }, { id: 'plan', label: '待派发计划' }, { id: 'runs', label: '巡检记录' }];
 const plans = computed(() => planItems(data.value?.plan || [], search.value, filter.value as PlanFilter));
 const entries = computed(() => executionReady.value ? executionEntries(runtime.data.value?.runs || [], data.value?.jobs || [], runtime.data.value?.conversationTitles || {},
   { rooms: groupDashboard.data.value!.rooms, tasks: teamTasks.data.value! }) : []);
@@ -80,7 +83,20 @@ const jobs = computed(() => entries.value.filter(item => (scope.value === 'all' 
   && (filter.value === 'all' || item.status === filter.value)));
 const runs = computed(() => (data.value?.runs || []).filter((item) => searchMatches(item, search.value)));
 const total = computed(() => mode.value === 'plan' ? plans.value.length : mode.value === 'queue' ? jobs.value.length : runs.value.length);
-const metrics = computed(() => mode.value === 'plan' ? [
+const metrics = computed(() => mode.value === 'queue' ? [
+  { label: '执行与排队中', value: executionCounts.value?.active, note: '实时 AI 会话与自动派发任务' },
+  {
+    label: '需人工关注',
+    value: executionCounts.value?.attention,
+    note: '受阻、失败或等待决策确认',
+    tone: (executionCounts.value?.attention || 0) > 0 ? 'warning' : undefined,
+  },
+  {
+    label: '已完成与历史',
+    value: executionCounts.value?.history,
+    note: `共汇总 ${executionCounts.value?.all ?? '—'} 条最近会话与队列记录`,
+  },
+] : mode.value === 'plan' ? [
   { label: '未完成计划', value: data.value ? planItems(data.value.plan, '', 'open').length : undefined, note: '按最近一次巡检快照' },
   { label: '符合派发规则', value: data.value ? planItems(data.value.plan, '', 'eligible').length : undefined, note: '仍受工作区和自动派发设置约束' },
   { label: '等待前置任务', value: data.value ? planItems(data.value.plan, '', 'dependencies').length : undefined, note: '有依赖或未完成子任务' },
@@ -89,6 +105,22 @@ const metrics = computed(() => mode.value === 'plan' ? [
   { label: '最近新增任务', value: data.value?.lastRun?.enqueuedCount, note: `最近巡检 ${dateTime(data.value?.lastRun?.completedAt)}` },
   { label: '最近状态推进', value: data.value?.lastRun?.transitionUpdatedCount, note: `阻塞 ${data.value?.lastRun?.transitionBlockedCount ?? '—'} 项` },
 ]);
+const STATUS_LABELS: Record<string, string> = {
+  running: '执行中 (running)',
+  queued: '排队中 (queued)',
+  pending: '待派发 (pending)',
+  waiting: '等待中 (waiting)',
+  completed: '已完成 (completed)',
+  done: '已完成 (done)',
+  failed: '失败 / 受阻 (failed)',
+  blocked: '被阻塞 (blocked)',
+  cancelled: '已取消 (cancelled)',
+  interrupted: '已中断 (interrupted)',
+  paused: '已暂停 (paused)',
+  idle: '空闲待命 (idle)',
+  waiting_input: '等待回复 (waiting_input)',
+  needs_decision: '等待决策 (needs_decision)',
+};
 const statusOptions = computed(() => [...new Set(entries.value.filter(item => scope.value === 'all' || executionScope(item.status) === scope.value).map(item => item.status))]);
 const hasFilters = computed(() => !!search.value.trim() || (mode.value === 'queue' ? filter.value !== 'all' : mode.value === 'plan' && filter.value !== 'open'));
 const emptyDescription = computed(() => {
@@ -135,25 +167,38 @@ watch(drawer, open => {
   const { plan: _plan, job: _job, run: _run, ...query } = route.query;
   void router.replace({ query });
 });
+function onExecutionSlashKey(event: KeyboardEvent) {
+  if (event.key !== '/' || event.metaKey || event.ctrlKey || event.altKey) return;
+  const target = event.target as HTMLElement | null;
+  if (target && (['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) || target.isContentEditable)) return;
+  if (drawer.value) return;
+  event.preventDefault();
+  filterSearchRef.value?.focus?.();
+}
+onMounted(() => window.addEventListener('keydown', onExecutionSlashKey));
+onBeforeUnmount(() => window.removeEventListener('keydown', onExecutionSlashKey));
 </script>
 <template>
-  <PageHeading title="执行中心" description="实际执行、自动化计划与巡检日志。" :loading="isFetching || (mode === 'queue' && executionFetching)" @refresh="refresh">
+  <PageHeading title="执行中心" description="查看 AI 正在跑的任务、待派发计划和自动巡检记录。" :loading="isFetching || (mode === 'queue' && executionFetching)" @refresh="refresh">
     <el-button v-if="mode !== 'queue'" type="primary" :loading="actions.pending.value" :disabled="!integrations.capability('issues.read')" title="需要已接入的任务提供者" @click="actions.execute('scan', {}, '确认立即巡检', '巡检会按现有策略执行，可能创建 AI 任务、推进 Jira 或创建合并请求。确认立即巡检吗？')">立即巡检</el-button>
   </PageHeading>
   <section ref="center" class="execution-center" aria-label="执行中心">
     <div class="execution-board">
       <div class="execution-navigation">
-        <div class="execution-heading">
-          <div><h1>执行中心</h1><p>查看正在发生的执行、自动化判定与巡检结果。</p></div>
+        <div v-if="!inAgentWorkspace" class="execution-heading">
+          <div><h1>执行中心</h1><p>集中查看 AI 任务进度、待派发队列和巡检结果。</p></div>
           <RouterLink to="/agent?view=settings&amp;settingsTab=automation" class="hub-link">自动交付设置</RouterLink>
         </div>
-        <el-tabs :model-value="mode" class="execution-tabs" aria-label="执行中心视图" @update:model-value="selectTab">
-          <el-tab-pane v-for="item in tabs" :key="item.id" :name="item.id" :label="item.label" />
-        </el-tabs>
+        <div class="execution-tab-row">
+          <el-tabs :model-value="mode" class="execution-tabs" aria-label="执行中心视图" @update:model-value="selectTab">
+            <el-tab-pane v-for="item in tabs" :key="item.id" :name="item.id" :label="item.label" />
+          </el-tabs>
+          <RouterLink v-if="inAgentWorkspace" to="/agent?view=settings&amp;settingsTab=automation" class="hub-link execution-settings-link">自动交付设置 ↗</RouterLink>
+        </div>
       </div>
       <aside class="execution-summary" aria-label="执行信息">
         <div class="execution-context">
-          <template v-if="mode === 'queue'"><span>Agent 最近执行与自动化队列；同一会话展示当前轮次。</span></template>
+          <template v-if="mode === 'queue'"><span>实时汇聚单人会话、团队协作群与自动队列的最新运行轮次。</span></template>
           <template v-else>
             <span>最近巡检 {{ dateTime(data?.lastRun?.completedAt) }} · 来源 {{ data?.lastRun?.source || '未记录' }}</span>
             <span v-if="data">定时巡检{{ data.settings.enabled ? '已开启' : '已暂停' }} · 自动创建任务{{ data.settings.autoCreateCodex ? '已开启' : '已关闭' }}</span>
@@ -162,27 +207,30 @@ watch(drawer, open => {
           </template>
           <RouterLink v-if="mode === 'plan'" to="/tasks/list" class="hub-link">查看当前 Jira 任务</RouterLink>
         </div>
-        <p v-if="mode === 'plan'" class="execution-note">以下为巡检时的计划快照；刷新只重读已保存结果。符合派发规则仍需工作区就绪并开启自动创建任务。<template v-if="data?.lastRun?.source === 'mock'">此快照使用模拟数据。</template></p>
+        <p v-if="mode === 'plan'" class="execution-note">以下为上次巡检结果，点刷新不会重新派发任务。<template v-if="data?.lastRun?.source === 'mock'">当前使用模拟数据。</template></p>
       </aside>
     </div>
-    <MetricStrip v-if="mode !== 'queue'" :items="metrics" />
+    <MetricStrip :items="metrics" />
     <QueryState :loading="isPending || (mode === 'queue' && executionPending)" :error="error || (mode === 'queue' ? executionError : null)" :has-data="mode === 'queue' ? !!data && executionReady : !!data" @retry="refresh">
       <div class="surface execution-records">
         <div v-if="mode === 'queue'" class="filter-bar execution-scopes">
           <el-radio-group v-model="scope" aria-label="执行记录范围"><el-radio-button v-for="item in scopes" :key="item.id" :value="item.id">{{ item.label }} <span class="scope-count">{{ executionCounts?.[item.id] ?? '—' }}</span></el-radio-button></el-radio-group>
         </div>
         <div class="filter-bar">
-          <el-input v-model="search" :placeholder="mode === 'plan' ? '搜索事项、判定或工作区' : mode === 'runs' ? '搜索巡检时间或结果' : '搜索任务、工作区或结果'" clearable @input="page = 1" />
+          <el-input ref="filterSearchRef" v-model="search" :placeholder="mode === 'plan' ? '搜索事项、判定或工作区' : mode === 'runs' ? '搜索巡检时间或结果' : '搜索任务、分支或结果'" clearable @input="page = 1" @keydown.esc="search = ''; page = 1">
+            <template v-if="!search" #suffix><kbd class="exec-slash-kbd">/</kbd></template>
+          </el-input>
           <el-select v-if="mode === 'plan'" v-model="filter" aria-label="计划范围" @change="page = 1">
             <el-option label="未完成计划" value="open" /><el-option label="符合派发规则" value="eligible" /><el-option label="等待前置任务" value="dependencies" /><el-option label="队列阻塞" value="blocked" /><el-option label="项目 / 工作区待核对" value="unmatched" /><el-option label="全部计划（含历史）" value="all" />
           </el-select>
-          <el-select v-if="mode === 'queue'" v-model="filter" aria-label="执行状态" @change="page = 1"><el-option label="全部状态" value="all" /><el-option v-for="value in statusOptions" :key="value" :value="value" :label="value" /></el-select>
+          <el-select v-if="mode === 'queue'" v-model="filter" aria-label="执行状态" @change="page = 1"><el-option label="全部状态" value="all" /><el-option v-for="value in statusOptions" :key="value" :value="value" :label="STATUS_LABELS[value] || value" /></el-select>
           <span class="filter-count"><template v-if="sourceReady">共 {{ total }} 条{{ mode === 'plan' ? '计划' : '记录' }}</template><template v-else>—</template></span>
         </div>
         <el-empty v-if="!total && sourceReady" :description="emptyDescription" :image-size="64">
           <template v-if="sourceReady">
             <el-button v-if="hasFilters" @click="clearFilters">清除筛选</el-button>
             <template v-else-if="mode === 'queue' && scope === 'active'">
+              <el-button v-if="executionCounts?.all" type="primary" plain @click="scope = 'all'">查看全部运行记录（{{ executionCounts.all }}）</el-button>
               <el-button v-if="executionCounts?.attention" @click="scope = 'attention'">查看需关注（{{ executionCounts.attention }}）</el-button>
               <el-button @click="selectTab('plan')">查看自动化计划</el-button>
             </template>
@@ -198,7 +246,7 @@ watch(drawer, open => {
       </div>
     </QueryState>
   </section>
-  <RecordDrawer v-model="drawer" :title="detailTitle" :record="selected">
+  <RecordDrawer v-if="drawer" v-model="drawer" :title="detailTitle" :record="selected">
     <WorkspaceContextLinks v-if="selectedPlan || selectedJob" :issue-key="selectedPlan?.issue.key || selectedJob?.issueKey" :workspace-path="selectedPlan?.workspace?.path || selectedJob?.workspacePath" :thread-id="selectedJob?.threadId" :prompt="selectedJob ? deliveryJobQuickPrompt(selectedJob) : selectedPlan ? jiraQuickPrompt(selectedPlan.issue) : ''" />
     <section v-if="selectedPlan || selectedJob" class="detail-section"><h3>项目匹配</h3><dl class="detail-facts"><div><dt>选中项目</dt><dd>{{ projectRoutingLabel(selectedRouting) }}</dd></div><div v-if="selectedRouting?.reason"><dt>匹配依据</dt><dd>{{ selectedRouting.reason }}</dd></div><template v-if="selectedRouting?.profile"><div><dt>仓库 / 本机路径</dt><dd>{{ selectedRouting.profile.repositoryUrl }}<br>{{ selectedRouting.profile.localPath || '未指定本机路径' }}</dd></div><div><dt>运行环境 / 启动命令</dt><dd>{{ selectedRouting.profile.runtimeEnvironment }}<br>{{ selectedRouting.profile.runtimeCommand }}</dd></div><div><dt>目标分支</dt><dd>{{ selectedRouting.profile.targetBranch }}</dd></div></template><div v-if="selectedRouting?.candidates.length && selectedRouting.status !== 'matched'"><dt>候选项目</dt><dd>{{ selectedRouting.candidates.map(profile => profile.name).join('、') }}</dd></div></dl><RouterLink v-if="selectedRouting && selectedRouting.status !== 'matched'" to="/settings?settingsTab=automation" class="hub-link">核对项目匹配配置</RouterLink></section>
     <template v-if="selectedPlan"><div class="inline-links"><a :href="safeUrl(selectedPlan.issue.url)" target="_blank">打开 {{ selectedPlan.issue.key }}</a></div><dl class="detail-facts"><div><dt>快照中的分类 / 模型</dt><dd>{{ selectedPlan.categoryLabel }} · {{ selectedPlan.model }}</dd></div><div><dt>下一步</dt><dd>{{ selectedPlan.action }}</dd></div><div><dt>工作区</dt><dd>{{ selectedPlan.workspace?.path || '未匹配' }}</dd></div><div><dt>依赖</dt><dd>{{ selectedPlan.dependencyKeys?.join('、') || '无记录' }}</dd></div></dl><section class="detail-section"><h3>任务描述</h3><JiraDescription class="detail-text" :text="selectedPlan.issue.description || '来源没有描述'" :base-url="selectedPlan.issue.url" /></section></template>
@@ -213,6 +261,11 @@ watch(drawer, open => {
 .execution-heading h1{margin:0;font-size:20px;font-weight:600}
 .execution-heading p,.execution-note{margin:6px 0 12px;color:var(--ui-muted);font-size:12px;line-height:1.7}
 .execution-heading>a{flex-shrink:0;font-size:12px}
+.execution-tab-row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px}
+.execution-tab-row .execution-tabs{flex:1;min-width:0}
+.execution-tab-row .execution-tabs :deep(.el-tabs__header){margin-bottom:0}
+.execution-settings-link{flex-shrink:0;font-size:12px;white-space:nowrap}
+.exec-slash-kbd{display:inline-grid;place-items:center;min-width:17px;height:17px;padding:0 4px;border:1px solid var(--ui-border);border-radius:4px;background:var(--ui-raised);color:var(--ui-muted);font:600 10px/1 var(--mono)}
 .execution-tabs :deep(.el-tabs__header){margin-bottom:12px}
 .execution-tabs :deep(.el-tabs__content){display:none}
 .execution-context{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:center;margin-bottom:12px;color:var(--ui-secondary);font-size:12px;line-height:1.7}
@@ -221,11 +274,12 @@ watch(drawer, open => {
 .execution-center :deep(.hub-metrics .metric-card){display:block;min-height:0;padding:14px 18px}
 .execution-center :deep(.hub-metrics .metric-card strong){display:block;margin:5px 0;font-size:28px;line-height:1.15}
 .execution-center :deep(.hub-metrics .metric-card small){display:block;font-size:11px;line-height:1.5}
-.execution-records{min-width:0}
-.execution-scopes :deep(.el-radio-group){display:flex;flex-wrap:wrap;gap:4px}
-.execution-scopes :deep(.el-radio-button__inner){border:1px solid var(--ui-border);border-radius:5px;box-shadow:none}
+.execution-records{min-width:0;min-height:360px;display:flex;flex-direction:column}
+.execution-scopes :deep(.el-radio-group){display:flex;flex-wrap:wrap;gap:6px}
+.execution-scopes :deep(.el-radio-button__inner){border:1px solid var(--ui-border);border-radius:6px;background:var(--ui-surface);color:var(--ui-secondary);box-shadow:none;padding:6px 11px;font-size:12px}
+.execution-scopes :deep(.el-radio-button.is-active .el-radio-button__inner){background:var(--ui-raised);border-color:color-mix(in srgb,var(--ui-text) 28%,var(--ui-border));color:var(--ui-text);font-weight:600;box-shadow:none}
 .scope-count{margin-left:5px;font-variant-numeric:tabular-nums;opacity:.75}
-.execution-records :deep(.el-empty){padding:40px 16px}
+.execution-records :deep(.el-empty){margin:auto 0;padding:44px 16px}
 .execution-records :deep(.el-empty__bottom){display:flex;justify-content:center;flex-wrap:wrap;gap:8px}
 .execution-records :deep(.el-empty__bottom .el-button){margin-left:0}
 .execution-center :deep(.execution-cards){display:none}

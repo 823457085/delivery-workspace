@@ -1,0 +1,726 @@
+/* ==========================================================================
+   Workspace Interior Refinement Layer — Unified Codex Density & Calm Palette
+   Harmonizes typography, control heights, KPI metrics, cards, tables,
+   navigation rails, and color hierarchy across all pages & themes.
+   ========================================================================== */
+
+:root,
+body,
+.workspace-console,
+.el-drawer,
+.el-dialog,
+.el-popper,
+.el-notification,
+.el-message,
+.el-message-box {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+
+  /* Element Plus Semantic Token Bridge — eliminates default #409eff blue leaks */
+  --el-color-primary: var(--ui-accent);
+  --el-color-primary-light-3: color-mix(in srgb, var(--ui-accent) 75%, var(--ui-surface));
+  --el-color-primary-light-5: color-mix(in srgb, var(--ui-accent) 55%, var(--ui-surface));
+  --el-color-primary-light-7: color-mix(in srgb, var(--ui-accent) 32%, var(--ui-surface));
+  --el-color-primary-light-8: color-mix(in srgb, var(--ui-accent) 18%, var(--ui-surface));
+  --el-color-primary-light-9: var(--ui-accent-soft);
+  --el-color-primary-dark-2: var(--ui-primary-hover, var(--ui-accent));
+  --el-color-success: var(--ui-success);
+  --el-color-success-light-9: var(--ui-success-bg);
+  --el-color-warning: var(--ui-warning);
+  --el-color-warning-light-9: var(--ui-warning-bg);
+  --el-color-danger: var(--ui-danger);
+  --el-color-danger-light-9: var(--ui-danger-bg);
+  --el-text-color-primary: var(--ui-text);
+  --el-text-color-regular: var(--ui-secondary);
+  --el-text-color-secondary: var(--ui-muted);
+  --el-checkbox-checked-text-color: var(--ui-text);
+  --el-radio-checked-text-color: var(--ui-text);
+  --el-border-color: var(--ui-border);
+  --el-border-color-light: var(--ui-divider);
+  --el-border-color-lighter: var(--ui-divider);
+  --el-fill-color-blank: var(--ui-surface);
+  --el-fill-color-light: var(--ui-raised);
+  --el-mask-color: color-mix(in srgb, var(--ui-surface) 78%, transparent);
+  --el-mask-color-extra-light: color-mix(in srgb, var(--ui-surface) 60%, transparent);
+}
+
+.el-notification {
+  border: 1px solid var(--ui-border) !important;
+  border-radius: var(--r-lg, 10px) !important;
+  background: var(--ui-surface) !important;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.14) !important;
+  padding: 12px 14px !important;
+}
+
+.el-notification__title {
+  font-size: 13px !important;
+  line-height: 1.4 !important;
+  font-weight: 600 !important;
+  color: var(--ui-text) !important;
+}
+
+.el-notification__content {
+  margin-top: 4px !important;
+  font-size: 12px !important;
+  line-height: 1.5 !important;
+  color: var(--ui-secondary) !important;
+}
+
+.workspace-console :is(input[type='checkbox'], input[type='radio']),
+.el-drawer :is(input[type='checkbox'], input[type='radio']),
+.el-dialog :is(input[type='checkbox'], input[type='radio']) {
+  accent-color: var(--ui-accent);
+}
+
+:is(.workspace-console, .el-drawer, .el-dialog) :is(.el-checkbox__input.is-checked + .el-checkbox__label, .el-radio__input.is-checked + .el-radio__label) {
+  color: var(--ui-text);
+  font-weight: 500;
+}
+
+/* Calm, high-legibility disabled buttons across all pages & overlays (replaces low-contrast peach/pink tints) */
+:is(.workspace-console, .el-drawer, .el-dialog) .el-button.is-disabled:not(.is-link):not(.is-text),
+:is(.workspace-console, .el-drawer, .el-dialog) .el-button.is-disabled:not(.is-link):not(.is-text):hover {
+  background: color-mix(in srgb, var(--ui-text) 6%, var(--ui-surface)) !important;
+  border-color: var(--ui-divider) !important;
+  color: var(--ui-muted) !important;
+  box-shadow: none !important;
+  opacity: 0.82;
+}
+
+:is(.workspace-console, .el-drawer, .el-dialog) .el-button.is-disabled:is(.is-link, .is-text) {
+  color: var(--ui-muted) !important;
+  opacity: 0.55;
+}
+
+/* 1. Harmonized Status Pills Across All Pages & Overlays */
+.workspace-console .status-pill,
+.el-drawer .status-pill,
+.el-dialog .status-pill {
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
+  flex-shrink: 0;
+  gap: 5px;
+  height: fit-content;
+  min-height: 20px;
+  padding: 1px 7px;
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  font: 500 11px/16px var(--ds-display, var(--sans));
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.workspace-console .status-pill > i,
+.el-drawer .status-pill > i {
+  width: 5px;
+  height: 5px;
+  flex-shrink: 0;
+}
+
+/* 2. Codex-Density Peripheral Chrome (Top Header, Left Nav Rail, Right Context Aside, Footer) */
+:root:not([data-theme='acid']) .workspace-console.holy-grail-shell {
+  --hg-header-height: 44px;
+  --hg-footer-height: 30px;
+  --hg-left-width: 212px;
+  --hg-right-width: 256px;
+}
+
+:root:not([data-theme='acid']) .workspace-console .hg-header-actions :is(.hg-frame-pill, .hg-cinema-pill, .hg-cinema-toggle, .hg-acid-cta, .theme-trigger, .el-button) {
+  min-height: 30px;
+  height: 30px;
+  font-size: 12px;
+}
+
+:root:not([data-theme='acid']) .workspace-console .hg-header-actions .hg-cinema-toggle {
+  width: 30px;
+  padding: 0;
+}
+
+/* Remove industrial boilerplate labels & decorative signal bars on non-Acid themes */
+:root:not([data-theme='acid']) .workspace-console :is(.hg-zone-tag, .hg-rail-meter, .acid-tick-rail, .hg-aside-head) {
+  display: none;
+}
+
+:root:not([data-theme='acid']) .workspace-console .hg-left-rail {
+  gap: 8px;
+  padding: 10px 8px 12px;
+}
+
+:root:not([data-theme='acid']) .workspace-console .hg-rail-top {
+  min-height: 0;
+  justify-content: flex-end;
+}
+
+.workspace-console .hg-studio-btn,
+.workspace-console .hg-studio-group {
+  height: 30px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.workspace-console .hg-rail-groups {
+  gap: 12px;
+  padding: 4px 2px 10px;
+}
+
+.workspace-console .hg-rail-heading {
+  padding: 0 8px 2px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--ui-muted);
+}
+
+.workspace-console .hg-rail-item {
+  min-height: 30px;
+  padding: 4px 9px;
+  gap: 8px;
+  font-size: 12.5px;
+  line-height: 18px;
+  font-weight: 500;
+  border-radius: 6px;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease,
+    border-color 140ms ease;
+}
+
+:root:not([data-theme='acid']) .workspace-console .hg-rail-item:hover {
+  border-color: transparent;
+  background: var(--ui-hover);
+  color: var(--ui-text);
+}
+
+:root:not([data-theme='acid']) .workspace-console .hg-rail-item[aria-current='page'] {
+  border-color: var(--ui-border);
+  background: var(--ui-surface);
+  color: var(--ui-text);
+  font-weight: 600;
+}
+
+.workspace-console .hg-rail-subitems {
+  margin: 2px 0 3px 16px;
+  padding-left: 8px;
+  gap: 1px;
+}
+
+.workspace-console .hg-rail-subitems button {
+  min-height: 26px;
+  padding: 3px 8px;
+  font-size: 12px;
+  border-radius: 5px;
+}
+
+:root:not([data-theme='acid']) .workspace-console .hg-rail-subitems button[aria-current='page'] {
+  color: var(--ui-text);
+  background: var(--ui-hover);
+  font-weight: 600;
+}
+
+.workspace-console .hg-right-aside {
+  padding: 12px;
+  gap: 10px;
+}
+
+.workspace-console .hg-aside-slot {
+  gap: 10px;
+}
+
+.workspace-console .hg-aside-card {
+  padding: 12px 14px;
+  gap: 8px;
+}
+
+/* 3. Compact Stage Bar (.workspace-page-head) & Interior Canvas Rhythm */
+.workspace-console .workspace-page-head {
+  min-height: 44px;
+  padding: 6px 18px;
+  gap: 8px 14px;
+}
+
+:root:not([data-theme='acid']) .workspace-console .workspace-page-symbol {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+}
+
+:root:not([data-theme='acid']) .workspace-console .workspace-page-identity p {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--ui-muted);
+}
+
+:root:not([data-theme='acid']) .workspace-console .workspace-page-identity p::after {
+  content: '/';
+  margin-left: 6px;
+  color: var(--ui-border);
+  font-weight: 400;
+}
+
+.workspace-console .workspace-page-identity h1 {
+  font-size: 14.5px;
+  line-height: 20px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.workspace-console .workspace-view-tabs button {
+  min-height: 26px;
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.workspace-console .workspace-page-head :is(#workspace-panel-toolbar, .heading-actions) {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.workspace-console .workspace-page-head :is(.el-button, .workspace-back) {
+  min-height: 28px;
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+  border-radius: 6px;
+}
+
+/* Interior Page Spacing & Duplicate Heading Normalization */
+.workspace-console .studio-layout .workspace-panel {
+  --tile-gap: 12px;
+  --tile-pad: 14px;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.workspace-console .studio-layout .workspace-panel-content {
+  padding: 14px 18px 24px;
+}
+
+@media (max-width: 900px) {
+  .workspace-console .studio-layout .workspace-panel-content {
+    padding: 12px 12px 20px;
+  }
+}
+
+/* Suppress redundant secondary page h1 blocks when Stage Bar already displays the page title */
+.studio-layout .workspace-panel:has(.workspace-page-head) .workspace-page-body :is(.task-heading, .execution-heading > div > h1, .center-heading-title > h1, .catalog-heading h1, .messages-eyebrow, .messages-heading h1) {
+  display: none;
+}
+
+.studio-layout .workspace-panel:has(.workspace-page-head) .workspace-page-body .page-heading {
+  margin-bottom: 10px;
+}
+
+.studio-layout .workspace-panel:has(.workspace-page-head) .workspace-page-body .page-heading h1 {
+  font-size: 15px;
+  line-height: 22px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.studio-layout .workspace-panel:has(.workspace-page-head) .workspace-page-body .page-heading p {
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--ui-muted);
+}
+
+/* 4. Universal Surface, Card, Filter Bar & Ledger Table Unification */
+.studio-layout .workspace-panel .workspace-page-body .surface {
+  margin-bottom: var(--tile-gap);
+  border: 1px solid var(--tile-edge);
+  border-radius: var(--ds-radius, 8px);
+  background: var(--ui-surface);
+  box-shadow: var(--tile-shadow);
+}
+
+.studio-layout .workspace-panel .workspace-page-body :is(.surface-header, .wb-card-head) {
+  min-height: 42px;
+  padding: 10px var(--tile-pad);
+  gap: 10px;
+  border-bottom: 1px solid var(--ui-divider);
+}
+
+.studio-layout .workspace-panel .workspace-page-body :is(.surface-header, .wb-card-head) h2 {
+  font-size: 13.5px;
+  line-height: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--ui-text);
+}
+
+.studio-layout .workspace-panel .workspace-page-body :is(.surface-header, .wb-card-head) p {
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--ui-muted);
+}
+
+.studio-layout .workspace-panel .workspace-page-body .surface-body {
+  padding: 12px var(--tile-pad) 14px;
+}
+
+.studio-layout .workspace-panel .workspace-page-body .filter-bar {
+  padding: 9px var(--tile-pad);
+  gap: 8px;
+  border-bottom: 1px solid var(--ui-divider);
+}
+
+.studio-layout .workspace-panel .workspace-page-body .table-footer {
+  padding: 8px var(--tile-pad);
+  border-top: 1px solid var(--ui-divider);
+  font-size: 12px;
+}
+
+/* Secondary Page Cards (Automation, Daily/Weekly Reports, Dev/Fix Forms, CLI Cards) */
+.studio-layout .workspace-panel .workspace-page-body :is(
+  .daily-report,
+  .weekly-card,
+  .automation-card,
+  .automation-job,
+  .development-form,
+  .fix-form,
+  .cli-card
+) {
+  padding: 14px 16px;
+  border: 1px solid var(--tile-edge);
+  border-radius: var(--ds-radius, 8px);
+  background: var(--ui-surface);
+  box-shadow: var(--tile-shadow);
+}
+
+.studio-layout .workspace-panel .workspace-page-body .automation-card .automation-summary {
+  padding: 0 0 10px;
+  border: 0;
+  border-bottom: 1px solid var(--ui-divider);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.studio-layout .workspace-panel .workspace-page-body .automation-card .automation-summary strong {
+  margin-top: 3px;
+  font-size: 13px;
+}
+
+.studio-layout .workspace-panel .workspace-page-body .automation-job + .automation-job {
+  margin-top: 8px;
+}
+
+/* High-Density Ledger Tables */
+.studio-layout .workspace-panel .workspace-page-body .el-table {
+  font-size: 12.5px;
+}
+
+.studio-layout .workspace-panel .workspace-page-body .el-table th.el-table__cell {
+  padding: 8px 0;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--ui-muted);
+  background: color-mix(in srgb, var(--ui-raised) 65%, var(--ui-surface));
+}
+
+.studio-layout .workspace-panel .workspace-page-body .el-table td.el-table__cell {
+  padding: 9px 0;
+  transition: background-color 120ms ease;
+}
+
+.studio-layout .workspace-panel .workspace-page-body .el-table .cell {
+  padding-inline: 11px;
+  line-height: 1.5;
+}
+
+.studio-layout .workspace-panel .workspace-page-body .el-table .el-table-column--selection .cell {
+  padding-inline: 8px;
+  text-overflow: clip;
+  overflow: visible;
+}
+
+.studio-layout .workspace-panel .workspace-page-body .row-title {
+  font-size: 13px;
+  line-height: 19px;
+  font-weight: 550;
+  letter-spacing: -0.006em;
+  color: var(--ui-text);
+}
+
+.studio-layout .workspace-panel .workspace-page-body .row-secondary {
+  margin-top: 2px;
+  font-size: 11.5px;
+  line-height: 16px;
+  color: var(--ui-muted);
+}
+
+/* 5. Unified Compact KPI Metric Strip (.hub-metrics, .wb-metric, .desk-metrics, .control-metrics) */
+.studio-layout .workspace-panel .workspace-page-body .hub-metrics {
+  gap: 10px;
+  margin-bottom: var(--tile-gap);
+}
+
+.studio-layout .workspace-panel .workspace-page-body .hub-metrics.hub-metrics > .metric-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto auto auto;
+  align-content: space-between;
+  align-items: start;
+  min-height: 76px;
+  padding: 11px 14px;
+  gap: 3px;
+  border-radius: var(--ds-radius, 8px);
+}
+
+:root:not([data-theme='acid']) .studio-layout .workspace-panel .workspace-page-body .hub-metrics.hub-metrics > .metric-card:hover {
+  border-color: color-mix(in srgb, var(--ui-text) 16%, var(--ui-border));
+}
+
+.studio-layout .workspace-panel .workspace-page-body .hub-metrics.hub-metrics > .metric-card > span {
+  grid-column: 1;
+  grid-row: 1;
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 500;
+  color: var(--ui-secondary);
+}
+
+.studio-layout .workspace-panel .workspace-page-body .hub-metrics.hub-metrics > .metric-card > strong {
+  grid-column: 1;
+  grid-row: 2;
+  margin: 1px 0 0;
+  font: 600 22px/26px var(--ds-numeral, var(--sans));
+  font-variant-numeric: tabular-nums lining-nums;
+  letter-spacing: -0.025em;
+}
+
+/* Calm numeral hierarchy: neutral text by default; reserve color for warning/danger */
+:root:not([data-theme='acid']) .studio-layout .workspace-panel .workspace-page-body .hub-metrics > .metric-card strong:is(.primary, .success),
+:root:not([data-theme='acid']) .studio-layout .workspace-panel .workspace-page-body .hub-metrics > .metric-card:not(.warning):not(.danger) strong:not(.warning):not(.danger) {
+  color: var(--ui-text);
+}
+
+:root:not([data-theme='acid']) .studio-layout .workspace-panel .workspace-page-body .hub-metrics > .metric-card > span::before {
+  background: var(--ui-muted);
+}
+
+:root:not([data-theme='acid']) .studio-layout .workspace-panel .workspace-page-body .hub-metrics > .metric-card:has(strong.warning) > span::before {
+  background: var(--ui-warning);
+}
+
+:root:not([data-theme='acid']) .studio-layout .workspace-panel .workspace-page-body .hub-metrics > .metric-card:has(strong.danger) > span::before {
+  background: var(--ui-danger);
+}
+
+.studio-layout .workspace-panel .workspace-page-body .hub-metrics.hub-metrics > .metric-card > small {
+  grid-column: 1;
+  grid-row: 3;
+  font-size: 11.5px;
+  line-height: 16px;
+  color: var(--ui-muted);
+}
+
+/* Desk Metrics & Refactor Control Metrics Unification */
+.studio-layout .workspace-panel .workspace-page-body :is(.desk-metrics, .control-metrics) {
+  gap: 10px;
+  margin-block: 10px;
+}
+
+.studio-layout .workspace-panel .workspace-page-body :is(.desk-metrics button, .control-metrics article) {
+  min-height: 76px;
+  padding: 11px 14px;
+  border-radius: var(--ds-radius, 8px);
+}
+
+.studio-layout .workspace-panel .workspace-page-body :is(.desk-metrics strong, .control-metrics strong) {
+  font-size: 22px;
+  line-height: 26px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Today Workbench Bento Deck & Metric Tile Unification */
+.studio-layout .workspace-panel .wb-bento-deck {
+  gap: 10px;
+}
+
+.studio-layout .workspace-panel .wb-bento-metrics {
+  gap: 10px;
+}
+
+.studio-layout .workspace-panel .wb-bento-hero {
+  padding: 13px 16px;
+  gap: 6px;
+  border-radius: var(--ds-radius, 8px);
+}
+
+:root:not([data-theme='acid']) .studio-layout .workspace-panel .wb-bento-hero {
+  border-left: 1px solid var(--tile-edge);
+}
+
+.studio-layout .workspace-panel .wb-bento-hero h1 {
+  font-size: 22px;
+  line-height: 28px;
+  letter-spacing: -0.025em;
+}
+
+.studio-layout .workspace-panel .wb-bento-ruler {
+  padding: 11px 14px 14px;
+  border-radius: var(--ds-radius, 8px);
+}
+
+.studio-layout .workspace-panel .wb-bento-ruler .wb-ruler-track {
+  height: 26px;
+  margin: 26px 10px 2px;
+}
+
+.studio-layout .workspace-panel .wb-bento-ruler .wb-now b {
+  top: -20px;
+  padding: 1px 7px;
+  font-size: 10.5px;
+  line-height: 15px;
+}
+
+.studio-layout .workspace-panel .wb-records .wb-head-controls {
+  flex-wrap: nowrap;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.studio-layout .workspace-panel .wb-records .wb-search {
+  width: 228px;
+  max-width: 228px;
+}
+
+.studio-layout .workspace-panel .workspace-page-body .wb-metric {
+  min-height: 76px;
+  padding: 11px 13px;
+  gap: 4px 6px;
+  border-radius: var(--ds-radius, 8px);
+}
+
+.studio-layout .workspace-panel .workspace-page-body .wb-metric .wb-metric-text > span {
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 500;
+  color: var(--ui-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.studio-layout .workspace-panel .workspace-page-body .wb-metric .wb-metric-text small {
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 15px;
+}
+
+.studio-layout .workspace-panel .workspace-page-body .wb-metric .wb-metric-icon {
+  width: 22px;
+  height: 22px;
+}
+
+.studio-layout .workspace-panel .wb-metric strong {
+  font: 600 22px/26px var(--ds-numeral, var(--sans));
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.025em;
+}
+
+:root:not([data-theme='acid']) .studio-layout .workspace-panel .wb-metric:not(.active):not(.warning):not(.danger) strong {
+  color: var(--ui-text);
+}
+
+:root:not([data-theme='acid']) .studio-layout .workspace-panel .wb-metric.zero:not(.active) strong {
+  color: var(--ui-muted);
+}
+
+/* Compact Workbench Record Cards */
+.studio-layout .workspace-panel .wb-list.is-cards {
+  gap: 10px;
+  padding: 12px var(--tile-pad);
+}
+
+.studio-layout .workspace-panel .wb-list .wb-row {
+  padding: 11px 13px;
+  gap: 6px;
+  border-radius: var(--ds-radius, 8px);
+}
+
+.studio-layout .workspace-panel .wb-row-title {
+  font-size: 13px;
+  line-height: 19px;
+  font-weight: 550;
+}
+
+/* 6. Calm Link & Inline Action Color Hierarchy (No Saturated Orange/Red Measles) */
+:root:not([data-theme='acid']) .studio-layout .workspace-panel .workspace-page-body :is(
+  .hub-link,
+  .wb-link,
+  .task-detail-button.el-button,
+  .open-browser-link,
+  .environment-address > a,
+  .plugin-card a,
+  .el-table td .el-button.is-link
+) {
+  color: var(--ui-secondary);
+  transition: color 140ms ease, background-color 140ms ease;
+}
+
+:root:not([data-theme='acid']) .studio-layout .workspace-panel .workspace-page-body :is(
+  .hub-link:hover,
+  .wb-link:hover,
+  .task-detail-button.el-button:hover,
+  .open-browser-link:hover,
+  .environment-address > a:hover,
+  .plugin-card a:hover,
+  .el-table td .el-button.is-link:not(.el-button--danger):hover
+) {
+  color: var(--ui-accent);
+}
+
+:root:not([data-theme='acid']) .studio-layout .workspace-panel .workspace-page-body .el-table td .el-button--danger.is-link:hover {
+  color: var(--ui-danger);
+}
+
+/* Sidebar Category Lists (Ports, Deployments, Interfaces, Refactor, Settings) */
+.studio-layout .workspace-panel .workspace-page-body :is(.port-sidebar, .deployment-sidebar, .module-sidebar, .control-sidebar) {
+  padding: 12px 10px;
+  border-radius: var(--ds-radius, 8px);
+}
+
+.studio-layout .workspace-panel .workspace-page-body :is(.port-main, .deployment-main, .interface-list, .project-bar) {
+  border-radius: var(--ds-radius, 8px);
+}
+
+.studio-layout .workspace-panel :is(.deployment-project-heading, .port-project-heading) h2 {
+  font-size: 15px;
+  line-height: 22px;
+  font-weight: 600;
+}
+
+/* 7. Workspace Overview Interactive Polish */
+.studio-layout .workspace-panel .attention-list > a {
+  padding: 9px 10px;
+  margin: 1px -10px;
+  border-radius: var(--ds-radius-sm, 6px);
+  transition: background-color 140ms ease;
+}
+
+.studio-layout .workspace-panel .quick-entry-grid {
+  gap: 10px;
+}
+
+.studio-layout .workspace-panel .quick-entry-grid > a {
+  padding: 11px 13px;
+  border-radius: var(--ds-radius, 8px);
+  transition:
+    border-color 160ms ease,
+    background-color 160ms ease;
+}
+
+.studio-layout .workspace-panel .source-statuses > div {
+  padding: 9px 0;
+  font-size: 12.5px;
+}

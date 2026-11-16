@@ -44,4 +44,4 @@ cd ai-delivery-kit
 ./install.sh both --validate --workspace /path/to/workspace
 ```
 
-Confluence：[Hub](https://confluence.example.com/spaces/TEAM/pages/1001/) · `guides/confluence-one-pager.md` · `guides/pilot-90day-checklist.md`
+Confluence：[Hub](https://confluence.hahabianli.com/spaces/SOP/pages/33746027/) · `guides/confluence-one-pager.md` · `guides/pilot-90day-checklist.md`

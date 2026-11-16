@@ -2201,3 +2201,68 @@ test('浏览器仅打开本轮记录中的 HTML/SVG 文件', async () => {
     ]);
   } finally { await service.close(); await fs.rm(root, { recursive: true, force: true }); }
 });
+
+test('会话内预览返回受限文件的 Git Diff 与内容，且终态运行持久化时自动剥离历史 teamContext', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-preview-file-test-'));
+  const directory = path.join(root, 'data');
+  const workspacePath = path.join(root, 'repo');
+  await fs.mkdir(directory, { recursive: true });
+  await exec('git', ['init', '-b', 'main', workspacePath]);
+  await exec('git', ['-C', workspacePath, 'config', 'user.email', 'delivery@example.test']);
+  await exec('git', ['-C', workspacePath, 'config', 'user.name', 'Delivery Test']);
+  await fs.writeFile(path.join(workspacePath, 'tracked.ts'), 'export const value = 1;\n');
+  await fs.writeFile(path.join(workspacePath, 'gone.ts'), 'export const old = true;\n');
+  await exec('git', ['-C', workspacePath, 'add', '.']);
+  await exec('git', ['-C', workspacePath, 'commit', '-m', 'init']);
+
+  const adapter: AgentRuntimeAdapter = {
+    id: 'codex',
+    health: async () => health('codex'),
+    execute: async context => {
+      await fs.writeFile(path.join(context.run.workspacePath, 'tracked.ts'), 'export const value = 2;\n');
+      await fs.writeFile(path.join(context.run.workspacePath, 'created.ts'), 'export const fresh = "ok";\n');
+      await fs.unlink(path.join(context.run.workspacePath, 'gone.ts'));
+      return '改动完成';
+    },
+  };
+  const service = await createAgentRuntimeService(directory, { adapters: [adapter] });
+  try {
+    const started = await service.startTeamNode(
+      { provider: 'codex', mode: 'agent', model: 'test-model', objective: '修改文件', workspacePath },
+      {
+        team: { taskId: 'task-preview', nodeId: 'node-preview', profileId: 'leader', profileName: 'Leader', round: 1, stage: 'execute' },
+        context: 'X'.repeat(4096),
+        parentConversationId: '',
+        title: '修改文件',
+      },
+    );
+    for (let attempt = 0; attempt < 80 && (!started.changedFiles || started.resultReady === false || started.status !== 'completed'); attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.equal(started.status, 'completed');
+    assert.equal(started.teamContext?.length, 4096, '内存态保留 teamContext');
+
+    const modPreview = await service.previewChangedFile(started.id, 'tracked.ts');
+    assert.equal(modPreview.status, 'modified');
+    assert.match(modPreview.patch, /-export const value = 1;/);
+    assert.match(modPreview.patch, /\+export const value = 2;/);
+    assert.equal(modPreview.content, 'export const value = 2;\n');
+
+    const addPreview = await service.previewChangedFile(started.id, 'created.ts');
+    assert.equal(addPreview.status, 'added');
+    assert.match(addPreview.patch, /^\+export const fresh = "ok";/m);
+
+    const delPreview = await service.previewChangedFile(started.id, 'gone.ts');
+    assert.equal(delPreview.status, 'deleted');
+    assert.match(delPreview.patch, /-export const old = true;/);
+    assert.equal(delPreview.content, '');
+
+    await assert.rejects(service.previewChangedFile(started.id, '../outside.ts'), /不属于本轮改动|超出/);
+  } finally {
+    await service.close();
+  }
+
+  const persisted = JSON.parse(await fs.readFile(path.join(directory, 'agent-runs.json'), 'utf8')) as AgentRun[];
+  assert.equal(persisted[0]?.teamContext, undefined, '落盘账本剥离已完成轮次的冗余 teamContext');
+  await fs.rm(root, { recursive: true, force: true });
+});

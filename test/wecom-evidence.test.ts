@@ -285,8 +285,8 @@ test('缺少或非法接口图在任何消息和回执创建前阻断', async t 
 
 test('请求证据页保留真实响应及接口文案，脱敏敏感数据并转义返回中的HTML', () => {
   const evidence = { source: 'browser-cdp', batchId: 'same-browser-batch', capturedAt: '2026-10-09T11:00:00.000Z',
-    pageUrl: 'http://demo-user1.localhost:6791/OperateManage/MerchantList',
-    request: { requestId: '23494.360', method: 'GET', url: 'http://demo-user1.localhost:6791/admin/v1/merchants/list?page=1', headers: { Authorization: 'Bearer fixture-secret', 'X-Region': 'NA' } },
+    pageUrl: 'http://lizirui1.localhost:6791/OperateManage/MerchantList',
+    request: { requestId: '23494.360', method: 'GET', url: 'http://lizirui1.localhost:6791/admin/v1/merchants/list?page=1', headers: { Authorization: 'Bearer fixture-secret', 'X-Region': 'NA' } },
     response: { status: 200, headers: { 'Set-Cookie': 'private-cookie' }, body: { code: 1000, data: { key: 'countryRegion', canResetPassword: false, label: 'L900037', phone: 'private-phone', message: '<script>alert(1)</script>' } } },
   };
   const html = renderIntegrationRequestEvidence(evidence);

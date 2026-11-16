@@ -84,3 +84,29 @@ test('历史会话续接后迁移未发送草稿，不丢失文本或附件', ()
   assert.equal(drafts.draft.value, '续接期间输入');
   assert.deepEqual(drafts.attachments.value, [image]);
 });
+
+test('传入持久化存储时跨页面重载保留文本草稿，但不落盘附件且发送后立即清理', () => {
+  const store = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => store.get(key) ?? null,
+    setItem: (key: string, value: string) => { store.set(key, value); },
+    removeItem: (key: string) => { store.delete(key); },
+  };
+  const firstId = shallowRef('persisted-a');
+  const first = useAgentConversationDrafts(firstId, storage);
+  first.draft.value = '刷新前未发送的提示词';
+  first.attachments.value = [image];
+  first.move('persisted-a', 'persisted-b');
+
+  const raw = [...store.values()][0] || '{}';
+  assert.equal(raw.includes('example.png'), false, '附件元信息不应落盘到文本草稿存储');
+
+  const reloadedId = shallowRef('persisted-b');
+  const reloaded = useAgentConversationDrafts(reloadedId, storage);
+  assert.equal(reloaded.draft.value, '刷新前未发送的提示词');
+  assert.deepEqual(reloaded.attachments.value, []);
+
+  reloaded.clear('persisted-b');
+  const afterClear = useAgentConversationDrafts(shallowRef('persisted-b'), storage);
+  assert.equal(afterClear.draft.value, '');
+});

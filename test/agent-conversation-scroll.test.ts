@@ -41,7 +41,7 @@ function mount(initial = conversation('a'), visible?: boolean) {
     return pending ? pending() : nextTick();
   }, onBeforeUnmount: (callback: () => void) => dispose.push(callback),
   useTemplateRef: (name: string) => name === 'messageViewport' ? messageViewport : shallowRef(),
-  defineProps: () => props, defineModel: (name: string) => shallowRef(name === 'automatic' ? true : undefined), defineEmits: () => () => {}, defineExpose: () => {} };
+  defineProps: () => props, defineModel: (name: string) => shallowRef(name === 'automatic' ? true : undefined), defineEmits: () => () => {}, defineExpose: () => {}, defineAsyncComponent: () => ({}) };
   const scope = effectScope();
   const state = scope.run(() => new Function(...Object.keys(dependencies), `${code}\nreturn { conversationView, searchQuery, rememberScroll, effectiveAutomatic, teamProgressVisible, teamResultVisible, currentTeamTask, visibleEntries };`)
     (...Object.values(dependencies))) as { conversationView: ShallowRef<'chat' | 'execution' | 'delivery'>;

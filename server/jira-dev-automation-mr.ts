@@ -6,6 +6,7 @@ import { resolveAutomationProject } from './jira-backend/automation-project-rout
 import { inspectTaskWorkspace, repositoryIdentity } from './jira-dev/index.mjs';
 import { readProjectGitSnapshot, redact, withProjectGitLock, type ProjectGitSnapshot } from './project-git.js';
 import { createProjectMergeRequest, prepareProjectMergeRequest } from './project-merge-request.js';
+import { analyzeUnifiedDiff, buildStructuredMergeRequestDescription } from './pr-review-intelligence.js';
 
 type Issue = Pick<JiraIssue, 'key' | 'summary' | 'description' | 'project' | 'components' | 'labels' | 'parent'>;
 type Policy = Pick<AutomationSettings, 'autoCreateMergeRequest' | 'reviewer' | 'projectProfiles'>;
@@ -125,11 +126,27 @@ export async function deliverJiraDevMergeRequest(input: {
       pushed = await publishVerifiedHead(snapshot, profile.targetBranch, options.beforeCreate);
       if (pushed) snapshot = await verifiedSnapshot();
     }
+    const commits = await git(snapshot.directory, ['log', '--no-merges', '--max-count=30', '--format=%H\t%s', `${baseSha}..${verifiedHead}`])
+      .then(output => output.stdout.split('\n').map(line => line.trim()).filter(Boolean).map(line => {
+        const tab = line.indexOf('\t');
+        return tab > 0 ? { sha: line.slice(0, tab), subject: line.slice(tab + 1) } : { sha: line, subject: '' };
+      }), () => []);
+    const patch = await git(snapshot.directory, ['diff', '--no-ext-diff', '--find-renames', '--unified=2', baseSha, verifiedHead, '--', '.', ':(exclude).delivery-artifacts'])
+      .then(output => output.stdout, () => '');
+    const description = buildStructuredMergeRequestDescription({
+      sourceBranch: branchName,
+      targetBranch: profile.targetBranch,
+      commits,
+      triage: analyzeUnifiedDiff(patch),
+      issue: { key: issue.key, summary: issue.summary },
+      verifiedHead,
+      mode: 'full',
+    });
     const request = {
       path: snapshot.directory, remote: 'origin', sourceBranch: branchName, targetBranch: profile.targetBranch,
       revision: snapshot.revision,
       title: `${issue.key}: ${issue.summary}`.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 256),
-      description: `关联 Jira：${issue.key}\n\n已验证并回读的源提交：${verifiedHead}`,
+      description,
     };
     const prepared = await prepareProjectMergeRequest(request, options);
     if (!prepared.canCreate && !prepared.existing) throw new Error(prepared.reason || '无法创建合并请求，请检查远端设置。');

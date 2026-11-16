@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import type { AntigravityUsageBucket, AntigravityUsageGroup, AntigravityUsageLimits } from '../shared/agent-runtime.js';
-import { antigravityBinary } from './cli-runtime.js';
+import { antigravityBinary, antigravityMetadataTimeoutMs } from './cli-runtime.js';
 
 const exec = promisify(execFile);
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value)
@@ -80,7 +80,7 @@ interface ReaderOptions {
   failureTtlMs?: number;
   staleMs?: number;
 }
-export function createAntigravityUsageReader(binary = antigravityBinary, ttlMs = 60_000, timeoutMs = 20_000, options: ReaderOptions = {}) {
+export function createAntigravityUsageReader(binary = antigravityBinary, ttlMs = 60_000, timeoutMs = antigravityMetadataTimeoutMs, options: ReaderOptions = {}) {
   const clock = options.now || Date.now;
   const request = options.request || (() => requestAntigravityUsage(binary, timeoutMs));
   const failureTtlMs = options.failureTtlMs ?? 5_000, staleMs = options.staleMs ?? 5 * 60_000;

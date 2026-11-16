@@ -7,6 +7,21 @@ export const workspaceScheduleInputSchema = z.object({ path: workspacePath,
   revision: z.string().max(200), deleteAt: z.string().datetime({ offset: true }).nullable(),
   confirmName: z.string().max(255).optional() }).strict();
 
+export const workspaceRestoreInputSchema = z.object({
+  id: z.string().trim().min(1).max(120),
+}).strict();
+
+export interface WorkspaceTrashItem {
+  id: string;
+  originalPath: string;
+  name: string;
+  linked: boolean;
+  deletedAt: string;
+  expiresAt: string;
+  ignoredFiles: string[];
+  restorable: boolean;
+}
+
 export interface WorkspaceCleanupRule {
   path: string;
   deleteAt: string;
@@ -22,5 +37,7 @@ export interface WorkspaceRemovalPreview {
   requiresDiscardChanges?: true;
   canSchedule: boolean;
   reason?: string;
+  ignoredFiles?: string[];
+  sensitiveIgnoredFiles?: string[];
   rule?: WorkspaceCleanupRule;
 }

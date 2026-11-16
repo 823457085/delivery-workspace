@@ -97,11 +97,23 @@ test('会话中的原始网页地址成为链接，不吞掉尾随标点或代�
 });
 
 test('运行动态的 Markdown 保留标题与强调，文件引用仅展示标签且不开放 file 协议', () => {
-  const blocks = parseAgentMarkdown('### 为什么不可用\n\n已检查 **自动巡检** 和 [DeliverySettings.vue](file:///Users/demo/Desktop/工作台/Delivery/src/DeliverySettings.vue)。');
+  const blocks = parseAgentMarkdown('### 为什么不可用\n\n已检查 **自动巡检** 和 [DeliverySettings.vue](file:///Users/example/projects/delivery/src/DeliverySettings.vue)。');
   assert.equal(blocks[0].type, 'heading');
   assert.equal(blocks[1].type, 'paragraph');
   if (blocks[1].type !== 'paragraph') return;
   assert.deepEqual(blocks[1].content.find(node => node.type === 'strong'), { type: 'strong', text: '自动巡检' });
   assert.ok(blocks[1].content.some(node => node.type === 'text' && node.text === 'DeliverySettings.vue'));
   assert.equal(blocks[1].content.some(node => node.type === 'link'), false);
+});
+
+test('Markdown 解析结果支持有界缓存复用，淘汰最旧条目后仍可正确重新解析', () => {
+  const sample = '# 缓存验证\n\n- 条目一\n- 条目二';
+  const first = parseAgentMarkdown(sample);
+  const second = parseAgentMarkdown(sample);
+  assert.equal(first, second);
+  for (let i = 0; i < 270; i++) {
+    parseAgentMarkdown(`## 动态消息 ${i}\n\n正文 ${i}`);
+  }
+  const reparsed = parseAgentMarkdown(sample);
+  assert.deepEqual(reparsed, first);
 });

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref, shallowRef, watch } from 'vue';
+import { computed, defineAsyncComponent, reactive, ref, shallowRef, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useQuery, useQueryClient } from '@tanstack/vue-query';
 import { ElMessage, ElMessageBox } from 'element-plus';
@@ -13,10 +13,10 @@ import type { JiraDevIssueView } from '../../../shared/jira-dev';
 import { emptyOverseasRequirement, filterOverseasRequirements, mergeOverseasRequirements, overseasI18nLabels, overseasRequirementPayload,
   overseasStageLabels, overseasSystemStatusLabels, type OverseasRequirement } from '../../../shared/overseas-requirements';
 import { dateTime } from '../../shared/format';
-import JiraDevTask from '../jira-dev/JiraDevTask.vue';
-import RequirementExecutionRecords from './RequirementExecutionRecords.vue';
-import RequirementProgressEditor from './RequirementProgressEditor.vue';
-import OverseasRequirementEditor from './OverseasRequirementEditor.vue';
+const JiraDevTask = defineAsyncComponent(() => import('../jira-dev/JiraDevTask.vue'));
+const RequirementExecutionRecords = defineAsyncComponent(() => import('./RequirementExecutionRecords.vue'));
+const RequirementProgressEditor = defineAsyncComponent(() => import('./RequirementProgressEditor.vue'));
+const OverseasRequirementEditor = defineAsyncComponent(() => import('./OverseasRequirementEditor.vue'));
 import { useIntegrationPlugins } from '../../plugins/runtime';
 const integrations = useIntegrationPlugins();
 import { jiraDevRequest } from '../jira-dev/useJiraDevTask';
@@ -41,12 +41,12 @@ async function get<T>(url: string, signal?: AbortSignal): Promise<T> {
   if (!response.ok) throw new Error(data.message || '需求读取失败');
   return data;
 }
-const requirements = useQuery({ queryKey: ['overseas-requirements'], retry: false,
+const requirements = useQuery({ queryKey: ['overseas-requirements'], retry: false, refetchIntervalInBackground: false,
   queryFn: ({ signal }) => get<RequirementSnapshot>('/api/overseas-requirements', signal), refetchInterval: 15000 });
-const runs = useQuery({ queryKey: ['requirement-development'], retry: false,
+const runs = useQuery({ queryKey: ['requirement-development'], retry: false, refetchIntervalInBackground: false,
   queryFn: async ({ signal }) => (await get<{ records: RequirementDevelopmentRecord[] }>('/api/agent-runtimes/requirement-development', signal)).records, refetchInterval: 15000 });
 const catalog = useQuery({ queryKey: ['system-catalog'], queryFn: () => get<SystemCatalog>('/api/systems'), staleTime: 60000, retry: false });
-const groups = useQuery({ queryKey: ['requirement-group-links'], queryFn: () => get<GroupChatDashboard>('/api/agent-runtimes/group-chat'), refetchInterval: 15000, retry: false });
+const groups = useQuery({ queryKey: ['requirement-group-links'], queryFn: () => get<GroupChatDashboard>('/api/agent-runtimes/group-chat'), refetchIntervalInBackground: false, refetchInterval: 15000, retry: false });
 watch(() => requirements.error.value || runs.error.value, error => { if (error) ElMessage.error(error.message); });
 const records = computed(() => runs.data.value || []);
 const items = computed(() => mergeOverseasRequirements(requirements.data.value?.items || [], records.value, requirements.data.value?.removedIds));
@@ -278,7 +278,7 @@ function executionStatus(record: RequirementDevelopmentRecord) {
     <div v-if="tab === 'today'" class="desk-layout">
       <main class="desk-work">
         <header class="desk-section-heading"><div><h2>{{ queueLabels[focus] }} <small>{{ queue.length }} 项</small></h2><p>按当前记录安排下一步，执行结束后继续核对验证与验收。</p></div><el-button link type="primary" @click="focus = focus === 'all' ? 'attention' : 'all'">{{ focus === 'all' ? '返回待办' : '查看全部' }}</el-button></header>
-        <div class="desk-filters"><el-input v-model="filter.search" clearable placeholder="搜索需求、Jira 或阻塞" aria-label="搜索推进事项"><template #prefix><Search :size="15" /></template></el-input><el-select v-model="filter.system" clearable filterable placeholder="全部系统" aria-label="推进系统筛选"><el-option v-for="system in systems" :key="system" :label="system" :value="system" /></el-select></div>
+        <div class="desk-filters"><el-input v-model="filter.search" clearable placeholder="搜索需求、Jira 或阻塞" aria-label="搜索推进事项" @keydown.esc="filter.search = ''"><template #prefix><Search :size="15" /></template></el-input><el-select v-model="filter.system" clearable filterable placeholder="全部系统" aria-label="推进系统筛选"><el-option v-for="system in systems" :key="system" :label="system" :value="system" /></el-select></div>
         <div v-loading="busy" class="desk-queue">
           <article v-for="row in visibleQueue" :key="row.item.id" :data-requirement-id="row.item.id" class="desk-card" :data-tone="row.tone">
             <div class="desk-card-status"><span class="desk-status" :data-tone="row.tone">{{ row.label }}</span><span v-if="row.overdue" class="desk-deadline">逾期 {{ -row.days! }} 天 · 计划 {{ row.item.endDate }}</span><span v-else-if="row.item.endDate" class="desk-deadline">{{ row.days === 0 ? '今天到期' : `计划 ${row.item.endDate}` }}</span></div>
@@ -290,7 +290,7 @@ function executionStatus(record: RequirementDevelopmentRecord) {
             <p v-if="row.blocker" class="desk-blocker-preview">{{ row.blocker }}</p>
             <div class="desk-next"><span>下一步</span><p>{{ row.nextStep }}</p></div>
             <details v-if="row.blocker" class="desk-evidence"><summary>查看阻塞原始证据</summary><p>{{ row.blocker }}</p></details>
-            <footer><span>{{ row.stages.length ? '依据本轮阶段记录' : row.item.revision ? '依据需求登记' : '依据开发启动记录' }}<template v-if="row.evidenceAt"> · {{ dateTime(row.evidenceAt) }}</template></span><div><el-button link type="danger" :loading="deletingId === row.item.id" :disabled="!!deletingId || !!requirements.error.value" @click="removeRequirement(row.item)">删除</el-button><el-button link @click="showDetail(row.item)">需求详情</el-button><el-button type="primary" :loading="opening && row.action === 'develop'" @click="follow(row)">{{ row.action === 'team' && !deskHasConversation(row) ? '查看记录' : row.actionLabel }}<ArrowUpRight :size="13" /></el-button></div></footer>
+            <footer><span>{{ row.stages.length ? '依据本轮阶段记录' : row.item.revision ? '依据需求登记' : '依据开发启动记录' }}<template v-if="row.evidenceAt"> · {{ dateTime(row.evidenceAt) }}</template></span><div><el-button link type="danger" class="desk-delete-btn" :loading="deletingId === row.item.id" :disabled="!!deletingId || !!requirements.error.value" @click="removeRequirement(row.item)">删除</el-button><el-button link @click="showDetail(row.item)">需求详情</el-button><el-button type="primary" plain size="small" :loading="opening && row.action === 'develop'" @click="follow(row)">{{ row.action === 'team' && !deskHasConversation(row) ? '查看记录' : row.actionLabel }}<ArrowUpRight :size="13" /></el-button></div></footer>
           </article>
           <el-empty v-if="!visibleQueue.length && !busy" :description="requirements.error.value || runs.error.value ? '需求暂时无法读取，请刷新重试' : focus === 'attention' ? '当前筛选下没有待处理事项' : '当前筛选下没有相关需求'" :image-size="60"><el-button v-if="focus !== 'all'" @click="focus = 'all'">查看全部在管需求</el-button><el-button v-else-if="integrations.slots('requirement-import').length" @click="importing = true">导入需求</el-button></el-empty>
         </div>
@@ -305,7 +305,7 @@ function executionStatus(record: RequirementDevelopmentRecord) {
       <div class="requirements-layout">
         <aside class="system-navigation" aria-label="业务系统筛选"><h2>业务系统</h2><button :class="{ active: !filter.system }" @click="filter.system = ''"><span>全部系统</span><span>{{ items.length }}</span></button><button v-for="system in systems" :key="system" :class="{ active: filter.system === system }" @click="filter.system = system"><span>{{ system }}</span><span>{{ desk.filter(row => row.systems.includes(system)).length }}</span></button><button :disabled="!!requirements.error.value" @click="addSystem"><Plus :size="13" /><span>添加系统</span></button><p>系统目录和需求登记共同提供筛选范围。</p></aside>
         <main class="requirements-main">
-          <div class="requirements-toolbar"><el-input v-model="filter.search" clearable placeholder="搜索需求、Jira 或阻塞" aria-label="搜索需求"><template #prefix><Search :size="15" /></template></el-input><el-select v-model="filter.stage" clearable placeholder="全部阶段" aria-label="需求阶段筛选"><el-option label="有阻塞" value="blocked" /><el-option v-for="(label, value) in overseasStageLabels" :key="value" :label="label" :value="value" /></el-select><el-select v-model="filter.owner" clearable placeholder="全部负责人" aria-label="负责人筛选"><el-option v-for="owner in owners" :key="owner" :label="owner" :value="owner" /></el-select><el-select v-model="filter.version" clearable placeholder="全部版本" aria-label="版本筛选"><el-option v-for="version in versions" :key="version" :label="version" :value="version" /></el-select></div>
+          <div class="requirements-toolbar"><el-input v-model="filter.search" clearable placeholder="搜索需求、Jira 或阻塞" aria-label="搜索需求" @keydown.esc="filter.search = ''"><template #prefix><Search :size="15" /></template></el-input><el-select v-model="filter.stage" clearable placeholder="全部阶段" aria-label="需求阶段筛选"><el-option label="有阻塞" value="blocked" /><el-option v-for="(label, value) in overseasStageLabels" :key="value" :label="label" :value="value" /></el-select><el-select v-model="filter.owner" clearable placeholder="全部负责人" aria-label="负责人筛选"><el-option v-for="owner in owners" :key="owner" :label="owner" :value="owner" /></el-select><el-select v-model="filter.version" clearable placeholder="全部版本" aria-label="版本筛选"><el-option v-for="version in versions" :key="version" :label="version" :value="version" /></el-select></div>
           <div class="list-heading"><h2>{{ filter.system || '全部' }}需求</h2><span>{{ filtered.length }} 项</span></div>
           <el-table v-loading="requirements.isPending.value || runs.isPending.value" :data="visibleTable" row-key="id" class="requirements-table" @row-click="showDetail">
             <el-table-column label="业务需求" min-width="270"><template #default="{ row }"><button class="requirement-title" @click.stop="showDetail(row)">{{ row.title }}</button><div class="row-meta"><span>{{ row.issueKey || '本地需求' }}</span><span v-if="jiraInfo(row)?.status || row.jiraStatus">{{ jiraInfo(row)?.status || row.jiraStatus }}</span></div><p v-if="row.blocker" class="blocker-text">阻塞 · {{ row.blocker }}</p></template></el-table-column>
@@ -324,7 +324,7 @@ function executionStatus(record: RequirementDevelopmentRecord) {
     </template>
     <section v-else-if="tab === 'develop'" class="development-view"><header><el-button link @click="tab = 'today'"><ArrowLeft :size="15" />返回今日推进</el-button><span v-if="executionContext">{{ items.find(item => item.id === executionContext?.id)?.title }}</span></header><JiraDevTask :key="executionContext?.id || 'global'" workflow="requirement" :requirement-context="executionContext" @open-run="emit('openRun', $event)" @task="linkTask" @next="nextDevelopment" /></section>
     <RequirementExecutionRecords v-else @open-run="emit('openRun', $event)" />
-    <el-drawer v-model="detailOpen" title="需求详情" size="min(700px, 100vw)">
+    <el-drawer v-if="detailOpen" v-model="detailOpen" title="需求详情" size="min(700px, 100vw)" append-to-body>
       <article v-if="selected" class="requirement-detail">
         <div class="detail-heading"><span>{{ selected.issueKey || '本地需求' }}</span><span>{{ overseasStageLabels[selected.stage] }}</span></div><h2>{{ selected.title }}</h2>
         <div v-if="selectedDesk" class="detail-next"><strong>{{ selectedDesk.label }}</strong><p>下一步：{{ selectedDesk.nextStep }}</p><el-button v-if="selectedDesk.action === 'team' && deskHasConversation(selectedDesk)" link type="primary" @click="follow(selectedDesk)">{{ selectedDesk.actionLabel }}<ArrowUpRight :size="13" /></el-button></div>

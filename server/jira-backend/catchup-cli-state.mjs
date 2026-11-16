@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
-import { sourceDataRoot } from "./config.mjs";
+import { homedir } from "node:os";
 import path from "node:path";
 
-const runtimeRoot = sourceDataRoot;
+const runtimeRoot = process.env.DELIVERY_SOURCE_DATA_DIR
+  || path.join(homedir(), "Library", "Application Support", "DeliveryWorkspace", "source");
 export const CATCHUP_CLI_LEDGER_FILE = path.join(runtimeRoot, "catchup-cli-dispatcher-ledger.json");
 export const CATCHUP_CLI_LOCK_FILE = path.join(runtimeRoot, "catchup-cli-dispatcher.lock");
 

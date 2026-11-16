@@ -109,7 +109,12 @@ export async function createPluginJira(directory: string, runtime: CustomPluginR
     async find(pluginId: string, key: string) { return publicIssue(await issue(pluginId, keySchema.parse(key.trim().toUpperCase()))); },
     async status(pluginId: string, recordId: string) {
       await runtime.resource(pluginId, recordId);
-      return { links: structuredClone(state.links[bucket(pluginId, recordId)] || []), operations: state.tickets.filter(t => t.pluginId === pluginId && t.recordId === recordId).map(t => ({ id: t.id, status: t.status, result: t.result, message: t.message })) };
+      return {
+        links: structuredClone(state.links[bucket(pluginId, recordId)] || []),
+        operations: state.tickets
+          .filter(t => t.pluginId === pluginId && t.recordId === recordId)
+          .map(t => ({ id: t.id, marker: `delivery-plugin-${t.id}`, status: t.status, result: t.result, message: t.message })),
+      };
     },
     link(pluginId: string, raw: unknown) { return serial(async () => {
       runtime.assertCommand(pluginId, 'jira.link');
@@ -165,7 +170,65 @@ export async function createPluginJira(directory: string, runtime: CustomPluginR
         saved.status = !accepted && (error as any).definite === true ? 'failed' : 'unknown';
         saved.message = saved.status === 'failed' ? 'Jira 明确拒绝本次创建，请检查权限和字段后重新预览' : '创建结果待核对，请在 Jira 按预览中的标记或标题查找；不会自动重发';
       }
-      await persist(finished); return { status: saved.status, result: saved.result, message: saved.message };
+      await persist(finished); return { status: saved.status, result: saved.result, message: saved.message, ticketId: ticket.id, marker: `delivery-plugin-${ticket.id}` };
+    }); },
+    reconcile(pluginId: string, raw: unknown) { return serial(async () => {
+      runtime.assertCommand(pluginId, 'jira.create'); runtime.assertCapability(pluginId, 'jira.read');
+      const input = z.object({
+        ticketId: z.uuid(),
+        outcome: z.enum(['auto', 'linked', 'not_created']),
+        issueKey: keySchema.optional(),
+        confirmed: z.literal(true),
+      }).strict().parse(raw);
+      const ticket = state.tickets.find(t => t.id === input.ticketId && t.pluginId === pluginId);
+      if (!ticket) throw new Error('创建请求记录不存在');
+      if (ticket.status === 'done') return { status: ticket.status, result: ticket.result, message: ticket.message };
+      if (ticket.status !== 'unknown') throw new Error('当前创建请求无需人工核对解锁');
+      if (input.outcome === 'auto') {
+        const marker = `delivery-plugin-${ticket.id}`;
+        const found = await json(pluginId, `search?${new URLSearchParams({
+          jql: `labels = "${marker}"`,
+          fields: 'summary,labels,project,issuetype',
+          maxResults: '5',
+        })}`);
+        const issues = Array.isArray(found.issues) ? found.issues : [];
+        const matches = issues.filter((item: Raw) => item.fields?.project?.key === ticket.fields.project?.key
+          && String(item.fields?.issuetype?.id) === String(ticket.fields.issuetype?.id));
+        if (matches.length > 1) throw new Error('匹配到多条同标记 Jira 任务，请输入具体任务编号核对关联');
+        if (!matches.length) {
+          return {
+            status: 'unknown' as const,
+            message: `未按标记 ${marker} 检索到任务；若已在 Jira 核实结果，可填入任务编号关联或确认未创建以解锁重试`,
+          };
+        }
+        const remote = matches[0]!;
+        const next = structuredClone(state), saved = next.tickets.find(t => t.id === ticket.id)!;
+        saved.result = { ...publicIssue(remote), linkedAt: new Date().toISOString(), created: true };
+        saved.status = 'done';
+        saved.message = `已按核对标记找回并关联 ${saved.result.key}`;
+        attach(next, pluginId, ticket.recordId, saved.result);
+        await persist(next);
+        return { status: saved.status, result: saved.result, message: saved.message };
+      }
+      if (input.outcome === 'linked') {
+        if (!input.issueKey) throw new Error('请填写已在 Jira 确认创建的任务编号');
+        const remote = await issue(pluginId, input.issueKey.trim().toUpperCase());
+        if (remote.fields?.project?.key && ticket.fields.project?.key && remote.fields.project.key !== ticket.fields.project.key) {
+          throw new Error(`所填任务属于项目 ${remote.fields.project.key}，与原创建目标 ${ticket.fields.project.key} 不一致`);
+        }
+        const next = structuredClone(state), saved = next.tickets.find(t => t.id === ticket.id)!;
+        saved.result = { ...publicIssue(remote), linkedAt: new Date().toISOString(), created: true };
+        saved.status = 'done';
+        saved.message = `人工核对已关联 ${saved.result.key}`;
+        attach(next, pluginId, ticket.recordId, saved.result);
+        await persist(next);
+        return { status: saved.status, result: saved.result, message: saved.message };
+      }
+      const next = structuredClone(state), saved = next.tickets.find(t => t.id === ticket.id)!;
+      saved.status = 'failed';
+      saved.message = '人工核对确认远端未创建，已解锁可重新预览创建';
+      await persist(next);
+      return { status: saved.status, message: saved.message };
     }); },
     close: () => queue,
   };

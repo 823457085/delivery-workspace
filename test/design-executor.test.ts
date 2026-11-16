@@ -21,7 +21,7 @@ function output(stage: ExecutionStage): { result: StageResult; proof: ToolProof[
   return { result: { outcome: 'passed', summary: '测试阶段结果，不调用真实 AI 或外部 API',
     checks: EXECUTION_STAGES.find((s) => s.id === stage)!.checks.map((id) => ({ id, passed: true, detail: '测试证据' })),
     evidence: [{ kind: 'code', ref: '/test/code', detail: '测试证据' }], artifacts: { ...artifacts },
-    markdown: stage === 'design' ? '元信息 方案摘要 需求映射 影响范围 详细设计 与 PRD 差异 风险 测试关注点 任务拆分 回滚 覆盖度矩阵 G2a\n' + '测试方案正文。'.repeat(200) : '' },
+    markdown: stage === 'design' ? '## 一、基本信息\n\nTEST-1 测试方案\n\n## 二、主要功能\n\n验收点 AC-1 见代码和验证路径。\n\n## 三、核心设计\n\n按已核实的接口返回值显示。' : '' },
     proof: ['TEST-1', 'TEST-2', 'TEST-3', 'TEST-4'].map((target) => ({ tool: 'jira_get_issue', target, succeeded: true })).concat([
       { tool: 'confluence_get_page', target: '100', succeeded: true }, { tool: 'confluence_get_page', target: '101', succeeded: true },
       { tool: 'command_execution', target: '', succeeded: true },
@@ -71,7 +71,7 @@ test('default execution waits for desktop claim; six stages are ordered, bound a
       assert.equal(saved.run.steps.find(item => item.id === stage)?.proofSource, 'codex-desktop');
     }
     assert.equal(f.service.desktop(id).run.status, 'completed');
-    assert.match(await fs.readFile(path.join(f.root, 'executor', id, 'tech-design.md'), 'utf8'), /覆盖度矩阵/);
+    assert.match(await fs.readFile(path.join(f.root, 'executor', id, 'tech-design.md'), 'utf8'), /一、基本信息/);
   } finally { await f.service.close(); await fs.rm(f.root, { recursive: true }); await fs.rm(f.workspace, { recursive: true }); }
 });
 
@@ -131,7 +131,7 @@ test('real Mastra traverses all six stages with injected executor; duplicate con
     assert.equal(run.status, 'completed');
     assert.equal(run.threadId, threadId);
     assert.equal((await f.service.snapshot(run.id))?.status, 'success');
-    assert.match(await fs.readFile(path.join(f.root, 'executor', run.id, 'tech-design.md'), 'utf8'), /覆盖度矩阵/);
+    assert.match(await fs.readFile(path.join(f.root, 'executor', run.id, 'tech-design.md'), 'utf8'), /一、基本信息/);
     await assert.rejects(f.service.start(request(f.workspace)), /已有自动执行记录/);
   } finally { await f.service.close(); await fs.rm(f.root, { recursive: true }); await fs.rm(f.workspace, { recursive: true }); }
 });
@@ -300,20 +300,19 @@ test('all stages use native tools even when resuming a thread with desktop Code 
   }
 });
 
-test('design prompt names both main skills and every server-required section without expanding code permissions', () => {
+test('design accepts the selected single-document format without legacy headings', () => {
   const run = emptyRun();
   const prompt = stagePrompt('design', run, '/skills', '/kit');
   assert.match(prompt, /apex-frontend-tech-design-delivery\/SKILL.md/);
   assert.match(prompt, /apex-jira-feature-development\/SKILL.md/);
   assert.match(prompt, /不执行其中的建目录、clone\/fetch、切分支或产品实现步骤/);
-  assert.match(prompt, /“与现有实现差异”不能替代“与 PRD 差异”/);
-  const result = output('design');
-  assert.deepEqual(validateStage('design', result.result, result.proof, run), []);
-  for (const heading of ['元信息', '方案摘要', '需求映射', '影响范围', '详细设计', '与 PRD 差异', '风险', '测试关注点', '任务拆分', '回滚', '覆盖度矩阵', 'G2a']) {
-    assert.ok(prompt.includes(heading));
-    const missing = { ...result.result, markdown: result.result.markdown.replace(heading, '') };
-    assert.ok(validateStage('design', missing, result.proof, run).includes(`方案未覆盖模板章节：${heading}`));
-  }
+  assert.match(prompt, /bundled\/skills\/frontend-tech-solution\/SKILL.md/);
+  assert.doesNotMatch(prompt, /S2a-tech-design\.md|覆盖度矩阵/);
+  const { result, proof } = output('design');
+  assert.deepEqual(validateStage('design', result, proof, run), []);
+  assert.ok(validateStage('design', { ...result, markdown: ' ' }, proof, run).includes('缺少前端技术方案正文'));
+  const checks = result.checks.filter(check => check.id !== 'template');
+  assert.ok(validateStage('design', { ...result, checks }, proof, run).includes('缺少通过证据：template'));
 });
 
 test('CLI failures explain configuration errors without exposing raw diagnostic secrets or guessing login failure', () => {

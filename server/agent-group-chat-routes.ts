@@ -5,6 +5,7 @@ import { groupMemberSchema, groupSendSchema, groupReviseSchema, groupActionSchem
 export function createAgentGroupChatRoutes(service: Awaited<ReturnType<typeof createAgentGroupChat>>, io: {
   json(response: ServerResponse, status: number, value: unknown): void; body(request: IncomingMessage, limit?: number): Promise<unknown>; port: number;
 }, delivery?: { preview(id: string): Promise<unknown>; submit(id: string, raw: unknown): Promise<unknown>;
+  reconcile?(id: string, raw: unknown): Promise<unknown>;
   downloadArtifact?(id: string, artifactId: string, sha256: string): Promise<{ name: string; data: Buffer }> }) {
   return async (request: IncomingMessage, response: ServerResponse, url: URL) => {
     const route = url.pathname.slice('/api/agent-runtimes/group-chat'.length);
@@ -44,12 +45,13 @@ export function createAgentGroupChatRoutes(service: Awaited<ReturnType<typeof cr
           'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
         response.end(file.data); return true;
       }
-      const room = /^\/rooms\/([0-9a-f-]{36})(?:\/(action|trust|retry|fallback|delivery|resume-login|delete|title))?$/.exec(route);
+      const room = /^\/rooms\/([0-9a-f-]{36})(?:\/(action|trust|retry|fallback|delivery|delivery-reconcile|resume-login|delete|title))?$/.exec(route);
       if (room && !room[2] && request.method === 'GET') result = service.detail(room[1]);
       else if (room?.[2] === 'title' && request.method === 'POST') result = await service.rename(room[1], z.object({ title: z.string().trim().min(1).max(300), expectedTitle: z.string().max(300) }).strict().parse(await io.body(request)));
       else if (room?.[2] === 'delete' && request.method === 'POST') { z.object({}).strict().parse(await io.body(request)); result = await service.remove(room[1]); }
       else if (room?.[2] === 'delivery' && delivery && request.method === 'GET') result = await delivery.preview(room[1]);
       else if (room?.[2] === 'delivery' && delivery && request.method === 'POST') result = await delivery.submit(room[1], await io.body(request));
+      else if (room?.[2] === 'delivery-reconcile' && delivery?.reconcile && request.method === 'POST') result = await delivery.reconcile(room[1], await io.body(request));
       else if (room?.[2] === 'trust' && request.method === 'POST') result = await service.trustAndContinue(room[1], z.object({ turnId: z.string().uuid(), runId: z.string().uuid(), workspacePath: z.string().min(1).max(2000), accessMode: z.enum(['workspace', 'full']).optional() }).strict().parse(await io.body(request)));
       else if (room?.[2] === 'retry' && request.method === 'POST') result = await service.retryAndContinue(room[1], z.object({ turnId: z.string().uuid(), runId: z.string().uuid(), accessMode: z.enum(['workspace', 'full']).optional() }).strict().parse(await io.body(request)));
       else if (room?.[2] === 'fallback' && request.method === 'POST') result = await service.fallbackAndContinue(room[1], z.object({ turnId: z.string().uuid(), runId: z.string().uuid(), accessMode: z.enum(['workspace', 'full']).optional() }).strict().parse(await io.body(request)));

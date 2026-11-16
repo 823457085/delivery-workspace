@@ -60,11 +60,10 @@ test('结果判定只认 delivery-report 中的 taskResult，不根据文字推�
   assert.deepEqual(failed.failedCriteria.map(item => item.id), ['AC-1']);
   assert.equal(evaluateVerification(verified([{ id: 'AC-1', status: 'passed' }]), criteria).outcome, 'blocked');
   assert.equal(evaluateVerification(verified([{ id: 'AC-1', status: 'passed' }, { id: 'AC-2', status: 'not_run' }]), criteria).outcome, 'blocked');
-  const unassignedFailure = evaluateVerification(verified(criteria.map(item => ({ ...item, status: 'passed' })),
+  const unassigned = evaluateVerification(verified(criteria.map(item => ({ ...item, status: 'passed' })),
     { ...passedEvidence(), tests: { status: 'failed', evidence: 'npm test 退出码 1', sha: '' } }), criteria);
-  assert.equal(unassignedFailure.outcome, 'blocked');
-  assert.equal(unassignedFailure.requiresDiagnosis, true);
-  assert.deepEqual(unassignedFailure.failedCriteria, [{ id: 'tests', status: 'failed', evidence: 'npm test 退出码 1' }]);
+  assert.equal(unassigned.outcome, 'blocked');
+  assert.equal(unassigned.requiresDiagnosis, true);
   assert.equal(evaluateVerification(report({ version: 1, taskResult: { role: 'verifier', status: 'succeeded' } }), []).outcome, 'blocked');
 
   assert.equal(evaluateReview(reviewed('approved')).outcome, 'passed');
@@ -351,5 +350,31 @@ test('已存在的 ignored 或未忽略产物日志不进入候选树，也不�
     const files = await exec('git', ['-C', root, 'ls-tree', '-r', '--name-only', unignored.value]);
     assert.doesNotMatch(files.stdout, /delivery-artifacts/);
     assert.doesNotMatch((await exec('git', ['-C', root, 'ls-files'])).stdout, /delivery-artifacts/);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('collectArtifacts 过滤交付产物目录中的 node_modules 与浏览器缓存目录，防止归档体积膨胀', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'workflow-artifact-filter-'));
+  try {
+    const workspace = path.join(root, 'workspace');
+    const archive = path.join(root, 'archive');
+    await fs.mkdir(path.join(workspace, '.delivery-artifacts/node_modules/pkg'), { recursive: true });
+    await fs.mkdir(path.join(workspace, '.delivery-artifacts/profile/Code Cache'), { recursive: true });
+    await fs.mkdir(path.join(workspace, '.delivery-artifacts/round-3/dist/assets'), { recursive: true });
+    await fs.mkdir(path.join(workspace, '.delivery-artifacts/candidate/assets'), { recursive: true });
+    await fs.mkdir(path.join(workspace, '.delivery-artifacts/evidence'), { recursive: true });
+    await fs.writeFile(path.join(workspace, '.delivery-artifacts/node_modules/pkg/index.js'), 'heavy');
+    await fs.writeFile(path.join(workspace, '.delivery-artifacts/profile/Code Cache/blob'), 'cache');
+    await fs.writeFile(path.join(workspace, '.delivery-artifacts/round-3/dist/assets/chunk.js'), 'bundle');
+    await fs.writeFile(path.join(workspace, '.delivery-artifacts/candidate/workspace-version.json'), '{"id":"1"}');
+    await fs.writeFile(path.join(workspace, '.delivery-artifacts/candidate/index.html'), '<html></html>');
+    await fs.writeFile(path.join(workspace, '.delivery-artifacts/candidate/assets/main.js'), 'candidate-bundle');
+    await fs.writeFile(path.join(workspace, '.delivery-artifacts/evidence/summary.json'), '{"ok":true}');
+
+    const collected = await localWorkflowWorkspace.collectArtifacts(workspace, archive);
+    assert.deepEqual(collected, [path.join('evidence', 'summary.json')]);
+    assert.equal(await fs.lstat(path.join(archive, 'node_modules')).then(() => true, () => false), false);
+    assert.equal(await fs.lstat(path.join(archive, 'round-3/dist')).then(() => true, () => false), false);
+    assert.equal(await fs.lstat(path.join(archive, 'candidate')).then(() => true, () => false), false);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });

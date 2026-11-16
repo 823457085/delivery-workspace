@@ -3,11 +3,11 @@ import AgentMarkdown from '../agent-workbench/AgentMarkdown.vue';
 /** 交接表单只负责展示证据、编辑评论和确认目标；请求与幂等状态由 composable / 服务端负责。 */
 import { computed, ref, watch } from 'vue';
 import { jiraFixHandoffComment, type JiraFixHandoffContext, type JiraHandoffDateField } from '../../../shared/jira-fix-handoff';
-const props = defineProps<{ open: boolean; loading: boolean; submitting: boolean; generating: boolean; applyingStatus: boolean; canApplyStatus: boolean; error: string; context?: JiraFixHandoffContext; dateFields: JiraHandoffDateField[]; locked: boolean; canSubmit: boolean }>();
+const props = defineProps<{ open: boolean; loading: boolean; submitting: boolean; generating: boolean; applyingStatus: boolean; canApplyStatus: boolean; statusUncertain?: boolean; error: string; context?: JiraFixHandoffContext; dateFields: JiraHandoffDateField[]; locked: boolean; canSubmit: boolean }>();
 const form = defineModel<{ transitionId: string; cause: string; impact: string; suggestion: string; conclusion: string }>({ required: true });
 const feedback = defineModel<string>('feedback', { required: true });
 const transitionFields = defineModel<Record<string, string>>('transitionFields', { required: true });
-const emit = defineEmits<{ close: []; submit: []; generate: []; applyStatus: [] }>();
+const emit = defineEmits<{ close: []; submit: []; generate: []; applyStatus: []; reconcile: [target: 'status' | 'handoff', commentOutcome?: 'posted' | 'not_posted'] }>();
 const view = ref('preview');
 const hasDraft = computed(() => [form.value.cause, form.value.impact, form.value.suggestion, form.value.conclusion].some(value => value.trim()));
 const preview = computed(() => jiraFixHandoffComment(form.value));
@@ -62,10 +62,21 @@ watch(() => props.generating, (value, previous) => { if (!value && previous) vie
           <p v-else class="handoff-hint">点击“生成评论”，根据缺陷资料及修复会话结果生成四段交接草稿。</p>
         </el-form>
         <p v-if="!context.issue.reporter?.active" class="handoff-error">报告人缺失或已停用，无法指派，请先在 Jira 核对。</p>
+        <div v-if="statusUncertain" class="handoff-progress handoff-reconcile-box">
+          <p>上次状态生效请求结果待回读核对，当前已暂停自动重发。</p>
+          <el-button size="small" type="warning" plain :loading="submitting" @click="emit('reconcile', 'status')">回读 Jira 状态并解锁</el-button>
+        </div>
         <div v-if="context.handoff" class="handoff-progress">
           <p>评论：{{ context.handoff.commentId ? '已发布' : '未确认' }} · 状态流转：{{ context.handoff.transitioned ? '已执行' : '未确认' }} · 指派：{{ context.handoff.assigned ? '已执行' : '未确认' }}</p>
           <p v-if="context.handoff.status === 'completed'">回读确认：{{ context.handoff.result?.status.name }} · {{ context.handoff.result?.assignee?.name }}</p>
           <p v-else-if="context.handoff.error">{{ context.handoff.error }}</p>
+          <div v-if="context.handoff.status === 'uncertain'" class="handoff-reconcile-actions">
+            <template v-if="!context.handoff.commentId && context.handoff.inFlight === 'comment'">
+              <el-button size="small" type="primary" plain :loading="submitting" @click="emit('reconcile', 'handoff', 'posted')">已在 Jira 确认评论已发</el-button>
+              <el-button size="small" :loading="submitting" @click="emit('reconcile', 'handoff', 'not_posted')">确认评论未发，解锁补发</el-button>
+            </template>
+            <el-button v-else size="small" type="warning" plain :loading="submitting" @click="emit('reconcile', 'handoff')">回读 Jira 状态并解锁剩余步骤</el-button>
+          </div>
         </div>
       </template>
       <p v-if="error" class="handoff-error" role="status">{{ error }}</p>
@@ -81,4 +92,6 @@ watch(() => props.generating, (value, previous) => { if (!value && previous) vie
 .handoff-body{min-height:100px;max-height:65vh;overflow:auto;padding:0 4px}.handoff-issue{margin-top:0}.handoff-hint{color:var(--el-text-color-secondary);font-size:12px;line-height:1.6}.handoff-evidence{margin:16px 0}.handoff-evidence summary{cursor:pointer}.handoff-result{overflow-wrap:anywhere;max-height:240px;overflow:auto;font:12px/1.6 var(--sans)}.handoff-error{color:var(--el-color-danger);font-size:13px;line-height:1.6}.handoff-progress{font-size:12px;line-height:1.6}.el-select{width:100%}
 .comment-tabs{margin-top:16px}.comment-preview{overflow-wrap:anywhere;font-family:inherit;font-size:14px;line-height:1.8;margin:0 0 16px}
 .handoff-status-action{display:flex;gap:12px;width:100%}.handoff-status-action .el-select{flex:1;min-width:0}.handoff-status-action .el-button{flex-shrink:0}
+.handoff-reconcile-box{margin:10px 0;padding:10px 12px;border-radius:8px;border:1px solid color-mix(in srgb,var(--el-color-warning,#e6a23c) 45%,transparent);background:color-mix(in srgb,var(--el-color-warning,#e6a23c) 8%,transparent)}
+.handoff-reconcile-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
 </style>

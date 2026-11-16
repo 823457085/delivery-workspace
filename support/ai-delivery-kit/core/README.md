@@ -16,7 +16,7 @@
 | [gate-policy.md](gate-policy.md) | 公共 Gate Pass/Fail/豁免判定策略 |
 | [gate-result-schema.md](gate-result-schema.md) | Gate 结构化结果 Schema |
 | [go-coding-standard.md](go-coding-standard.md) | Go 编程规范、工具链、G3 提测准入接入 |
-| [go-service-engineering-standard.md](go-service-engineering-standard.md) | 团队 Go 服务工程分层、Bootstrap、Nacos、Makefile/Docker 与审查清单 |
+| [go-service-engineering-standard.md](go-service-engineering-standard.md) | Raytheon Go 服务工程分层、Bootstrap、Nacos、Makefile/Docker 与审查清单 |
 | [unit-test-standard.md](unit-test-standard.md) | 单元测试分层、必测范围、覆盖率、G3/PR/MR 证据与 GitLab Hook Review 口径 |
 | [code-review-standard.md](code-review-standard.md) | 代码评审维度、MR 必备信息、自动 Review finding 分级 |
 | [api-contract-standard.md](api-contract-standard.md) | HTTP/gRPC/Webhook 接口契约、错误码、鉴权、幂等和兼容性 |

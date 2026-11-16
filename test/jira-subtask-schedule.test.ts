@@ -184,6 +184,9 @@ test('主任务十个工作日：一天方案，其余拆成四个最多三天�
     assert.equal(new Set(plan.items.map((item: any) => item.id)).size, plan.items.length);
     assert.equal(f.writes.length, 0);
     assert.ok(plan.items.every(item => String(item.description).includes('需求原文 L123')));
+    for (const item of plan.items) {
+      assert.deepEqual(String(item.description).match(/^\*[^*\n]+\*$/gm), ['*需求来源*', '*实现说明*', '*交付物*', '*影响范围*', '*相关文档*']);
+    }
   } finally { await f.close(); }
 });
 

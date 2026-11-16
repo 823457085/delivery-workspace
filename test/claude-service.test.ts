@@ -67,7 +67,7 @@ test('Claude Agent 完全访问和续聊每轮权限跨服务重建保留', asyn
   const executed: { accessMode: AgentRun['accessMode']; resumeSessionId: string | undefined }[] = [];
   const adapter: AgentRuntimeAdapter = { id: 'claude', health: async () => health, execute: async context => {
     executed.push({ accessMode: context.run.accessMode, resumeSessionId: context.resumeSessionId });
-    await context.onSession(context.resumeSessionId || `claude-${context.run.accessMode}-session`);
+    await context.onSession('claude-full-session');
     return context.run.objective;
   } };
   let service = await createAgentRuntimeService(directory, { adapters: [adapter] });
@@ -82,11 +82,9 @@ test('Claude Agent 完全访问和续聊每轮权限跨服务重建保留', asyn
     assert.deepEqual(executed, [
       { accessMode: 'full', resumeSessionId: '' },
       { accessMode: 'full', resumeSessionId: 'claude-full-session' },
-      { accessMode: 'workspace', resumeSessionId: '' },
+      { accessMode: 'workspace', resumeSessionId: 'claude-full-session' },
     ]);
     assert.equal(third.conversationId, first.conversationId);
-    assert.equal(third.sessionId, 'claude-workspace-session');
-    assert.notEqual(third.sessionId, second.sessionId);
     assert.equal(first.accessMode, 'full');
     await service.close();
     service = await createAgentRuntimeService(directory, { adapters: [adapter] });

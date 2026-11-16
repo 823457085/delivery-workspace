@@ -7,7 +7,7 @@ import { readTeamTasks } from '../agent-workbench/team-api';
 import { dateTime } from '../../shared/format';
 import { useAgentRuntimeSnapshot } from '../../shared/useAgentRuntimeSnapshot';
 const runtime = useAgentRuntimeSnapshot();
-const query = useQuery({ queryKey: ['agent-team-chat', 'tasks'], queryFn: ({ signal }) => readTeamTasks(signal), retry: false, refetchInterval: 15_000 });
+const query = useQuery({ queryKey: ['agent-team-chat', 'tasks'], staleTime: 15_000, queryFn: ({ signal }) => readTeamTasks(signal), retry: false, refetchInterval: 15_000, refetchIntervalInBackground: false });
 const todos = computed(() => workspaceTeamTodos(query.data.value || [], runtime.data.value?.runs).filter(task => task.category !== 'doing'));
 watch(query.error, error => { if (error) ElMessage.error(error.message); });
 </script>
@@ -20,5 +20,5 @@ watch(query.error, error => { if (error) ElMessage.error(error.message); });
   </section>
 </template>
 <style scoped>
-.team-todos{margin-bottom:20px}.team-todo-list{padding:0 20px}.team-todo-list article{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 0;border-bottom:1px solid var(--ui-divider)}.team-todo-list article:last-child{border:0}.team-todo-list article>div{min-width:0}.team-todo-list a{color:var(--ui-accent);overflow-wrap:anywhere}.team-todo-list span{display:block;margin-top:6px;color:var(--ui-secondary);font-size:12px}.team-todo-list p{margin:6px 0;color:var(--ui-muted);font-size:12px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere}.team-todo-list small{color:var(--ui-muted);font-size:11px}@media(max-width:600px){.team-todo-list article{align-items:flex-start;flex-direction:column}}
+.team-todos{margin-bottom:20px}.team-todo-list{padding:4px 20px}.team-todo-list article{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px 0;border-bottom:1px solid var(--ui-divider)}.team-todo-list article:last-child{border:0}.team-todo-list article>div{min-width:0}.team-todo-list a{color:var(--ui-text);font-size:14px;font-weight:600;text-decoration:none;overflow-wrap:anywhere;transition:color 160ms ease}.team-todo-list a:hover{color:var(--ui-accent)}.team-todo-list span{display:inline-flex;align-items:center;margin-top:6px;padding:2px 8px;border:1px solid var(--ui-border);border-radius:999px;background:var(--ui-raised);color:var(--ui-secondary);font-size:11.5px;font-weight:500}.team-todo-list p{margin:6px 0;color:var(--ui-muted);font-size:12.5px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere}.team-todo-list small{color:var(--ui-muted);font:11.5px/16px var(--mono)}@media(max-width:600px){.team-todo-list article{align-items:flex-start;flex-direction:column}}
 </style>

@@ -268,8 +268,45 @@ export async function createJiraDevAutomation(options: Options) {
     }
     refresh(task.taskId);
   }
+  async function reconcile(raw: unknown) {
+    const input = z.object({
+      taskId: z.uuid(),
+      step: z.enum(['start', 'mergeRequest', 'complete']),
+      outcome: z.enum(['applied', 'not_applied']),
+      url: z.url().max(1000).optional(),
+      confirmed: z.literal(true),
+    }).strict().parse(raw);
+    if (closed) throw new Error('自动交付服务已关闭');
+    if (pending.has(input.taskId)) throw new Error('该任务正在执行自动交付核对，请稍候重试');
+    const entry = entries.get(input.taskId);
+    if (!entry) throw new Error('未找到该任务的自动交付记录');
+    if (entry.results[input.step]?.status !== 'uncertain') throw new Error('当前步骤无需人工核对解锁');
+    if (input.outcome === 'applied') {
+      if (input.step === 'mergeRequest') {
+        entry.results.mergeRequest = {
+          status: 'completed',
+          message: '人工核对远端合并请求已创建。',
+          ...(input.url ? { url: input.url } : {}),
+        };
+      } else {
+        const issue = await options.readIssue(entry.issue);
+        entry.results[input.step] = {
+          status: 'completed',
+          message: `人工核对远端已生效（当前 Jira 状态：${issue.status || '已确认'}）。`,
+        };
+      }
+    } else {
+      entry.results[input.step] = {
+        status: 'blocked',
+        message: '人工核对确认远端未生效，已解除不确定锁定。',
+      };
+      entry.resultVersion = undefined;
+    }
+    await save(entry);
+    return structuredClone(entry.results);
+  }
   return {
-    prepare, activate, refresh,
+    prepare, activate, refresh, reconcile,
     refreshTeam(teamTaskId: string) {
       for (const entry of entries.values()) if (entry.launch?.teamTaskId === teamTaskId) refresh(entry.taskId);
     },

@@ -1,10 +1,9 @@
 <script setup lang="ts">
-import AgentMarkdown from '../agent-workbench/AgentMarkdown.vue';
 /** 项目按真实 repository 分组，采用左项目分类 + 右工作区卡片与操作控制台的双栏布局，支持添加本机目录、克隆仓库和交互式 Git 管理。 */
-import { computed, inject, onMounted, onUnmounted, shallowRef, watch } from 'vue';
+import { computed, defineAsyncComponent, inject, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue';
 import { useWorkspacePanelState } from '../../shared/useWorkspacePanelState';
 import { agentWorkspaceContext } from '../../shared/agent-workspace-context';
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { ElMessage } from 'element-plus';
 import { Copy, FolderGit2, GitBranch, Terminal } from '@lucide/vue';
 import { useRoute, useRouter } from 'vue-router';
 import type { LocalProject, ProjectsData } from '../../../shared/hub';
@@ -14,8 +13,11 @@ import PageHeading from '../../shared/ui/PageHeading.vue';
 import MetricStrip from '../../shared/ui/MetricStrip.vue';
 import QueryState from '../../shared/ui/QueryState.vue';
 import { projectWorkspaceReviewDraft } from '../agent-workbench/agent-quick-actions';
-import ProjectGitDrawer from './ProjectGitDrawer.vue';
 import ProjectWorkspaceActions from './ProjectWorkspaceActions.vue';
+import { useHolyGrailAside } from '../../shared/ui/useHolyGrailAside';
+
+const AgentMarkdown = defineAsyncComponent(() => import('../agent-workbench/AgentMarkdown.vue'));
+const ProjectGitDrawer = defineAsyncComponent(() => import('./ProjectGitDrawer.vue'));
 
 type ProjectGroup = {
   project: LocalProject;
@@ -27,6 +29,7 @@ const router = useRouter();
 const query = useSource<ProjectsData>('projects', computed((): Record<string, string> => typeof route.query.workspace === 'string' && route.query.workspace
   ? { refresh: 'true' } : {}));
 const agentWorkspace = inject(agentWorkspaceContext, undefined);
+const hgAsideActive = useHolyGrailAside(Boolean(agentWorkspace));
 const { data, isPending, isFetching, error } = query;
 const actions = useSourceActions();
 const { search: savedSearch, root, status, sort } = useWorkspacePanelState('projects', () => ({
@@ -70,10 +73,25 @@ const workspaceKeyword = shallowRef('');
 const gitProject = shallowRef<LocalProject>();
 const gitDrawer = shallowRef(false);
 const workspacePaths = new Map<string, string>();
+const repoSearchInputRef = ref<{ focus?: () => void }>();
 const activityClock = shallowRef(Date.now());
 let activityTimer: ReturnType<typeof setInterval>;
-onMounted(() => { activityTimer = setInterval(() => { activityClock.value = Date.now(); }, 60_000); });
-onUnmounted(() => clearInterval(activityTimer));
+function onProjectSlashKey(event: KeyboardEvent) {
+  if (event.key !== '/' || event.metaKey || event.ctrlKey || event.altKey) return;
+  const target = event.target as HTMLElement | null;
+  if (target && (['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) || target.isContentEditable)) return;
+  if (gitDrawer.value || cloneDialogVisible.value || renamingProjectId.value) return;
+  event.preventDefault();
+  repoSearchInputRef.value?.focus?.();
+}
+onMounted(() => {
+  activityTimer = setInterval(() => { activityClock.value = Date.now(); }, 60_000);
+  window.addEventListener('keydown', onProjectSlashKey);
+});
+onUnmounted(() => {
+  clearInterval(activityTimer);
+  window.removeEventListener('keydown', onProjectSlashKey);
+});
 const gitWorkspaces = computed(() =>
   (data.value?.projects || []).filter(item => item.projectId === gitProject.value?.projectId),
 );
@@ -166,6 +184,7 @@ watch(
 );
 
 function selectProjectGroup(group: ProjectGroup) {
+  if (renamingProjectId.value && renamingProjectId.value !== group.project.projectId) cancelRename();
   selectedProjectId.value = group.project.projectId;
 }
 
@@ -184,7 +203,7 @@ const metrics = computed(() => [
   {
     label: '有本地改动',
     value: data.value?.projects.filter(item => !item.clean).length,
-    note: '未清理或修改工作树',
+    note: '有未提交的文件改动',
     tone: 'warning',
   },
   {
@@ -205,22 +224,36 @@ async function copy(value: string) {
   }
 }
 
-async function rename(item: LocalProject) {
-  try {
-    const result = await ElMessageBox.prompt('只修改看板中的展示名称，不重命名目录或 Git 仓库。', '设置项目中文名称', {
-      inputValue: item.displayName,
-      confirmButtonText: '下一步',
-      cancelButtonText: '取消',
-    });
-    await actions.execute(
-      'project-label',
-      { projectId: item.projectId, displayName: result.value },
-      '确认保存展示名称',
-      `将项目显示名称改为“${result.value}”。`,
-    );
-  } catch {
-    /* 用户取消 */
-  }
+const renamingProjectId = shallowRef('');
+const renameDraft = shallowRef('');
+const renameInputRef = ref<HTMLInputElement>();
+
+async function startRename(item: LocalProject) {
+  renamingProjectId.value = item.projectId;
+  renameDraft.value = item.displayName || item.projectName;
+  await nextTick();
+  renameInputRef.value?.focus();
+  renameInputRef.value?.select();
+}
+
+function cancelRename() {
+  renamingProjectId.value = '';
+  renameDraft.value = '';
+}
+
+async function commitRename(item: LocalProject) {
+  if (renamingProjectId.value !== item.projectId) return;
+  const nextName = renameDraft.value.trim();
+  const currentName = (item.displayName || item.projectName).trim();
+  renamingProjectId.value = '';
+  if (!nextName || nextName === currentName) return;
+  await actions.execute(
+    'project-label',
+    { projectId: item.projectId, displayName: nextName },
+    '确认保存展示名称',
+    `将项目显示名称改为“${nextName}”。`,
+    { skipConfirm: true },
+  );
 }
 
 function openGitManager(item: LocalProject) {
@@ -334,9 +367,9 @@ function buildWorkspaceSummary(ws: LocalProject): string {
     `创建时间: ${ws.createdAt ? workspaceDateTime.format(new Date(ws.createdAt)) : '未知'}`,
     `最近活动: ${ws.lastActivityAt ? `${workspaceDateTime.format(new Date(ws.lastActivityAt))} · ${workspaceIdle(ws)}` : '暂无活动记录'}（根据本地 Git 操作与未提交文件的修改时间估算）`,
     `Git 仓库: ${ws.repository || '未配置远程地址'}`,
-    `当前分支: ${ws.branch || '游离 HEAD'}${ws.detached ? ' (游离 HEAD)' : ''}`,
-    `远端跟踪: ${ws.upstream || '未关联 upstream'} (领先 ${ws.ahead} · 落后 ${ws.behind})`,
-    `工作树状态: ${ws.clean ? '干净（无未提交改动）' : `共 ${ws.changed} 项改动（暂存 ${ws.staged} · 修改 ${ws.modified} · 未跟踪 ${ws.untracked}）`}`,
+    `当前分支: ${ws.branch ? `${ws.branch}${ws.detached ? '（临时检出，未建分支）' : ''}` : '未建分支（临时检出）'}`,
+    `远端跟踪: ${ws.upstream || '未绑定远程分支'} (领先 ${ws.ahead} · 落后 ${ws.behind})`,
+    `代码状态: ${ws.clean ? '干净（无未提交改动）' : `共 ${ws.changed} 项改动（暂存 ${ws.staged} · 修改 ${ws.modified} · 未跟踪 ${ws.untracked}）`}`,
     '',
     `# 操作提示`,
     `点击上方「打开完整 Git 面板」或工作区卡片中的「Git 管理」，可直接查看文件 Diff、暂存提交、切换/合并分支及在线编辑代码。`,
@@ -458,40 +491,47 @@ async function submitClone() {
     />
 
     <QueryState :loading="isPending" :error="error" :has-data="!!data" @retry="query.refetch()">
-      <div class="project-layout">
-        <!-- 左侧：项目分类导航（对齐项目部署布局） -->
-        <aside class="project-sidebar" aria-label="本地项目分类">
-          <div class="sidebar-heading">
-            <strong>项目分类</strong>
-            <span>{{ groups.length }}</span>
-          </div>
+      <div class="project-layout" :class="{ 'is-hg-stage': hgAsideActive }">
+        <!-- 项目仓库检索与分组矩阵：圣杯模式下展开为顶部全宽仓库指挥条，避免三栏内再套侧栏 -->
+        <aside class="project-sidebar" :class="{ 'is-repo-deck': hgAsideActive }" aria-label="本地项目分类">
+          <div class="repo-deck-toolbar">
+            <div class="sidebar-heading">
+              <strong>项目仓库</strong>
+              <span>{{ groups.length }} 组 / {{ filtered.length }} 工作区</span>
+            </div>
 
-          <el-input
-            v-model="search"
-            placeholder="搜索项目、路径或分支"
-            clearable
-            aria-label="搜索项目、路径或分支"
-          />
+            <el-input
+              ref="repoSearchInputRef"
+              v-model="search"
+              class="repo-deck-search"
+              placeholder="搜索项目、路径或分支（按 / 聚焦）"
+              clearable
+              aria-label="搜索项目、路径或分支"
+              @keydown.esc="search = ''"
+            >
+              <template v-if="!search" #suffix><kbd class="repo-slash-kbd">/</kbd></template>
+            </el-input>
 
-          <div class="sidebar-filters">
-            <el-select v-model="status" size="small" aria-label="工作区状态">
-              <el-option label="全部状态" value="all" />
-              <el-option label="有本地改动" value="dirty" />
-              <el-option label="干净" value="clean" />
-              <el-option label="游离 HEAD" value="detached" />
+            <div class="sidebar-filters">
+              <el-select v-model="status" size="small" aria-label="工作区状态">
+                <el-option label="全部状态" value="all" />
+                <el-option label="有本地改动" value="dirty" />
+                <el-option label="干净" value="clean" />
+                <el-option label="未建分支" value="detached" />
+              </el-select>
+              <el-select v-model="sort" size="small" aria-label="排序">
+                <el-option label="按工作区数" value="workspaces" />
+                <el-option label="按项目名称" value="project" />
+                <el-option label="按本地改动" value="changes" />
+                <el-option label="按分支" value="branch" />
+              </el-select>
+            </div>
+
+            <el-select v-if="(data?.roots?.length || 0) > 1" v-model="root" size="small" class="repo-root-select" aria-label="扫描目录">
+              <el-option label="全部扫描目录" value="all" />
+              <el-option v-for="item in data?.roots" :key="item.path" :label="item.label" :value="item.path" />
             </el-select>
-            <el-select v-model="sort" size="small" aria-label="排序">
-              <el-option label="按工作区数" value="workspaces" />
-              <el-option label="按项目名称" value="project" />
-              <el-option label="按本地改动" value="changes" />
-              <el-option label="按分支" value="branch" />
-            </el-select>
           </div>
-
-          <el-select v-if="(data?.roots?.length || 0) > 1" v-model="root" size="small" aria-label="扫描目录">
-            <el-option label="全部扫描目录" value="all" />
-            <el-option v-for="item in data?.roots" :key="item.path" :label="item.label" :value="item.path" />
-          </el-select>
 
           <nav class="deployment-projects" aria-label="项目列表">
             <button
@@ -502,13 +542,13 @@ async function submitClone() {
               :aria-current="selectedGroup?.project.projectId === group.project.projectId ? 'page' : undefined"
               @click="selectProjectGroup(group)"
             >
-              <FolderGit2 :size="16" />
+              <FolderGit2 :size="15" />
               <span>
                 <strong>{{ group.project.displayName || group.project.projectName }}</strong>
                 <small>
-                  {{ group.workspaces.length }} 个工作区 ·
+                  {{ group.workspaces.length }} 工作区 ·
                   <em :class="{ dirty: dirtyWorkspacesCount(group) > 0 }">
-                    {{ dirtyWorkspacesCount(group) > 0 ? `${dirtyWorkspacesCount(group)} 个有改动` : '工作区干净' }}
+                    {{ dirtyWorkspacesCount(group) > 0 ? `${dirtyWorkspacesCount(group)} 有改动` : '干净' }}
                   </em>
                 </small>
               </span>
@@ -516,7 +556,7 @@ async function submitClone() {
             <p v-if="!groups.length" class="sidebar-empty">没有匹配的项目</p>
           </nav>
 
-          <div class="sidebar-footer">
+          <div v-if="!hgAsideActive" class="sidebar-footer">
             <span>{{ groups.length }} 个项目 · {{ filtered.length }} 个工作区</span>
           </div>
         </aside>
@@ -526,7 +566,26 @@ async function submitClone() {
           <template v-if="selectedGroup">
             <header class="deployment-project-heading">
               <div>
-                <h2>{{ selectedGroup.project.displayName || selectedGroup.project.projectName }}</h2>
+                <input
+                  v-if="renamingProjectId === selectedGroup.project.projectId"
+                  ref="renameInputRef"
+                  v-model="renameDraft"
+                  class="inline-project-rename"
+                  type="text"
+                  aria-label="编辑项目显示名称"
+                  placeholder="输入项目名称，回车保存"
+                  @keydown.enter.prevent="commitRename(selectedGroup.project)"
+                  @keydown.esc.prevent="cancelRename"
+                  @blur="commitRename(selectedGroup.project)"
+                />
+                <h2
+                  v-else
+                  class="editable-project-title"
+                  title="双击可直接修改显示名称（不改文件夹名）"
+                  @dblclick="startRename(selectedGroup.project)"
+                >
+                  {{ selectedGroup.project.displayName || selectedGroup.project.projectName }}
+                </h2>
                 <p>
                   <a
                     v-if="safeUrl(selectedGroup.project.webUrl)"
@@ -541,7 +600,13 @@ async function submitClone() {
                 </p>
               </div>
               <div class="heading-actions">
-                <el-button @click="rename(selectedGroup.project)">编辑名称</el-button>
+                <el-button
+                  v-if="renamingProjectId === selectedGroup.project.projectId"
+                  @mousedown.prevent="cancelRename"
+                >
+                  取消
+                </el-button>
+                <el-button v-else @click="startRename(selectedGroup.project)">编辑名称</el-button>
                 <el-button
                   type="primary"
                   @click="openGitManager(activeWorkspace || selectedGroup.project)"
@@ -569,7 +634,11 @@ async function submitClone() {
                 />
               </div>
 
-              <div v-if="visibleWorkspaces.length" class="environment-grid">
+              <div
+                v-if="visibleWorkspaces.length"
+                class="environment-grid"
+                :class="{ 'is-single': visibleWorkspaces.length === 1 }"
+              >
                 <article
                   v-for="ws in visibleWorkspaces"
                   :key="ws.path"
@@ -581,17 +650,29 @@ async function submitClone() {
                     <strong :title="ws.relativePath || ws.folderName">
                       {{ ws.relativePath || ws.folderName }}
                     </strong>
-                    <el-tag size="small" :type="ws.clean ? 'success' : 'warning'" effect="plain">
-                      {{ ws.clean ? '干净' : `${ws.changed} 项改动` }}
-                    </el-tag>
+                    <div class="ws-card-badges">
+                      <span v-if="ws.lastActivityAt" class="ws-idle-chip">{{ workspaceIdle(ws) }}</span>
+                      <el-tag size="small" :type="ws.clean ? 'success' : 'warning'" effect="plain">
+                        {{ ws.clean ? '干净' : `${ws.changed} 项改动` }}
+                      </el-tag>
+                    </div>
                   </header>
 
                   <div class="branch-row">
                     <span class="branch-pill" :title="ws.branch">
                       <GitBranch :size="12" />
-                      <span>{{ ws.branch || '游离 HEAD' }}</span>
+                      <span>{{ ws.branch || '未建分支' }}</span>
                     </span>
-                    <span v-if="ws.detached" class="detached-badge">游离 HEAD</span>
+                    <span v-if="ws.detached && ws.branch" class="detached-badge">临时检出</span>
+                    <span v-if="ws.ahead > 0" class="gb-sync-pill is-ahead" :title="`领先远端 ${ws.ahead} 个提交，可推送`">
+                      ↑{{ ws.ahead }}
+                    </span>
+                    <span v-if="ws.behind > 0" class="gb-sync-pill is-behind" :title="`落后远端 ${ws.behind} 个提交，建议拉取`">
+                      ↓{{ ws.behind }}
+                    </span>
+                    <span v-else-if="ws.upstream && ws.ahead === 0 && ws.behind === 0" class="gb-sync-pill is-synced" title="与远端跟踪分支完全一致">
+                      ✓ 同步
+                    </span>
                   </div>
 
                   <div class="cwd-line">
@@ -606,12 +687,16 @@ async function submitClone() {
                     </button>
                   </div>
 
-                  <div class="environment-status">
-                    <span>{{ ws.upstream || '无 upstream' }}</span>
-                    <span>领先 {{ ws.ahead }} · 落后 {{ ws.behind }}</span>
-                    <span v-if="!ws.clean" class="dirty-breakdown">
-                      暂存 {{ ws.staged }} · 修改 {{ ws.modified }} · 未跟踪 {{ ws.untracked }}
+                  <div class="gb-status-deck">
+                    <span class="gb-upstream-label" :title="ws.upstream || '未绑定远程分支'">
+                      {{ ws.upstream ? `跟踪 ${ws.upstream}` : '未绑定远程分支' }}
                     </span>
+                    <div v-if="!ws.clean" class="gb-dirty-strip" aria-label="工作树改动明细">
+                      <span v-if="ws.staged > 0" class="gb-tree-chip is-staged">暂存 <strong>+{{ ws.staged }}</strong></span>
+                      <span v-if="ws.modified > 0" class="gb-tree-chip is-modified">修改 <strong>~{{ ws.modified }}</strong></span>
+                      <span v-if="ws.untracked > 0" class="gb-tree-chip is-untracked">未跟踪 <strong>?{{ ws.untracked }}</strong></span>
+                    </div>
+                    <span v-else class="gb-clean-note">工作树无未提交改动</span>
                   </div>
 
                   <footer @click.stop>
@@ -627,6 +712,7 @@ async function submitClone() {
                           { path: ws.path },
                           '打开本地目录',
                           `在 Finder 中打开 ${ws.path}，不会修改文件。`,
+                          { skipConfirm: true },
                         )
                       "
                     >
@@ -639,17 +725,132 @@ async function submitClone() {
                     </el-button>
                   </footer>
                 </article>
+
+                <aside
+                  v-if="visibleWorkspaces.length === 1 && activeWorkspace"
+                  class="environment-card workspace-inline-brief"
+                  aria-label="单工作区仓库速览"
+                >
+                  <header>
+                    <strong>仓库同步与最近活动</strong>
+                    <span class="brief-idle-pill">{{ workspaceIdle(activeWorkspace) }}</span>
+                  </header>
+
+                  <dl class="workspace-brief-grid">
+                    <div>
+                      <dt>远端仓库</dt>
+                      <dd :title="activeWorkspace.repository || '未配置远程地址'">
+                        {{ activeWorkspace.repository || '未配置远程地址' }}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>最近活动</dt>
+                      <dd>
+                        {{
+                          activeWorkspace.lastActivityAt
+                            ? workspaceDateTime.format(new Date(activeWorkspace.lastActivityAt))
+                            : '暂无活动记录'
+                        }}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>远程分支同步</dt>
+                      <dd>
+                        {{ activeWorkspace.upstream || '未绑定远程分支' }} · 领先 {{ activeWorkspace.ahead }} / 落后
+                        {{ activeWorkspace.behind }}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>本地改动情况</dt>
+                      <dd>
+                        {{
+                          activeWorkspace.clean
+                            ? '干净，没有未提交改动'
+                            : `暂存 ${activeWorkspace.staged} · 修改 ${activeWorkspace.modified} · 未跟踪 ${activeWorkspace.untracked}`
+                        }}
+                      </dd>
+                    </div>
+                  </dl>
+
+                  <footer>
+                    <el-button size="small" @click="openExternal(activeWorkspace.path, '/api/workspace/cursor')">
+                      Cursor 打开
+                    </el-button>
+                    <el-button size="small" @click="openExternal(activeWorkspace.path, '/api/workspace/terminal')">
+                      终端打开
+                    </el-button>
+                    <span class="environment-spacer"></span>
+                    <el-button size="small" @click="openGitManager(activeWorkspace)">
+                      查看完整 Git
+                    </el-button>
+                  </footer>
+                </aside>
               </div>
               <el-empty v-else description="没有匹配的工作区" :image-size="60" />
             </section>
+          </template>
 
-            <!-- 底部区域：工作区列表 + 选中工作区状态与快捷操作控制台（参考项目部署的运行控制台） -->
-            <section class="deployment-execution" aria-label="工作区详情与操作">
-              <aside class="run-history" aria-label="工作区快速切换">
-                <div class="section-heading">
-                  <h3>工作区记录</h3>
-                  <small>{{ selectedGroup.workspaces.length }} 个</small>
+          <el-empty
+            v-else
+            description="当前筛选没有匹配工作区，可点击右上角“添加本地目录”或“克隆远程仓库”"
+            :image-size="80"
+          />
+        </main>
+
+        <!-- 右侧常驻检查器：圣杯模式下投射至 Zone 4 右栏（280px），独立窄屏则原位展示 -->
+        <Teleport defer to="#hg-aside-slot" :disabled="!hgAsideActive">
+          <aside v-if="selectedGroup" class="project-inspector" :class="{ 'is-teleported': hgAsideActive }" aria-label="工作区详情与操作">
+            <div class="run-console">
+              <div class="section-heading">
+                <h3>
+                  <Terminal :size="15" />
+                  <span>目录详情</span>
+                </h3>
+                <span class="live-state">{{ dateTime(data?.scannedAt) }}</span>
+              </div>
+
+              <template v-if="activeWorkspace">
+                <div class="log-heading">
+                  <div>
+                    <strong>
+                      {{ activeWorkspace.relativePath || activeWorkspace.folderName }}
+                    </strong>
+                    <span class="inspector-branch" :title="activeWorkspace.branch || '未建分支'"><GitBranch :size="11" /><span>{{ activeWorkspace.branch || '未建分支' }}</span></span>
+                    <p>{{ activeWorkspace.path }}</p>
+                  </div>
+                  <div class="console-header-actions">
+                    <el-button
+                      size="small"
+                      @click="openExternal(activeWorkspace.path, '/api/workspace/cursor')"
+                    >
+                      Cursor 打开
+                    </el-button>
+                    <el-button
+                      size="small"
+                      @click="openExternal(activeWorkspace.path, '/api/workspace/terminal')"
+                    >
+                      终端打开
+                    </el-button>
+                    <el-button
+                      size="small"
+                      type="primary"
+                      plain
+                      @click="openGitManager(activeWorkspace)"
+                    >
+                      Git 与代码管理
+                    </el-button>
+                    <ProjectWorkspaceActions
+                      :path="activeWorkspace.path"
+                      @removed="workspaceRemoved"
+                    />
+                  </div>
                 </div>
+
+                <AgentMarkdown class="workspace-summary" aria-label="工作区状态摘要" :source="buildWorkspaceSummary(activeWorkspace)" />
+              </template>
+
+              <details class="inspector-history">
+                <summary>快速切换工作区 ({{ selectedGroup.workspaces.length }})</summary>
                 <div class="run-history-list">
                   <button
                     v-for="ws in selectedGroup.workspaces"
@@ -665,79 +866,18 @@ async function submitClone() {
                         {{ ws.clean ? '干净' : `${ws.changed} 改动` }}
                       </span>
                     </span>
-                    <small>{{ ws.branch || '游离 HEAD' }}</small>
-                    <small>{{ ws.displayPath }}</small>
-                    <small class="workspace-activity">
-                      <time v-if="ws.createdAt" :datetime="ws.createdAt">创建 {{ workspaceDate.format(new Date(ws.createdAt)) }}</time>
-                      <span v-else>创建日期未知</span>
-                      <span :title="ws.lastActivityAt ? workspaceDateTime.format(new Date(ws.lastActivityAt)) : undefined">{{ workspaceIdle(ws) }}</span>
-                    </small>
+                    <small>{{ ws.branch || '未建分支' }} · {{ workspaceIdle(ws) }}</small>
                   </button>
                 </div>
-              </aside>
-
-              <div class="run-console">
-                <div class="section-heading">
-                  <h3>
-                    <Terminal :size="16" />
-                    <span>工作区状态与快捷操作</span>
-                  </h3>
-                  <span class="live-state">扫描于 {{ dateTime(data?.scannedAt) }}</span>
-                </div>
-
-                <template v-if="activeWorkspace">
-                  <div class="log-heading">
-                    <div>
-                      <strong>
-                        {{ activeWorkspace.relativePath || activeWorkspace.folderName }}
-                        · {{ activeWorkspace.branch || '游离 HEAD' }}
-                      </strong>
-                      <p>{{ activeWorkspace.path }}</p>
-                    </div>
-                    <div class="console-header-actions">
-                      <el-button
-                        size="small"
-                        @click="openExternal(activeWorkspace.path, '/api/workspace/cursor')"
-                      >
-                        Cursor 打开
-                      </el-button>
-                      <el-button
-                        size="small"
-                        @click="openExternal(activeWorkspace.path, '/api/workspace/terminal')"
-                      >
-                        终端打开
-                      </el-button>
-                      <el-button
-                        size="small"
-                        type="primary"
-                        plain
-                        @click="openGitManager(activeWorkspace)"
-                      >
-                        Git 与代码管理
-                      </el-button>
-                      <ProjectWorkspaceActions
-                        :path="activeWorkspace.path"
-                        @removed="workspaceRemoved"
-                      />
-                    </div>
-                  </div>
-
-                  <AgentMarkdown class="workspace-summary" aria-label="工作区状态摘要" :source="buildWorkspaceSummary(activeWorkspace)" />
-                </template>
-              </div>
-            </section>
-          </template>
-
-          <el-empty
-            v-else
-            description="当前筛选没有匹配工作区，可点击右上角“添加本地目录”或“克隆远程仓库”"
-            :image-size="80"
-          />
-        </main>
+              </details>
+            </div>
+          </aside>
+        </Teleport>
       </div>
     </QueryState>
 
     <ProjectGitDrawer
+      v-if="gitDrawer || gitProject"
       v-model="gitDrawer"
       :project="gitProject"
       :workspaces="gitWorkspaces"
@@ -750,6 +890,7 @@ async function submitClone() {
             { path: item.path },
             '打开本地目录',
             `在 Finder 中打开 ${item.path}，不会修改文件。`,
+            { skipConfirm: true },
           )
       "
       @refreshed="query.refetch()"
@@ -757,7 +898,7 @@ async function submitClone() {
       @compose="composeProject"
     />
 
-    <el-dialog v-model="cloneDialogVisible" title="克隆远程 Git 仓库" width="520px">
+    <el-dialog v-if="cloneDialogVisible" v-model="cloneDialogVisible" title="克隆远程 Git 仓库" width="520px">
       <el-form label-position="top">
         <el-form-item label="仓库地址 (SSH 或 HTTPS)">
           <el-input
@@ -803,15 +944,94 @@ async function submitClone() {
   font-size: 11px;
 }
 
-/* 左右分栏主布局（与项目部署 DeploymentWorkspace 对齐） */
+/* 三栏 IDE 主从检查器布局：左项目导航 · 中双栏工作区网格 · 右常驻工作区检查器 */
 .project-layout {
   display: grid;
-  grid-template-columns: 248px minmax(0, 1fr);
+  grid-template-columns: 228px minmax(0, 1fr) 328px;
+  gap: 14px;
   align-items: start;
+  border: 0;
+  background: transparent;
+  overflow: visible;
+}
+
+.project-inspector {
+  position: sticky;
+  top: 0;
+  min-width: 0;
   border: 1px solid var(--ui-border);
-  border-radius: 10px;
+  border-radius: 16px;
+  background: var(--ui-raised);
+  overflow: hidden;
+}
+
+.inspector-branch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  box-sizing: border-box;
+  max-width: 100%;
+  min-width: 0;
+  margin-top: 6px;
+  padding: 2px 7px;
+  border: 1px solid var(--ui-border);
+  border-radius: 6px;
   background: var(--ui-surface);
-  overflow: clip;
+  font: 600 11px/16px var(--mono);
+  color: var(--ui-accent);
+  overflow: hidden;
+}
+
+.inspector-branch > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inspector-branch :deep(svg) {
+  flex-shrink: 0;
+}
+
+.workspace-summary :deep(:is(h1, h2, h3, h4)) {
+  margin: 0 0 8px;
+  font: 600 12.5px/18px var(--sans);
+  letter-spacing: 0.01em;
+  color: var(--ui-secondary);
+}
+
+.environment-status > span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inspector-history {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--ui-divider, var(--ui-border));
+}
+
+.inspector-history > summary {
+  font: 600 12px/18px var(--sans);
+  color: var(--ui-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.inspector-history[open] > summary {
+  margin-bottom: 8px;
+}
+
+@media (max-width: 1320px) {
+  .project-layout {
+    grid-template-columns: 220px minmax(0, 1fr);
+  }
+  .project-inspector {
+    position: static;
+    grid-column: 1 / -1;
+  }
 }
 
 .project-sidebar {
@@ -939,7 +1159,9 @@ async function submitClone() {
 
 /* 右侧主区域 */
 .project-main {
+  width: 100%;
   min-width: 0;
+  box-sizing: border-box;
   padding: 20px 22px;
 }
 
@@ -960,6 +1182,29 @@ async function submitClone() {
   margin: 0;
   font-size: 19px;
   line-height: 1.5;
+}
+
+.editable-project-title {
+  cursor: text;
+  border-radius: 6px;
+  transition: background-color 150ms ease;
+}
+
+.editable-project-title:hover {
+  background: var(--ui-accent-soft);
+}
+
+.inline-project-rename {
+  width: min(100%, 380px);
+  margin: 0;
+  padding: 2px 8px;
+  border: 1px solid var(--ui-accent);
+  border-radius: 6px;
+  background: var(--ui-surface);
+  color: var(--ui-text);
+  font: 600 18px/1.45 var(--sans);
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ui-accent) 18%, transparent);
 }
 
 .deployment-project-heading p {
@@ -1020,29 +1265,87 @@ async function submitClone() {
 
 .environment-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(275px, 100%), 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(min(286px, 100%), 1fr));
+  gap: 14px;
+  width: 100%;
+}
+
+.environment-grid.is-single {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media (max-width: 780px) {
+  .environment-grid.is-single {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.workspace-inline-brief {
+  cursor: default;
+  background: color-mix(in srgb, var(--ui-raised, var(--ui-surface)) 55%, var(--ui-surface));
+}
+
+.workspace-inline-brief:hover {
+  transform: none;
+}
+
+.brief-idle-pill {
+  padding: 2px 8px;
+  border: 1px solid var(--ui-border);
+  border-radius: 999px;
+  background: var(--ui-surface);
+  color: var(--ui-secondary);
+  font: 500 11px/16px var(--sans);
+  white-space: nowrap;
+}
+
+.workspace-brief-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+  margin: 12px 0;
+}
+
+.workspace-brief-grid > div {
+  min-width: 0;
+}
+
+.workspace-brief-grid dt {
+  margin: 0;
+  font: 500 11px/15px var(--sans);
+  color: var(--ui-muted);
+}
+
+.workspace-brief-grid dd {
+  margin: 3px 0 0;
+  font: 500 12px/17px var(--sans);
+  color: var(--ui-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .environment-card {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  padding: 14px;
+  padding: 16px 18px;
   border: 1px solid var(--ui-border);
-  border-radius: 8px;
+  border-radius: var(--ds-radius, 12px);
   background: var(--ui-surface);
   cursor: pointer;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
 }
 
 .environment-card:hover {
-  border-color: color-mix(in srgb, var(--ui-accent) 40%, var(--ui-border));
+  border-color: color-mix(in srgb, var(--ui-accent) 45%, var(--ui-border));
+  box-shadow: var(--ds-shadow);
+  transform: translateY(-1px);
 }
 
 .environment-card.selected {
   border-color: var(--ui-accent);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ui-accent) 25%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ui-accent) 28%, transparent), var(--ds-shadow);
 }
 
 .environment-card > header {
@@ -1064,13 +1367,18 @@ async function submitClone() {
   align-items: center;
   gap: 6px;
   margin: 10px 0 6px;
+  min-width: 0;
 }
 
 .branch-pill {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  flex: 0 1 auto;
+  min-width: 0;
   max-width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
   padding: 2px 7px;
   border-radius: 5px;
   background: var(--ui-raised, var(--ui-bg));
@@ -1143,8 +1451,133 @@ async function submitClone() {
   font-size: 11px;
 }
 
-.dirty-breakdown {
-  color: var(--el-color-warning-dark-2);
+.repo-slash-kbd {
+  display: inline-grid;
+  place-items: center;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  border: 1px solid var(--ui-border);
+  border-radius: 4px;
+  background: var(--ui-raised);
+  color: var(--ui-muted);
+  font: 600 10px/1 var(--mono);
+}
+
+.ws-card-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.ws-idle-chip {
+  padding: 1px 6px;
+  border: 1px solid var(--ui-border);
+  border-radius: 999px;
+  background: var(--ui-raised);
+  color: var(--ui-muted);
+  font: 500 10.5px/15px var(--sans);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.gb-sync-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid var(--ui-border);
+  border-radius: 5px;
+  background: var(--ui-raised);
+  color: var(--ui-secondary);
+  font: 600 10.5px/1 var(--mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.gb-sync-pill.is-ahead {
+  border-color: color-mix(in srgb, var(--ui-success) 36%, var(--ui-border));
+  background: var(--ui-success-bg);
+  color: var(--ui-success);
+}
+
+.gb-sync-pill.is-behind {
+  border-color: color-mix(in srgb, var(--ui-warning) 36%, var(--ui-border));
+  background: color-mix(in srgb, var(--ui-warning) 12%, var(--ui-surface));
+  color: var(--ui-warning);
+}
+
+.gb-sync-pill.is-synced {
+  border-color: color-mix(in srgb, var(--ui-success) 26%, var(--ui-border));
+  color: var(--ui-secondary);
+}
+
+.gb-status-deck {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin: 10px 0 12px;
+  min-width: 0;
+}
+
+.gb-upstream-label {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ui-muted);
+  font: 450 11px/1.4 var(--mono);
+}
+
+.gb-clean-note {
+  color: var(--ui-muted);
+  font-size: 11px;
+}
+
+.gb-dirty-strip {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.gb-tree-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid var(--ui-border);
+  border-radius: 5px;
+  background: var(--ui-raised);
+  color: var(--ui-secondary);
+  font: 500 10.5px/1 var(--sans);
+  white-space: nowrap;
+}
+
+.gb-tree-chip strong {
+  font: 650 10.5px/1 var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.gb-tree-chip.is-staged {
+  border-color: color-mix(in srgb, var(--ui-success) 36%, var(--ui-border));
+  background: var(--ui-success-bg);
+  color: var(--ui-success);
+}
+
+.gb-tree-chip.is-modified {
+  border-color: color-mix(in srgb, var(--ui-warning) 36%, var(--ui-border));
+  background: color-mix(in srgb, var(--ui-warning) 12%, var(--ui-surface));
+  color: var(--ui-warning);
+}
+
+.gb-tree-chip.is-untracked {
+  color: var(--ui-muted);
 }
 
 .environment-card > footer {
@@ -1308,16 +1741,16 @@ async function submitClone() {
 
 .workspace-summary {
   flex: 1;
-  max-height: 280px;
+  max-height: 300px;
   overflow: auto;
   box-sizing: border-box;
   margin: 0;
-  padding: 14px;
+  padding: 14px 16px;
   border: 1px solid var(--ui-border);
-  border-radius: 6px;
+  border-radius: var(--ds-radius-xs, 8px);
   background: var(--ui-raised, var(--ui-bg));
   color: var(--ui-text);
-  font: 12px/1.75 var(--sans);
+  font: 12.5px/1.75 var(--sans);
   white-space: normal;
   overflow-wrap: anywhere;
 }
@@ -1349,5 +1782,144 @@ async function submitClone() {
     border-right: 0;
     border-bottom: 1px solid var(--ui-border);
   }
+}
+
+/* 圣杯模式（Zone 3 全宽仓库指挥条 + Zone 4 投射检查器） */
+.project-layout.is-hg-stage {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+  gap: 18px;
+  width: 100%;
+}
+.repo-deck-toolbar {
+  display: contents;
+}
+.project-sidebar.is-repo-deck {
+  position: static;
+  width: 100%;
+  padding: 16px 20px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ds-radius-lg);
+  background: var(--ui-surface);
+  box-shadow: var(--ds-shadow);
+  gap: 14px;
+}
+.project-sidebar.is-repo-deck .repo-deck-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.project-sidebar.is-repo-deck .sidebar-heading {
+  gap: 8px;
+  padding: 0;
+  white-space: nowrap;
+}
+.project-sidebar.is-repo-deck .repo-deck-search {
+  flex: 1 1 220px;
+  min-width: 180px;
+}
+.project-sidebar.is-repo-deck .sidebar-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.project-sidebar.is-repo-deck .sidebar-filters :deep(.el-select) {
+  width: 128px;
+}
+.project-sidebar.is-repo-deck .repo-root-select {
+  width: 148px;
+}
+.project-sidebar.is-repo-deck .deployment-projects {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(212px, 1fr));
+  gap: 10px;
+  max-height: 236px;
+  padding: 2px 2px 6px;
+}
+.project-sidebar.is-repo-deck .deployment-projects > button {
+  padding: 10px 12px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ds-radius-sm);
+  background: var(--ui-raised);
+  transition: border-color 160ms ease, background-color 160ms ease, transform 160ms ease;
+}
+.project-sidebar.is-repo-deck .deployment-projects > button:hover:not(.selected) {
+  border-color: color-mix(in srgb, var(--ui-accent) 38%, var(--ui-border));
+  background: var(--ui-hover);
+}
+.project-sidebar.is-repo-deck .deployment-projects > button.selected {
+  border-color: var(--ui-accent);
+  background: var(--ui-accent-soft);
+}
+:global(:root[data-theme='acid'] .project-sidebar.is-repo-deck .deployment-projects > button.selected) {
+  background: #141a12;
+  border-color: var(--acid-green, #39ff14);
+  box-shadow: 3px 3px 0 var(--acid-violet, #a020f0);
+}
+:global(:root[data-theme='acid'] .project-sidebar.is-repo-deck .deployment-projects > button:hover:not(.selected)) {
+  border-color: var(--acid-yellow, #e6ff00);
+}
+
+.project-inspector.is-teleported {
+  position: static;
+  width: 100%;
+  box-sizing: border-box;
+  border-radius: var(--ds-radius);
+  background: var(--ui-surface);
+}
+.project-inspector.is-teleported .run-console {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 14px 16px;
+  overflow: hidden;
+}
+.project-inspector.is-teleported .log-heading {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+.project-inspector.is-teleported .log-heading > div:first-child {
+  flex: none;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+}
+.project-inspector.is-teleported .log-heading strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-inspector.is-teleported .console-header-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  width: 100%;
+}
+.project-inspector.is-teleported .console-header-actions :deep(.el-button) {
+  width: 100%;
+  min-width: 0;
+  margin-left: 0;
+  padding-inline: 6px;
+}
+.project-inspector.is-teleported .console-header-actions > :deep(.el-button--primary) {
+  grid-column: 1 / -1;
+}
+.project-inspector.is-teleported .console-header-actions :deep(.workspace-actions) {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  width: 100%;
+}
+.project-inspector.is-teleported .workspace-summary :deep(:is(h1, h2, h3, h4)) {
+  font-size: 12.5px !important;
+  line-height: 18px !important;
+  transform: none !important;
+}
+:global(:root[data-theme='acid'] :is(.project-inspector, .inspector-branch, .branch-pill, .detached-badge, .workspace-summary, .mini-status-tag)) {
+  border-radius: 0 !important;
 }
 </style>

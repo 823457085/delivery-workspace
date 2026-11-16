@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue';
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, reactive, ref, shallowRef, useTemplateRef, watch } from 'vue';
 import {
+  Check,
   Copy,
   ExternalLink,
   Folder,
@@ -11,6 +12,7 @@ import {
   Plus,
   RadioTower,
   RotateCw,
+  Search,
   Square,
   Terminal,
   Trash2,
@@ -30,8 +32,9 @@ import type { LocalProject, ProjectsData } from '../../../shared/hub';
 import PageHeading from '../../shared/ui/PageHeading.vue';
 import MetricStrip from '../../shared/ui/MetricStrip.vue';
 import { shortPath } from '../../shared/format';
-import AgentMarkdown from '../agent-workbench/AgentMarkdown.vue';
 import { markdownCodeBlock } from '../agent-workbench/markdown';
+
+const AgentMarkdown = defineAsyncComponent(() => import('../agent-workbench/AgentMarkdown.vue'));
 
 type RowState = 'listening' | 'stopped' | 'errored' | 'available';
 type StatusTab = 'all' | 'listening' | 'stopped' | 'pm2' | 'standalone';
@@ -363,22 +366,22 @@ watch(
 const stoppedCount = computed(() => data.value?.summary.stoppedCount ?? (data.value?.stopped?.length || 0));
 
 const metrics = computed(() => [
-  { label: '运行项目', value: data.value?.summary.projectCount, note: '活跃与托管项目去重' },
+  { label: '运行项目', value: data.value?.summary.projectCount, note: '已启动与后台常驻项目' },
   {
-    label: '监听端口',
+    label: '运行中端口',
     value: data.value?.summary.listeningPorts,
-    note: portFilter.value.trim() ? '指定端口实际监听' : '项目服务实际监听',
+    note: portFilter.value.trim() ? '所查端口正在运行' : '项目服务正在运行',
     tone: 'success',
   },
   {
-    label: '运行进程',
+    label: '运行服务数',
     value: data.value?.summary.processCount,
-    note: stoppedCount.value ? `另有 ${stoppedCount.value} 个已停止服务` : '同一进程的多个地址合并展示',
+    note: stoppedCount.value ? `另有 ${stoppedCount.value} 个已停止服务` : '同一服务的多个地址已合并',
   },
   {
-    label: 'PM2 托管 / 当前展示',
+    label: '后台常驻 / 当前展示',
     value: data.value ? `${data.value.summary.pm2Count ?? 0} / ${rows.value.length}` : undefined,
-    note: '支持开启、重启、关闭与删除操作',
+    note: '支持一键开启、重启、关闭与删除',
   },
 ]);
 
@@ -465,8 +468,12 @@ async function onStartRow(row: PortRow) {
   );
 }
 
+function isNonProjectListeningRow(row: PortRow): boolean {
+  return row.rowState === 'listening' && !row.project && !row.manager;
+}
+
 async function onRestartRow(row: PortRow) {
-  if (row.rowState === 'available') return;
+  if (row.rowState === 'available' || isNonProjectListeningRow(row)) return;
   if (row.isSelf) {
     try {
       await ElMessageBox.confirm(
@@ -494,14 +501,16 @@ async function onRestartRow(row: PortRow) {
 
 async function onStopRow(row: PortRow) {
   if (row.rowState !== 'listening' || row.isSelf) return;
-  try {
-    await ElMessageBox.confirm(
-      `确认关闭「${rowTitleLabel(row)}」吗？关闭后将停止进程并释放端口，记录会保留为“已停止”，随时可点击“开启”恢复。`,
-      '确认关闭服务',
-      { confirmButtonText: '确认关闭', cancelButtonText: '取消', type: 'warning' },
-    );
-  } catch {
-    return;
+  if (isNonProjectListeningRow(row)) {
+    try {
+      await ElMessageBox.confirm(
+        `进程「${rowTitleLabel(row)}」（PID ${row.pid ?? '—'} · 端口 ${row.port || '—'}）不属于当前工作台项目。强制关闭可能中断本地数据库、代理或桌面应用，确认仍要关闭吗？`,
+        '确认关闭非项目进程',
+        { confirmButtonText: '确认关闭', cancelButtonText: '取消', type: 'warning' },
+      );
+    } catch {
+      return;
+    }
   }
   await runPortAction(
     {
@@ -658,13 +667,51 @@ function handleVisibilityChange() {
   refreshAutomatically();
 }
 
-async function copy(value: string) {
+const keywordInputRef = useTemplateRef<{ focus: () => void }>('keywordInputRef');
+const copiedPortKey = shallowRef('');
+let copyPortTimer: ReturnType<typeof setTimeout> | undefined;
+
+const portPresets = [
+  { label: '全部', value: '' },
+  { label: '工作台 5288/5186', value: '5186, 5288' },
+  { label: '前端 3000/5173', value: '3000, 5173-5199' },
+  { label: '后端 8080/18081', value: '8000, 8080, 18080-18090' },
+] as const;
+
+function applyPortPreset(value: string) {
+  portFilter.value = portFilter.value.trim() === value ? '' : value;
+}
+
+async function copy(value: string, message = '已复制') {
   try {
     await navigator.clipboard.writeText(value);
-    ElMessage.success('已复制');
+    ElMessage.success(message);
   } catch {
     ElMessage.error('浏览器未允许复制');
   }
+}
+
+async function copyWithKey(key: string, value: string, message = '已复制') {
+  try {
+    await navigator.clipboard.writeText(value);
+    copiedPortKey.value = key;
+    clearTimeout(copyPortTimer);
+    copyPortTimer = setTimeout(() => {
+      if (copiedPortKey.value === key) copiedPortKey.value = '';
+    }, 1500);
+    ElMessage.success(message);
+  } catch {
+    ElMessage.error('浏览器未允许复制');
+  }
+}
+
+function handlePortKeydown(event: KeyboardEvent) {
+  if (event.key !== '/' || event.metaKey || event.ctrlKey || event.altKey) return;
+  const target = event.target as HTMLElement | null;
+  if (target && (['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) || target.isContentEditable)) return;
+  if (document.querySelector('.el-overlay-dialog:not([style*="display: none"]), .el-drawer__wrapper')) return;
+  event.preventDefault();
+  keywordInputRef.value?.focus();
 }
 
 function addressLabel(listener: PortListener) {
@@ -678,12 +725,12 @@ function scopeLabel(scope: PortListener['scope']) {
 
 function statusText(state: RowState) {
   return state === 'listening'
-    ? '已监听'
+    ? '运行中'
     : state === 'errored'
       ? '异常停止'
       : state === 'stopped'
         ? '已停止'
-        : '未监听';
+        : '空闲';
 }
 
 function isRowActing(row: PortRow, action?: PortActionType) {
@@ -728,22 +775,25 @@ watch(portFilter, () => {
 watch(autoRefresh, resetTimer);
 onMounted(() => {
   document.addEventListener('visibilitychange', handleVisibilityChange);
+  window.addEventListener('keydown', handlePortKeydown);
   handleVisibilityChange();
 });
 onBeforeUnmount(() => {
   disposed = true;
   document.removeEventListener('visibilitychange', handleVisibilityChange);
+  window.removeEventListener('keydown', handlePortKeydown);
   controller?.abort();
   if (timer) clearInterval(timer);
   if (debounce) clearTimeout(debounce);
+  if (copyPortTimer) clearTimeout(copyPortTimer);
 });
 </script>
 
 <template>
   <section class="port-monitor-page">
     <PageHeading
-      title="项目端口检测"
-      description="按项目分类检测本机端口占用、工作区与分支状态，支持一键开启、重启、关闭与删除服务。"
+      title="本地项目服务与端口"
+      description="按项目查看本机正在运行的服务和端口占用，一键开启、重启或关闭服务。"
       :loading="fetching"
       @refresh="refresh"
     >
@@ -765,17 +815,35 @@ onBeforeUnmount(() => {
         </div>
 
         <el-input
+          ref="keywordInputRef"
           v-model="keyword"
           clearable
-          placeholder="搜索项目、分支、服务或 PID"
+          placeholder="搜索项目、分支或 PID"
           aria-label="搜索项目、分支、服务或 PID"
-        />
+          @keydown.esc="keyword = ''"
+        >
+          <template #prefix><Search :size="13" /></template>
+          <template #suffix><kbd v-if="!keyword" class="port-slash-kbd">/</kbd></template>
+        </el-input>
         <el-input
           v-model="portFilter"
           clearable
-          placeholder="检查端口，如 5179 或 5173-5199"
+          placeholder="端口，如 5186 或 5173-5199"
           aria-label="检查端口"
+          @keydown.esc="portFilter = ''"
         />
+        <div class="port-presets" role="group" aria-label="常用端口快捷筛选">
+          <button
+            v-for="preset in portPresets"
+            :key="preset.label"
+            type="button"
+            class="port-preset-chip"
+            :class="{ active: portFilter.trim() === preset.value }"
+            @click="applyPortPreset(preset.value)"
+          >
+            {{ preset.label }}
+          </button>
+        </div>
         <p v-if="filterState.error" class="sidebar-error">{{ filterState.error }}</p>
 
         <nav class="port-projects" aria-label="选择项目分类">
@@ -788,7 +856,7 @@ onBeforeUnmount(() => {
             <RadioTower :size="16" />
             <span>
               <strong>全部项目服务</strong>
-              <small>{{ allListeningCount }} 个监听 · 共 {{ keywordFilteredRows.length }} 项</small>
+              <small>{{ allListeningCount }} 个运行中 · 共 {{ keywordFilteredRows.length }} 项</small>
             </span>
           </button>
 
@@ -804,7 +872,7 @@ onBeforeUnmount(() => {
             <span>
               <strong>{{ group.name }}</strong>
               <small>
-                {{ group.listeningCount }} 个监听<template v-if="group.stoppedCount"> · {{ group.stoppedCount }} 个已停止</template>
+                {{ group.listeningCount }} 个运行中<template v-if="group.stoppedCount"> · {{ group.stoppedCount }} 个已停止</template>
                 · {{ group.portsLabel }}
               </small>
             </span>
@@ -863,16 +931,16 @@ onBeforeUnmount(() => {
               全部 <span>{{ tabCounts.all }}</span>
             </button>
             <button type="button" :class="{ active: statusTab === 'listening' }" @click="statusTab = 'listening'">
-              已监听 <span>{{ tabCounts.listening }}</span>
+              运行中 <span>{{ tabCounts.listening }}</span>
             </button>
             <button type="button" :class="{ active: statusTab === 'stopped' }" @click="statusTab = 'stopped'">
               已停止 <span>{{ tabCounts.stopped }}</span>
             </button>
             <button type="button" :class="{ active: statusTab === 'pm2' }" @click="statusTab = 'pm2'">
-              PM2 托管 <span>{{ tabCounts.pm2 }}</span>
+              后台常驻 (PM2) <span>{{ tabCounts.pm2 }}</span>
             </button>
             <button type="button" :class="{ active: statusTab === 'standalone' }" @click="statusTab = 'standalone'">
-              独立进程 <span>{{ tabCounts.standalone }}</span>
+              临时启动 <span>{{ tabCounts.standalone }}</span>
             </button>
           </div>
           <span class="filter-count">当前展示 {{ rows.length }} 项</span>
@@ -950,6 +1018,26 @@ onBeforeUnmount(() => {
                     <span v-if="row.listeners[0]" class="manager-badge">
                       {{ addressLabel(row.listeners[0]) }} · {{ scopeLabel(row.listeners[0].scope) }}
                     </span>
+                    <button
+                      v-if="row.port > 0 && row.rowState === 'listening'"
+                      type="button"
+                      class="port-quick-copy"
+                      :title="`复制本地访问地址 http://localhost:${row.port}`"
+                      @click.stop="copyWithKey(`url:${row.key}`, `http://localhost:${row.port}`, '已复制本地地址')"
+                    >
+                      <component :is="copiedPortKey === `url:${row.key}` ? Check : Copy" :size="11" />
+                      <span>{{ copiedPortKey === `url:${row.key}` ? '已复制' : '复制地址' }}</span>
+                    </button>
+                    <button
+                      v-if="row.command"
+                      type="button"
+                      class="port-quick-copy"
+                      title="复制进程启动命令"
+                      @click.stop="copyWithKey(`cmd:${row.key}`, row.command, '已复制启动命令')"
+                    >
+                      <component :is="copiedPortKey === `cmd:${row.key}` ? Check : Terminal" :size="11" />
+                      <span>{{ copiedPortKey === `cmd:${row.key}` ? '已复制' : '复制命令' }}</span>
+                    </button>
                   </div>
 
                   <div v-if="row.rowState !== 'available'" class="card-workspace-box">
@@ -974,7 +1062,7 @@ onBeforeUnmount(() => {
                       </button>
                     </div>
                   </div>
-                  <p v-else class="card-empty-note">当前端口未发现 TCP 监听进程，可点击开启服务。</p>
+                  <p v-else class="card-empty-note">这个端口目前空闲，可直接点击「开启」启动服务。</p>
 
                   <footer @click.stop>
                     <button class="service-details-trigger" type="button" :aria-label="`查看端口 ${row.port || '未定'} 服务详情`" aria-haspopup="dialog" @click="openDetails(row)">详情 <ExternalLink :size="12" /></button>
@@ -992,8 +1080,8 @@ onBeforeUnmount(() => {
                       <button
                         type="button"
                         class="port-op-btn is-restart"
-                        :disabled="row.rowState === 'available' || !!actingKey"
-                        :title="row.rowState === 'available' ? '空闲端口请先点击开启' : '重启该服务'"
+                        :disabled="row.rowState === 'available' || isNonProjectListeningRow(row) || !!actingKey"
+                        :title="row.rowState === 'available' ? '空闲端口请先点击开启' : isNonProjectListeningRow(row) ? '非项目进程不支持通过工作台自动重启' : '重启该服务'"
                         @click="onRestartRow(row)"
                       >
                         <RotateCw :size="12" :class="{ 'is-spinning': isRowActing(row, 'restart') }" />
@@ -1100,7 +1188,7 @@ onBeforeUnmount(() => {
                           <span v-else class="manager-badge">独立进程</span>
                         </div>
                       </div>
-                      <span v-else class="row-secondary">未发现 TCP 监听进程</span>
+                      <span v-else class="row-secondary">当前空闲</span>
                     </template>
                   </el-table-column>
 
@@ -1142,7 +1230,7 @@ onBeforeUnmount(() => {
                       </template>
                       <template v-else-if="row.rowState === 'stopped' || row.rowState === 'errored'">
                         <span class="row-title is-muted">{{ row.processName }}</span>
-                        <span class="row-mono">{{ row.stopped?.pmId !== undefined ? `PM2 #${row.stopped.pmId}` : '已释放监听' }}</span>
+                        <span class="row-mono">{{ row.stopped?.pmId !== undefined ? `PM2 #${row.stopped.pmId}` : '未运行' }}</span>
                       </template>
                       <span v-else class="row-secondary">—</span>
                     </template>
@@ -1164,7 +1252,8 @@ onBeforeUnmount(() => {
                         <button
                           type="button"
                           class="port-op-btn is-restart"
-                          :disabled="row.rowState === 'available' || !!actingKey"
+                          :disabled="row.rowState === 'available' || isNonProjectListeningRow(row) || !!actingKey"
+                          :title="isNonProjectListeningRow(row) ? '非项目进程不支持通过工作台自动重启' : '重启该服务'"
                           @click="onRestartRow(row)"
                         >
                           <RotateCw :size="12" :class="{ 'is-spinning': isRowActing(row, 'restart') }" />
@@ -1201,7 +1290,7 @@ onBeforeUnmount(() => {
       </main>
     </div>
 
-    <el-drawer v-model="detailsVisible" title="服务运行详情" size="min(1080px, 96vw)" class="port-details-drawer" append-to-body destroy-on-close>
+    <el-drawer v-if="detailsVisible" v-model="detailsVisible" title="服务运行详情" size="min(1080px, 96vw)" class="port-details-drawer" append-to-body destroy-on-close>
       <!-- 服务列表与详情在固定抽屉内展示，无需滚动至卡片列表底部。 -->
       <section class="deployment-execution" aria-label="服务运行信息与命令配置">
         <aside class="run-history" aria-label="服务实例列表">
@@ -1293,6 +1382,7 @@ onBeforeUnmount(() => {
 
     <!-- 开启新端口服务弹窗 -->
     <el-dialog
+      v-if="createDialogVisible"
       v-model="createDialogVisible"
       title="开启项目端口服务"
       width="560px"
@@ -1318,10 +1408,10 @@ onBeforeUnmount(() => {
           </el-select>
         </el-form-item>
 
-        <el-form-item label="工作区目录 (cwd)" required>
+        <el-form-item label="项目所在文件夹" required>
           <el-input
             v-model="createForm.cwd"
-            placeholder="例如 /Users/yourname/Projects/example"
+            placeholder="例如 /path/to/your/project"
             @input="updatePresetCommand"
           />
         </el-form-item>
@@ -1410,12 +1500,12 @@ onBeforeUnmount(() => {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
   position: sticky;
   top: 0;
   align-self: start;
   box-sizing: border-box;
-  padding: 18px 12px;
+  padding: 14px 12px;
   border-right: 1px solid var(--ui-border);
   background: var(--ui-raised, var(--ui-bg));
 }
@@ -1445,9 +1535,10 @@ onBeforeUnmount(() => {
   max-width: 100%;
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 4px;
   min-height: 0;
-  max-height: min(48dvh, 26rem);
+  max-height: min(76dvh, 50rem);
+  padding-bottom: 4px;
   overflow: auto;
   flex: 1;
 }
@@ -1455,9 +1546,9 @@ onBeforeUnmount(() => {
 .port-projects > button {
   display: flex;
   align-items: flex-start;
-  gap: 9px;
+  gap: 8px;
   width: 100%;
-  padding: 11px 10px;
+  padding: 6px 9px;
   border: 1px solid transparent;
   border-radius: 7px;
   background: transparent;
@@ -1712,17 +1803,18 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 4px;
   min-height: 26px;
-  padding: 0 3px;
+  padding: 0 5px;
   border: 0;
-  border-radius: 4px;
+  border-radius: 5px;
   background: transparent;
-  color: var(--ui-accent);
+  color: var(--ui-secondary);
   font: inherit;
   font-size: 12px;
   cursor: pointer;
+  transition: color 0.14s ease, background-color 0.14s ease;
 }
 
-.service-details-trigger:hover { background: var(--ui-hover); }
+.service-details-trigger:hover { color: var(--ui-accent); background: var(--ui-hover); }
 .service-details-trigger:focus-visible,
 .environment-grid:focus-visible {
   outline: 2px solid var(--ui-accent);
@@ -1940,21 +2032,25 @@ onBeforeUnmount(() => {
 }
 
 .manager-badge {
-  display: inline-flex;
-  align-items: center;
+  display: inline-block;
+  max-width: 100%;
   height: 20px;
+  line-height: 18px;
   padding: 0 7px;
   border-radius: 4px;
-  font: 500 11px/1 var(--mono);
+  font: 500 11px/18px var(--mono);
   color: var(--ui-muted);
-  background: var(--ui-bg);
+  background: var(--ui-raised, var(--ui-bg));
   border: 1px solid var(--ui-border);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .manager-badge.is-pm2 {
   color: var(--ui-secondary);
-  background: color-mix(in srgb, var(--ui-accent) 6%, var(--ui-surface));
-  border-color: color-mix(in srgb, var(--ui-accent) 20%, var(--ui-border));
+  background: var(--ui-raised, var(--ui-bg));
+  border-color: var(--ui-border);
 }
 
 .workspace-cell {
@@ -2105,25 +2201,27 @@ onBeforeUnmount(() => {
 }
 
 .port-op-btn.is-stop:not(:disabled) {
-  color: var(--ui-warning);
-  border-color: color-mix(in srgb, var(--ui-warning) 34%, var(--ui-border));
-  background: color-mix(in srgb, var(--ui-warning) 6%, var(--ui-surface));
+  color: var(--ui-secondary);
+  border-color: var(--ui-border);
+  background: var(--ui-surface);
 }
 
 .port-op-btn.is-stop:not(:disabled):hover {
-  border-color: var(--ui-warning);
-  background: color-mix(in srgb, var(--ui-warning) 14%, var(--ui-surface));
+  color: var(--ui-warning);
+  border-color: color-mix(in srgb, var(--ui-warning) 55%, var(--ui-border));
+  background: color-mix(in srgb, var(--ui-warning) 10%, var(--ui-surface));
 }
 
 .port-op-btn.is-delete:not(:disabled) {
-  color: var(--ui-danger);
-  border-color: color-mix(in srgb, var(--ui-danger) 30%, var(--ui-border));
-  background: color-mix(in srgb, var(--ui-danger) 5%, var(--ui-surface));
+  color: var(--ui-secondary);
+  border-color: var(--ui-border);
+  background: var(--ui-surface);
 }
 
 .port-op-btn.is-delete:not(:disabled):hover {
-  border-color: var(--ui-danger);
-  background: color-mix(in srgb, var(--ui-danger) 14%, var(--ui-surface));
+  color: var(--ui-danger);
+  border-color: color-mix(in srgb, var(--ui-danger) 55%, var(--ui-border));
+  background: color-mix(in srgb, var(--ui-danger) 10%, var(--ui-surface));
 }
 
 /* 固定抽屉中的服务导航与 Markdown 详情，各自滚动。 */
@@ -2363,5 +2461,77 @@ onBeforeUnmount(() => {
   .form-row-2col {
     grid-template-columns: 1fr;
   }
+}
+
+.port-slash-kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ds-radius-xs, 4px);
+  background: var(--ui-surface);
+  color: var(--ui-muted);
+  font: 600 10.5px/1 var(--mono, monospace);
+  pointer-events: none;
+}
+
+.port-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.port-preset-chip {
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ds-radius-xs, 5px);
+  background: var(--ui-surface);
+  color: var(--ui-secondary);
+  font: 500 11px/1 var(--sans, sans-serif);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 150ms ease, background-color 150ms ease, color 150ms ease;
+}
+
+.port-preset-chip:hover {
+  border-color: var(--ui-accent);
+  color: var(--ui-text);
+}
+
+.port-preset-chip.active {
+  border-color: color-mix(in srgb, var(--ui-accent) 42%, var(--ui-border));
+  background: var(--ui-accent-soft);
+  color: var(--ui-accent);
+  font-weight: 600;
+}
+
+.port-quick-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 21px;
+  padding: 0 7px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ds-radius-xs, 5px);
+  background: var(--ui-surface);
+  color: var(--ui-secondary);
+  font: 500 11px/1 var(--sans, sans-serif);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 150ms ease, color 150ms ease, background-color 150ms ease;
+}
+
+.port-quick-copy:hover {
+  border-color: var(--ui-accent);
+  background: var(--ui-hover, var(--ui-raised));
+  color: var(--ui-accent);
+}
+
+:global(:root[data-theme='acid']) .port-monitor-page :is(.port-slash-kbd, .port-preset-chip, .port-quick-copy) {
+  border-radius: 0 !important;
 }
 </style>

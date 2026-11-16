@@ -9,7 +9,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { promisify } from 'node:util';
 import type { AgentRuntimeAdapter } from './agent-runtime.js';
 import type { AgentRun, AgentRuntimeHealth, AgentModelOption } from '../shared/agent-runtime.js';
-import { kiroBinary } from './cli-runtime.js';
+import { cliChildEnvironment, kiroBinary } from './cli-runtime.js';
 import { prepareKiroImages } from './kiro-images.js';
 
 const exec = promisify(execFile);
@@ -86,7 +86,8 @@ function runKiroProcess(binary: string, context: Context, agentDirectory: string
   return new Promise<string>((resolve, reject) => {
     const child = spawn(process.execPath, [fileURLToPath(new URL('./cli-start-gate.mjs', import.meta.url))], {
       cwd: context.run.workspacePath, stdio: ['pipe', 'pipe', 'pipe', 'ipc'], shell: false,
-      detached: process.platform !== 'win32', env: { ...process.env, ...(agentDirectory ? { KIRO_AGENT_CONFIG_DIR: agentDirectory } : {}) },
+      detached: process.platform !== 'win32',
+      env: cliChildEnvironment('kiro', process.env, agentDirectory ? { KIRO_AGENT_CONFIG_DIR: agentDirectory } : undefined),
     });
     const stdout = new StringDecoder('utf8');
     const stderr = new StringDecoder('utf8');
@@ -195,10 +196,11 @@ export function createKiroAdapter(binary = kiroBinary, promptForRun: (run: Agent
   let cached: AgentRuntimeHealth | undefined;
   return { id: 'kiro', health: async (force = false) => {
     if (!force && cached && Date.now() - Date.parse(cached.checkedAt) < 30_000) return cached;
+    const kiroEnv = cliChildEnvironment('kiro');
     const [version, login, help] = await Promise.allSettled([
-      exec(binary, ['--version'], { timeout: 10_000, maxBuffer: 256_000 }),
-      exec(binary, ['whoami', '--format', 'json'], { timeout: 10_000, maxBuffer: 256_000 }),
-      exec(binary, ['chat', '--help'], { timeout: 10_000, maxBuffer: 256_000 }),
+      exec(binary, ['--version'], { env: kiroEnv, timeout: 10_000, maxBuffer: 256_000 }),
+      exec(binary, ['whoami', '--format', 'json'], { env: kiroEnv, timeout: 10_000, maxBuffer: 256_000 }),
+      exec(binary, ['chat', '--help'], { env: kiroEnv, timeout: 10_000, maxBuffer: 256_000 }),
     ]);
     const versionText = version.status === 'fulfilled' ? version.value.stdout.trim().slice(0, 200) : '';
     let authenticated = false;
@@ -212,7 +214,7 @@ export function createKiroAdapter(binary = kiroBinary, promptForRun: (run: Agent
     let catalog = { models: [{ id: 'auto', label: 'auto' }] as AgentModelOption[], defaultModel: 'auto' };
     if (ready) {
       try { catalog = kiroModels((await exec(binary, ['chat', '--v2', '--list-models', '--format', 'json'],
-        { timeout: 15_000, maxBuffer: 1_000_000 })).stdout); } catch { /* Explicit auto fallback remains usable. */ }
+        { env: kiroEnv, timeout: 15_000, maxBuffer: 1_000_000 })).stdout); } catch { /* Explicit auto fallback remains usable. */ }
     }
     cached = { provider: 'kiro', label: 'Kiro CLI', binary, version: versionText, authenticated, ready,
       message: ready ? 'Kiro 已连接；Ask/Plan 仅读取，工作区模式可读写文件，完全访问可执行命令'

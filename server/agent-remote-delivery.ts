@@ -1,6 +1,8 @@
 /** 交付按钮只操作已登记任务；预览绑定结果、文件与目标，外部结果逐项落盘并回读。 */
 import fs from 'node:fs/promises';
 import { constants } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
@@ -10,17 +12,25 @@ import type { RemoteDeliveryAttempt, RemoteDeliveryPreview, RemoteDeliverySubmit
 import type { JiraDevTaskRecord, JiraDevDesignDestination, JiraDevPlanItem } from './jira-dev/index.mjs';
 import type { RemoteDesignLookup, RemoteDesignMatch } from './agent-remote-delivery-confluence.js';
 import type { SourceBackend } from './source-backend.js';
-import { executeProjectGitAction, readProjectGitSnapshot, type ProjectGitSnapshot } from './project-git.js';
+import { executeProjectGitAction, readProjectGitSnapshot, synthesizeUntrackedFilesPatch, type ProjectGitSnapshot } from './project-git.js';
+import { buildSmartCommitMessage, scanDiffHygieneIssues } from './pr-review-intelligence.js';
 import { readAgentDeliveryReport } from '../shared/delivery-report.js';
 import { requirementProgressDataSchema, requirementStageLabels, requirementStageStatusLabels, requirementStages } from '../shared/requirement-development.js';
 import { deliveryEvidenceSchema, deliveryEvidenceKinds, deliveryEvidenceLabels, deliveryEvidenceStatusLabels } from '../shared/delivery-acceptance.js';
 
+const exec = promisify(execFile);
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const fail = (message: string, statusCode = 409) => Object.assign(new Error(message), { statusCode });
 const maxArtifactBytes = 40 * 1024 * 1024;
 const submitSchema = z.object({ requestId: z.string().uuid(), fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
   kind: z.enum(['design', 'jira', 'git']), projectId: z.string().max(100).optional(),
-  files: z.array(z.string().min(1).max(2000)).max(200).optional(), message: z.string().trim().max(4000).optional() }).strict();
+  files: z.array(z.string().min(1).max(2000)).max(200).optional(), message: z.string().trim().max(4000).optional(),
+  confirmHygiene: z.boolean().optional() }).strict();
+const reconcileSchema = z.object({
+  attemptId: z.string().uuid(),
+  resolution: z.enum(['retry', 'completed']),
+}).strict();
+const maxPreviewFullHashBytes = 2 * 1024 * 1024;
 interface Publication {
   url: string; pageId: string; title: string; parentId: string; spaceKey: string; version: number; verifiedAt: string; bodySha256: string;
 }
@@ -338,15 +348,46 @@ export async function createAgentRemoteDelivery(options: Options) {
       const remoteHost = remoteWeb ? new URL(remoteWeb).hostname : '';
       const url = remoteWeb ? remoteHost === 'github.com' ? `${remoteWeb}/tree/${encodeURIComponent(project.branchName)}`
         : /gitlab/i.test(remoteHost) ? `${remoteWeb}/-/tree/${encodeURIComponent(project.branchName)}` : remoteWeb : '';
+      let combinedPatch = '';
+      if (snapshot.isGit && snapshot.files.length > 0 && !snapshot.truncated) {
+        const [trackedPatch, untrackedPatch] = await Promise.all([
+          exec(
+            'git',
+            ['-c', 'core.hooksPath=/dev/null', '-C', snapshot.directory, 'diff', 'HEAD', '--no-ext-diff', '--no-textconv', '--find-renames', '--unified=1', '--', '.', ':(exclude).delivery-artifacts'],
+            { timeout: 10_000, maxBuffer: 4 * 1024 * 1024 },
+          ).then(r => r.stdout, () => ''),
+          synthesizeUntrackedFilesPatch(snapshot.directory, snapshot.files.filter(file => file.untracked).map(file => file.path)).catch(() => ''),
+        ]);
+        combinedPatch = [trackedPatch.trimEnd(), untrackedPatch.trimEnd()].filter(Boolean).join('\n');
+      }
+      const hygieneWarnings = combinedPatch || snapshot.files.length
+        ? scanDiffHygieneIssues(combinedPatch, snapshot.files.map(file => file.path))
+        : [];
+      const blockerFiles = new Set(hygieneWarnings.filter(item => item.severity === 'blocker').map(item => item.file));
+      const mappedFiles = snapshot.files.map(file => ({
+        path: file.path,
+        status: file.status,
+        recommended: paths.has(file.path) && !blockerFiles.has(file.path),
+      }));
+      const recommendedForMessage = snapshot.files.filter(file => paths.has(file.path) && !blockerFiles.has(file.path));
+      const suggestedMessage = buildSmartCommitMessage({
+        patch: combinedPatch,
+        files: recommendedForMessage.map(file => ({ path: file.path, status: file.status })),
+        branch: snapshot.branch,
+        issueKey: issue.key,
+        issueTitle: issue.title,
+      }).subject;
       return { id, path: project.workspacePath, branch: snapshot.branch, head: snapshot.head, remote: remote?.name || '', url, pushUrl: remote?.pushUrl || '',
-        files: snapshot.files.map(file => ({ path: file.path, status: file.status, recommended: paths.has(file.path) })),
-        message: `${issue.key}：更新${issue.title}前端实现`, available: !reason, reason };
+        files: mappedFiles,
+        message: suggestedMessage, available: !reason, reason,
+        ...(hygieneWarnings.length ? { hygieneWarnings } : {}) };
     }));
     const fileContents = await Promise.all([...snapshots].map(async ([id, snapshot]) => [id, await Promise.all(snapshot.files.map(async file => {
       const filename = path.join(snapshot.directory, file.path), stat = await fs.lstat(filename).catch(() => undefined);
       if (!stat) return [file.path, 'missing'];
       if (stat.isSymbolicLink()) return [file.path, 'symlink', await fs.readlink(filename)];
       if (!stat.isFile()) return [file.path, 'non-file'];
+      if (stat.size > maxPreviewFullHashBytes) return [file.path, `large:${stat.size}:${Math.trunc(stat.mtimeMs)}`];
       return [file.path, createHash('sha256').update(await fs.readFile(filename)).digest('hex')];
     }))]));
     const linked = jiraTasks.filter(item => item.key !== issue.key).map(item => `${item.key} ${item.url}`);
@@ -389,7 +430,15 @@ export async function createAgentRemoteDelivery(options: Options) {
     if (input.kind === 'git') {
       if ((input.files || []).some(file => !project!.files.some(item => item.path === file))) throw fail('所选文件不在本次预览中。');
       if ((input.files || []).length && (!input.message?.trim() || !/[\u3400-\u9fff]/.test(input.message))) throw fail('请填写中文提交说明。');
-    } else if (input.files !== undefined || input.message !== undefined || input.projectId !== undefined) throw fail('该交付类型不接受 Git 文件、项目或提交说明。');
+      const selectedSet = new Set(input.files || []);
+      const selectedWarnings = (project!.hygieneWarnings || []).filter(item => selectedSet.has(item.file));
+      if (selectedWarnings.some(item => item.category === 'conflict-markers')) {
+        throw fail('所选文件包含未解决的合并冲突标记，请先解决冲突后再提交推送。');
+      }
+      if (selectedWarnings.some(item => item.severity === 'blocker') && input.confirmHygiene !== true) {
+        throw fail('所选文件命中敏感凭据或高风险密钥提示，请取消勾选相关文件，或核对确认非真实密钥后再提交。');
+      }
+    } else if (input.files !== undefined || input.message !== undefined || input.projectId !== undefined || input.confirmHygiene !== undefined) throw fail('该交付类型不接受 Git 文件、项目或提交说明。');
     const attempt: StoredAttempt = { id: input.requestId, kind: input.kind, projectId: input.projectId, fingerprint: input.fingerprint,
       input, status: 'submitting', updatedAt: new Date().toISOString(), detail: '正在执行并核对远端结果。' };
     list.push(attempt); states.set(storageId, list); await save(storageId);
@@ -438,6 +487,22 @@ export async function createAgentRemoteDelivery(options: Options) {
       const storageId = resolveStorageId(roomId);
       if (pending.has(storageId)) return Promise.reject(fail('本群聊正在执行远端交付，请稍候。'));
       const work = execute(roomId, input).finally(() => pending.delete(storageId)); pending.set(storageId, work); return work;
+    },
+    async reconcile(roomId: string, raw: unknown) {
+      const input = reconcileSchema.parse(raw);
+      await context(roomId);
+      const storageId = resolveStorageId(roomId);
+      if (pending.has(storageId)) throw fail('本群聊正在执行远端交付，请稍候。');
+      const list = states.get(storageId) || [];
+      const attempt = list.find(item => item.id === input.attemptId);
+      if (!attempt || attempt.status !== 'uncertain') throw fail('未找到待人工核对的远端交付记录。', 404);
+      attempt.status = input.resolution === 'completed' ? 'completed' : 'failed';
+      attempt.detail = input.resolution === 'completed'
+        ? '已人工核对远端结果生效。'
+        : '已人工核对远端未生效，已解除重试锁定。';
+      attempt.updatedAt = new Date().toISOString();
+      await save(storageId);
+      return publicAttempt(attempt);
     },
     isIdle: () => !pending.size,
     close: async () => { await Promise.allSettled(pending.values()); },

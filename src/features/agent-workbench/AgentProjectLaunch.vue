@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import { useQuery, useQueryClient } from '@tanstack/vue-query';
 import { ElMessage } from 'element-plus';
 import { ExternalLink, History, Play, Square, Terminal } from '@lucide/vue';
@@ -14,7 +14,6 @@ let lastReadError = '';
 let launchTab: { tab: Window; configId: string; executionId?: string } | undefined;
 const observed = new Map<string, ProjectExecution['state']>();
 const logElements = new Map<string, HTMLElement>(), readingLogs = new Set<string>();
-onMounted(() => { timer = setInterval(() => { now.value = Date.now(); }, 1000); });
 onBeforeUnmount(() => { disposed = true; operation++; closeLaunchTab(); clearInterval(timer); logElements.clear(); readingLogs.clear(); });
 const base = '/api/projects/launch';
 const key = (path: string) => ['project-launch', path];
@@ -49,10 +48,24 @@ async function request(method: string, path: string, body?: unknown, signal?: Ab
 const query = useQuery({ queryKey: computed(() => key(workspace.value)), enabled: computed(() => !!workspace.value),
   queryFn: ({ queryKey, signal }) => request('GET', `?path=${encodeURIComponent(queryKey[1]!)}`, undefined, signal),
   retry: false, refetchIntervalInBackground: true,
-  refetchInterval: query => query.state.data?.executions?.some(item => item.state === 'running') ? 1000
-    : query.state.data?.statuses.some(item => ['running', 'starting'].includes(item.state)) ? 5000 : false,
+  refetchInterval: query => {
+    if (query.state.data?.executions?.some(item => item.state === 'running')) return 1000;
+    if (query.state.data?.statuses.some(item => item.state === 'starting')) return 2000;
+    if (query.state.data?.statuses.some(item => item.state === 'running')) {
+      return typeof document !== 'undefined' && document.hidden ? false : 15_000;
+    }
+    return false;
+  },
 });
 const snapshot = computed(() => query.data.value);
+watch(() => Boolean(snapshot.value?.executions?.some(item => item.state === 'running') || snapshot.value?.statuses.some(item => item.state === 'starting')), active => {
+  clearInterval(timer);
+  timer = undefined;
+  if (active && !disposed) {
+    now.value = Date.now();
+    timer = setInterval(() => { now.value = Date.now(); }, 1000);
+  }
+}, { immediate: true });
 watch(query.error, error => {
   if (!error) lastReadError = '';
   else if (!disposed && error.message !== lastReadError) { lastReadError = error.message; ElMessage.error(error.message); }
@@ -293,8 +306,8 @@ async function stop() {
 
 <style scoped>
 .project-launch{display:flex;align-items:center;flex-wrap:wrap;flex:0 0 auto;gap:6px;min-width:0;max-width:100%}.project-launch :deep(.launch-action.el-select){flex:0 0 90px;width:90px;min-width:0}.project-launch :deep(.launch-environment.el-select){flex:0 0 116px;width:116px;min-width:0;max-width:100%}.launch-project{width:150px;max-width:100%}.project-launch :deep(.el-button+.el-button){margin-left:0}.project-launch :deep(.el-button){padding:6px 8px}.launch-status{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--agent-muted)}.launch-unavailable{float:right;margin-left:14px;color:var(--el-text-color-placeholder)}.project-launch>a{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--agent-accent)}.launch-directory{font-size:12px;overflow-wrap:anywhere;color:var(--el-text-color-secondary);margin:0 0 16px}
-.launch-full-command{display:block;max-width:100%;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.6}.launch-record-button :deep(span){gap:5px}.launch-record-button span{font-size:10px;color:var(--el-text-color-secondary)}.launch-record-button .launch-active{color:var(--el-color-primary)}.launch-history-hint{font-size:12px;color:var(--el-text-color-secondary);line-height:1.6}.launch-record{min-width:0;padding:16px 0;border-top:1px solid var(--el-border-color-light)}.launch-record header{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px}.launch-record header strong{min-width:0;overflow-wrap:anywhere;font-size:14px}.launch-record header>span{font-size:12px;color:var(--el-text-color-secondary)}.launch-record header>span[data-state=succeeded]{color:var(--el-color-success)}.launch-record header>span[data-state=failed],.launch-record header>span[data-state=interrupted]{color:var(--el-color-danger)}.launch-record header>.el-button{margin-left:auto}.launch-record-message{margin:10px 0 6px;font-size:13px;line-height:1.6;overflow-wrap:anywhere}.launch-record-meta{margin:0 0 10px;font-size:11px;color:var(--el-text-color-secondary);overflow-wrap:anywhere}.launch-record-log{max-width:100%;max-height:260px;overflow:auto;margin:12px 0 0;padding:12px;border-radius:6px;background:var(--el-fill-color-light);font:11px/1.6 var(--font-mono,monospace);white-space:pre-wrap;overflow-wrap:anywhere;tab-size:2}
-.project-launch-sidebar{width:100%;align-content:flex-start}.project-launch-sidebar :deep(.launch-action.el-select),.project-launch-sidebar :deep(.launch-environment.el-select){flex:1 1 calc(50% - 3px);width:auto}.project-launch-sidebar .launch-project{flex:1 0 100%;width:100%}.project-launch-sidebar .launch-status{flex:1 0 100%;max-width:100%}
+.launch-full-command{display:block;max-width:100%;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.6}.launch-record-button :deep(span){gap:5px}.launch-record-button span{font-size:11px;color:var(--el-text-color-secondary)}.launch-record-button .launch-active{color:var(--el-color-primary)}.launch-history-hint{font-size:12px;color:var(--el-text-color-secondary);line-height:1.6}.launch-record{min-width:0;padding:16px 0;border-top:1px solid var(--el-border-color-light)}.launch-record header{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px}.launch-record header strong{min-width:0;overflow-wrap:anywhere;font-size:14px}.launch-record header>span{font-size:12px;color:var(--el-text-color-secondary)}.launch-record header>span[data-state=succeeded]{color:var(--el-color-success)}.launch-record header>span[data-state=failed],.launch-record header>span[data-state=interrupted]{color:var(--el-color-danger)}.launch-record header>.el-button{margin-left:auto}.launch-record-message{margin:10px 0 6px;font-size:13px;line-height:1.6;overflow-wrap:anywhere}.launch-record-meta{margin:0 0 10px;font-size:11px;color:var(--el-text-color-secondary);overflow-wrap:anywhere}.launch-record-log{max-width:100%;max-height:260px;overflow:auto;margin:12px 0 0;padding:12px;border-radius:6px;background:var(--el-fill-color-light);font:11px/1.6 var(--font-mono,monospace);white-space:pre-wrap;overflow-wrap:anywhere;tab-size:2}
+.project-launch-sidebar{width:100%;align-content:flex-start}.project-launch-sidebar :deep(.launch-action.el-select),.project-launch-sidebar :deep(.launch-environment.el-select){flex:1 1 calc(50% - 3px);width:auto}.project-launch-sidebar .launch-project{flex:1 0 100%;width:100%}.project-launch-sidebar .launch-status{flex:1 0 100%;max-width:100%;white-space:normal;line-height:1.5}
 .launch-address{display:inline-flex;align-items:center;gap:5px;max-width:100%;font-size:12px;overflow-wrap:anywhere;color:var(--el-color-primary)}.launch-address svg{flex-shrink:0}.launch-address:hover{text-decoration:underline}.project-launch-sidebar .launch-address{flex-basis:100%}.launch-record-address{margin-bottom:6px}
 @media(max-width:600px){.launch-status{max-width:160px}.launch-record-log{max-height:220px;padding:8px}}
 </style>

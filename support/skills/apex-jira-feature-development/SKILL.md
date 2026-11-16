@@ -9,11 +9,11 @@ Turn one Jira requirement into an isolated, runnable Apex frontend workspace and
 
 ## Workspace Contract
 
-- Parse and uppercase the Jira key from either a key or URL, for example `DEMO-123`.
+- Parse and uppercase the Jira key from either a key or URL, for example `OPAY-255`.
 - Use the current system month as two digits. The monthly root is `~/Desktop/apex-MM`, for example `~/Desktop/apex-08` in August and `~/Desktop/apex-09` in September.
 - Create the monthly root when absent.
-- Clone the repository directly into `~/Desktop/apex-MM/<JIRA-KEY>`. The issue directory itself must be the repository root; do not add a nested repository directory.
-- Default repository: `<configure APEX_REPO_URL>`.
+- Clone the repository directly into `~/Desktop/apex-MM/<JIRA-KEY>`. The issue directory itself must be the repository root; do not add a nested `thor-admin2.0` directory.
+- Default repository: `git@codeup.aliyun.com:64ad9c6e702c0cacad9a2168/Raytheon_project/thor-admin2.0.git`.
 - Default new branch name: `feature/<JIRA-KEY>`, preserving the uppercase Jira key.
 - Reuse an existing issue directory only when it is the expected repository. Never overwrite a nonempty directory, replace a different origin, discard changes, or delete an existing branch.
 
@@ -50,13 +50,13 @@ If `feature/<JIRA-KEY>` already exists remotely, track it. If it exists locally,
 Run:
 
 ```bash
-bash "${DELIVERY_SKILLS_ROOT:-${CODEX_HOME:-$HOME/.codex}/skills}/apex-jira-feature-development/scripts/prepare_apex_workspace.sh" <JIRA-KEY> <BASE-REF> [BRANCH]
+bash "${CODEX_HOME:-$HOME/.codex}/skills/apex-jira-feature-development/scripts/prepare_apex_workspace.sh" <JIRA-KEY> <BASE-REF> [BRANCH]
 ```
 
 Example:
 
 ```bash
-bash "${DELIVERY_SKILLS_ROOT:-${CODEX_HOME:-$HOME/.codex}/skills}/apex-jira-feature-development/scripts/prepare_apex_workspace.sh" DEMO-123 origin/master feature/DEMO-123
+bash "${CODEX_HOME:-$HOME/.codex}/skills/apex-jira-feature-development/scripts/prepare_apex_workspace.sh" OPAY-255 origin/master feature/OPAY-255
 ```
 
 Afterward verify the printed workspace path, origin, current branch, base ref, and `git status --short`.

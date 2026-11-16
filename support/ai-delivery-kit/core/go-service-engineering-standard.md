@@ -1,6 +1,6 @@
 # Go 服务工程规范
 
-> 适用范围：团队 Go 后端服务、BFF、worker、cron、consumer、内部工具。通用 Go 语言规则见 [go-coding-standard.md](go-coding-standard.md)。
+> 适用范围：Raytheon Go 后端服务、BFF、worker、cron、consumer、内部工具。通用 Go 语言规则见 [go-coding-standard.md](go-coding-standard.md)。
 
 ## 1. 分层架构
 

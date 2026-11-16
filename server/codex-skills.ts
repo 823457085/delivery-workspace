@@ -18,6 +18,7 @@ const skillDescriptionsZh: Record<string, string> = {
   'apex-frontend-tech-design-delivery': '基于 Jira、PRD、原型和仓库证据生成 Apex 前端技术方案，并按需交付到 Confluence 或 Jira。',
   'apex-jira-feature-development': '从 Jira 需求开始实现或继续 Apex 前端开发，包含工作区、分支和验证流程。',
   'hardcode-i18n-scanner': '扫描并改造前端硬编码中文与国际化问题，支持位置码规范化、校验和 Excel 导出。',
+  'codebase-improve': '顾问式代码库全景体检与复核排优，生成带基线漂移检查与 STOP 熔断的自包含改造计划。',
 };
 
 export function skillDisplayDescription(name: string, fallback: string) {

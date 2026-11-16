@@ -16,7 +16,7 @@ export const customPluginsQueryKey = ['custom-plugins'];
 export function useCustomPlugins() {
   const query = useQuery({ queryKey: customPluginsQueryKey,
     queryFn: ({ signal }) => pluginRequest<{ plugins: CustomPluginInfo[]; navigation: NavigationPreferences }>('', undefined, signal),
-    staleTime: 5000, refetchInterval: 10000, retry: false,
+    staleTime: 5000, refetchInterval: 15_000, refetchIntervalInBackground: false, retry: false,
   });
   const plugins = computed(() => query.data.value?.plugins || []);
   const navigation = computed(() => query.data.value?.navigation || { order: [], icons: {} });

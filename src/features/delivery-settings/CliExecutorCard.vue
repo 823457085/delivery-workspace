@@ -30,5 +30,5 @@ const label = computed(() => data.value?.status === 'running' ? '运行中' : da
   </section>
 </template>
 <style scoped>
-.cli-card{margin-bottom:24px;border-top:3px solid var(--el-color-primary)}.cli-description,.cli-path{color:var(--ui-muted);font-size:12px;line-height:1.9}.cli-path{overflow-wrap:anywhere}.cli-facts{display:flex;gap:24px;flex-wrap:wrap;color:var(--ui-secondary);font-size:13px}.cli-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}
+.cli-card{margin-bottom:16px}.cli-description,.cli-path{color:var(--ui-muted);font-size:12px;line-height:1.6;margin:6px 0}.cli-path{overflow-wrap:anywhere;font-family:var(--mono)}.cli-facts{display:flex;gap:18px;flex-wrap:wrap;color:var(--ui-secondary);font-size:12.5px;margin:8px 0}.cli-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
 </style>

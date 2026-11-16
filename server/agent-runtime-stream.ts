@@ -4,6 +4,13 @@
  */
 import type { AgentRun } from '../shared/agent-runtime.js';
 
+/** 团队岗位提示只在服务端执行和归档，聊天快照和增量不传输它。 */
+export function browserAgentRun(run: AgentRun): AgentRun {
+  if (run.teamContext === undefined) return run;
+  const { teamContext: _teamContext, ...visible } = run;
+  return visible;
+}
+
 export function createAgentRuntimeStream(write: (frame: string) => void, incremental: boolean) {
   const pending = new Map<string, AgentRun>();
   let latestRevision = 0;
@@ -15,7 +22,7 @@ export function createAgentRuntimeStream(write: (frame: string) => void, increme
     if (timer) clearTimeout(timer);
     timer = undefined;
     if (!pending.size) return;
-    send('runs', latestRevision, { runs: [...pending.values()] });
+    send('runs', latestRevision, { runs: [...pending.values()].map(browserAgentRun) });
     pending.clear();
   };
   return {
@@ -23,7 +30,7 @@ export function createAgentRuntimeStream(write: (frame: string) => void, increme
       if (!incremental || !run) { flush(); send('refresh', revision, {}); return; }
       latestRevision = revision;
       pending.set(run.id, run);
-      if (!timer) timer = setTimeout(flush, 100);
+      if (!timer) timer = setTimeout(flush, 32);
     },
     close() { if (timer) clearTimeout(timer); pending.clear(); },
   };

@@ -4,7 +4,7 @@
 |------|-----|
 | **AI Delivery Kit** | `ai-delivery-kit/` |
 | **版本** | 1.0.0（初版） |
-| **仓库路径** | `team/ai-delivery-kit/` |
+| **仓库路径** | `raytheon/ai-delivery-kit/` |
 | **上位方案** | 《AI 原生产研全流程落地方案》V1.0 |
 
 ## 铁律
@@ -18,9 +18,9 @@
 
 | 页面 | ID | 仓库源 |
 |------|-----|--------|
-| [AI 原生产研测交付门禁 v1.0](https://confluence.example.com/spaces/TEAM/pages/1001/) | 1001 | 本文件 |
-| [宣贯一页纸](https://confluence.example.com/spaces/TEAM/pages/1002/) | 1002 | confluence-one-pager.md |
-| [90 天试点检查清单](https://confluence.example.com/spaces/TEAM/pages/1003/) | 1003 | pilot-90day-checklist.md |
+| [AI 原生产研测交付门禁 v1.0](https://confluence.hahabianli.com/spaces/SOP/pages/33746027/) | 33746027 | 本文件 |
+| [宣贯一页纸](https://confluence.hahabianli.com/spaces/SOP/pages/33746028/) | 33746028 | confluence-one-pager.md |
+| [90 天试点检查清单](https://confluence.hahabianli.com/spaces/SOP/pages/33746029/) | 33746029 | pilot-90day-checklist.md |
 
 同步方式：`scripts/sync-confluence.sh` + `scripts/build-confluence-storage.py`（Markdown 宏）
 

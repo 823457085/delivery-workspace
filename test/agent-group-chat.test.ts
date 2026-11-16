@@ -7,7 +7,7 @@ import { createAgentRuntimeService, type AgentRuntimeAdapter } from '../server/a
 import { createAgentGroupChat } from '../server/agent-group-chat.js';
 import { jiraDevSkillsDirectory } from '../server/jira-dev-prompt.js';
 import { defaultTeamProfileConfig } from '../shared/agent-team.js';
-import { exportGroupTemplate, importGroupTemplate, type GroupMember } from '../shared/agent-group-chat.js';
+import { exportGroupTemplate, importGroupTemplate, packJsonTail, type GroupMember } from '../shared/agent-group-chat.js';
 import type { AgentRun, AgentProvider, AgentUsageLimits } from '../shared/agent-runtime.js';
 
 type Context = Parameters<AgentRuntimeAdapter['execute']>[0];
@@ -826,4 +826,112 @@ test('现有群改名只更新标题，保留任务和运行且重载后持久�
     assert.deepEqual(restored.runs, before.runs);
     assert.equal(f.calls.length, 1);
   } finally { await f.cleanup(); }
+});
+
+test('packJsonTail 按尾部预算保留完整数组元素并始终生成合法 JSON', () => {
+  const items = Array.from({ length: 12 }, (_, index) => ({
+    id: `msg-${index + 1}`,
+    speaker: `成员-${index + 1}`,
+    text: `第 ${index + 1} 轮总结：${'关键证据\"转义\"内容'.repeat(20)}`,
+  }));
+  const packed = packJsonTail(items, 900, (item, budget) => ({
+    ...item,
+    text: item.text.slice(-Math.max(32, Math.floor(budget * 0.6))),
+  }));
+  assert.ok(packed.length <= 900);
+  const parsed = JSON.parse(packed) as typeof items;
+  assert.ok(Array.isArray(parsed) && parsed.length >= 2);
+  assert.equal(parsed.at(-1)?.id, 'msg-12');
+  assert.equal(parsed.at(-2)?.id, 'msg-11');
+});
+
+test('代码实现成员未执行工具且无文件改动时额度耗尽自动切换备用模型', async () => {
+  const f = await fixture(async context => {
+    if (context.run.provider === 'cursor') throw new Error('insufficient_quota before any tool');
+    await fs.writeFile(path.join(context.run.workspacePath, 'value.txt'), 'fallback-written');
+    return '备用实现完成';
+  });
+  try {
+    const writer = member('writer', 'write');
+    writer.binding = { provider: 'cursor', model: 'fixture-model', reasoningEffort: '' };
+    writer.fallbackBinding = { provider: 'codex', model: 'gpt-6-astra', reasoningEffort: 'high' };
+    await f.roles([writer]);
+    const sent = await f.send();
+    const done = await settle(() => f.group.detail(sent.room.id), value => value.room.rounds[0].state === 'completed');
+    assert.equal(f.calls.length, 2);
+    assert.equal(done.room.rounds[0].turns[0].executionBinding?.provider, 'codex');
+    assert.equal(done.room.rounds[0].turns[0].fallbacks?.length, 1);
+    assert.equal(await fs.readFile(path.join(f.source, 'value.txt'), 'utf8'), 'fallback-written');
+  } finally { await f.cleanup(); }
+});
+
+test('单房间阻塞停止期间不冻结其他群聊发送或团队配置保存', async () => {
+  let releaseRoomA!: () => void;
+  const holdRoomA = new Promise<void>(resolve => { releaseRoomA = resolve; });
+  let roomAStarted!: () => void;
+  const waitForRoomAStart = new Promise<void>(resolve => { roomAStarted = resolve; });
+  const f = await fixture(async context => {
+    if (context.run.objective.includes('房间A慢任务')) {
+      roomAStarted();
+      await new Promise<void>(resolve => {
+        context.signal.addEventListener('abort', () => { void holdRoomA.then(resolve); }, { once: true });
+      });
+      return '房间A结束';
+    }
+    return `快速完成:${context.run.objective}`;
+  });
+  try {
+    await f.roles([member('reader')]);
+    const roomA = await f.send('房间A慢任务', 'room-a-req');
+    await waitForRoomAStart;
+    const cancelPromise = f.group.action(roomA.room.id, 'cancel');
+    const otherWorkspace = path.join(path.dirname(f.source), 'project-b');
+    await fs.mkdir(otherWorkspace, { recursive: true });
+    const roomB = await f.group.send({ text: '房间B秒回', requestId: 'room-b-req', workspacePath: otherWorkspace });
+    const doneB = await settle(() => f.group.detail(roomB.room.id), value => value.room.rounds[0].state === 'completed');
+    assert.equal(doneB.room.rounds[0].turns[0].result, '快速完成:房间B秒回');
+    const updatedConfig = await f.roles([member('reader'), member('reviewer', 'review')]);
+    assert.equal(updatedConfig.members.length, 2);
+    releaseRoomA();
+    await cancelPromise;
+  } finally { releaseRoomA(); await f.cleanup(); }
+});
+
+test('顺序群聊支持待执行轮次插队，停止当前轮未启动成员并优先执行插队消息', async () => {
+  let releaseFirstTurn!: () => void;
+  const firstTurnGate = new Promise<void>(resolve => { releaseFirstTurn = resolve; });
+  let startedFirstTurn!: () => void;
+  const waitFirstTurn = new Promise<void>(resolve => { startedFirstTurn = resolve; });
+  const order: string[] = [];
+  const f = await fixture(async context => {
+    order.push(`${context.run.objective}:${context.run.team?.profileId}`);
+    if (context.run.objective === '第一轮任务' && context.run.team?.profileId === 'first') {
+      startedFirstTurn();
+      await new Promise<void>(resolve => {
+        if (context.signal.aborted) { resolve(); return; }
+        context.signal.addEventListener('abort', () => resolve(), { once: true });
+        void firstTurnGate.then(resolve);
+      });
+    }
+    return `完成:${context.run.objective}`;
+  });
+  try {
+    await f.roles([member('first'), member('second')]);
+    const initial = await f.send('第一轮任务', 'seq-round-1');
+    await waitFirstTurn;
+    const afterR2 = await f.group.send({ roomId: initial.room.id, text: '第二轮普通排队', requestId: 'seq-round-2' });
+    const afterR3 = await f.group.send({ roomId: initial.room.id, text: '第三轮紧急插队', requestId: 'seq-round-3' });
+    const round3Id = afterR3.room.rounds.find(round => round.requestId === 'seq-round-3')!.id;
+    assert.ok(afterR2.room.rounds.some(round => round.requestId === 'seq-round-2'));
+    await f.group.steerMessage(initial.room.id, { messageId: round3Id });
+    releaseFirstTurn();
+    const finished = await settle(() => f.group.detail(initial.room.id),
+      value => value.room.rounds.filter(round => round.state === 'completed').length === 2);
+    assert.equal(finished.room.rounds[0].turns[1].status, 'cancelled');
+    assert.equal(finished.room.rounds[1].requestId, 'seq-round-3');
+    assert.equal(finished.room.rounds[2].requestId, 'seq-round-2');
+    const idxRound3 = order.findIndex(item => item.startsWith('第三轮紧急插队:'));
+    const idxRound2 = order.findIndex(item => item.startsWith('第二轮普通排队:'));
+    assert.ok(idxRound3 > 0 && idxRound2 > idxRound3, `插队顺序异常: ${order.join(', ')}`);
+  } finally { releaseFirstTurn(); await f.cleanup(); }
 });

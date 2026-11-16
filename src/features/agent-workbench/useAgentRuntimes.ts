@@ -1,6 +1,6 @@
 /** Agent 运行只通过固定后端协议启停；页面刷新只读取状态，不会触发 CLI。 */
 import { computed, onMounted, onUnmounted, shallowRef } from 'vue';
-import { agentProviderLabels, codexWorkbenchDefaults } from '../../../shared/agent-runtime';
+import { codexWorkbenchDefaults } from '../../../shared/agent-runtime';
 import { agentModelDefaults } from '../../shared/agent-model-defaults';
 import { useQuery, useQueryClient } from '@tanstack/vue-query';
 import { ElMessage, ElMessageBox } from 'element-plus';
@@ -25,12 +25,14 @@ export function useAgentRuntimes() {
   const codexDetails = shallowRef<Record<string, CodexSessionDetail>>({});
   const streamState = createRuntimeStreamState();
   let forceRefresh = false;
-  const snapshotQuery = useQuery({ queryKey: ['agent-runtimes'], retry: false, refetchInterval: () => streamConnected.value ? 60_000 : 15_000,
+  const snapshotQuery = useQuery({ queryKey: ['agent-runtimes'], retry: false, staleTime: 15_000, refetchInterval: () => streamConnected.value ? 60_000 : 15_000,
     queryFn: async ({ signal }): Promise<AgentRuntimeDashboard> => {
       const response = await fetch('/api/agent-runtimes?status=0', { signal });
       const data = await response.json();
       if (!response.ok) throw new Error(data.message || 'Agent 执行器状态读取失败');
-      return streamState.snapshot(data);
+      const snapshot = streamState.snapshot(data);
+      if (snapshot.revision < streamRevision.value) runtimeRefresh.request();
+      return snapshot;
     },
   });
   type RuntimeStatus = Pick<AgentRuntimeDashboard, 'runtimeStatusVersion' | 'runtimes' | 'codexUsage' | 'apiUsage' | 'cursorUsage' | 'claudeUsage' | 'antigravityUsage'>;
@@ -75,23 +77,24 @@ export function useAgentRuntimes() {
     finally { refreshing.value = false; }
   }
   let eventSource: EventSource | undefined;
-  const refresh = createRuntimeRefresh(async () => {
-    const result = await query.refetch({ cancelRefetch: false });
-    if (result.data && (result.data.revision || 0) < streamRevision.value) refresh.request();
+  const runtimeRefresh = createRuntimeRefresh(async () => {
+    await query.refetch({ cancelRefetch: false });
   });
   onMounted(() => {
-    eventSource = new EventSource('/api/agent-runtimes/events?updates=runs');
+    const openStream = (globalThis as { __deliveryOpenEventSource?: (url: string) => EventSource }).__deliveryOpenEventSource;
+    eventSource = openStream ? openStream('/api/agent-runtimes/events?updates=runs') : new EventSource('/api/agent-runtimes/events?updates=runs');
     eventSource.addEventListener('open', () => { streamConnected.value = true; streamStatus.value = 'connected'; });
     eventSource.addEventListener('error', () => { streamConnected.value = false; streamStatus.value = 'reconnecting'; });
     eventSource.addEventListener('ready', (event) => {
       const revision = eventRevision(event);
       if (revision) streamRevision.value = revision;
-      refresh.request();
+      // 初次快照正在读取；它会合并已到达的运行事件，并检查是否追上连接版本。
+      if ((snapshotQuery.data.value?.revision || 0) < revision && !snapshotQuery.isPending.value) runtimeRefresh.request();
     });
     eventSource.addEventListener('refresh', (event) => {
       const revision = eventRevision(event);
       if (revision) streamRevision.value = revision;
-      refresh.request();
+      runtimeRefresh.request();
     });
     eventSource.addEventListener('runs', (event) => {
       try {
@@ -99,45 +102,27 @@ export function useAgentRuntimes() {
         if (!Number.isFinite(update.revision) || !Array.isArray(update.runs)) return;
         streamRevision.value = Math.max(streamRevision.value, update.revision);
         client.setQueryData<AgentRuntimeDashboard>(['agent-runtimes'], (current) => streamState.receive(update.revision, update.runs, current));
-      } catch { refresh.request(); }
+      } catch { runtimeRefresh.request(); }
     });
   });
   onUnmounted(() => {
-    refresh.close();
+    runtimeRefresh.close();
     eventSource?.close();
   });
   async function post(path: string, body: unknown, refresh = true) {
     const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Delivery-Confirmed': 'yes' }, body: JSON.stringify(body) });
     const data = await response.json();
     if (!response.ok) throw new Error(data.message || 'Agent 操作失败');
-    if (refresh) await query.refetch();
+    const revision = Number(response.headers?.get('X-Agent-Revision') || 0);
+    if (revision > 0 && data?.id) {
+      client.setQueryData<AgentRuntimeDashboard>(['agent-runtimes'], current => streamState.accept(revision, data, current));
+      if (!streamConnected.value) runtimeRefresh.request();
+    } else if (refresh) await query.refetch();
     return data;
   }
   async function start(input: StartAgentRunInput) {
     if (changing.value) return undefined;
-    // 确认框显示的目录与实际提交保持一致，避免等待确认期间表单变化改变执行范围。
     input = { ...input, attachmentIds: input.attachmentIds ? [...input.attachmentIds] : undefined };
-    try {
-      const mode = input.mode === 'agent' ? 'Agent 执行' : input.mode === 'plan' ? '只读方案分析' : '只读问答';
-      const boundary = input.mode !== 'agent' ? '不会修改工作区或外部系统。'
-        : input.accessMode === 'full' ? '已选择完全访问，可访问工作区外的本机文件和网络；提交、推送或写入外部系统需在任务中明确要求。'
-          : input.provider === 'kiro' ? '仅可读取和修改所选工作区文件，不执行命令。'
-            : input.provider === 'antigravity' ? '可读取和修改所选工作区文件，并在沙箱内运行命令；网络和工作区外访问仍受权限限制。'
-            : '可修改所选工作区并运行必要命令；提交、推送或写入外部系统需在任务中明确要求。';
-      const workspaceContext = input.branch ? `以分支 ${input.branch}` : input.workspacePath ? '在所选本地文件夹' : '在自动创建的独立会话目录';
-      const branchHint = input.isolateWorkspace && input.branch
-        ? '创建隔离工作区；不会切换或修改原目录。'
-        : input.branch ? '若与当前分支不同，确认后将先切换分支。' : '';
-      const confirmBody = [
-        `执行：${agentProviderLabels[input.provider]} · ${input.model || '默认模型'}`,
-        `${workspaceContext}，${mode}。`,
-        ...(branchHint ? [branchHint.trim()] : []),
-        '',
-        boundary.trim(),
-      ].join('\n');
-      await ElMessageBox.confirm(confirmBody,
-        input.continueConversationId ? '切换当前对话的执行器' : '启动 Agent', { type: 'warning', confirmButtonText: '确认启动', cancelButtonText: '取消', closeOnClickModal: false });
-    } catch { return undefined; }
     changing.value = 'start';
     try {
       const run = await post('/api/agent-runtimes/runs', { ...input,
@@ -186,9 +171,6 @@ export function useAgentRuntimes() {
   }
   async function stop(run: AgentRun) {
     if (changing.value) return;
-    try { await ElMessageBox.confirm('将停止该本机 CLI 进程；已生成的结果和会话 ID 会保留。', '停止 Agent',
-      { type: 'warning', confirmButtonText: '停止', cancelButtonText: '取消', closeOnClickModal: false }); }
-    catch { return; }
     changing.value = run.id;
     try { await post(`/api/agent-runtimes/runs/${run.id}/stop`, {}); ElMessage.success('正在停止 Agent'); }
     catch (error) { ElMessage.error(error instanceof Error ? error.message : String(error)); }
@@ -207,8 +189,6 @@ export function useAgentRuntimes() {
     if (changing.value || run.status !== 'queued' || !run.parentRunId) return false;
     changing.value = `delete:${run.id}`;
     try {
-      await ElMessageBox.confirm('将从当前会话删除这条排队消息，删除后不会执行；当前正在运行和后续排队的消息不受影响。', '删除排队消息',
-        { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消', closeOnClickModal: false });
       await post(`/api/agent-runtimes/runs/${run.id}/delete`, {});
       ElMessage.success('排队消息已删除');
       return true;
@@ -219,14 +199,10 @@ export function useAgentRuntimes() {
   }
   async function pauseForEdit(run: AgentRun) {
     if (changing.value) return undefined;
+    if (run.pausedForEdit) return run;
     changing.value = `edit:${run.id}`;
     try {
-      if (!run.pausedForEdit && ['running', 'queued'].includes(run.status)) {
-        try { await ElMessageBox.confirm('将暂停当前会话执行及排队消息，再编辑这条消息。已有结果、附件和文件改动会保留，不会回滚。', '暂停并编辑',
-          { type: 'warning', confirmButtonText: '暂停并编辑', cancelButtonText: '取消', closeOnClickModal: false }); }
-        catch { return undefined; }
-      }
-      return await post(`/api/agent-runtimes/runs/${run.id}/pause-edit`, {}) as AgentRun;
+      return await post(`/api/agent-runtimes/runs/${run.id}/pause-edit`, {}, false) as AgentRun;
     } catch (error) { ElMessage.error(error instanceof Error ? error.message : String(error)); return undefined; }
     finally { changing.value = ''; }
   }
@@ -235,7 +211,7 @@ export function useAgentRuntimes() {
     changing.value = `revise:${run.id}`;
     try {
       const next = await post(`/api/agent-runtimes/runs/${run.id}/revise`, { objective: objective.trim() }, false) as AgentRun;
-      ElMessage.success('已按编辑后的内容继续，原消息和结果保留');
+      ElMessage.success(next.status === 'queued' ? '编辑已保存，等待续接原会话' : '已按编辑后的内容继续');
       return next;
     } catch (error) { ElMessage.error(error instanceof Error ? error.message : String(error)); return undefined; }
     finally { changing.value = ''; }

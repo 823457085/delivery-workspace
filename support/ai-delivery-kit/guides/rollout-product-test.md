@@ -3,7 +3,7 @@
 > **版本**：AI Delivery Kit v1.0.0  
 > **读者**：产品、测试（研发可参考配合节奏）  
 > **用途**：评审会宣贯、迭代启动对齐、日常执行对照  
-> **详细流程图**：[lifecycle.md](./lifecycle.md) · **Confluence**：[Hub](https://confluence.example.com/spaces/TEAM/pages/1001/)
+> **详细流程图**：[lifecycle.md](./lifecycle.md) · **Confluence**：[Hub](https://confluence.hahabianli.com/spaces/SOP/pages/33746027/)
 
 ---
 

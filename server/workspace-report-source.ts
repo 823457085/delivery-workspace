@@ -77,7 +77,7 @@ export async function readWorkspaceReportSnapshot(readers: WorkspaceReportReader
       detail: [jiraTask ? `Jira 当前状态：${jiraTask.status}` : '', jiraTask?.detail, `来源：${record.source}`, record.requirementProgress ? `进展记录：${Object.entries(record.requirementProgress.stages).filter(([, stage]) => ['in_progress', 'blocked'].includes(stage.status)).map(([name, stage]) => `${requirementStageLabels[name as keyof typeof requirementStageLabels] || name}（${stage.status}）`).join('、') || '未提供进行中阶段'}` : '',
         record.groupProgress?.error ? '本轮存在未处理执行错误，请查看工作台记录' : '', !isActive && ['completed', 'ended'].includes(state) ? '执行记录已返回，交付与验收结果请在工作台核验' : ''].filter(Boolean).join('；'),
       updatedAt: jiraTask?.category === 'completed' ? jiraTask.updatedAt : record.updatedAt,
-      dueDate: jiraTask?.dueDate, nextAction: jiraTask?.nextAction, url: record.detailPath.startsWith('/catchup/') ? '/agent?view=integration-execution' : record.detailPath, jiraUrl: jiraTask?.url, project: record.project || jiraTask?.project };
+      dueDate: jiraTask?.dueDate, nextAction: jiraTask?.nextAction, url: record.detailPath.startsWith('/catchup/') ? '/agent?view=queue' : record.detailPath, jiraUrl: jiraTask?.url, project: record.project || jiraTask?.project };
     // 同一主任务的多条交付记录仅保留活动或最近记录。
     const existing = tasks.get(item.id);
     if (!existing || existing.source === 'jira' || (isActive && existing.category !== 'doing') || (existing.category !== 'doing' && item.updatedAt > existing.updatedAt)) tasks.set(item.id, item);
