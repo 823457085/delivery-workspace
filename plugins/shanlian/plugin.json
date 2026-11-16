@@ -1,0 +1,62 @@
+{
+  "apiVersion": 1,
+  "hostApi": 2,
+  "id": "shanlian",
+  "name": "闪连",
+  "version": "1.0.0",
+  "description": "独立闪连控制台：节点、连接、账号、代理接口与 Clash 订阅，通过配置的服务接口接入。",
+  "permissions": [
+    "storage.read",
+    "application.local"
+  ],
+  "page": {
+    "title": "闪连",
+    "kind": "application"
+  },
+  "application": {
+    "frontend": "ui.js",
+    "styles": "ui.css",
+    "backend": "server.mjs"
+  },
+  "records": {
+    "storage": "private",
+    "resourceType": "entry",
+    "fields": [
+      {
+        "key": "title",
+        "label": "标题",
+        "type": "text",
+        "required": true
+      }
+    ]
+  },
+  "commands": [],
+  "configuration": {
+    "fields": [
+      {
+        "key": "endpoint",
+        "label": "Shanlian 服务地址",
+        "type": "text",
+        "required": true,
+        "description": "填写实际服务的 HTTP(S) 地址，例如本机转发地址；不默认使用 18081，避免连接到其他服务。"
+      },
+      {
+        "key": "username",
+        "label": "控制台管理账号",
+        "type": "text",
+        "required": true,
+        "default": "admin"
+      },
+      {
+        "key": "password",
+        "label": "控制台管理密码",
+        "type": "password",
+        "required": true,
+        "resetOnChange": [
+          "endpoint",
+          "username"
+        ]
+      }
+    ]
+  }
+}

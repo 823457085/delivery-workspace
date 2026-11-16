@@ -2,7 +2,7 @@
 
 工作台支持从本机目录添加**声明式功能插件**。插件通过 `plugin.json` 声明数据字段、功能页面、操作和会话资源，宿主生成页面并提供受控的 Jira、存储和会话能力。添加新插件不需要修改工作台注册表、路由或会话选择器。
 
-本期交付面向待办、备忘等记录型功能，不执行插件 JavaScript、Shell、HTML 或远程代码，也不提供任意网络代理。插件声明是数据契约，不是可执行 SDK；有复杂交互、OAuth、自定义代码运行或自动调度需求时，需要另行扩展宿主协议。不要把本机制描述为可执行插件沙箱。
+hostApi 1 面向待办、备忘和课程阅读等声明式记录功能，不执行插件代码。hostApi 2 另提供需明确信任本机代码的独立应用插件，包含通用页面、进程、专属目录与会话草稿能力，详见[自定义应用插件对接规范](custom-plugin-application-api.md)。两种模式都不是操作系统安全沙箱。
 
 ## 使用已有示例
 
@@ -26,12 +26,13 @@
 
 图标只接受宿主内置标识，不加载第三方图片或脚本。顺序和图标是宿主偏好，不增加插件权限，也不修改 plugin.json。
 
-## 两类插件的区别
+## 插件接入形式
 
 | 类型 | 配置入口 | 生效时间 | 扩展方式 |
 | --- | --- | --- | --- |
 | Jira / Confluence / 企微连接插件 | 接入插件 | 启停即时；连接变更需重启 | 源码内适配远端连接与功能扩展，见[装配规范](integration-plugin-ui.md) |
-| 待办 / 备忘等功能插件 | 自定义功能插件 | 添加、启停、授权变更即时生效 | 添加本地声明式插件包 |
+| 待办 / 备忘等记录插件（hostApi 1） | 自定义功能插件 | 添加、启停、授权变更即时生效 | 添加本地声明式插件包，不执行第三方代码 |
+| Go 实训 / Alert Hub / Sign Hub / Shanlian 等应用插件（hostApi 2） | 自定义功能插件 | 添加、配置、启停和授权变更即时生效 | 添加独立 UI 与后端包，手动确认信任本机代码 |
 
 功能插件的停用或权限撤回阻止后续调用及排队操作继续进入受控接口。已经发出的远端请求无法撤销，必要的结果核对或本地记录保存仍可能发生。停用待办插件不删除个人待办，也不禁用宿主原来的个人待办页面。
 
@@ -67,16 +68,17 @@
 
 | 字段 | 约束 |
 | --- | --- |
-| `apiVersion` / `hostApi` | 当前均为数字 `1`，不兼容版本拒绝添加 |
+| `apiVersion` / `hostApi` | `apiVersion` 为 `1`；记录插件 `hostApi: 1`，应用插件 `hostApi: 2`，不兼容版本拒绝添加 |
 | `id` | 2–64 位，以小写字母开头，其余为小写字母、数字或连字符；必须唯一 |
 | `version` | `主版本.次版本.修订版本`，仅接受三段数字 |
-| `page` | 当前提供一个 `records` 页面，内容由宿主渲染，不接受 HTML |
+| `page` | `records` 由宿主渲染；`application` 通过应用桥加载插件自己的页面，详见应用规范 |
+| `configuration` | 可选通用配置表单，支持普通文本和密码；密码不得声明默认值，不回显已保存密码 |
 | `records.storage` | `private` 使用按插件 ID 隔离的存储；`workspace.todos` 调用宿主个人待办服务 |
 | `records.resourceType` | 稳定资源类型，用于持久化引用，不随意更名 |
 | `records.fields` | 1–15 个字段，必须有必填的文本 `title`；字段键和显示名称分别唯一，不能占用 `id/createdAt/updatedAt` 等宿主字段 |
 | `commands` | 最多 10 个，ID 唯一；action 必须是当前支持的宿主操作 |
 
-字段类型支持 `text`、`textarea`、`date`、`select`。文本长度由 `maxLength` 限制，最多 8000；选择类型必须声明 `options: [{value,label}]`，可提供 `default`。日期为空或有效的 `YYYY-MM-DD`。不接受未知配置字段，不能把凭据放入记录字段。
+字段类型支持 `text`、`textarea`、`date`、`select`、`number`、`url`、`checkbox`、`tags`。数字、复选框和标签仍以字符串保存；数字需为有限十进制数，URL 仅接受无账号密码的 HTTP(S)，复选框为 `true`/`false`，标签以逗号或换行分隔并去重。文本长度由 `maxLength` 限制，最多 8000；选择类型必须声明 `options: [{value,label}]`，可提供 `default`。日期为空或有效的 `YYYY-MM-DD`。不接受未知配置字段，不能把凭据放入记录字段。
 
 复用 `workspace.todos` 时必须声明 `title/details/dueDate/priority/status` 五个字段，并使用示例中的状态和优先级取值；真实读写仍经过个人待办原有校验。新增插件需要特殊字段时，优先使用私有存储。
 
@@ -128,7 +130,7 @@ plugin:<plugin-id>/<resource-type>/<record-id>
 4. 请求前持久化 `sending` 状态，再执行一次 Jira POST。成功后读取任务核对标题、项目和类型，保存 Key、链接和本地关联。
 5. 断连、超时、回读失败或服务中断产生 `unknown`，禁止自动重发；界面要求在 Jira 核对。相同票据已成功时返回已有结果，不重复提交；同一源事项存在成功或待核对创建记录时阻止重新创建。
 
-Jira 支持 `labels` 字段时预览加入稳定核对标记，否则按预览标题及字段人工核对。已确认远端创建但回读未成功仍属于待核对结果。当前没有自动解除待核对状态的接口；可核对远端后手动关联已有任务，不应删除操作台账来强制重试。
+Jira 支持 `labels` 字段时预览加入稳定核对标记，否则按预览标题及字段人工核对。已确认远端创建但回读未成功仍属于待核对结果。管理页提供人工核对入口：按标记查询、输入已创建任务编号核对关联，或明确确认未创建后解除重试锁。未查询到任务不会自动认定未创建；核对接口不重发创建请求，不应删除操作台账来强制重试。
 
 自定义 Jira 字段根据元数据生成表单，复杂类型可填写 JSON 值；最终仍由服务端和 Jira 验证。供应商实例的字段、工作流及创建权限需要真实环境单独验证。
 
@@ -138,10 +140,14 @@ Jira 支持 `labels` 字段时预览加入稳定核对标记，否则按预览�
 
 | 方法与相对路径 | 用途 |
 | --- | --- |
-| `GET /` | 已安装插件、状态、授权、错误、本机示例路径和 `navigation: {order, icons}` |
+| `GET /` | 已安装插件、已移除插件摘要、状态、授权、错误、本机示例路径和 `navigation: {order, icons}` |
 | `POST /navigation/settings` | `{order: string[], icons: Record<string, MenuIconName>}`，整体保存菜单顺序及图标；同源与确认头限制同其他写接口 |
 | `POST /inspect` | `{directory}`，只检查本机声明，返回 manifest/source/digest |
-| `POST /install` | `{directory,digest,grants,confirmed:true,showInMenu?:boolean}`，重新校验摘要后添加 |
+| `POST /install` | `{directory,digest,grants,confirmed:true,showInMenu?:boolean}`；应用信任与兼容更新参数见应用规范 |
+| `POST /upgrade-preview` | `{id,directory?}`，检查记录插件声明差异、迁移和历史数据兼容性 |
+| `POST /upgrade` | `{id,directory?,digest,grants,confirmed:true,dropRemovedFields?:boolean,showInMenu?:boolean}`，确认后迁移记录插件；应用插件不使用此接口 |
+| `GET /:id/configuration` | 读取普通配置、密码是否已配置及并发版本，不回显密码 |
+| `POST /:id/configure` | `{values,revision,clearSecrets?:string[]}`；保存后停止旧应用进程，下次调用读取新配置 |
 | `POST /:id/change` | `{enabled}`、`{showInMenu}`、`{grants}` 或 `{remove:true}`；不删除数据 |
 | `GET /:id/records` | 读取记录及各记录版本 |
 | `POST /:id/save` | `{id?,expectedVersion?,values}`；编辑需要当前版本 |
@@ -156,6 +162,7 @@ Jira 支持 `labels` 字段时预览加入稳定核对标记，否则按预览�
 | `POST /:id/jira-link` | `{recordId,version,key,confirmed:true}` |
 | `POST /:id/jira-prepare` | `{recordId,version,project,type,fields}`，返回预览票据 |
 | `POST /:id/jira-commit` | `{ticketId,confirmed:true}`，提交已核对票据 |
+| `POST /:id/jira-reconcile` | `{ticketId,outcome:"auto"或"linked"或"not_created",issueKey?,confirmed:true}`，核对未知结果，不自动重新创建 |
 
 不支持的方法返回 405，同源或确认头错误返回 403，非 JSON 写入返回 415；参数、状态和能力错误返回 400 与 `message`。真实创建返回 `done/failed/unknown`，不能只凭 HTTP 200 显示创建成功。
 
@@ -167,9 +174,9 @@ Jira 支持 `labels` 字段时预览加入稳定核对标记，否则按预览�
 
 `showInMenu` 是宿主安装记录的本机布尔偏好，不属于 plugin.json；旧记录和新安装默认关闭。菜单沿用 `/agent?view=plugins&plugin=<id>`，原有事项深链接保持可用。管理页保存后即时更新菜单，其他页面最多在下一次状态刷新（10 秒）时同步。
 
-添加时只接受与预览摘要一致的声明，重复 ID 拒绝。移除保留声明墓碑与数据，再添加相同声明可恢复数据；声明变化则要求先提供迁移，不自动升级、覆盖或重新解释历史数据。当前没有数据清空或自动版本迁移接口。
+添加时只接受与预览摘要一致的包，重复 ID 不会静默覆盖。移除保留声明墓碑与数据，再添加相同包可恢复数据。记录插件可先检查升级预览；新增字段按默认值补齐，现有数据不兼容时拒绝升级，移除仍有数据的字段必须单独确认。应用插件通过显式兼容更新替换固定摘要包，保留原授权、启停、菜单、配置及业务数据；改变数据或权限契约仍需单独设计迁移。应用移除后，若来源包已变化，应先恢复原包，再执行兼容更新。没有数据清空或后台自动升级接口。
 
-运行时只装配声明和宿主调用，不启动第三方进程或计时器；服务关闭时等待本机保存队列及 Jira 操作队列结束。单个声明或私有记录损坏会显示错误，不覆盖原件；安装注册表整体损坏时启动失败并要求检查，不能伪装为空列表。
+记录插件运行时只装配声明和宿主调用，不启动第三方进程或计时器；应用插件只有在启用且授权后才按需启动独立后端，停用、移除或撤销本机执行授权会关闭对应进程与 MCP 连接；服务关闭时等待本机保存队列及 Jira 操作队列结束。单个声明或私有记录损坏会显示错误，不覆盖原件；安装注册表整体损坏时启动失败并要求检查，不能伪装为空列表。
 
 ## 开发和验证
 
@@ -192,3 +199,18 @@ pnpm build
 ```
 
 测试覆盖添加与权限、数据复用和隔离、声明冲突、损坏文件、停用、引用快照、宿主会话持久化、Jira 元数据及重复和不确定提交。测试中的 Jira 使用模拟服务，AI 使用本地模拟执行器；不能据此声称真实 Jira 写权限或真实模型执行已验收。
+
+## 独立应用插件
+
+Go 实训工坊使用 `hostApi: 2`、`page.kind: application`，从 `plugins/go-learning/package` 检查添加，不注册为远端服务接入。应用包可独立分发；能力、信任边界及开发契约见[应用插件规范](custom-plugin-application-api.md)。
+
+
+## 应用插件安装与更新
+
+内附示例从 `plugins/` 下的有效声明自动发现，应用优先使用已构建的 `package/`。新增插件无需修改宿主示例列表。检查不会安装、执行代码或自动连接外部服务。
+
+首次添加默认不显示主菜单，`application.local` 默认不勾选。应用安装预览明确说明本机代码的权限边界；用户核对后自行选择信任。更新时展示已有授权和菜单偏好，不允许在更新预览里修改，并要求重新确认信任新包。更改授权或菜单请使用插件卡片的独立入口。
+
+- Go 实训包：`plugins/go-learning/package`，包含独立页面、课程、代码模板、真实 Go 执行与进度保存。
+- Alert Hub 包：`plugins/alert-hub/package`，包含独立告警页面；在插件卡片的“配置”填写服务地址、本机 MCP 绝对路径、账号和密码。账号密码由插件后端传给 MCP 完成真实认证，不嵌套远端网页，不复制宿主凭据。
+- 更换工作台目录或启动新分支不会自动复制原 `.data`、凭据或安装清单。旧目录的数据继续保留；新实例按上述流程安装和配置。

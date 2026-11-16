@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { pluginInstallDefaults } from './install-preview';
+import PluginConfiguration from './PluginConfiguration.vue';
 import WorkspaceMenuSettings from './WorkspaceMenuSettings.vue';
 import { computed, onMounted, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
@@ -19,7 +21,8 @@ const data = ref<{
   examples: { name: string; directory: string }[];
 }>({ plugins: [], removedPlugins: [], errors: [], examples: [] });
 
-const showInMenu = ref(true);
+const showInMenu = ref(false);
+const updateTrusted = ref(false);
 const grantTarget = ref<CustomPluginInfo>();
 const selectedGrants = ref<PluginCapability[]>([]);
 const inspected = ref<{ manifest: CustomPluginManifest; source: string; digest: string }>();
@@ -35,23 +38,14 @@ const labels: Record<PluginCapability, string> = {
   'jira.read': '读取 Jira 项目和任务',
   'jira.create': '经确认创建 Jira 任务',
   'conversation.context': '提供会话上下文',
+  'application.local': '信任本机应用代码（以当前用户权限执行）',
+  'conversation.compose': '写入会话草稿',
+  'workspace.open': '打开插件工作区',
 };
 
-const allExamples = computed(() => {
-  const base = data.value.examples || [];
-  const sample = base.find(item => item.directory.endsWith('/plugins/todos'));
-  if (!sample) return base;
-  const pluginsRoot = sample.directory.slice(0, -'/todos'.length);
-  const bundled = [
-    { name: '待办事项', directory: `${pluginsRoot}/todos` },
-    { name: '轻量需求台账', directory: `${pluginsRoot}/requirement-ledger` },
-    { name: '发版检查清单', directory: `${pluginsRoot}/release-checklist` },
-    { name: '缺陷复盘台账', directory: `${pluginsRoot}/bug-retrospective` },
-    { name: '项目备忘示例', directory: `${pluginsRoot}/example-notes` },
-  ];
-  const seen = new Set(base.map(item => item.directory));
-  return [...base, ...bundled.filter(item => !seen.has(item.directory))];
-});
+const allExamples = computed(() => data.value.examples || []);
+const replacement = computed(() => inspected.value?.manifest.application
+  ? data.value.plugins.find(plugin => plugin.manifest.id === inspected.value?.manifest.id) : undefined);
 
 async function load() {
   data.value = await pluginRequest();
@@ -74,12 +68,24 @@ async function inspect() {
   inspected.value = undefined;
   upgradePreview.value = undefined;
   dropRemovedFields.value = false;
-  showInMenu.value = true;
+  showInMenu.value = false;
+  updateTrusted.value = false;
   await run(async () => {
     const dir = directory.value.trim();
     const candidate = await pluginRequest<{ manifest: CustomPluginManifest; source: string; digest: string }>('inspect', { directory: dir });
     const existingActive = data.value.plugins.find(item => item.manifest.id === candidate.manifest.id);
     const existingRemoved = data.value.removedPlugins?.find(item => item.id === candidate.manifest.id);
+    if (candidate.manifest.application) {
+      if (existingActive?.digest === candidate.digest) {
+        ElMessage.info(`「${candidate.manifest.name}」已是当前安装包版本`);
+        return;
+      }
+      const defaults = pluginInstallDefaults(candidate.manifest, existingActive);
+      inspected.value = candidate;
+      grants.value = defaults.grants;
+      showInMenu.value = defaults.showInMenu;
+      return;
+    }
     if (existingActive || (existingRemoved && existingRemoved.digest !== candidate.digest)) {
       const preview = await pluginRequest<CustomPluginUpgradePreview>('upgrade-preview', {
         id: candidate.manifest.id,
@@ -93,14 +99,15 @@ async function inspect() {
       return;
     }
     if (existingRemoved) {
-      showInMenu.value = true;
+      showInMenu.value = false;
     }
     inspected.value = candidate;
-    grants.value = [...candidate.manifest.permissions];
+    grants.value = pluginInstallDefaults(candidate.manifest).grants;
   });
 }
 
 async function checkPluginUpgrade(plugin: CustomPluginInfo) {
+  if (plugin.manifest.application) { directory.value = plugin.source; await inspect(); return; }
   inspected.value = undefined;
   upgradePreview.value = undefined;
   dropRemovedFields.value = false;
@@ -126,18 +133,21 @@ async function restoreRemoved(item: { id: string; source: string }) {
 }
 
 async function install() {
-  if (!inspected.value) return;
+  if (!inspected.value || (replacement.value && !updateTrusted.value)) return;
+  const updating = !!replacement.value;
   await run(async () => {
     await pluginRequest('install', {
       directory: inspected.value!.source,
       digest: inspected.value!.digest,
+      ...(data.value.plugins.find(p => p.manifest.id === inspected.value!.manifest.id) ? { replaceDigest: data.value.plugins.find(p => p.manifest.id === inspected.value!.manifest.id)!.digest } : {}),
       grants: grants.value,
       confirmed: true,
+      ...((updating ? updateTrusted.value : grants.value.includes('application.local')) ? { trustedLocalCode: true } : {}),
       showInMenu: showInMenu.value,
     });
     inspected.value = undefined;
     await load();
-    ElMessage.success('插件已添加并生效');
+    ElMessage.success(updating ? '插件已更新，保留原授权、配置、启停和菜单设置' : '插件已添加并生效');
   });
 }
 
@@ -150,6 +160,7 @@ async function confirmUpgrade() {
       digest: upgradePreview.value!.digest,
       grants: grants.value,
       confirmed: true,
+      ...(grants.value.includes('application.local') ? { trustedLocalCode: true } : {}),
       dropRemovedFields: dropRemovedFields.value,
       showInMenu: showInMenu.value,
     });
@@ -186,7 +197,7 @@ async function changeMenu(plugin: CustomPluginInfo, value: boolean) {
 async function saveGrants() {
   if (!grantTarget.value) return;
   await run(async () => {
-    await pluginRequest(`${grantTarget.value!.manifest.id}/change`, { grants: selectedGrants.value });
+    await pluginRequest(`${grantTarget.value!.manifest.id}/change`, { grants: selectedGrants.value, ...(selectedGrants.value.includes('application.local') ? { trustedLocalCode: true } : {}) });
     grantTarget.value = undefined;
     await load();
   });
@@ -227,17 +238,20 @@ onMounted(() => run(load));
         <h3>{{ inspected.manifest.name }} · v{{ inspected.manifest.version }}</h3>
         <p>{{ inspected.manifest.description }}</p>
         <p class="preview-meta">来源：{{ inspected.source }} · 字段数：{{ inspected.manifest.records.fields.length }}</p>
+        <el-alert v-if="inspected.manifest.application" title="应用插件包含可执行代码，可访问当前用户的文件与网络。独立进程不是系统安全沙箱，请仅信任已核对来源的插件。" type="warning" :closable="false" />
+        <p v-if="replacement">本次仅更新安装包，保留原授权、配置、数据、启停和菜单偏好。需要改变权限或菜单时，请在插件卡片单独设置。</p>
         <p>选择允许使用的宿主能力。未授权的能力会被拒绝；Jira 写入仍需每次预览确认。</p>
-        <el-checkbox-group v-model="grants">
+        <el-checkbox-group v-model="grants" :disabled="!!replacement">
           <el-checkbox v-for="permission in inspected.manifest.permissions" :key="permission" :value="permission">
             {{ labels[permission] }}
           </el-checkbox>
         </el-checkbox-group>
         <div class="menu-setting">
-          <el-checkbox v-model="showInMenu" :disabled="busy">在主菜单显示</el-checkbox>
+          <el-checkbox v-model="showInMenu" :disabled="busy || !!replacement">在主菜单显示</el-checkbox>
         </div>
+        <el-checkbox v-if="replacement" v-model="updateTrusted" :disabled="busy">已核对新安装包，确认信任此次更新的本机代码</el-checkbox>
         <div class="preview-actions">
-          <el-button type="primary" :disabled="busy" @click="install">确认授权并添加</el-button>
+          <el-button type="primary" :disabled="busy || (!!replacement && !updateTrusted)" @click="install">{{ replacement ? '确认更新（保留原设置）' : '确认授权并添加' }}</el-button>
           <el-button @click="inspected = undefined">取消</el-button>
         </div>
       </div>
@@ -315,6 +329,7 @@ onMounted(() => run(load));
           <p v-if="plugin.error" class="plugin-error-banner">{{ plugin.error }}</p>
         </div>
         <div class="plugin-controls">
+          <PluginConfiguration v-if="plugin.manifest.configuration" :plugin="plugin" />
           <el-switch
             :model-value="plugin.showInMenu"
             :disabled="busy"

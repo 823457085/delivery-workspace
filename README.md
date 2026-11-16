@@ -85,3 +85,7 @@ Jira、Confluence 和企微可在设置中的接入插件卡片配置。自定�
 自动派发和外部写动作首次默认暂停，按自己的项目配置后在设置页启用。已运行任务的会话锁、领取令牌、回调确认和人工审核继续生效。页面启动、测试通过和真实 Jira/模型/Git 交付是不同的验证层级。
 
 主要开发验证在 macOS；原生目录选择器、Terminal.app 和桌面会话协作属于 macOS 接入，其他系统可手动输入工作区路径。Linux 使用端口检测和启动服务时需要安装 `lsof` 和 `zsh`。完整功能还取决于接收方 CLI/MCP 版本及外部账号权限。
+
+## 自定义应用插件
+
+本分支在记录插件之外支持 `hostApi: 2` 独立应用包，包含通用配置、stdio MCP、会话草稿与插件工作区能力。Go 实训、Alert Hub、[Sign Hub](plugins/sign-hub/README.md) 和 [Shanlian](plugins/shanlian/README.md) 均通过自定义插件管理安装；主菜单图标和顺序沿用工作台菜单设置。首次检查不默认信任本机代码，更新保留原授权、配置和数据。安装与开发参见 [自定义插件指南](docs/custom-plugin-guide.md)、[应用接口规范](docs/custom-plugin-application-api.md) 和 [插件 Agent 规范](plugins/AGENTS.md)。

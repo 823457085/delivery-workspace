@@ -1,0 +1,36 @@
+{
+  "apiVersion": 1,
+  "hostApi": 2,
+  "id": "go-learning",
+  "name": "Go 实训工坊",
+  "version": "2.0.0",
+  "description": "独立的七天 Go 实训：课程、代码编辑、快照、真实运行测试与 HTTP 调试。",
+  "permissions": [
+    "storage.read",
+    "application.local",
+    "conversation.compose",
+    "workspace.open"
+  ],
+  "page": {
+    "title": "Go 实训工坊",
+    "kind": "application"
+  },
+  "application": {
+    "frontend": "ui.js",
+    "styles": "ui.css",
+    "backend": "server.mjs"
+  },
+  "records": {
+    "storage": "private",
+    "resourceType": "note",
+    "fields": [
+      {
+        "key": "title",
+        "label": "标题",
+        "type": "text",
+        "required": true
+      }
+    ]
+  },
+  "commands": []
+}

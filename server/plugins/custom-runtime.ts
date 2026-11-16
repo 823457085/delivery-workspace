@@ -1,3 +1,4 @@
+import { readApplicationPackage, applicationHashes } from './application-package.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
@@ -50,14 +51,13 @@ export async function inspectCustomPlugin(directory: string) {
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 64_000) throw new Error('plugin.json 必须是小于 64 KB 的普通文件');
   let manifest: CustomPluginManifest;
   try { manifest = pluginManifestSchema.parse(JSON.parse(await fs.readFile(file, 'utf8'))); }
-  catch { throw new Error('插件声明无效：请核对 API 版本、字段、权限和操作；不支持可执行脚本入口'); }
-  return { manifest, source: root, digest: fingerprint(manifest) };
+  catch { throw new Error('插件声明无效：请核对 API 版本、字段、权限和操作；应用入口仅支持 hostApi 2'); }
+  const assets = await readApplicationPackage(root, manifest);
+  return { manifest, source: root, digest: manifest.application ? fingerprint({ manifest, assets: applicationHashes(assets) }) : fingerprint(manifest) };
 }
-
 const recordSchema = z.object({ id: z.uuid(), values: z.record(z.string(), z.string()), createdAt: z.iso.datetime(), updatedAt: z.iso.datetime() }).strict();
 const installedSchema = z.object({ manifest: pluginManifestSchema, source: z.string(), digest: z.string(), enabled: z.boolean(), showInMenu: z.boolean().default(false), grants: z.array(capabilitySchema), removed: z.boolean().optional() }).strict();
 type Installed = z.infer<typeof installedSchema>;
-
 export async function createCustomPluginRuntime(directory: string, todos: Awaited<ReturnType<typeof createWorkspaceTodos>>) {
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
   const root = await fs.realpath(directory), stateFile = path.join(root, 'installed.json');
@@ -84,6 +84,7 @@ export async function createCustomPluginRuntime(directory: string, todos: Awaite
   function info(id: string, active = true) {
     const entry = installed.get(pluginIdSchema.parse(id));
     if (!entry || entry.removed) throw new Error('插件已移除或尚未添加；历史引用内容仍保存在会话快照');
+    if (active && entry.manifest.capabilities?.some(c => c.required && !entry.grants.includes(c.id))) throw new Error('插件必需能力已撤回');
     if (active && (!entry.enabled || errors.has(id))) throw new Error(errors.get(id) || '插件已停用');
     return entry;
   }
@@ -141,6 +142,7 @@ export async function createCustomPluginRuntime(directory: string, todos: Awaite
     const current = installed.get(parsedId);
     if (!current) throw new Error('未找到该插件的安装记录，请先添加插件');
     const candidate = await inspectCustomPlugin(directory?.trim() || current.source);
+    if (candidate.manifest.application || current.manifest.application) throw new Error('应用插件请通过重新检查安装包更新，并确认信任本机代码');
     if (candidate.manifest.id !== parsedId) throw new Error(`升级目录的插件 ID（${candidate.manifest.id}）与目标插件（${parsedId}）不一致`);
     if (candidate.manifest.records.storage !== current.manifest.records.storage) throw new Error('不允许跨存储模式迁移，请保持原有 storage 类型');
     const oldFields = new Map(current.manifest.records.fields.map(field => [field.key, field]));
@@ -231,8 +233,48 @@ export async function createCustomPluginRuntime(directory: string, todos: Awaite
     if (info(id).manifest.records.resourceType !== type) throw new Error('插件资源类型已变化，请重新选择');
     return resource(id, recordId, true);
   }
+  const configurationSalt = randomUUID();
+  const configurationRevision = (values: unknown) => fingerprint({ salt: configurationSalt, values });
+  const configurationFile = (id: string) => path.join(root, 'configuration', pluginIdSchema.parse(id) + '.json');
+  async function configurationValues(id: string) {
+    const entry = info(id, false);
+    const saved = z.record(z.string(), z.string()).parse(await readJson(configurationFile(id), {}));
+    return Object.fromEntries((entry.manifest.configuration?.fields || []).map(f => [f.key, saved[f.key] ?? f.default ?? '']));
+  }
+  async function configuration(id: string) {
+    const entry = info(id, false), values = await configurationValues(id);
+    const fields = entry.manifest.configuration?.fields || [];
+    return { values: Object.fromEntries(fields.filter(f => f.type !== 'password').map(f => [f.key, values[f.key]])),
+      secrets: Object.fromEntries(fields.filter(f => f.type === 'password').map(f => [f.key, !!values[f.key]])),
+      revision: configurationRevision(values) };
+  }
   return {
+    configuration,
+    async applicationConfiguration(id: string) { assertCapability(id, 'application.local'); return configurationValues(id); },
+    configure(id: string, raw: unknown) { return serial(async () => {
+      const entry = info(id, false), fields = entry.manifest.configuration?.fields || [];
+      const input = z.object({ revision: z.string(), values: z.record(z.string(), z.string()), clearSecrets: z.array(z.string()).default([]) }).strict().parse(raw);
+      const previous = await configurationValues(id);
+      if (configurationRevision(previous) !== input.revision) throw new Error('配置已变化，请重新打开配置后保存');
+      if (Object.keys(input.values).some(key => !fields.some(f => f.key === key)) || input.clearSecrets.some(key => !fields.some(f => f.key === key && f.type === 'password'))) throw new Error('包含未声明的配置字段');
+      const next = { ...previous };
+      for (const f of fields) {
+        const value = input.values[f.key];
+        if (value !== undefined && (value.length > 4000 || /[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(value))) throw new Error(`${f.label}格式或长度无效`);
+        if (f.type === 'password' && f.resetOnChange?.some(key => input.values[key] !== undefined && input.values[key] !== previous[key])) next[f.key] = '';
+        if (value !== undefined && (f.type !== 'password' || value !== '')) next[f.key] = value;
+        if (input.clearSecrets.includes(f.key)) next[f.key] = '';
+        if (f.required && !next[f.key]?.trim()) throw new Error(`请填写${f.label}`);
+      }
+      await privateJson(configurationFile(id), next);
+      return configuration(id);
+    }); },
     assertCapability, assertCommand, resource, resolveReference, records,
+    applicationEntry(id: string) {
+      const entry = assertCapability(id, 'application.local');
+      if (!entry.manifest.application) throw new Error('该插件没有应用入口');
+      return { ...entry, packageDirectory: path.join(root, 'packages', id, entry.digest), dataDirectory: path.join(root, 'data', id, 'application') };
+    },
     list(): { navigation: NavigationPreferences; plugins: CustomPluginInfo[]; removedPlugins: { id: string; name: string; version: string; source: string; digest: string }[]; errors: { id: string; message: string }[] } {
       return {
         navigation: structuredClone(navigation),
@@ -258,14 +300,34 @@ export async function createCustomPluginRuntime(directory: string, todos: Awaite
       return serial(async () => (await prepareUpgrade(id, directory)).preview);
     },
     install(raw: unknown) { return serial(async () => {
-      const input = z.object({ directory: z.string(), digest: z.string(), grants: z.array(capabilitySchema), confirmed: z.literal(true), showInMenu: z.boolean().optional() }).strict().parse(raw);
+      const input = z.object({ directory: z.string(), digest: z.string(), grants: z.array(capabilitySchema), confirmed: z.literal(true), showInMenu: z.boolean().optional(), trustedLocalCode: z.literal(true).optional(), replaceDigest: z.string().optional() }).strict().parse(raw);
       const entry = await inspectCustomPlugin(input.directory);
+      if ((input.grants.includes('application.local') || input.replaceDigest && entry.manifest.application) && !input.trustedLocalCode) throw new Error('需要明确确认信任本机插件代码；它以当前用户权限运行，不是操作系统沙箱');
       if (input.digest !== entry.digest) throw new Error('插件内容已变化，请重新检查并授权');
+      const assets = await readApplicationPackage(entry.source, entry.manifest);
+      if (entry.manifest.application && fingerprint({ manifest: entry.manifest, assets: applicationHashes(assets) }) !== entry.digest) throw new Error('插件内容已变化，请重新检查');
       const previous = installed.get(entry.manifest.id);
-      if (previous && !previous.removed) throw new Error('插件 ID 已存在，请勿重复添加');
-      if (previous && previous.digest !== entry.digest) throw new Error('存在该插件的历史数据，声明已变化；需要先提供数据迁移，不会覆盖');
+      if (input.replaceDigest && (!previous || previous.removed || previous.digest !== input.replaceDigest)) throw new Error('已安装版本变化，请重新检查后更新');
+      if (input.replaceDigest && previous) {
+        for (const key of ['hostApi', 'records', 'commands', 'page'] as const) if (fingerprint(previous.manifest[key]) !== fingerprint(entry.manifest[key])) throw new Error('更新改变了权限或数据契约，需要显式迁移');
+        for (const field of previous.manifest.configuration?.fields || []) if (!entry.manifest.configuration?.fields.some(f => f.key === field.key && f.type === field.type)) throw new Error('更新不能移除或改变配置字段类型');
+      }
+      if (previous && !previous.removed && !input.replaceDigest) throw new Error('插件 ID 已存在，请勿重复添加');
+      if (previous && previous.digest !== entry.digest && !input.replaceDigest) throw new Error('存在该插件的历史数据，声明已变化；需要先提供数据迁移，不会覆盖');
+      if (entry.manifest.capabilities?.some(c => c.required && !input.grants.includes(c.id))) throw new Error('必须同意全部必需能力，否则不安装');
       if (input.grants.some(grant => !entry.manifest.permissions.includes(grant))) throw new Error('不能授予插件未声明的能力');
       const installedEntry: Installed = { ...entry, enabled: true, showInMenu: input.showInMenu ?? previous?.showInMenu ?? false, grants: [...new Set(input.grants)] };
+      if (input.replaceDigest && previous) Object.assign(installedEntry, { enabled: previous.enabled, showInMenu: previous.showInMenu, grants: input.grants });
+      if (entry.manifest.compatibility) {
+        const saved = await readJson(configurationFile(entry.manifest.id), {});
+        if (entry.manifest.configuration?.fields.some(f => f.required && !(saved[f.key] || f.default || '').trim())) installedEntry.enabled = false;
+      }
+      if (!input.replaceDigest && entry.manifest.compatibility && entry.manifest.configuration?.fields.some(f => f.required && !f.default?.trim())) installedEntry.enabled = false;
+      if (entry.manifest.application) {
+        const target = path.join(root, 'packages', entry.manifest.id, entry.digest);
+        await fs.mkdir(target, { recursive: true, mode: 0o700 });
+        for (const [name, data] of Object.entries(assets)) await fs.writeFile(path.join(target, name), data, { mode: 0o600 });
+      }
       installed.set(entry.manifest.id, installedEntry);
       try { await saveState(); } catch (error) { if (previous) installed.set(entry.manifest.id, previous); else installed.delete(entry.manifest.id); throw error; }
       return this.list();
@@ -309,11 +371,18 @@ export async function createCustomPluginRuntime(directory: string, todos: Awaite
       return this.list();
     }); },
     change(id: string, raw: unknown) { return serial(async () => {
-      const input = z.object({ enabled: z.boolean().optional(), showInMenu: z.boolean().optional(), remove: z.boolean().optional(), grants: z.array(capabilitySchema).optional() }).strict().parse(raw);
+      const input = z.object({ enabled: z.boolean().optional(), showInMenu: z.boolean().optional(), remove: z.boolean().optional(), grants: z.array(capabilitySchema).optional(), trustedLocalCode: z.literal(true).optional() }).strict().parse(raw);
       const current = info(id, false), next = { ...current };
+      if (input.grants?.includes('application.local') && !current.grants.includes('application.local') && !input.trustedLocalCode) throw new Error('需要明确确认信任本机插件代码');
       if (input.grants?.some(grant => !current.manifest.permissions.includes(grant))) throw new Error('不能扩大到未声明的能力');
       if (input.grants) next.grants = [...new Set(input.grants)];
+      if (input.enabled === true && current.manifest.compatibility) {
+        const config = await configurationValues(id);
+        if (current.manifest.configuration?.fields.some(f => f.required && !config[f.key]?.trim())) throw new Error('插件待配置，请先保存必填配置');
+        if (current.manifest.capabilities?.some(c => c.required && !next.grants.includes(c.id))) throw new Error('请先授权必需能力');
+      }
       if (input.enabled !== undefined) next.enabled = input.enabled;
+      if (current.manifest.capabilities?.some(c => c.required && !next.grants.includes(c.id))) next.enabled = false;
       if (input.showInMenu !== undefined) next.showInMenu = input.showInMenu;
       if (input.remove) { next.removed = true; next.enabled = false; }
       installed.set(id, next);
