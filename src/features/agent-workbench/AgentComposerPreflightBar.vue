@@ -14,7 +14,7 @@ import {
   scanPromptPreflight,
 } from '../../../shared/agent-composer-preflight';
 import { formatCompactTokens } from '../../../shared/agent-session-telemetry';
-import type { AgentConversation } from './conversation';
+import { codexConversationContext, type AgentConversation } from './conversation';
 
 const props = defineProps<{
   conversation: AgentConversation;
@@ -23,14 +23,9 @@ const props = defineProps<{
 }>();
 
 const draft = defineModel<string>('draft', { default: '' });
-const historicalContext = shallowRef<AgentContextUsage>();
-const historicalRunId = computed(() => {
-  const run = props.conversation.latest;
-  return run.provider === 'codex' && !run.usage?.context && run.sessionId && run.codexTurnId
-    && !['queued', 'running'].includes(run.status) ? run.id : '';
-});
-watch(historicalRunId, async (id, _previous, onCleanup) => {
-  historicalContext.value = undefined;
+const historicalContext = shallowRef<{ runId: string; context: AgentContextUsage }>();
+const reportedContext = computed(() => codexConversationContext(props.conversation, historicalContext.value));
+watch(() => reportedContext.value.lookupRunId, async (id, _previous, onCleanup) => {
   if (!id) return;
   const controller = new AbortController();
   onCleanup(() => controller.abort());
@@ -38,7 +33,8 @@ watch(historicalRunId, async (id, _previous, onCleanup) => {
     const response = await fetch(`/api/agent-runtimes/runs/${encodeURIComponent(id)}/context-usage`, { signal: controller.signal });
     if (!response.ok) return;
     const { context } = await response.json();
-    if (!controller.signal.aborted) historicalContext.value = readAgentContextUsage(context?.usedTokens, context?.windowTokens);
+    const measured = readAgentContextUsage(context?.usedTokens, context?.windowTokens);
+    if (measured && !controller.signal.aborted) historicalContext.value = { runId: id, context: measured };
   } catch { /* Older records may lack context telemetry. */ }
 }, { immediate: true });
 
@@ -50,7 +46,7 @@ const preflight = computed(() =>
 );
 
 const contextMeter = computed(() =>
-  estimateConversationContextMeter(props.conversation.runs, draft.value, undefined, props.conversation.latest.usage?.context || historicalContext.value),
+  estimateConversationContextMeter(props.conversation.runs, draft.value, undefined, reportedContext.value.context),
 );
 const meterTitle = computed(() => [
   contextMeter.value.reportedWindow ? 'Codex 最近一次上报的上下文窗口。草稿用量为估算。' : '工作台参考窗口，上下文占用为估算。',
