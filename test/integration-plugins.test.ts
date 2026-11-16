@@ -128,7 +128,7 @@ test('disabled plugins block actual Jira and notification calls before network a
     assert.equal(preview.canSend, true);
     process.env.DELIVERY_PLUGIN_WECOM_INSTALLED = 'false';
     assert.equal(service.messagePreview(preview.input).canSend, false);
-    const item = buildReviewCatalog().find(item => item.path === '/admin/v1/merchants/detail')!;
+    const item = buildReviewCatalog()[0]!;
     const feedback = service.preview({ interfaceId: item.id, summary: 'Fixture', environment: 'Test',
       parameters: '{}', actual: 'Fixture', expected: 'Fixture', contractReference: 'Fixture' });
     assert.equal(feedback.canSend, false);

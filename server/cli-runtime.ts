@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-function isCompleteCodexRuntime(binary: string) {
+export function isCompleteCodexRuntime(binary: string) {
   return fs.existsSync(binary) && fs.existsSync(path.join(path.dirname(binary), 'codex-code-mode-host'));
 }
 

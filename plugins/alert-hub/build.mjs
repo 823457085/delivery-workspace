@@ -1,0 +1,10 @@
+import { build } from 'vite';
+import vue from '@vitejs/plugin-vue';
+import path from 'node:path';
+import fs from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+const root = path.dirname(fileURLToPath(import.meta.url)), outDir = path.join(root, 'package');
+await build({ configFile: false, root, plugins: [vue()], define: { 'process.env.NODE_ENV': '"production"' }, build: { outDir, emptyOutDir: true, lib: { entry: path.join(root, 'main.ts'), name: 'AlertHubPlugin', formats: ['iife'], fileName: () => 'ui.js', cssFileName: 'ui' }, cssCodeSplit: false } });
+await build({ configFile: false, root, ssr: { noExternal: ['zod'] }, build: { outDir, emptyOutDir: false, ssr: path.join(root, 'application.ts'), rollupOptions: { output: { entryFileNames: 'server.mjs', inlineDynamicImports: true } } } });
+await fs.copyFile(path.join(root, 'plugin.json'), path.join(outDir, 'plugin.json'));
+console.log('自定义插件包已生成：' + outDir);

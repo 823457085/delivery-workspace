@@ -4,18 +4,13 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { createGoLearningService } from '../server/go-learning.js';
-import { createGoLearningRoutes } from '../server/go-learning-routes.js';
+import { createGoLearningService } from '../plugins/go-learning/service.js';
+import { createGoLearningRoutes } from '../plugins/go-learning/routes.js';
 import { workspaceLocation, workspaceView } from '../src/pages/agent/workspace-navigation.js';
 
-test('Go 实训工坊导航入口与路由映射正确', () => {
-  const view = workspaceView('go-studio');
-  assert.ok(view);
-  assert.equal(view.label, 'Go 实训工坊');
-  assert.deepEqual(workspaceLocation('/go-studio', { day: '3' }), {
-    path: '/agent',
-    query: { day: '3', view: 'go-studio' },
-  });
+test('Go 实训不注册固定宿主页面，安装后由自定义插件贡献菜单', () => {
+  assert.equal(workspaceView('go-studio'), undefined);
+  assert.equal(workspaceLocation('/go-studio', { day: '3' }), undefined);
 });
 
 test('Go 实训工坊服务端支持 7 天课程读取、进度保存、沙盒快照切换、命令运行与 HTTP 调试', async t => {
@@ -130,7 +125,7 @@ test('Go 实训工坊服务端支持 7 天课程读取、进度保存、沙盒�
   const handled = await routes(
     {
       method: 'POST',
-      headers: { host: 'localhost:5199' },
+      headers: { host: 'localhost:5199', origin: 'http://localhost:5199', 'x-delivery-confirmed': 'yes', 'content-type': 'application/json' },
       socket: { remoteAddress: '127.0.0.1' },
     } as unknown as IncomingMessage,
     {} as ServerResponse,

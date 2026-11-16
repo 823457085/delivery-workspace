@@ -1,9 +1,6 @@
 import jira from '../plugins/jira/integration.json';
 import confluence from '../plugins/confluence/integration.json';
 import wecom from '../plugins/wecom/integration.json';
-import goLearning from '../plugins/go-learning/integration.json';
-import signHub from '../plugins/sign-hub/integration.json';
-import shanlian from '../plugins/shanlian/integration.json';
 import interfaceCenter from '../plugins/interface-center/integration.json';
 import systemCatalog from '../plugins/system-catalog/integration.json';
 import portMonitor from '../plugins/port-monitor/integration.json';
@@ -19,7 +16,7 @@ export interface IntegrationManifest { id: string; name: string; description: st
  sourceKeys: string[]; apiPrefixes: string[]; apiPaths: string[]; businessTypes?: string[] }
 export interface IntegrationStatus { id: string; enabled: boolean; installed: boolean; runningEnabled: boolean; runningConfigured: boolean; configured: boolean; restartRequired: boolean; name: string }
 export const integrationCatalog: IntegrationManifest[] = [
-  jira, confluence, wecom, goLearning, signHub, shanlian,
+  jira, confluence, wecom,
   interfaceCenter, systemCatalog, portMonitor, deployments, refactorControl, overseasRequirements,
 ];
 export function integrationAvailable(status: IntegrationStatus | undefined) { return !!status?.installed && status.runningEnabled && status.runningConfigured; }

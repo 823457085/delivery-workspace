@@ -5,5 +5,5 @@
     "resolveJsonModule": true, "isolatedModules": true, "noEmit": true, "allowImportingTsExtensions": true,
     "lib": ["ES2022", "DOM", "DOM.Iterable"], "types": ["vite/client"]
   },
-  "include": ["src/**/*.ts", "src/**/*.vue", "shared/**/*.ts", "vite.config.ts"]
+  "include": ["src/**/*.ts", "src/**/*.vue", "shared/**/*.ts", "plugins/*/frontend.ts", "plugins/**/*.vue", "vite.config.ts"]
 }

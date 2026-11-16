@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import PluginApplicationFrame from './PluginApplicationFrame.vue';
 import { computed, defineAsyncComponent, inject, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
@@ -21,6 +22,8 @@ const plugins = ref<CustomPluginInfo[]>([]), items = ref<(PluginRecord & { versi
 const id = computed(() => typeof route.query.plugin === 'string' ? route.query.plugin : ''), plugin = computed(() => plugins.value.find(p => p.manifest.id === id.value));
 const selected = ref<PluginRecord & { version: string }>(), form = ref<Record<string, string>>({}), tagDrafts = ref<Record<string, string>>({}), editing = ref(false), detail = ref<any>();
 const jiraOpen = ref(false), jiraMode = ref<'jira.link' | 'jira.create'>('jira.link');
+const applicationFrame = ref<{ reload(): Promise<void> }>();
+async function refreshWorkspace() { if (plugin.value?.manifest.page.kind === 'application') await applicationFrame.value?.reload(); else await run(load); }
 const writable = computed(() => !!plugin.value?.grants.includes(plugin.value.manifest.records.storage === 'private' ? 'storage.write' : 'workspace.todos.write'));
 const statusField = computed(() => plugin.value?.manifest.records.fields.find(f => f.key === 'status' && f.type === 'select'));
 const tagFields = computed(() => plugin.value?.manifest.records.fields.filter(f => f.type === 'tags') || []);
@@ -56,7 +59,7 @@ async function load() {
   detail.value = undefined;
   selected.value = undefined;
   editing.value = false;
-  if (plugin.value?.enabled) {
+  if (plugin.value?.enabled && plugin.value.manifest.page.kind !== 'application') {
     items.value = (await pluginRequest(`${id.value}/records`)).items;
     const record = items.value.find(item => item.id === route.query.record);
     if (record) await select(record);
@@ -239,7 +242,7 @@ onMounted(() => run(load));
       :title="dedicated && plugin ? plugin.manifest.page.title : '功能插件中心'"
       :description="dedicated && plugin ? plugin.manifest.description : '集中管理自定义业务台账插件与内置模块启停，按需精简左侧菜单结构。'"
       :loading="busy"
-      @refresh="run(load)"
+      @refresh="refreshWorkspace"
     >
       <el-button v-if="id" @click="router.push({ query: { view: 'plugins' } })">返回插件中心</el-button>
       <el-button @click="router.push({ query: { view: 'settings', settingsTab: 'plugins' } })">连接与凭据设置</el-button>
@@ -262,6 +265,7 @@ onMounted(() => run(load));
     </template>
     <el-skeleton v-else-if="busy && !plugin" :rows="3" animated />
     <el-empty v-else-if="!plugin || !plugin.enabled" :description="id ? '插件已停用或移除，历史引用快照仍保留在会话中' : '请先在插件中心添加或启用插件'" />
+    <PluginApplicationFrame v-else-if="plugin.manifest.page.kind === 'application'" ref="applicationFrame" :key="plugin.manifest.id" :plugin-id="plugin.manifest.id" />
     <template v-else>
       <h2 v-if="!dedicated">{{ plugin.manifest.page.title }}</h2>
       <p v-if="!dedicated">{{ plugin.manifest.description }}</p>

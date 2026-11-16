@@ -103,39 +103,40 @@ test('integration gateway preserves multipart upload protocol and confirmation g
  assert.equal(code,403); assert.equal(calls,1);
 });
 
-test('本机插件可启停与移除，旧 Go 接口遵守插件状态及同源门禁', async t => {
+test('本机插件可启停与移除，接口遵守插件状态及同源门禁', async t => {
  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'local-plugin-'));
  t.after(() => fs.rm(root, {recursive:true,force:true}));
  const env = { ...process.env }, file = path.join(root, 'plugins.json');
  const store = await createPluginStore({file, port:5288});
  const get = async (id: string) => (await store.list()).find(item => item.id === id)!;
- const key = 'DELIVERY_PLUGIN_GO_LEARNING';
+ const key = 'DELIVERY_PLUGIN_INTERFACE_CENTER';
  t.after(() => { for (const suffix of ['_ENABLED', '_INSTALLED']) {
   const name = key + suffix;
   if (env[name] === undefined) delete process.env[name]; else process.env[name] = env[name];
  } });
- assert.equal((await get('go-learning')).runningConfigured, true);
- assert.equal((await get('sign-hub')).runningConfigured, true);
- assert.equal((await (await createPluginStore({file, port:5199})).list()).find(item => item.id === 'sign-hub')?.runningConfigured, false);
- await assert.rejects(store.save('go-learning', {enabled:true, baseUrl:'https://wrong.test'}), /本机插件/);
+ assert.equal(await get('go-learning'), undefined, 'Go 实训通过自定义应用插件接入');
+ assert.equal((await get('interface-center')).runningConfigured, true);
+ assert.equal((await (await createPluginStore({file, port:5199})).list()).find(item => item.id === 'interface-center')?.runningConfigured, true);
+ await assert.rejects(store.save('interface-center', {enabled:true, baseUrl:'https://wrong.test'}), /本机插件/);
 
  let status = 0;
  const runtime = createIntegrationRuntime({
   root, directory:root, port:5288,
   source:{jiraIssueRequest:async () => Response.json({}),confluenceReadRequest:async () => Response.json({})},
   json: (_res, code) => { status = code; }, body: async () => ({}),
- });
+ }, [host => ({ id:'interface-center', matches: url => url.pathname === '/api/interface-center/plugin-test',
+   route: async (_req, res) => { host.json(res, 200, {}); return true; }, close: async () => {} })]);
  const request = {method:'GET',socket:{remoteAddress:'127.0.0.1'},headers:{host:'localhost:5288'}} as unknown as http.IncomingMessage;
  const call = (pathname: string) => runtime.route(request, {} as http.ServerResponse, new URL(pathname,'http://localhost:5288'));
- assert.equal(await call('/api/go-learning/overview'), true); assert.equal(status, 200);
- await store.state('go-learning', {installed:false});
- assert.equal(integrationAvailable(await get('go-learning')), false);
- assert.throws(() => assertIntegrationRequest('/api/go-learning/overview'), /移除/);
- await call('/api/go-learning/overview'); assert.equal(status, 400);
- await store.state('go-learning', {installed:true, enabled:true});
- await call('/api/go-learning/overview'); assert.equal(status, 200);
+ assert.equal(await call('/api/interface-center/plugin-test'), true); assert.equal(status, 200);
+ await store.state('interface-center', {installed:false});
+ assert.equal(integrationAvailable(await get('interface-center')), false);
+ assert.throws(() => assertIntegrationRequest('/api/interface-center/plugin-test'), /移除/);
+ await call('/api/interface-center/plugin-test'); assert.equal(status, 400);
+ await store.state('interface-center', {installed:true, enabled:true});
+ await call('/api/interface-center/plugin-test'); assert.equal(status, 200);
  request.method = 'POST';
  request.headers.origin = 'http://other.test';
- await call('/api/go-learning/progress'); assert.equal(status, 403);
+ await call('/api/interface-center/plugin-test'); assert.equal(status, 403);
  await runtime.close();
 });

@@ -1,0 +1,19 @@
+{
+  "name": "@delivery/plugin-sdk",
+  "version": "2.1.0",
+  "type": "module",
+  "exports": {
+    "./browser": "./browser.ts",
+    "./server": "./server.ts",
+    "./theme": "./theme.ts",
+    "./protocol": "./protocol.ts",
+    "./manifest": "./manifest.ts"
+  },
+  "files": [
+    "*.ts",
+    "README.md"
+  ],
+  "dependencies": {
+    "zod": "4.5.4"
+  }
+}

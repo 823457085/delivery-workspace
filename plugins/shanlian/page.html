@@ -1,0 +1,74 @@
+
+<section id="admin-screen" class="card"><h2>连接闪连服务</h2><p>请在工作台「功能插件 → 闪连 → 配置」填写服务地址、控制台管理账号和密码。</p><p id="admin-error" role="alert"></p><button id="retry-connection">重新连接</button></section>
+  <div class="app-shell" id="shanlian-app" hidden>
+    <aside class="sidebar">
+      <a class="brand" href="#overview"><span class="brand-mark">ϟ</span><span>闪连<span class="brand-sub">网络控制台</span></span></a>
+      <div class="nav-caption">工作区</div>
+      <nav aria-label="主要导航">
+        <button class="nav-item active" data-view="overview"><span class="nav-symbol">◫</span>连接总览</button>
+        <button class="nav-item" data-view="nodes"><span class="nav-symbol">◎</span>节点选择<span class="nav-count" id="nav-node-count">—</span></button>
+        <button class="nav-item" data-view="subscription"><span class="nav-symbol">◇</span>Clash 订阅</button>
+        <button class="nav-item" data-view="proxy"><span class="nav-symbol">⇄</span>代理接口</button>
+        <button class="nav-item" data-view="account"><span class="nav-symbol">♙</span>闪连账号</button>
+      </nav>
+      <div class="sidebar-bottom"><span class="server-label">RUST SERVER</span><strong id="server-address">—</strong><span id="sidebar-status">读取状态中</span><button class="text-button" id="admin-logout">退出控制台 ↗</button></div>
+    </aside>
+    <main>
+      <header class="page-header"><div><span class="eyebrow">SHANLIAN / RUST</span><h1 id="page-title">连接总览</h1></div><div class="header-right"><span id="refresh-state">正在同步</span><button class="icon-button" id="refresh" aria-label="刷新状态">↻</button><span class="avatar" aria-label="管理员">A</span></div></header>
+      <section class="view" id="view-overview">
+        <div class="connection-panel">
+          <div class="connection-copy"><div class="status-badge" id="connection-badge">读取状态中</div><h2 id="connection-title">正在读取连接</h2><p id="connection-description">稍候，正在与服务器同步。</p><div class="connection-actions"><button class="button primary" id="connection-toggle" disabled>连接</button><button class="button secondary" id="reconnect" disabled>重新连接</button><button class="button ghost" id="check">检测网络 ↗</button></div><p class="inline-result" id="network-result" aria-live="polite"></p></div>
+          <div class="route-visual" aria-label="局域网通过服务器连接闪连"><div class="route-device"><span>▤</span><small>局域网设备</small></div><span class="route-line"></span><div class="route-core">ϟ<small>闪连服务器</small></div><span class="route-line"></span><div class="route-device"><span>◎</span><small id="route-node">出口节点</small></div></div>
+        </div>
+        <div class="metrics"><div><span>已接收</span><strong id="received">—</strong><small>本次连接累计</small></div><div><span>已发送</span><strong id="sent">—</strong><small>本次连接累计</small></div><div><span>可选节点</span><strong id="node-count">—</strong><small>来自当前账号</small></div><div><span>代理服务</span><strong id="proxy-running">—</strong><small>HTTP · SOCKS5</small></div></div>
+        <div class="section-heading"><h2>局域网接入</h2><button class="link-button" data-goto="proxy">配置接口 →</button></div>
+        <div class="proxy-cards"><article class="proxy-card"><div><span class="protocol-tag">HTTP</span><span class="service-status" id="http-status">—</span></div><strong id="http-address">—</strong><p>浏览器与系统代理，支持 HTTPS 网站。</p><button class="button small secondary" id="copy-http">复制地址</button></article><article class="proxy-card"><div><span class="protocol-tag">SOCKS5</span><span class="service-status" id="socks-status">—</span></div><strong id="socks-address">—</strong><p>适用于支持 SOCKS5 的客户端。</p><button class="button small secondary" id="copy-socks">复制地址</button></article></div>
+        <div class="notice" id="account-notice" hidden><span>i</span><p>登录有效的闪连账号后，即可获取节点并建立连接。</p><button class="link-button" data-goto="account">登录账号 →</button></div>
+        <details class="terminal-help"><summary>也可以从终端管理</summary><p>在服务器中输入 <code>shanlian</code> 打开菜单，登录、选节点或查看配置。两种方式共用当前设置。</p><p><code>shanlian mode terminal</code> 关闭网页，保留终端管理；<code>shanlian mode web</code> 重新开启网页。切换模式不影响现有代理连接。</p></details>
+      </section>
+      <section class="view" id="view-nodes" hidden>
+        <div class="section-heading tight"><div><h2>选择出口节点</h2><p class="muted">选择后用于代理的新连接；重连可立即切换所有连接。</p></div><span class="count-label" id="node-results">—</span></div>
+        <div class="filter-bar"><input id="node-search" type="search" placeholder="搜索国家、节点或地址" aria-label="搜索节点"><select id="country-filter" aria-label="筛选地区"><option value="">全部地区</option></select><button class="button secondary" id="nodes-refresh">刷新列表</button></div>
+        <div class="node-tools"><div class="node-test-actions"><button class="button secondary" id="nodes-test" disabled>批量测延迟</button><button class="button secondary" id="nodes-test-stop" hidden>停止测试</button></div><select id="delay-sort" aria-label="节点排序"><option value="default">默认排序</option><option value="asc">延迟从低到高</option><option value="desc">延迟从高到低</option></select></div>
+        <p class="node-test-progress muted" id="nodes-test-progress" role="status" aria-live="polite">批量测试当前筛选出的节点，显示预热后的 HTTPS 响应延迟；不可达和未测试节点排在有效延迟之后。</p>
+        <div class="table-wrap"><table><thead><tr><th>节点</th><th>协议</th><th>延迟</th><th>状态</th><th><span class="sr-only">操作</span></th></tr></thead><tbody id="node-table"></tbody></table><div class="empty" id="nodes-empty" hidden>当前列表为空。请调整筛选，或在账号页刷新节点。</div></div>
+      </section>
+      <section class="view" id="view-subscription" hidden>
+        <div class="subscription-hero">
+          <div class="subscription-hero-copy"><span class="subscription-kicker">CLASH / MIHOMO</span><div class="subscription-title-row"><h2>一条链接，组合全部节点</h2><span class="status-badge off" id="subscription-badge">读取中</span></div><p id="subscription-status" role="status">正在读取订阅状态。</p></div>
+          <div class="subscription-hero-actions"><button class="button primary" type="button" id="subscription-copy-full" disabled>复制转接配置</button><button class="button secondary" type="button" id="subscription-copy-provider" disabled>复制转接节点</button><button class="button secondary" type="button" id="subscription-copy-direct" disabled>复制设备直连</button><button class="button secondary" type="button" id="subscription-copy-direct-provider" disabled>复制直连节点</button></div>
+        </div>
+        <form class="subscription-workspace" id="subscription-form">
+          <section class="subscription-card endpoint-card">
+            <div class="card-heading"><span class="step-number">01</span><div><h3>客户端入口</h3><p>填写 Clash 客户端实际能够访问的转接地址。</p></div></div>
+            <label>转接服务器<input name="server" placeholder="vpn.example.com 或服务器 IP" autocomplete="off"></label>
+            <div class="form-grid"><label>连接端口<input name="port" type="number" min="1" max="65535"></label><label>传输方式<select name="transport"><option value="plain">TCP</option><option value="tls">TLS</option></select></label></div>
+            <label class="switch-row"><input name="enabled" type="checkbox"><span><strong>启用订阅下载</strong><small>保存后生成带独立令牌的链接</small></span></label>
+          </section>
+          <section class="subscription-card script-card">
+            <div class="card-heading"><span class="step-number">02</span><div><h3>全局 JavaScript</h3><p>兼容 Clash Verge 的脚本入口，在完整配置生成后修改代理、策略组和规则。</p></div><span class="count-chip" id="subscription-script-state">未启用</span></div>
+            <label>全局扩展脚本<textarea name="globalScript" rows="14" spellcheck="false" placeholder='function main(config, profileName) {&#10;  const extra = {&#10;    name: "备用节点",&#10;    type: "socks5",&#10;    server: "proxy.example.com",&#10;    port: 1080&#10;  };&#10;  config.proxies.push(extra);&#10;  config["proxy-groups"][0].proxies.unshift(extra.name);&#10;  config.rules.unshift(`DOMAIN-SUFFIX,example.com,${extra.name}`);&#10;  return config;&#10;}'></textarea><span class="help">入口必须为 main(config, profileName) 并返回 config。支持修改 config.proxies、config["proxy-groups"]、config.rules 等字段；清空即停用。</span></label>
+          </section>
+          <section class="subscription-card rules-card">
+            <div class="card-heading"><span class="step-number">03</span><div><h3>分流规则</h3><p>先生成网页规则，再交给全局脚本做最终处理。</p></div></div>
+            <div class="rule-options"><label class="switch-row"><input name="lanDirect" type="checkbox" checked><span><strong>局域网直连</strong><small>私有网段、本机和 .local</small></span></label><label class="switch-row"><input name="chinaDirect" type="checkbox"><span><strong>国内直连</strong><small>GeoSite CN 与 GeoIP CN</small></span></label><label>未匹配流量<select name="ruleFallback"><option value="闪连节点">走闪连节点</option><option value="DIRECT">直接连接</option><option value="REJECT">拒绝连接</option></select></label></div>
+            <label>自定义规则<textarea name="customRules" rows="8" spellcheck="false" placeholder="DOMAIN-SUFFIX,example.com,DIRECT&#10;DOMAIN,ads.example.com,REJECT&#10;IP-CIDR,203.0.113.0/24,闪连节点,no-resolve"></textarea><span class="help">每行一条。策略支持 DIRECT、REJECT、闪连节点或 PROXY；无需填写 rules: 或 MATCH。需要其他策略时可在全局 JavaScript 中添加代理和规则。</span></label>
+            <div class="rules-details"><details class="rules-help"><summary>支持的规则类型</summary><p class="help">DOMAIN、DOMAIN-SUFFIX、DOMAIN-KEYWORD、IP-CIDR、IP-CIDR6、SRC-IP-CIDR、GEOIP、GEOSITE、DST-PORT、SRC-PORT、PROCESS-NAME、PROCESS-PATH、NETWORK。暂不支持 RULE-SET 和逻辑组合。</p></details><details class="rules-help"><summary>查看最终规则顺序</summary><pre id="subscription-rules-preview" aria-label="已保存规则，按匹配顺序显示"></pre></details></div>
+          </section>
+          <section class="subscription-card links-card" id="subscription-url-fields" hidden>
+            <div class="card-heading"><span class="step-number">04</span><div><h3>订阅地址</h3><p>完整配置含代理组与规则；仅节点链接会保留脚本处理后的代理。</p></div></div>
+            <label>服务器转接完整配置<input id="subscription-full-url" readonly></label><label>服务器转接仅节点<input id="subscription-provider-url" readonly></label><label>设备直连完整配置<input id="subscription-direct-url" readonly></label><label>设备直连仅节点<input id="subscription-direct-provider-url" readonly></label><p class="caption" id="subscription-url-note">设备直连链接带有 direct=1，只能使用支持 shanlian-uid 的定制 Mihomo，且包含闪连 UID。未添加该参数的原链接继续使用服务器转接。</p>
+          </section>
+          <div class="subscription-footer"><p class="form-error" id="subscription-error" role="alert"></p><div class="subscription-actions"><button class="button primary" type="submit" id="subscription-save">保存订阅</button><button class="button secondary" type="button" id="subscription-rotate" disabled>重置链接</button><button class="button ghost" type="button" id="subscription-disable" disabled>关闭下载</button></div></div>
+        </form>
+      </section>
+      <section class="view" id="view-proxy" hidden>
+        <div class="section-heading tight"><div><h2>代理接口设置</h2><p class="muted">指定其他设备接入服务器时使用的地址与端口。</p></div></div>
+        <form class="settings-card" id="proxy-form"><div class="form-section-title"><span class="step-number">01</span><h3>监听地址</h3></div><label>服务器接口<select name="address" id="bind-address" required></select><span class="help">只显示服务器当前拥有的 IPv4 地址。</span></label><div class="form-divider"></div><div class="form-section-title"><span class="step-number">02</span><h3>客户端接入</h3></div><div class="form-grid"><label>HTTP 端口<input name="httpPort" type="number" min="1024" max="65535" required></label><label>SOCKS5 端口<input name="socksPort" type="number" min="1024" max="65535" required></label></div><label>允许访问的网段<input name="allowedSubnet" placeholder="0.0.0.0/0" required><span class="help">0.0.0.0/0 允许所有 IPv4 来源；也可填写自定义网段。代理无需用户名与密码。</span></label><p class="form-error" id="proxy-error" role="alert"></p><div class="form-footer"><p>应用设置会短暂重启代理服务。</p><button class="button primary" id="proxy-save">保存并应用</button></div></form>
+      </section>
+      <section class="view" id="view-account" hidden>
+        <div class="account-layout"><div class="account-forms"><div><div class="section-heading tight"><div><h2>闪连账号</h2><p class="muted">使用你的数字账号或邮箱登录。</p></div></div><form class="settings-card" id="account-form"><label>闪连账号<input name="username" autocomplete="username" placeholder="数字账号或邮箱" required></label><label>密码<input name="password" type="password" autocomplete="current-password" required></label><details class="login-network"><summary>登录网络设置（可选）</summary><label>登录代理<input name="proxy" placeholder="http://192.168.30.1:7890" autocomplete="off"><span class="help">首次登录若无法访问账号服务，可使用已有的 HTTP 或 SOCKS5 代理。已有账号会自动复用连接路径。</span></label></details><p class="form-error" id="account-error" role="alert"></p><button class="button primary full" type="submit">登录闪连</button><p class="caption">密码仅用于本次登录，不保存在控制台中。</p><button class="button secondary full" type="button" id="account-refresh">立即刷新账号和节点</button></form></div><form class="settings-card refresh-schedule-card" id="refresh-schedule-form"><div class="card-heading"><span class="step-number">AUTO</span><div><h3>定时刷新</h3><p>后台按间隔更新账号状态和节点列表。</p></div></div><label class="switch-row"><input name="enabled" type="checkbox"><span><strong>启用自动刷新</strong><small>服务重启后继续执行</small></span></label><label>刷新间隔（分钟）<input name="intervalMinutes" type="number" min="5" max="10080" step="1" value="360"><span class="help">范围 5 分钟至 7 天。保存后从当前时间开始计算下一次刷新。</span></label><div class="schedule-facts"><div><span>下次刷新</span><strong id="refresh-next">未安排</strong></div><div><span>最近成功</span><strong id="refresh-last-success">尚未执行</strong></div></div><p class="form-error" id="refresh-schedule-error" role="alert"></p><p class="caption" id="refresh-schedule-status">自动刷新未启用。</p><button class="button primary" type="submit" id="refresh-schedule-save">保存定时设置</button></form></div><aside class="account-summary"><span class="eyebrow">ACCOUNT STATUS</span><h3 id="account-state">尚未登录</h3><dl><div><dt>账号</dt><dd id="account-name">—</dd></div><div><dt>有效期</dt><dd id="account-expiry">—</dd></div><div><dt>连接管理</dt><dd id="account-control">需要登录</dd></div></dl><p>连接由 Rust 程序独立处理。账号和节点来自闪连服务。</p></aside></div>
+      </section>
+      <footer class="page-footer"><span>闪连 Rust 控制台 <span class="footer-divider">/</span> 局域网</span><span id="last-action">配置在服务器本地保存</span></footer>
+    </main>
+  </div><div class="toast" id="toast" role="status" hidden></div>

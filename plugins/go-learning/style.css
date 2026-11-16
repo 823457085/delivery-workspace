@@ -1,0 +1,1 @@
+:root{font-family:var(--sans,system-ui,sans-serif);color:var(--ui-text,#233650);background:var(--ui-bg,#eaf0f7);--mono:ui-monospace,SFMono-Regular,monospace}*{box-sizing:border-box}body{margin:0;padding:4px}button,input,textarea{font:inherit}button{cursor:pointer}a{color:var(--ui-accent,#245de8)}

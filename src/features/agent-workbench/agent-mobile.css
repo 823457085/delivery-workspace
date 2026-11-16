@@ -44,6 +44,9 @@
   .agent-panel .message-copy { min-width: 36px; }
   .agent-panel .composer { flex-shrink: 0; padding: 6px 8px; }
   .agent-panel .composer-inner { padding: 8px; grid-template-areas: "settings" "mode" "tools" "editor" "footer"; grid-template-columns: minmax(0, 1fr); }
+  .agent-panel .composer-inner:has(.composer-preflight) {
+    grid-template-areas: 'preflight' 'settings' 'mode' 'tools' 'editor' 'footer';
+  }
   .agent-panel .mobile-composer-options { display: block; grid-area: settings; justify-self: start; min-height: 36px; padding: 0 4px; border: 0; background: transparent; color: var(--agent-secondary); font: inherit; font-size: 12px; line-height: 16px; }
   .agent-panel .composer-inner:not(.options-expanded) .composer-mode { display: none; }
   .agent-panel .composer-inner .composer-mode { gap: 8px; margin: 4px 0; max-height: 100px; overflow-y: auto; }

@@ -1,0 +1,55 @@
+{
+  "apiVersion": 1,
+  "hostApi": 2,
+  "id": "sign-hub",
+  "name": "Sign Hub",
+  "version": "1.0.0",
+  "description": "独立签到管理：站点、账号、登录校验、签到、执行记录、备份与服务设置。",
+  "permissions": [
+    "storage.read",
+    "application.local"
+  ],
+  "page": {
+    "title": "Sign Hub",
+    "kind": "application"
+  },
+  "application": {
+    "frontend": "ui.js",
+    "styles": "ui.css",
+    "backend": "server.mjs"
+  },
+  "records": {
+    "storage": "private",
+    "resourceType": "entry",
+    "fields": [
+      {
+        "key": "title",
+        "label": "标题",
+        "type": "text",
+        "required": true
+      }
+    ]
+  },
+  "commands": [],
+  "configuration": {
+    "fields": [
+      {
+        "key": "endpoint",
+        "label": "Sign Hub 服务地址",
+        "type": "text",
+        "required": true,
+        "default": "http://127.0.0.1:8990"
+      },
+      {
+        "key": "token",
+        "label": "管理员令牌",
+        "type": "password",
+        "required": true,
+        "resetOnChange": [
+          "endpoint"
+        ],
+        "description": "使用你自己的 Sign Hub 管理员令牌；不自动读取其他工作台的认证文件。"
+      }
+    ]
+  }
+}

@@ -11,7 +11,7 @@ test('所有工作入口可以定位且旧链接保留具体任务参数', () =>
   assert.deepEqual(workspaceLocation('/deployments', { project: 'project-1' }), { path: '/agent', query: { project: 'project-1', view: 'deployments' } });
   const project = { q: '项目名', workspace: '/code/task', git: '1' };
   assert.deepEqual(workspaceLocation('/projects', project), { path: '/agent', query: { ...project, view: 'projects' } });
-  assert.deepEqual(workspaceLocation('/go-studio'), { path: '/agent', query: { view: 'go-studio' } });
+  assert.equal(workspaceLocation('/go-studio'), undefined, 'Go 实训由自定义插件菜单注册，不恢复固定宿主入口');
   assert.deepEqual(workspaceLocation('/settings', { settingsTab: 'plugins' }), { path: '/agent', query: { view: 'settings', settingsTab: 'plugins' } });
 });
 test('Jira 接入恢复原菜单和子页，停用时旧链接仍可定位', () => {
