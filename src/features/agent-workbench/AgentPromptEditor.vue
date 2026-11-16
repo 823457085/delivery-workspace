@@ -29,6 +29,7 @@ const emit = defineEmits<{ submit: []; selectMode: [mode: AgentRunMode] }>();
 const input = useTemplateRef('input');
 const imageInput = useTemplateRef<HTMLInputElement>('imageInput');
 const fileInput = useTemplateRef<HTMLInputElement>('fileInput');
+const mentionPicker = useTemplateRef<HTMLElement>('mentionPicker');
 const preview = shallowRef(false);
 const noteReference = shallowRef('');
 const customSlashName = shallowRef('');
@@ -104,6 +105,16 @@ const slashGroups = computed(() => {
 });
 const slashModeLabels: Record<AgentRunMode, string> = { agent: '直接改', plan: '先出方案', ask: '只读分析' };
 watch(mentions.documentError, error => { if (error) ElMessage.error(error); });
+watch([() => mentions.activeOption.value?.id, mentions.open], () => {
+  const picker = mentionPicker.value;
+  const active = picker?.querySelector<HTMLElement>('button.active');
+  if (!picker || !active) return;
+  const bounds = picker.getBoundingClientRect();
+  const row = active.getBoundingClientRect();
+  const bottom = bounds.bottom - (picker.querySelector('footer')?.offsetHeight || 0);
+  if (row.top < bounds.top) picker.scrollTop -= bounds.top - row.top;
+  else if (row.bottom > bottom) picker.scrollTop += row.bottom - bottom;
+}, { flush: 'post' });
 const mentionGroups = computed(() => {
   const labels: Record<AgentMentionKind, string> = { business: '业务上下文', mode: '模式', skill: 'Skills', note: 'Obsidian 笔记', folder: '目录模块（@目录:）', symbol: '代码符号（@符号:）', file: '文件', ...mentions.labels.value };
   const order: AgentMentionKind[] = mentions.prioritizeSkills.value
@@ -121,11 +132,11 @@ function citeNote(reference: string) {
   mentions.select({ id: reference, kind: 'note', label: '', detail: '', value: reference });
 }
 
-async function insertMention() {
+async function insertMention(trigger: '@' | '$') {
   preview.value = false;
   slashPrompts.close();
   inputHistory.closePanel();
-  mentions.insertTrigger();
+  mentions.insertTrigger(trigger);
   await nextTick();
   input.value?.focus();
 }
@@ -259,7 +270,8 @@ function onDrop(event: DragEvent) { attachedFiles.fromTransfer(event.dataTransfe
 <template>
   <div class="prompt-editor">
     <div class="prompt-tools">
-      <el-button text size="small" :disabled="disabled" title="引用项目文件、任务、模式或笔记（输入 @）" @click="insertMention"><AtSign :size="13" /> 选择</el-button>
+      <el-button text size="small" :disabled="disabled" title="引用项目文件、任务、模式或笔记（输入 @）" @click="insertMention('@')"><AtSign :size="13" /> 选择</el-button>
+      <el-button v-if="provider === 'codex'" text size="small" :disabled="disabled" title="搜索 Codex Skills（输入 $）" @click="insertMention('$')">$ Skills</el-button>
       <el-button text size="small" :class="{ active: slashPrompts.open.value }" :disabled="disabled"
         title="快捷指令与常用话术（行首输 / 可呼出，也能把当前草稿存为常用）" @click="toggleSlashPrompts">
         <Zap :size="13" /> 快捷指令
@@ -388,7 +400,8 @@ function onDrop(event: DragEvent) { attachedFiles.fromTransfer(event.dataTransfe
           <span><kbd>ESC</kbd> 关闭</span>
         </footer>
       </div>
-      <div v-if="mentions.open.value" class="mention-picker" role="listbox" aria-label="选择业务上下文、模式、Skill、文件或文档">
+      <div v-if="mentions.open.value" ref="mentionPicker" class="mention-picker" role="listbox"
+        :aria-label="mentions.skillOnly.value ? '选择 Skill' : '选择业务上下文、模式、Skill、文件或文档'">
         <section v-for="group in mentionGroups" :key="group.kind" class="mention-group">
           <header>{{ group.label }}</header>
           <div v-for="option in group.options" :key="option.id" class="mention-option">

@@ -7,6 +7,7 @@ import http from 'node:http';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { ProjectsData } from '../shared/hub.js';
+import type { SessionWorkspaceReference } from '../shared/project-workspaces.js';
 import { createProjectWorkspaces, type ProjectWorkspaceOptions } from '../server/project-workspaces.js';
 import { createProjectWorkspaceRoutes } from '../server/project-workspace-routes.js';
 import { withProjectGitLock } from '../server/project-git.js';
@@ -29,17 +30,19 @@ async function fixture(t: { after(fn: () => unknown): void }) {
   await git(repo, 'remote', 'add', 'origin', remote); await git(repo, 'push', '-u', 'origin', 'main');
   await git(remote, 'symbolic-ref', 'HEAD', 'refs/heads/main');
   const known = new Set([repo]), busy = new Set<string>();
+  const sessions: SessionWorkspaceReference[] = [];
   let current = Date.now(), running = true, scans = 0;
   const options: ProjectWorkspaceOptions = {
     readProjects: async () => { scans++; return { projects: [...known].filter(folder => true).map(folder => ({ path: folder })) } as ProjectsData; },
     withWorkspace: async (_folder, _owner, action) => action(),
     checkBusy: async folder => { if (busy.has(folder)) throw new Error('工作区正在使用'); },
     canRun: () => running, protectedPaths: [state], now: () => current, intervalMs: 20,
+    sessionWorkspaceRoot: root, sessionWorkspaces: () => sessions,
   };
   const service = await createProjectWorkspaces(state, options);
   t.after(async () => { await service.close(); await fs.rm(root, { recursive: true, force: true }); });
   const input = async (folder = repo) => ({ path: folder, revision: (await service.preview(folder)).revision, confirmName: path.basename(folder) });
-  return { root, repo, remote, state, service, known, busy, options, input,
+  return { root, repo, remote, state, service, known, busy, options, input, sessions,
     advance: (amount: number) => { current += amount; }, future: () => new Date(current + 1000).toISOString(),
     pause: () => { running = false; }, resume: () => { running = true; }, scans: () => scans,
     linked: async () => { const folder = path.join(root, 'linked'); await git(repo, 'worktree', 'add', '-b', 'feature/temporary', folder, 'origin/main'); known.add(folder); return folder; },
@@ -72,6 +75,58 @@ test('删除 linked worktree 保留主仓库和分支；主仓库被依赖时不
   assert.equal(await git(f.repo, 'rev-parse', 'HEAD'), head);
   assert.equal(await git(f.repo, 'rev-parse', 'feature/temporary'), head);
   assert.ok(!(await git(f.repo, 'worktree', 'list', '--porcelain')).includes(linked));
+});
+
+test('盘点合并同一 worktree 的多轮会话，并沿用本机回收区、保留分支和会话', async t => {
+  const f = await fixture(t), linked = await f.linked();
+  const nested = path.join(linked, 'nested');
+  await fs.mkdir(nested);
+  const add = (id: string, title: string, workspacePath: string, day: number) => f.sessions.push({
+    id, title, workspacePath, updatedAt: new Date(Date.UTC(2026, 0, day)).toISOString(),
+  });
+  add('main', '主仓库', f.repo, 1);
+  add('a', '第一轮', linked, 1);
+  add('a', '继续会话', nested, 3);
+  add('b', '另一个会话', linked, 2);
+  f.known.delete(linked); // 内置会话目录可以在项目扫描根目录之外。
+
+  f.busy.add(linked);
+  let [item] = await f.service.sessionInventory();
+  assert.equal(item.path, linked);
+  assert.equal(item.eligible, false);
+  assert.match(item.reason || '', /正在使用/);
+  f.busy.delete(linked);
+  const inventory = await f.service.sessionInventory();
+  assert.equal(inventory.length, 1);
+  [item] = inventory;
+  assert.equal(item.eligible, true);
+  assert.equal(item.branch, 'feature/temporary');
+  assert.ok(typeof item.bytes === 'number' && item.bytes >= 0);
+  assert.deepEqual(item.sessions.map(session => session.title), ['继续会话', '另一个会话']);
+  const preview = await f.service.preview(linked, true);
+  await f.service.remove({ path: linked, revision: preview.revision, confirmName: path.basename(linked), sessionWorktree: true });
+  assert.equal(await exists(linked), false);
+  assert.equal((await f.service.listTrash())[0].originalPath, linked);
+  assert.equal(await git(f.repo, 'rev-parse', 'feature/temporary'), await git(f.repo, 'rev-parse', 'HEAD'));
+  assert.equal(f.sessions.length, 4);
+  assert.deepEqual(await f.service.sessionInventory(), []);
+});
+
+test('清理期间出现新的 Git 忽略文件时恢复原目录并保留文件', async t => {
+  const f = await fixture(t), linked = await f.linked();
+  const ignored = path.join(linked, 'local-config.tmp');
+  await fs.appendFile(path.join(f.repo, '.git', 'info', 'exclude'), '\nlocal-config.tmp\n');
+  f.sessions.push({ id: 'session', title: '带本地文件的会话', workspacePath: linked, updatedAt: new Date().toISOString() });
+  const preview = await f.service.preview(linked, true);
+  let usageChecks = 0;
+  f.options.checkBusy = async () => {
+    if (++usageChecks === 2) await fs.writeFile(ignored, 'local config');
+  };
+  const input = { path: linked, revision: preview.revision, confirmName: path.basename(linked), sessionWorktree: true };
+  await assert.rejects(f.service.remove(input), /Git 忽略/);
+  assert.equal(await fs.readFile(ignored, 'utf8'), 'local config');
+  assert.equal((await f.service.preview(linked, true)).eligible, false);
+  assert.deepEqual(await f.service.listTrash(), []);
 });
 
 test('手动确认可丢弃独立克隆和 linked worktree 的改动，并保留远端与共享分支', async t => {

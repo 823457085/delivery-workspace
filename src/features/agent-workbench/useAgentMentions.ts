@@ -1,5 +1,5 @@
 /**
- * 设计说明：@ 选择器统一编排业务上下文、运行模式、Codex Skills 与工作区文件。
+ * 设计说明：@ 选择上下文，$ 单独选择 Codex Skills。
  * 模式改变真实运行参数；其他选项只写入可识别引用，不在浏览器读取文件正文或执行业务写操作。
  */
 import { computed, shallowRef, watch, type Ref } from 'vue';
@@ -11,6 +11,7 @@ import { integrationCatalog } from '../../../shared/integration-plugins';
 import { useIntegrationPlugins } from '../../plugins/runtime';
 
 export type AgentMentionKind = string;
+const mentionTrigger = /(^|\s)([@$])([^\s@"]*)$/;
 
 export interface AgentMentionOption {
   id: string;
@@ -69,12 +70,17 @@ export function useAgentMentions(draft: Ref<string>, context: () => AgentMention
   const loading = shallowRef(false);
   const open = shallowRef(false);
   const activeIndex = shallowRef(0);
-  const mentionQuery = computed(() => draft.value.match(/(?:^|\s)@([^\s@"]*)$/)?.[1]);
-  const prioritizeSkills = computed(() => shouldPrioritizeSkillMentions(mentionQuery.value));
+  const triggerMatch = computed(() => draft.value.match(mentionTrigger));
+  const mentionQuery = computed(() => triggerMatch.value?.[3]);
+  const skillOnly = computed(() => triggerMatch.value?.[2] === '$');
+  const prioritizeSkills = computed(() => skillOnly.value || shouldPrioritizeSkillMentions(mentionQuery.value));
   const options = computed<AgentMentionOption[]>(() => {
     const state = context();
     const rawTerm = mentionQuery.value || '';
     const term = rawTerm.toLowerCase();
+    const skillOptions = skills.value.map((skill) => ({ id: `skill:${skill.invocation}`, kind: 'skill' as const, label: `$${skill.invocation}`,
+      detail: skill.description || skill.sourceLabel, value: skill.invocation }));
+    if (skillOnly.value) return skillOptions;
     if (documentProvider(term)) return documents.value;
     const explicitFolder = /^(?:folder|dir|目录)[:：]/i.test(rawTerm);
     const explicitSymbol = /^(?:symbol|sym|fn|符号|函数)[:：]/i.test(rawTerm);
@@ -106,8 +112,6 @@ export function useAgentMentions(draft: Ref<string>, context: () => AgentMention
       .flatMap(type => filteredBusiness.filter(option => option.type === type).slice(0, 8));
     const business = visibleBusiness
       .map(option => ({ id: option.id, kind: 'business' as const, label: option.label, detail: option.detail, value: option.value }));
-    const skillOptions = skills.value.map((skill) => ({ id: `skill:${skill.invocation}`, kind: 'skill' as const, label: `$${skill.invocation}`,
-      detail: skill.description || skill.sourceLabel, value: skill.invocation }));
     const fileOptions = files.value.map((file) => ({ id: `file:${file}`, kind: 'file' as const, label: file, detail: '工作区文件', value: file }));
     const noteOptions = notes.value.map(note => ({ id: note.reference, kind: 'note' as const, label: note.title, detail: note.path, value: note.reference }));
     return prioritizeSkills.value
@@ -116,10 +120,10 @@ export function useAgentMentions(draft: Ref<string>, context: () => AgentMention
   });
   const activeOption = computed(() => options.value[activeIndex.value]);
 
-  watch([mentionQuery, () => context().workspacePath, () => context().provider, disabled, providers], ([query, workspace, provider, isDisabled], _previous, onCleanup) => {
+  watch([mentionQuery, skillOnly, () => context().workspacePath, () => context().provider, disabled, providers], ([query, skillsOnly, workspace, provider, isDisabled], _previous, onCleanup) => {
     documentError.value = '';
     documents.value = [];
-    if (query === undefined || isDisabled) { open.value = false; files.value = []; folders.value = []; symbols.value = []; skills.value = []; notes.value = []; loading.value = false; return; }
+    if (query === undefined || isDisabled || (skillsOnly && provider !== 'codex')) { open.value = false; files.value = []; folders.value = []; symbols.value = []; skills.value = []; notes.value = []; loading.value = false; return; }
     open.value = true;
     activeIndex.value = 0;
     files.value = []; folders.value = []; symbols.value = []; skills.value = []; notes.value = [];
@@ -127,8 +131,8 @@ export function useAgentMentions(draft: Ref<string>, context: () => AgentMention
     const timer = setTimeout(async () => {
       loading.value = true;
       try {
-        const source = documentProvider(query);
-        if (!source && integrationCatalog.some(plugin => plugin.mention?.prefixes.some(prefix => query.startsWith(prefix + ':') || query.startsWith(prefix + '：')))) { documentError.value = '文档提供者未接入或尚未配置，请在插件管理中检查'; return; }
+        const source = skillsOnly ? undefined : documentProvider(query);
+        if (!skillsOnly && !source && integrationCatalog.some(plugin => plugin.mention?.prefixes.some(prefix => query.startsWith(prefix + ':') || query.startsWith(prefix + '：')))) { documentError.value = '文档提供者未接入或尚未配置，请在插件管理中检查'; return; }
         if (source) {
           try {
             const data = await source.search(workspace, query.replace(/^[^:：]*[:：]/, ''), controller.signal);
@@ -137,13 +141,14 @@ export function useAgentMentions(draft: Ref<string>, context: () => AgentMention
           return;
         }
         const params = new URLSearchParams({ workspacePath: workspace, provider, q: query });
+        if (skillsOnly) params.set('scope', 'skills');
         const [workspaceResult, noteResult] = await Promise.allSettled([
-          workspace ? fetch(`/api/agent-runtimes/mentions?${params}`, { signal: controller.signal }).then(async response => {
+          (workspace || skillsOnly) ? fetch(`/api/agent-runtimes/mentions?${params}`, { signal: controller.signal }).then(async response => {
             const data = await response.json() as { message?: string; files?: unknown; skills?: unknown; folders?: unknown; symbols?: unknown };
             if (!response.ok) throw new Error(data.message || '候选项读取失败');
             return data;
           }) : Promise.resolve({ files: [], skills: [], folders: [], symbols: [] }),
-          noteRequest<{ notes: AgentNote[] }>(`notes?q=${encodeURIComponent(query)}`, undefined, controller.signal),
+          skillsOnly ? Promise.resolve({ notes: [] }) : noteRequest<{ notes: AgentNote[] }>(`notes?q=${encodeURIComponent(query)}`, undefined, controller.signal),
         ]);
         if (controller.signal.aborted) return;
         const data = workspaceResult.status === 'fulfilled' ? workspaceResult.value : { files: [], skills: [], folders: [], symbols: [] };
@@ -165,7 +170,7 @@ export function useAgentMentions(draft: Ref<string>, context: () => AgentMention
   }, { immediate: true });
 
   function replaceTrigger(replacement = '') {
-    draft.value = draft.value.replace(/(^|\s)@([^\s@"]*)$/, (_match, prefix: string) => `${prefix}${replacement}`);
+    draft.value = draft.value.replace(mentionTrigger, (_match, prefix: string) => `${prefix}${replacement}`);
   }
 
   function select(option: AgentMentionOption) {
@@ -183,21 +188,26 @@ export function useAgentMentions(draft: Ref<string>, context: () => AgentMention
     open.value = false;
   }
 
-  function insertTrigger() {
-    draft.value = `${draft.value}${draft.value && !/\s$/.test(draft.value) ? ' ' : ''}@`;
+  function insertTrigger(trigger: '@' | '$' = '@') {
+    draft.value = `${draft.value}${draft.value && !/\s$/.test(draft.value) ? ' ' : ''}${trigger}`;
   }
 
   function handleKeydown(event: KeyboardEvent) {
     if (event.isComposing || event.keyCode === 229) return false;
-    if (!open.value || !options.value.length) return false;
+    if (!open.value) return false;
+    if (event.key === 'Escape') {
+      open.value = false;
+      event.preventDefault();
+      return true;
+    }
+    if (!options.value.length) return false;
     if (event.key === 'ArrowDown') activeIndex.value = (activeIndex.value + 1) % options.value.length;
     else if (event.key === 'ArrowUp') activeIndex.value = (activeIndex.value - 1 + options.value.length) % options.value.length;
     else if (event.key === 'Enter' || event.key === 'Tab') select(options.value[activeIndex.value]);
-    else if (event.key === 'Escape') open.value = false;
     else return false;
     event.preventDefault();
     return true;
   }
 
-  return { labels: computed(() => Object.fromEntries(providers.value.map(item => [item.kind, item.label]))), loading, open, options, activeOption, prioritizeSkills, documentError, select, insertTrigger, handleKeydown };
+  return { labels: computed(() => Object.fromEntries(providers.value.map(item => [item.kind, item.label]))), loading, open, options, activeOption, prioritizeSkills, skillOnly, documentError, select, insertTrigger, handleKeydown };
 }

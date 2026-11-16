@@ -54,6 +54,7 @@ import type {
   SpawnAgentTaskInput, StartAgentRunInput, StartAgentTaskWorkflowInput, AgentProfileId, AgentTeamTemplateId, AgentWorkflowAction,
   AgentWorkflowStage, AgentWorkspaceVersion, AgentUsageLimits,
 } from '../shared/agent-runtime.js';
+import type { SessionWorkspaceReference } from '../shared/project-workspaces.js';
 
 const exec = promisify(execFile);
 const sessionPattern = /^[A-Za-z0-9_-]{8,200}$/;
@@ -3741,7 +3742,28 @@ export async function createAgentRuntimeService(directory: string, options: Serv
         ...(previous && previous.provider !== input.provider ? { resetQueueRoot: true, providerSwitch: { from: previous.provider, context: '' } } : {}) });
   }
 
+  function sessionWorkspaces(): SessionWorkspaceReference[] {
+    const entries: SessionWorkspaceReference[] = [];
+    const representedCodexIds = new Set<string>();
+    for (const run of runs) {
+      const id = conversationIdFor(run);
+      const title = conversationTitles[id] || run.task?.title || run.objective.trim().split(/\r?\n/, 1)[0].slice(0, 80) || '未命名会话';
+      if (run.provider === 'codex' && run.sessionId) representedCodexIds.add(run.sessionId);
+      for (const workspacePath of new Set([run.workspacePath, run.continuation?.workspacePath, ...(run.team?.workspacePaths || [])])) {
+        if (workspacePath) entries.push({ id, title, workspacePath, updatedAt: run.updatedAt });
+      }
+    }
+    for (const session of codexSessions) {
+      if (!session.archived && !representedCodexIds.has(session.id) && session.workspacePath) {
+        const { id, title, workspacePath, updatedAt } = session;
+        entries.push({ id, title: conversationTitles[id] || title || '未命名会话', workspacePath, updatedAt });
+      }
+    }
+    return entries;
+  }
+
   return { dashboard, snapshot, runtimeStatuses, runtimeStatusResult, runtimeStatusVersion: () => runtimeStatusVersion, withProviderMaintenance, recoveryRuns,
+    sessionWorkspaces,
     activeWorkspacePaths: () => runs.filter(run => activeStatuses.has(run.status) || observingDesktop(run))
       .flatMap(run => [run.workspacePath, run.sourceWorkspacePath, ...(run.team?.workspacePaths || [])].filter((value): value is string => !!value)),
     knownWorkspacePaths: () => new Set(runs.flatMap(run => [run.workspacePath, run.sourceWorkspacePath, ...(run.team?.workspacePaths || [])].filter((value): value is string => !!value))),

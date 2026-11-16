@@ -26,7 +26,7 @@ import { createAgentRemoteDeliveryConfluence } from './agent-remote-delivery-con
 import { createAgentUsageStore } from './agent-usage.js';
 import { createAgentTeamGovernance } from './agent-team-governance.js';
 import { createAgentTeamRoutes } from './agent-team-routes.js';
-import { createAgentRuntimeService } from './agent-runtime.js';
+import { createAgentRuntimeService, resolveWorkspace } from './agent-runtime.js';
 import { createBrowserConnection } from './browser-connection.js';
 import { createBrowserConnectionRoute } from './browser-connection-route.js';
 import { chromeRelayPrefix } from './chrome-cdp-relay.js';
@@ -52,7 +52,7 @@ import { createWorkspaceTodoRoutes } from './workspace-todo-routes.js';
 import { createProjectWorkspaces } from './project-workspaces.js';
 import { createProjectWorkspaceRoutes } from './project-workspace-routes.js';
 import { createProjectLaunch, createProjectLaunchRoutes } from './project-launch.js';
-import { createWorkspaceUsageCheck } from './project-workspace-usage.js';
+import { createWorkspaceUsageCheck, readWorkspaceCwds } from './project-workspace-usage.js';
 import { createWorkspaceReports } from './workspace-reports.js';
 import { createWorkspaceReportRoutes } from './workspace-report-routes.js';
 import { readWorkspaceReportSnapshot } from './workspace-report-source.js';
@@ -396,10 +396,20 @@ const workspaceReports = await createWorkspaceReports(path.join(dataDirectory, '
 });
 const workspaceTodoRoutes = createWorkspaceTodoRoutes(workspaceTodos, { json, body, port });
 const overseasRequirementRoutes = createOverseasRequirementRoutes(overseasRequirements, { json, body, port });
+const projectWorkspaceActivePaths = () => [
+  ...agentRuntimes.activeWorkspacePaths(),
+  ...(agentTeams?.storageIndex().activeWorkspacePaths || []),
+];
 const projectWorkspaces = await createProjectWorkspaces(path.join(dataDirectory, 'project-workspaces'), {
   readProjects: refresh => sourceBackend.readLocalProjects(refresh),
   withWorkspace: (directory, owner, action) => agentRuntimes.withTeamWorkspace(directory, owner, action),
-  checkBusy: createWorkspaceUsageCheck(() => agentRuntimes.activeWorkspacePaths()),
+  checkBusy: createWorkspaceUsageCheck(projectWorkspaceActivePaths),
+  inventoryUsageCheck: () => {
+    let cwds: Promise<string> | undefined;
+    return createWorkspaceUsageCheck(projectWorkspaceActivePaths, () => cwds ??= readWorkspaceCwds());
+  },
+  sessionWorkspaces: agentRuntimes.sessionWorkspaces,
+  sessionWorkspaceRoot: path.join(dataDirectory, 'agent-runtimes', 'workspaces'),
   protectedPaths: [root, dataDirectory, distDirectory],
   workspaceRoots: [path.join(root, 'workspaces'), ...['workspaces', 'team-workspaces', 'group-verifications']
     .map(name => path.join(dataDirectory, 'agent-runtimes', name))],
@@ -1184,8 +1194,15 @@ const server = http.createServer(async (request, response) => {
           json(response, 200, await agentRuntimes.workspaceFiles(input.workspacePath, input.q)); return;
         }
         if (request.method === 'GET' && url.pathname === '/api/agent-runtimes/mentions') {
-          const input = z.object({ workspacePath: z.string().trim().min(1).max(1000), provider: z.enum(['codex', 'cursor', 'claude', 'kiro', 'antigravity']),
-            q: z.string().trim().max(200).default('') }).parse(Object.fromEntries(url.searchParams));
+          const input = z.object({ workspacePath: z.string().trim().max(1000), provider: z.enum(['codex', 'cursor', 'claude', 'kiro', 'antigravity']),
+            q: z.string().trim().max(200).default(''), scope: z.literal('skills').optional() }).parse(Object.fromEntries(url.searchParams));
+          if (input.scope === 'skills') {
+            const workspacePath = input.workspacePath ? (await resolveWorkspace(input.workspacePath)).workspacePath : '';
+            const skills = input.provider === 'codex' ? await listCodexSkills(workspacePath, input.q) : [];
+            json(response, 200, { skills });
+            return;
+          }
+          if (!input.workspacePath) { json(response, 400, { message: '请选择工作区后搜索文件或代码' }); return; }
           const parsedMention = parseMentionGroundingQuery(input.q);
           const effectiveFileQuery = parsedMention.scope === 'all' ? input.q : parsedMention.term;
           const files = await agentRuntimes.workspaceFiles(input.workspacePath, effectiveFileQuery);

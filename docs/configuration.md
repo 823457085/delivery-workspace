@@ -11,7 +11,7 @@
 - `LOCAL_PROJECT_ROOTS`：填写自己的项目目录；多个目录按系统路径分隔符连接。项目根目录需要包含 `.git`。
 - `DELIVERY_SKILLS_ROOT` / `AI_DELIVERY_KIT_ROOT`：默认仓库 `support/skills` / `support/ai-delivery-kit`。无需覆盖全局 Skill。
 
-工作台可手动输入项目路径。macOS 原生文件夹选择器、Terminal.app、钥匙串和桌面 IPC 需要对应系统能力。`pnpm run doctor` 会报告当前可用的执行器。
+工作台可手动输入项目路径。macOS 原生文件夹选择器、系统默认终端应用、钥匙串和桌面 IPC 需要对应系统能力。`pnpm run doctor` 会报告当前可用的执行器。
 
 ## 状态备份与版本核对
 

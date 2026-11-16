@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, shallowRef, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { WorkspaceRemovalPreview } from '../../../shared/project-workspaces';
 
-const props = defineProps<{ path: string; revision?: string; disabled?: boolean }>();
+const props = defineProps<{ path: string; revision?: string; disabled?: boolean; sessionWorktree?: boolean }>();
 const emit = defineEmits<{ removed: [path: string]; busy: [value: boolean] }>();
 const preview = shallowRef<WorkspaceRemovalPreview>();
 const loading = shallowRef(false), action = shallowRef(''), scheduleOpen = shallowRef(false);
@@ -27,14 +27,15 @@ async function loadPreview(background = false) {
   controller?.abort(); controller = new AbortController();
   loading.value = true;
   try {
-    const response = await fetch(`/api/projects/workspaces?path=${encodeURIComponent(path)}`, { signal: controller.signal });
+    const params = new URLSearchParams({ path, ...(props.sessionWorktree ? { sessionWorktree: '1' } : {}) });
+    const response = await fetch(`/api/projects/workspaces?${params}`, { signal: controller.signal });
     const data = await response.json();
     if (request !== requestId || path !== props.path) return;
     if (!response.ok) throw new Error(data.message || '工作区删除状态读取失败');
     if (background && (scheduleOpen.value || busy.value || props.disabled)) return;
     preview.value = data;
     deleteAt.value = activeRule.value ? new Date(activeRule.value.deleteAt) : undefined;
-    if (data.rule?.status === 'deleted') notifyRemoved(path);
+    if (!props.sessionWorktree && data.rule?.status === 'deleted') notifyRemoved(path);
   } catch (error) {
     if (request === requestId && path === props.path && !(error instanceof Error && error.name === 'AbortError')) {
       preview.value = undefined;
@@ -55,7 +56,8 @@ async function submit(kind: 'delete' | 'schedule' | 'cancel') {
   try {
     let confirmName: string | undefined;
     if (kind !== 'cancel') {
-      const baseImpact = kind === 'delete' ? (discardChanges ? '将删除本地工作区并丢弃暂存、未暂存、未跟踪文件及未完成的合并，无法恢复（7 天内可从本机隔离回收区找回）。' : '将立即删除本地工作区目录，无法恢复（7 天内可从本机隔离回收区找回）。')
+      const baseImpact = props.sessionWorktree ? '将清理这个 worktree，保留 Git 分支和会话记录。继续原会话前需要重新准备工作区。'
+        : kind === 'delete' ? (discardChanges ? '将删除本地工作区并丢弃暂存、未暂存、未跟踪文件及未完成的合并，无法恢复（7 天内可从本机隔离回收区找回）。' : '将立即删除本地工作区目录，无法恢复（7 天内可从本机隔离回收区找回）。')
         : `将在 ${deadlineLabel(deadline!)} 删除本地工作区目录，无法恢复（7 天内可从本机隔离回收区找回）。`;
       const ignoredNotice = current.ignoredFiles?.length
         ? `\n注意：检测到被 Git 忽略的本地文件（${current.ignoredFiles.slice(0, 6).join('、')}${current.ignoredFiles.length > 6 ? ' 等' : ''}）。`
@@ -76,6 +78,7 @@ async function submit(kind: 'delete' | 'schedule' | 'cancel') {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Delivery-Confirmed': 'yes' },
       body: JSON.stringify({ path, revision: current.revision, ...(kind === 'delete' ? {} : { deleteAt: deadline }),
         ...(discardChanges ? { discardChanges: true } : {}),
+        ...(props.sessionWorktree ? { sessionWorktree: true } : {}),
         ...(confirmName !== undefined ? { confirmName } : {}) }),
     });
     const data = await response.json();
@@ -110,8 +113,9 @@ onBeforeUnmount(() => { ++selection; ++requestId; controller?.abort(); if (refre
 <template>
   <div class="workspace-actions" aria-label="工作区删除管理">
     <el-button size="small" type="danger" plain :loading="action === 'delete'"
-      :disabled="disabled || loading || busy || !(preview?.eligible || preview?.requiresDiscardChanges)" :title="preview?.reason || '删除选中的本地工作区'" @click="submit('delete')">删除工作区</el-button>
-    <el-popover v-model:visible="scheduleOpen" trigger="click" placement="bottom-end" :width="320" :show-arrow="false">
+      :disabled="disabled || loading || busy || !(preview?.eligible || preview?.requiresDiscardChanges)" :title="preview?.reason || '删除选中的本地工作区'"
+      @click="submit('delete')">{{ sessionWorktree ? '清理工作区' : '删除工作区' }}</el-button>
+    <el-popover v-if="!sessionWorktree" v-model:visible="scheduleOpen" trigger="click" placement="bottom-end" :width="320" :show-arrow="false">
       <template #reference><el-button size="small" :disabled="disabled || loading || busy || !preview">自动删除</el-button></template>
       <section class="workspace-schedule" aria-label="设置工作区自动删除时间">
         <strong>自动删除当前工作区</strong>
@@ -126,7 +130,7 @@ onBeforeUnmount(() => { ++selection; ++requestId; controller?.abort(); if (refre
         </div>
       </section>
     </el-popover>
-    <el-text v-if="activeRule" size="small" :title="activeRule.message">自动删除：{{ deadlineLabel(activeRule.deleteAt) }}</el-text>
+    <el-text v-if="!sessionWorktree && activeRule" size="small" :title="activeRule.message">自动删除：{{ deadlineLabel(activeRule.deleteAt) }}</el-text>
   </div>
 </template>
 

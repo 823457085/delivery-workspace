@@ -7,7 +7,8 @@ import { promisify } from 'node:util';
 import { z } from 'zod';
 import type { ProjectsData } from '../shared/hub.js';
 import { workspaceRemovalInputSchema, workspaceRestoreInputSchema, workspaceScheduleInputSchema,
-  type WorkspaceCleanupRule, type WorkspaceRemovalPreview, type WorkspaceTrashItem } from '../shared/project-workspaces.js';
+  type SessionWorkspaceReference, type SessionWorkspaceUsage, type WorkspaceCleanupRule,
+  type WorkspaceRemovalPreview, type WorkspaceTrashItem } from '../shared/project-workspaces.js';
 import { readProjectGitSnapshot, withProjectGitLock } from './project-git.js';
 
 const exec = promisify(execFile);
@@ -41,6 +42,9 @@ export interface ProjectWorkspaceOptions {
   canRun(): boolean;
   protectedPaths: string[];
   workspaceRoots?: string[];
+  sessionWorkspaceRoot?: string;
+  sessionWorkspaces?(): SessionWorkspaceReference[];
+  inventoryUsageCheck?(): ProjectWorkspaceOptions['checkBusy'];
   now?: () => number;
   intervalMs?: number;
   trashRetentionMs?: number;
@@ -86,6 +90,10 @@ export async function createProjectWorkspaces(rawDirectory: string, options: Pro
     fs.realpath(value).catch(() => path.resolve(value))));
   const workspaceRoots = await Promise.all((options.workspaceRoots || []).map(value =>
     fs.realpath(value).catch(() => path.resolve(value))));
+  const configuredSessionRoot = options.sessionWorkspaceRoot;
+  const sessionRoot = configuredSessionRoot
+    ? await fs.realpath(configuredSessionRoot).catch(() => path.resolve(configuredSessionRoot))
+    : undefined;
   const now = options.now || Date.now;
   let rules: StoredRule[] = [], pending: Promise<unknown> = Promise.resolve(), active = 0, closed = false;
   let timer: ReturnType<typeof setInterval> | undefined;
@@ -117,7 +125,13 @@ export async function createProjectWorkspaces(rawDirectory: string, options: Pro
       await fs.rename(temporary, file); rules = next;
     } finally { await fs.rm(temporary, { force: true }); }
   }
-  async function location(raw: string, refresh = false) {
+  function assertSessionAssociation(folder: string) {
+    if (!options.sessionWorkspaces?.().some(session => path.isAbsolute(session.workspacePath)
+      && inside(folder, path.resolve(session.workspacePath)))) {
+      throw error('该工作区已无关联会话，请重新扫描');
+    }
+  }
+  async function location(raw: string, refresh = false, sessionWorktree = false) {
     if (!path.isAbsolute(raw) || /[\x00-\x1f\x7f]/.test(raw)) throw error('请选择工作区的完整绝对路径', 400);
     const selected = path.resolve(raw);
     const real = await fs.realpath(selected).catch(() => { throw error('工作区已不存在或无法访问', 404); });
@@ -132,8 +146,11 @@ export async function createProjectWorkspaces(rawDirectory: string, options: Pro
         && !workspaceRoots.some(container => inside(root, container) && inside(container, real) && container !== real))) {
       throw error('此目录受保护，不能删除');
     }
-    const projects = await options.readProjects(refresh);
-    if (!projects.projects.some(project => path.resolve(project.path) === real)) throw error('该目录不在当前工作区列表中，不能删除');
+    if (sessionWorktree) assertSessionAssociation(real);
+    if (!sessionWorktree || path.dirname(real) !== sessionRoot) {
+      const projects = await options.readProjects(refresh);
+      if (!projects.projects.some(project => path.resolve(project.path) === real)) throw error('该目录不在当前工作区列表中，不能删除');
+    }
     const root = await git(real, ['rev-parse', '--show-toplevel']);
     if (await fs.realpath(root.replace(/\r?\n$/, '')) !== real) throw error('只能删除完整的 Git 工作区，不能删除其父目录或子目录');
     return real;
@@ -161,8 +178,8 @@ export async function createProjectWorkspaces(rawDirectory: string, options: Pro
     const sensitiveIgnoredFiles = ignoredFiles.filter(item => SENSITIVE_IGNORED_FILE_RE.test(item));
     return { ignoredFiles, sensitiveIgnoredFiles };
   }
-  async function inspect(raw: string, refresh = false) {
-    const folder = await location(raw, refresh), id = await identity(folder);
+  async function inspect(raw: string, refresh = false, sessionWorktree = false, checkBusy = options.checkBusy) {
+    const folder = await location(raw, refresh, sessionWorktree), id = await identity(folder);
     const [snapshot, ignoredInfo] = await Promise.all([
       readProjectGitSnapshot(folder, { forRemoval: true }),
       inspectIgnoredFiles(folder),
@@ -183,7 +200,7 @@ export async function createProjectWorkspaces(rawDirectory: string, options: Pro
       if (!(await git(folder, ['for-each-ref', '--format=%(refname)', 'refs/remotes'])).trim()) throw error('无法确认远端已保存提交，未执行删除');
       const unique = await git(folder, ['rev-list', '--count', 'HEAD', ...mergeHeads, ...(!linked ? ['--branches', '--tags'] : []), '--not', '--remotes']);
       if (!/^0\s*$/.test(unique)) throw error('工作区有未推送提交，未执行删除');
-      await options.checkBusy(folder);
+      await checkBusy(folder);
     } catch (cause) { reason = cause instanceof Error ? cause.message : '无法确认工作区是否可删除'; }
     const gitDirty = !snapshot.clean || snapshot.mergeInProgress;
     const dirty = gitDirty || ignoredInfo.sensitiveIgnoredFiles.length > 0;
@@ -236,6 +253,17 @@ export async function createProjectWorkspaces(rawDirectory: string, options: Pro
       ...(result.ignoredFiles.length ? { ignoredFiles: result.ignoredFiles } : {}),
       ...(result.sensitiveIgnoredFiles.length ? { sensitiveIgnoredFiles: result.sensitiveIgnoredFiles } : {}),
       ...(rule ? { rule: publicRule(rule) } : {}) };
+  }
+  async function assertNoIgnoredFiles(folder: string) {
+    if ((await git(folder, ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'])).length) {
+      throw error('含被 Git 忽略的文件，清理前请先处理这些文件');
+    }
+  }
+  async function assertCleanSessionWorktree(checked: Awaited<ReturnType<typeof inspect>>) {
+    if (checked.id.gitDir === checked.id.common) throw error('仅可清理会话关联的 Git worktree 副本');
+    if (checked.reason) throw error(checked.reason);
+    if (checked.gitDirty) throw error('有未提交改动或未跟踪文件');
+    await assertNoIgnoredFiles(checked.folder);
   }
   async function pruneExpiredTrash() {
     const entries = await fs.readdir(trashDirectory).catch(() => [] as string[]);
@@ -340,21 +368,79 @@ export async function createProjectWorkspaces(rawDirectory: string, options: Pro
       return { ok: true as const, restoredPath: restoreTarget, kind: 'preserved-files' as const };
     });
   }
-  async function preview(raw: string): Promise<WorkspaceRemovalPreview> {
+  async function preview(raw: string, sessionWorktree = false, checkBusy = options.checkBusy): Promise<WorkspaceRemovalPreview> {
     const rule = rules.find(value => value.path === path.resolve(raw));
     try {
-      return removalPreview(await inspect(raw), rule);
+      const checked = await inspect(raw, false, sessionWorktree, checkBusy);
+      if (sessionWorktree) await assertCleanSessionWorktree(checked);
+      return removalPreview(checked, rule);
     } catch (cause) {
       return { path: raw, revision: '', eligible: false, canSchedule: false, reason: cause instanceof Error ? cause.message : '工作区读取失败',
         ...(rule ? { rule: publicRule(rule) } : {}) };
     }
   }
-  async function erase(raw: string, expected: { revision?: string; identity?: Identity; discardChanges?: true }) {
+  let inventoryInProgress: Promise<SessionWorkspaceUsage[]> | undefined;
+  function sessionInventory() {
+    if (inventoryInProgress) return inventoryInProgress;
+    inventoryInProgress = scanSessionWorkspaces().finally(() => { inventoryInProgress = undefined; });
+    return inventoryInProgress;
+  }
+  async function scanSessionWorkspaces(): Promise<SessionWorkspaceUsage[]> {
+    const byPath = new Map<string, SessionWorkspaceReference[]>();
+    for (const entry of options.sessionWorkspaces?.() || []) {
+      if (!path.isAbsolute(entry.workspacePath) || /[\x00-\x1f\x7f]/.test(entry.workspacePath)) continue;
+      const cwd = path.resolve(entry.workspacePath);
+      if (!byPath.has(cwd)) byPath.set(cwd, []);
+      byPath.get(cwd)!.push(entry);
+    }
+    const pendingPaths = byPath.entries();
+    const worktrees = new Map<string, { branch: string; sessions: SessionWorkspaceReference[] }>();
+    // Worktrees are resolved from session paths, including sessions opened in a subdirectory.
+    await Promise.all(Array.from({ length: 4 }, async () => {
+      for (const [cwd, sessions] of pendingPaths) {
+        try {
+          if (await fs.realpath(cwd) !== cwd) continue;
+          const [folder, gitDir, commonDir, branch] = (await git(cwd, [
+            'rev-parse', '--path-format=absolute', '--show-toplevel', '--git-dir', '--git-common-dir', '--abbrev-ref', 'HEAD',
+          ])).trimEnd().split('\n');
+          if (!folder || !gitDir || !commonDir || gitDir === commonDir || !inside(folder, cwd)) continue;
+          if (!worktrees.has(folder)) worktrees.set(folder, { branch, sessions: [] });
+          worktrees.get(folder)!.sessions.push(...sessions);
+        } catch { /* Deleted, inaccessible, or regular directories do not belong in the worktree inventory. */ }
+      }
+    }));
+    const pendingWorktrees = worktrees.entries();
+    const items: SessionWorkspaceUsage[] = [];
+    const checkBusy = options.inventoryUsageCheck?.() || options.checkBusy;
+    await Promise.all(Array.from({ length: 4 }, async () => {
+      for (const [folder, entry] of pendingWorktrees) {
+        const bySession = new Map<string, SessionWorkspaceUsage['sessions'][number]>();
+        for (const { id, title, updatedAt } of entry.sessions) {
+          const previous = bySession.get(id);
+          if (!previous || updatedAt > previous.updatedAt) bySession.set(id, { id, title, updatedAt });
+        }
+        const sessions = [...bySession.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+        const [checked, bytes] = await Promise.all([
+          preview(folder, true, checkBusy),
+          exec('du', ['-skx', folder], { timeout: 15_000, maxBuffer: 64 * 1024 })
+            .then(result => {
+              const kilobytes = result.stdout.match(/^(\d+)\s/)?.[1];
+              return kilobytes === undefined ? null : Number(kilobytes) * 1024;
+            }, () => null),
+        ]);
+        items.push({ path: folder, branch: entry.branch, bytes, sessions, eligible: checked.eligible, reason: checked.reason });
+      }
+    }));
+    return items.sort((a, b) => (b.bytes ?? -1) - (a.bytes ?? -1)
+      || b.sessions[0].updatedAt.localeCompare(a.sessions[0].updatedAt) || a.path.localeCompare(b.path));
+  }
+  async function erase(raw: string, expected: { revision?: string; identity?: Identity; discardChanges?: true; sessionWorktree?: true }) {
     if (!options.canRun()) throw error('工作台正在停止或重启，请稍后重试');
-    const folder = await location(raw, true);
+    const folder = await location(raw, true, expected.sessionWorktree);
     return options.withWorkspace(folder, `workspace-delete:${randomUUID()}`, () => withProjectGitLock(folder, async () => {
       const refsBefore = await refsDigest(folder);
-      const checked = await inspect(folder, true);
+      const checked = await inspect(folder, true, expected.sessionWorktree);
+      if (expected.sessionWorktree) await assertCleanSessionWorktree(checked);
       if (checked.reason) throw error(checked.reason);
       if (expected.revision && checked.revision !== expected.revision) throw error('工作区状态已变化，请刷新后重新确认删除');
       if (expected.identity && !sameIdentity(expected.identity, checked.id)) throw error('工作区目录或仓库已被替换，未执行删除');
@@ -362,6 +448,7 @@ export async function createProjectWorkspaces(rawDirectory: string, options: Pro
       // 删除前先确认配置可持久化；保存失败时绝不触碰工作区。
       await persist(rules);
       await options.checkBusy(folder);
+      if (expected.sessionWorktree) assertSessionAssociation(folder);
       if (!sameIdentity(checked.id, await identity(folder)) || await fs.realpath(folder) !== folder) throw error('工作区目录已变化，未执行删除');
       const quarantine = path.join(path.dirname(folder), `.delivery-delete-${randomUUID()}`);
       const linked = checked.id.gitDir !== checked.id.common;
@@ -379,6 +466,7 @@ export async function createProjectWorkspaces(rawDirectory: string, options: Pro
           throw error('工作区状态已变化，未执行删除');
         }
         await assertGitIdle(gitDir, linked);
+        if (expected.sessionWorktree) await assertNoIgnoredFiles(quarantine);
         await moveIntoTrash(quarantine, folder, linked, checked);
       } catch (cause) {
         if (moved && await fs.lstat(quarantine).then(() => true, () => false)
@@ -441,7 +529,7 @@ export async function createProjectWorkspaces(rawDirectory: string, options: Pro
       await persist(rules.map(value => value.path === rule.path ? next : value));
   }
   return {
-    preview,
+    preview, sessionInventory,
     list: () => rules.map(publicRule),
     listTrash,
     restoreTrash,
@@ -449,7 +537,8 @@ export async function createProjectWorkspaces(rawDirectory: string, options: Pro
       const input = workspaceRemovalInputSchema.parse(raw);
       return exclusive(async () => {
         if (input.confirmName !== path.basename(input.path)) throw error('请输入当前工作区文件夹名称以确认删除', 400);
-        const removed = await erase(input.path, { revision: input.revision, discardChanges: input.discardChanges });
+        if (input.sessionWorktree && input.discardChanges) throw error('会话工作区清理不能丢弃改动', 400);
+        const removed = await erase(input.path, input);
         const previous = rules.find(rule => rule.path === removed);
         if (previous) await persist(rules.map(rule => rule.path === removed ? { ...rule, status: 'deleted' as const,
           checkedAt: new Date(now()).toISOString(), message: '工作区已手动删除' } : rule));

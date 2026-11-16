@@ -22,6 +22,6 @@ async function open() {
 }
 </script>
 
-<template><el-button class="terminal-button" :loading="opening" :disabled="!workspacePath" :title="`在系统终端打开：${workspacePath}`" @click="open"><Terminal :size="14" />打开终端</el-button></template>
+<template><el-button class="terminal-button" :loading="opening" :disabled="!workspacePath" :title="`在系统默认终端打开：${workspacePath}`" @click="open"><Terminal :size="14" />打开终端</el-button></template>
 
 <style scoped>.terminal-button{flex-shrink:0;gap:5px;margin-left:0}</style>

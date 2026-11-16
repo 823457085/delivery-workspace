@@ -72,7 +72,10 @@ const savingNote = ref(false);
 const showTutorDrawer = ref(false);
 const tutorMode = ref<'diagnose' | 'review' | 'quiz'>('diagnose');
 const diagnosing = ref(false);
+const diagnosisRun = ref<GoCommandRunResult | null>(null);
 const vetResult = ref<GoCommandRunResult | null>(null);
+const diagnosisPassed = computed(() => diagnosisRun.value?.exitCode === 0 && vetResult.value?.exitCode === 0);
+const failedDiagnosis = computed(() => [diagnosisRun.value, vetResult.value].find(result => result && result.exitCode !== 0));
 const quizAnswers = ref<Record<string, number>>({});
 
 const snapshotOptions = [
@@ -321,16 +324,15 @@ async function applyDaySnapshot(snapshotKey = selectedSnapshot.value, skipConfir
 }
 
 async function saveCurrentFile() {
-  if (!selectedFilePath.value) return;
+  const filePath = selectedFilePath.value;
+  const content = editorContent.value;
+  if (!filePath || savingFile.value) return false;
   savingFile.value = true;
   try {
     const res = await fetch('/api/go-learning/sandbox/save-file', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Delivery-Confirmed': 'yes' },
-      body: JSON.stringify({
-        filePath: selectedFilePath.value,
-        content: editorContent.value,
-      }),
+      body: JSON.stringify({ filePath, content }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.message || '保存文件失败');
@@ -338,19 +340,20 @@ async function saveCurrentFile() {
       overview.value.sandboxFiles = cleanSandboxFiles(data.sandboxFiles);
       overview.value.tasksJsonContent = data.tasksJsonContent;
     }
-    editorDirty.value = false;
-    ElMessage.success(`已保存 ${selectedFilePath.value}`);
+    const savedCurrentEdit = selectedFilePath.value === filePath && editorContent.value === content;
+    if (savedCurrentEdit) editorDirty.value = false;
+    ElMessage.success(`已保存 ${filePath}`);
+    return savedCurrentEdit;
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '保存文件失败');
+    return false;
   } finally {
     savingFile.value = false;
   }
 }
 
-async function runSandboxCommand(action: GoCommandAction, args?: string[], switchTab = true) {
-  if (editorDirty.value) {
-    await saveCurrentFile();
-  }
+async function runSandboxCommand(action: GoCommandAction, args?: string[], switchTab = true): Promise<GoCommandRunResult | undefined> {
+  if (runningCommand.value || (editorDirty.value && !await saveCurrentFile())) return;
   if (switchTab) {
     rightTab.value = 'Runner';
   }
@@ -361,26 +364,33 @@ async function runSandboxCommand(action: GoCommandAction, args?: string[], switc
       headers: { 'Content-Type': 'application/json', 'X-Delivery-Confirmed': 'yes' },
       body: JSON.stringify({ action, ...(args ? { args } : {}) }),
     });
-    if (!res.ok) throw new Error('fallback');
-    const data = await res.json();
+    const isJson = res.headers.get('content-type')?.includes('application/json');
+    if (res.status === 404 || (res.ok && !isJson)) {
+      const dayMeta = FALLBACK_DAYS.find(d => d.day === currentDay.value?.day) || FALLBACK_DAYS[0]!;
+      commandResult.value = {
+        action,
+        command: action === 'run' ? 'go run .' : `go ${action} ./...`,
+        exitCode: 0,
+        stdout: dayMeta.expectedRunOutput,
+        stderr: '',
+        durationMs: 12,
+        ranAt: new Date().toISOString(),
+        simulated: true,
+        notice: '预期输出预览（重启工作台后端并安装 Go 后将直接执行本机二进制命令）',
+      };
+      return;
+    }
+    const data = isJson ? await res.json() : undefined;
+    if (!res.ok || !data?.result) throw new Error(data?.message || 'Go 命令执行失败');
     commandResult.value = data.result;
     if (overview.value) {
       overview.value.sandboxFiles = cleanSandboxFiles(data.sandboxFiles);
       overview.value.tasksJsonContent = data.tasksJsonContent;
     }
-  } catch {
-    const dayMeta = FALLBACK_DAYS.find(d => d.day === currentDay.value?.day) || FALLBACK_DAYS[0]!;
-    commandResult.value = {
-      action,
-      command: action === 'run' ? 'go run .' : `go ${action} ./...`,
-      exitCode: 0,
-      stdout: dayMeta.expectedRunOutput,
-      stderr: '',
-      durationMs: 12,
-      ranAt: new Date().toISOString(),
-      simulated: true,
-      notice: '预期输出预览（重启工作台后端并安装 Go 后将直接执行本机二进制命令）',
-    };
+    return data.result;
+  } catch (error) {
+    commandResult.value = null;
+    ElMessage.error(error instanceof Error ? error.message : 'Go 命令执行失败');
   } finally {
     runningCommand.value = false;
   }
@@ -448,7 +458,7 @@ async function copyText(text: string, label = '代码') {
 
 // ---------- In-Studio AI Tutor Logic ----------
 const parsedErrorHints = computed(() => {
-  const errText = `${commandResult.value?.stderr || ''}\n${vetResult.value?.stderr || ''}`.trim();
+  const errText = failedDiagnosis.value?.stderr.trim() || '';
   if (!errText) return [];
   const hints: { title: string; detail: string; fix: string }[] = [];
   if (/declared and not used/i.test(errText)) {
@@ -749,19 +759,22 @@ async function askAgentTutor(mode: 'diagnose' | 'review' | 'quiz') {
 
   if (mode === 'diagnose') {
     diagnosing.value = true;
+    diagnosisRun.value = null;
+    vetResult.value = null;
     try {
-      await runSandboxCommand('run', undefined, false);
+      const result = await runSandboxCommand('run', undefined, false);
+      if (!result || result.simulated || editorDirty.value) return;
+      diagnosisRun.value = result;
       const res = await fetch('/api/go-learning/sandbox/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Delivery-Confirmed': 'yes' },
         body: JSON.stringify({ action: 'vet' }),
       });
-      if (res.ok) {
-        const data = await res.json();
-        vetResult.value = data.result;
-      }
-    } catch {
-      // Ignore vet error in fallback mode
+      const data = res.headers.get('content-type')?.includes('application/json') ? await res.json() : undefined;
+      if (!res.ok || !data?.result) throw new Error(data?.message || 'Go 静态检查失败');
+      if (!data.result.simulated) vetResult.value = data.result;
+    } catch (error) {
+      ElMessage.error(error instanceof Error ? error.message : 'Go 静态检查失败');
     } finally {
       diagnosing.value = false;
     }
@@ -779,19 +792,13 @@ function sendToAgentStudio() {
 
   let prompt = '';
   if (tutorMode.value === 'diagnose') {
-    const hasErr =
-      (commandResult.value && commandResult.value.exitCode !== 0) ||
-      (vetResult.value && vetResult.value.exitCode !== 0);
-    if (hasErr) {
-      const errOut =
-        commandResult.value?.stderr ||
-        commandResult.value?.stdout ||
-        vetResult.value?.stderr ||
-        vetResult.value?.stdout ||
-        '';
+    if (failedDiagnosis.value) {
+      const errOut = failedDiagnosis.value.stderr || failedDiagnosis.value.stdout;
       prompt = `我正在「Go 实训工坊」学习【${day.title}】，沙盒目录为 \`${sandboxPath}\`。\n执行编译检查时遇到以下报错：\n\`\`\`\n${errOut}\n\`\`\`\n\n${codeSnippet}\n\n请用通俗的大白话帮我分析报错原因，并给出修改后的代码。`;
+    } else if (diagnosisPassed.value) {
+      prompt = `我正在「Go 实训工坊」学习【${day.title}】，沙盒目录为 \`${sandboxPath}\`。\n目前 \`go run .\` 和 \`go vet\` 均已通过（Exit 0），输出结果如下：\n\`\`\`\n${diagnosisRun.value?.stdout || '无输出'}\n\`\`\`\n\n${codeSnippet}\n\n请帮我结合本日核心知识点（${day.keywords.join('、')}）讲解一下这段代码的执行流程与潜在易错点。`;
     } else {
-      prompt = `我正在「Go 实训工坊」学习【${day.title}】，沙盒目录为 \`${sandboxPath}\`。\n目前 \`go run .\` 和 \`go vet\` 均已通过（Exit 0），输出结果如下：\n\`\`\`\n${commandResult.value?.stdout || '无输出'}\n\`\`\`\n\n${codeSnippet}\n\n请帮我结合本日核心知识点（${day.keywords.join('、')}）讲解一下这段代码的执行流程与潜在易错点。`;
+      prompt = `我正在「Go 实训工坊」学习【${day.title}】，本机编译和静态检查结果尚不完整。\n\n${codeSnippet}\n\n请帮我检查当前代码并指出可能的问题。`;
     }
   } else if (tutorMode.value === 'review') {
     prompt = `我正在「Go 实训工坊」学习【${day.title}】，沙盒目录为 \`${sandboxPath}\`。\n${codeSnippet}\n\n请结合 Go 语言工程最佳实践（指针接收者、显式 error 处理、并发安全等）帮我深入审查这段代码，并给出优化建议。`;
@@ -1617,7 +1624,7 @@ onMounted(() => {
           </div>
           <template v-else>
             <div
-              v-if="(!commandResult || commandResult.exitCode === 0) && (!vetResult || vetResult.exitCode === 0)"
+              v-if="diagnosisPassed"
               class="tutor-status-card is-ok"
             >
               <div class="tutor-status-head">
@@ -1625,16 +1632,16 @@ onMounted(() => {
                 <strong>当前沙盒代码编译运行与静态检查全部通过（0 报错）！</strong>
               </div>
               <p>
-                执行命令 <code>{{ commandResult?.command || 'go run .' }}</code> 退出码为 <code>0</code>，<code>go vet</code> 未发现任何静态隐患。
+                执行命令 <code>{{ diagnosisRun?.command || 'go run .' }}</code> 退出码为 <code>0</code>，<code>go vet</code> 未发现任何静态隐患。
               </p>
-              <pre v-if="commandResult?.stdout" class="tutor-mini-pre">{{ commandResult.stdout }}</pre>
+              <pre v-if="diagnosisRun?.stdout" class="tutor-mini-pre">{{ diagnosisRun.stdout }}</pre>
             </div>
 
-            <div v-else class="tutor-status-card is-err">
+            <div v-else-if="failedDiagnosis" class="tutor-status-card is-err">
               <div class="tutor-status-head">
-                <strong>检测到编译或静态检查异常（Exit {{ commandResult?.exitCode || vetResult?.exitCode }}）</strong>
+                <strong>检测到编译或静态检查异常（Exit {{ failedDiagnosis.exitCode }}）</strong>
               </div>
-              <pre class="tutor-mini-pre err">{{ commandResult?.stderr || vetResult?.stderr || commandResult?.stdout }}</pre>
+              <pre class="tutor-mini-pre err">{{ failedDiagnosis.stderr || failedDiagnosis.stdout }}</pre>
               <div class="tutor-hints-list">
                 <div v-for="(h, idx) in parsedErrorHints" :key="idx" class="tutor-hint-item">
                   <strong>💡 大白话原因：{{ h.title }}</strong>

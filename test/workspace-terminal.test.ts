@@ -4,7 +4,7 @@ import http from 'node:http';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { createWorkspaceAppRoute, createWorkspaceTerminalRoute, openWorkspaceCursor, prepareCursorWorkspace } from '../server/workspace-terminal.js';
+import { createWorkspaceAppRoute, createWorkspaceTerminalRoute, openWorkspaceCursor, openWorkspaceTerminal, prepareCursorWorkspace } from '../server/workspace-terminal.js';
 
 async function fixture(t: TestContext, app: 'Terminal' | 'Cursor', open: (directory: string) => Promise<void>) {
   const handler = app === 'Terminal' ? createWorkspaceTerminalRoute(open) : createWorkspaceAppRoute(app, open);
@@ -119,8 +119,26 @@ for (const app of ['Terminal', 'Cursor'] as const) {
     fail = true;
     const failed = await post({ workspacePath: os.tmpdir() });
     assert.equal(failed.status, 400);
-    assert.match((await failed.json()).message, new RegExp(app));
+    assert.match((await failed.json()).message, app === 'Terminal' ? /默认终端/ : /Cursor/);
     fail = wait = false;
     assert.equal((await post({ workspacePath: os.tmpdir() })).status, 200);
   });
 }
+
+test('终端使用系统返回的应用路径和原始目录路径，不打开查询文件', { skip: process.platform !== 'darwin' }, async () => {
+  let probe = '';
+  const folder = '/tmp/中 文 + 项目';
+  const calls: { executable: string; args: string[] }[] = [];
+  await openWorkspaceTerminal(folder, async (executable, args) => {
+    calls.push({ executable, args });
+    if (executable === '/usr/bin/osascript') {
+      probe = args.at(-1)!;
+      assert.equal(path.extname(probe), '.command');
+      assert.equal(await fs.readFile(probe, 'utf8'), '');
+      return { stdout: '/Applications/iTerm.app\n' };
+    }
+    return { stdout: '' };
+  });
+  assert.deepEqual(calls.slice(1), [{ executable: '/usr/bin/open', args: ['-a', '/Applications/iTerm.app', folder] }]);
+  await assert.rejects(fs.stat(probe), { code: 'ENOENT' });
+});

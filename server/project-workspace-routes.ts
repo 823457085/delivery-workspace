@@ -6,14 +6,23 @@ export function createProjectWorkspaceRoutes(service: Awaited<ReturnType<typeof 
   body(request: IncomingMessage, limit?: number): Promise<unknown>; port: number;
 }) {
   const base = '/api/projects/workspaces';
+  const sessionInventory = base + '/session-inventory';
   return async (request: IncomingMessage, response: ServerResponse, url: URL): Promise<boolean> => {
-    if (![base, base + '/trash', base + '/delete', base + '/schedule', base + '/restore'].includes(url.pathname)) return false;
+    if (![base, sessionInventory, base + '/trash', base + '/delete', base + '/schedule', base + '/restore'].includes(url.pathname)) return false;
     const local = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(request.socket.remoteAddress || '')
       && [`localhost:${io.port}`, `127.0.0.1:${io.port}`].includes(request.headers.host || '');
     if (!local) { io.json(response, 403, { message: '请从本机工作台管理工作区' }); return true; }
+    if (url.pathname === sessionInventory) {
+      if (request.method !== 'GET') { io.json(response, 405, { message: '请求方法不支持' }); return true; }
+      if (request.headers.origin && request.headers.origin !== `http://${request.headers.host}`) {
+        io.json(response, 403, { message: '请从本机工作台查看会话工作区' }); return true;
+      }
+      io.json(response, 200, { items: await service.sessionInventory() }); return true;
+    }
     if (request.method === 'GET' && url.pathname === base) {
       const selected = url.searchParams.get('path');
-      io.json(response, 200, selected ? await service.preview(selected) : { rules: service.list() }); return true;
+      io.json(response, 200, selected ? await service.preview(selected, url.searchParams.get('sessionWorktree') === '1')
+        : { rules: service.list() }); return true;
     }
     if (request.method === 'GET' && url.pathname === base + '/trash') {
       io.json(response, 200, { items: await service.listTrash() }); return true;

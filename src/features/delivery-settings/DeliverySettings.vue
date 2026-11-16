@@ -22,6 +22,7 @@ const IntegrationPluginsCard = defineAsyncComponent(() => import('./IntegrationP
 const CustomPluginManager = defineAsyncComponent(() => import('../custom-plugins/CustomPluginManager.vue'));
 const WorkspaceReportsCard = defineAsyncComponent(() => import('./WorkspaceReportsCard.vue'));
 const WorkspaceStorageCard = defineAsyncComponent(() => import('./WorkspaceStorageCard.vue'));
+const SessionWorkspaceInventory = defineAsyncComponent(() => import('./SessionWorkspaceInventory.vue'));
 
 const integrations = useIntegrationPlugins();
 const route = useRoute(), router = useRouter();
@@ -376,6 +377,7 @@ async function save() {
               </div>
             </section>
             <WorkspaceStorageCard v-if="activeTab === 'runtime'" />
+            <SessionWorkspaceInventory v-if="activeTab === 'runtime'" />
             <p class="settings-boundary">凭据和自动交付开关保存在当前工作台本机目录；此处显示已保存的运行配置。</p>
           </div>
         </QueryState>

@@ -934,8 +934,9 @@ onBeforeUnmount(() => {
           <template #header-actions>
             <span id="conversation-connection-status"></span>
             <button v-if="!mobile" type="button" class="side-chat-action" aria-controls="agent-side-chat"
-              aria-label="侧边聊天" title="侧边聊天" :aria-expanded="sideChatOpen" @click="sideChatOpen = !sideChatOpen">
-              <PanelRightOpen :size="16" />
+              :aria-label="sideChatOpen ? '收起侧边聊天' : '打开侧边聊天'" :title="sideChatOpen ? '收起侧边聊天' : '打开侧边聊天'"
+              :aria-expanded="sideChatOpen" @click="sideChatOpen = !sideChatOpen">
+              <component :is="sideChatOpen ? PanelRightClose : PanelRightOpen" :size="16" />
             </button>
           </template>
         </AgentConversation>

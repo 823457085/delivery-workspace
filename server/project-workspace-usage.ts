@@ -7,12 +7,14 @@ import { parseLsofCwds } from './port-monitor.js';
 const exec = promisify(execFile);
 const overlaps = (a: string, b: string) => a === b || a.startsWith(b + path.sep) || b.startsWith(a + path.sep);
 
-/** 删除前检查任务与进程的实际目录；无法核验占用时不允许删除。 */
-export function createWorkspaceUsageCheck(activePaths: () => string[], readCwds = async () => {
+export async function readWorkspaceCwds() {
   try {
     return (await exec('lsof', ['-nP', '-a', '-d', 'cwd', '-Fpn'], { timeout: 10_000, maxBuffer: 4_000_000 })).stdout;
   } catch { throw new Error('无法核验本机进程是否正在使用工作区，请稍后重试'); }
-}) {
+}
+
+/** 删除前检查任务与进程的实际目录；无法核验占用时不允许删除。 */
+export function createWorkspaceUsageCheck(activePaths: () => string[], readCwds = readWorkspaceCwds) {
   return async (directory: string) => {
     const canonical = await fs.realpath(directory);
     for (const candidate of activePaths()) {
