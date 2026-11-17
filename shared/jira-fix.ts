@@ -26,7 +26,14 @@ export const jiraFixInputSchema = z.object({
 }).strict().refine(value => value.baseBranch !== value.branch, '修复分支不能与基准分支相同');
 export const jiraFixStartSchema = z.object({ requestId: z.uuid(), input: jiraFixInputSchema,
   authorization: z.literal('clone-and-fix-jira') }).strict();
+export const jiraFixReconcileSchema = z.object({
+  outcome: z.enum(['started', 'not_started']),
+  runId: z.string().trim().min(1).max(200).optional(),
+  note: z.string().trim().max(500).default(''),
+  authorization: z.literal('reconcile-uncertain-jira-fix'),
+}).strict();
 export type JiraFixInput = z.infer<typeof jiraFixInputSchema>;
+export type JiraFixReconcileInput = z.infer<typeof jiraFixReconcileSchema>;
 export interface JiraFixProject {
   projectKey: string; name: string; repository: string; parentDirectory: string; baseBranch: string;
 }
@@ -40,6 +47,8 @@ export interface JiraFixRecord {
   runStatus?: AgentRunStatus; runError?: string;
   handoff?: JiraFixHandoffState;
   groupRoomId?: string; groupProgress?: import('./agent-group-chat.js').GroupExecutionProgress;
+  reconciledAt?: string;
+  reconcileNote?: string;
 }
 export function repositoryIdentity(repository: string) {
   return repository.trim().replace(/^\w+@([^:]+):/, '$1/').replace(/^(?:https?|ssh):\/\/(?:[^@/]+@)?/, '').replace(/(?:\.git)?\/?$/, '');

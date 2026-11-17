@@ -76,8 +76,14 @@ export interface TeamServiceOptions {
   readWorkspaceCandidates?: () => Promise<string[]>;
   readAcceptance?: (recordId: string) => DeliveryAcceptanceRecord | undefined;
   readLegacyAcceptanceSource?: DeliveryAcceptanceSourceResolver;
+  /** 审查期间候选连续变化触发自动复验的最大次数，防止审查岗位改文件导致死循环。 */
+  maxReverifyCount?: number;
+  /** 可选默认最大返工轮次（默认保留无限轮次兼容，显式配置时生效）。 */
+  defaultMaxRounds?: number | null;
 }
 export async function createAgentTeamService(directory: string, runtime: Runtime, options: TeamServiceOptions = {}) {
+  const maxReverifyCount = Math.max(1, options.maxReverifyCount ?? 6);
+  const configuredMaxRounds = options.defaultMaxRounds ?? null;
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
   directory = await fs.realpath(directory);
   const profiles = await createAgentProfileStore(directory, { readRuntime: runtime.health, writeJson: options.writeJson });
@@ -86,7 +92,7 @@ export async function createAgentTeamService(directory: string, runtime: Runtime
   const artifactRoot = path.join(directory, 'team-artifacts');
   let tasks: AdvancedTeamTask[] = [], revision = 0, closed = false, recovering = true;
   try { const value = JSON.parse(await fs.readFile(file, 'utf8')); if (value.version !== 1 || !Array.isArray(value.tasks)) throw new Error('团队任务结构无效');
-    tasks = value.tasks.map((task: AdvancedTeamTask) => ({ ...task, maxRounds: null, budgetLimit: null,
+    tasks = value.tasks.map((task: AdvancedTeamTask) => ({ ...task, maxRounds: configuredMaxRounds ?? null, budgetLimit: null,
       // Historical snapshots may contain earlier role metadata. Migrate permissions without
       // revalidating every past task against the current editable-profile schema.
       profileConfig: { ...normalizeTeamAccessModes(task.profileConfig) as TeamTask['profileConfig'],
@@ -124,14 +130,14 @@ export async function createAgentTeamService(directory: string, runtime: Runtime
   function taskRunBusy(task: AdvancedTeamTask, run: AgentRun) {
     if (!nativeBusy(run)) return false;
     if (runtime.isRunActive(run.id) || ['queued', 'running'].includes(run.status) || run.pid !== null
-      || run.recovery?.state === 'active' || processIsAlive(run.recovery?.previousPid || null)) return true;
+      || run.recovery?.state === 'active' || processIsAlive(run.recovery?.previousPid || null, run.recovery?.previousPidStartedAt)) return true;
     const node = task.nodes.find(item => item.id === run.team?.nodeId), current = node && runFor(node);
     if (!node || !current || current.id === run.id || node.receiptRunId !== current.id) return true;
     const prefix = `team:${task.id}:${node.id}:`;
     const attempt = (item: AgentRun) => item.team?.taskId === task.id && item.team.nodeId === node.id && item.team.stageKey.startsWith(prefix)
       && /^[1-9]\d*$/.test(item.team.stageKey.slice(prefix.length)) ? Number(item.team.stageKey.slice(prefix.length)) : 0;
     return !(attempt(run) && attempt(current) > attempt(run) && ['completed', 'failed', 'cancelled'].includes(current.status)
-      && !nativeBusy(current) && !processIsAlive(current.recovery?.previousPid || null));
+      && !nativeBusy(current) && !processIsAlive(current.recovery?.previousPid || null, current.recovery?.previousPidStartedAt));
   }
   const planResult = (node: Node, run: AgentRun) => node.stage === 'plan' && !node.purpose && node.planRepair?.runId === run.id
     ? node.planRepair.result : run.result;
@@ -1010,6 +1016,13 @@ export async function createAgentTeamService(directory: string, runtime: Runtime
       task.reason = [reason, ...new Set(blockers), '只读验证结果已保留，等待阻塞条件更新或新的处理要求；未安排代码返工或重复验证。'].join('；');
       return;
     }
+    if (typeof task.maxRounds === 'number' && task.round >= task.maxRounds) {
+      task.state = 'needs_decision';
+      task.candidateEvidenceAt = undefined;
+      task.reason = `${reason}；自动返工已达轮次上限（${task.maxRounds} 轮），等待你确认后续安排或追加轮次`;
+      if (task.chat) coordination(task, { phase: 'needs_input', text: task.reason });
+      return;
+    }
     task.round += 1; task.state = 'running'; task.reason = reason; task.candidateEvidenceAt = undefined;
     const reworkReason = JSON.stringify({ reason, findings });
     const authors = [...new Set(task.nodes.filter(node => node.stage === 'implement').map(node => node.profileId))];
@@ -1055,6 +1068,13 @@ export async function createAgentTeamService(directory: string, runtime: Runtime
     const template = task.plan!.templateId, snapshot = verified?.snapshot || await version(task);
     if (!same(snapshot, await version(task))) {
       task.reverifyCount += 1;
+      if (task.reverifyCount > maxReverifyCount) {
+        task.state = 'needs_decision';
+        task.candidateEvidenceAt = undefined;
+        task.reason = `候选代码在验证与审查交接间连续变化 ${task.reverifyCount} 次（超过自动复验上限 ${maxReverifyCount} 次），已暂停循环，请人工核对改动后再决定是否继续`;
+        if (task.chat) coordination(task, { phase: 'needs_input', text: task.reason });
+        return;
+      }
       add(task, 'verify', 'verifier'); task.reason = '验证后候选变化，原证据失效，重新验证'; return;
     }
     let authors = [...new Set(task.nodes.filter(node => node.stage === 'implement' && node.purpose !== 'conflict').map(node => node.profileId))];
@@ -1554,8 +1574,18 @@ export async function createAgentTeamService(directory: string, runtime: Runtime
       if (same(reviewed[0].snapshot, await version(task))) {
         task.state = task.chat ? 'completed' : 'awaiting_acceptance'; task.candidateEvidenceAt = now();
         task.reason = task.chat ? '验证与审查已通过，结果已生成' : '当前候选的验证与全部审查单元通过，等待人工验收';
-      } else { task.reverifyCount += 1;
-        for (const node of reviewed) node.status = 'skipped'; add(task, 'verify', 'verifier'); task.state = 'running'; task.reason = '审查期间候选变化，重新验证'; }
+      } else {
+        task.reverifyCount += 1;
+        for (const node of reviewed) node.status = 'skipped';
+        if (task.reverifyCount > maxReverifyCount) {
+          task.state = 'needs_decision';
+          task.candidateEvidenceAt = undefined;
+          task.reason = `审查期间候选代码已连续变化 ${task.reverifyCount} 次（超过自动复验上限 ${maxReverifyCount} 次），已暂停循环，请人工核对审查岗位改动后再决定是否继续`;
+          if (task.chat) coordination(task, { phase: 'needs_input', text: task.reason });
+        } else {
+          add(task, 'verify', 'verifier'); task.state = 'running'; task.reason = '审查期间候选变化，重新验证';
+        }
+      }
     }
     if (nodes.some(node => node.stage === 'diagnose' && node.status === 'completed')) {
       task.state = task.chat ? 'completed' : 'awaiting_acceptance'; task.candidateEvidenceAt = now(); task.reason = '诊断报告已生成，源工作区未被修改';
@@ -1577,7 +1607,7 @@ export async function createAgentTeamService(directory: string, runtime: Runtime
       if (dirty.stdout.trim()) throw new Error('并行固定基线要求干净 Git 工作区，请先处理已有改动或选择串行');
     }
     task.plan = plan; task.confirmedAt = now(); task.confirmedBy = by; task.state = 'running'; task.reason = '计划已确认';
-    task.budgetLimit = null; task.maxRounds = null;
+    task.budgetLimit = null; task.maxRounds = configuredMaxRounds ?? null;
     build(task); await save(task, 'workflow.decision'); await advance(task);
   }
   async function create(parentRunId: string, input: { objective: string; attachmentIds: string[]; requestId: string; templateId?: TeamTemplateId; workspacePath?: string; interactionMode?: 'chat'; accessMode?: AgentAccessMode; group?: TeamChatRequest['group'] }) {
@@ -1599,7 +1629,7 @@ export async function createAgentTeamService(directory: string, runtime: Runtime
       accessMode: input.accessMode === 'workspace' ? 'workspace' : 'full',
       objective: input.objective.trim(), attachmentIds: input.attachmentIds || [], requestedTemplateId: input.templateId,
       profileConfig: profiles.freeze(),
-      ...(input.group ? { groupRoomId: input.group.roomId, groupMembers: groupTeamMembers(input.group.config), groupCursorTrustPaths: [...input.group.cursorTrustPaths] } : {}), planRevision: 0, nodes: [], state: 'planning', round: 0, maxRounds: null,
+      ...(input.group ? { groupRoomId: input.group.roomId, groupMembers: groupTeamMembers(input.group.config), groupCursorTrustPaths: [...input.group.cursorTrustPaths] } : {}), planRevision: 0, nodes: [], state: 'planning', round: 0, maxRounds: configuredMaxRounds ?? null,
       budgetLimit: teamTemplateBudgets[input.templateId || 'engineering'].maxRuns, reverifyCount: 0, requestIds: {}, upgradedProfiles: [],
       ...(/^jira-fix:[0-9a-f-]{36}$/.test(parent?.task?.sourceId || '') ? { jiraFixId: parent!.task!.sourceId!.slice(9) } : {}),
       ...(baseHead ? { baseHead } : {}), baseSnapshot: await localWorkflowWorkspace.version(source, []), createdAt: now(), updatedAt: now() };

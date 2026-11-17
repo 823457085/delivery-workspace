@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, shallowRef } from 'vue';
+import { computed, onBeforeUnmount, onMounted } from 'vue';
 import { CalendarDays, GanttChart } from '@lucide/vue';
 import type { JiraIssue } from '../../../shared/hub';
 import { isDone } from '../../shared/format';
@@ -21,7 +21,7 @@ const props = withDefaults(
 const emit = defineEmits<{ inspect: [issue: JiraIssue]; selectDay: [day: string] }>();
 const calendarDate = defineModel<Date>({ required: true });
 
-const calendarMode = shallowRef<'month' | 'gantt'>('month');
+const calendarMode = defineModel<'month' | 'gantt'>('mode', { default: 'month' });
 
 const allIssues = computed<JiraIssue[]>(() => {
   if (props.items) return props.items;
@@ -514,12 +514,12 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onCalendarKeydown)
 .gantt-empty p { margin: 0 0 12px; }
 .gantt-empty-actions { display: inline-flex; align-items: center; gap: 8px; }
 
-:global(:root[data-theme='acid']) .calendar-subtitle-pill,
-:global(:root[data-theme='acid']) .calendar-mode-switch,
-:global(:root[data-theme='acid']) .calendar-mode-switch > button,
-:global(:root[data-theme='acid']) .calendar-kbd-hint kbd,
-:global(:root[data-theme='acid']) .gantt-key,
-:global(:root[data-theme='acid']) .gantt-bar {
+:root[data-theme='acid'] .calendar-subtitle-pill,
+:root[data-theme='acid'] .calendar-mode-switch,
+:root[data-theme='acid'] .calendar-mode-switch > button,
+:root[data-theme='acid'] .calendar-kbd-hint kbd,
+:root[data-theme='acid'] .gantt-key,
+:root[data-theme='acid'] .gantt-bar {
   border-radius: 0 !important;
 }
 

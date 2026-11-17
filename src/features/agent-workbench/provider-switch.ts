@@ -13,7 +13,7 @@ export function providerSwitchInput(conversation: AgentConversation, objective: 
     ...(selection.provider === 'codex' ? { serviceTier: selection.serviceTier } : {}),
     reasoningEffort: selection.provider !== 'cursor' ? selection.reasoningEffort : '',
     accessMode: mode === 'agent' ? selection.accessMode : 'workspace',
-    workspacePath: source.continuation?.workspacePath || source.workspacePath,
+    workspacePath: conversation.workspace?.workspacePath ?? (source.continuation?.workspacePath || source.workspacePath),
     objective,
   };
 }

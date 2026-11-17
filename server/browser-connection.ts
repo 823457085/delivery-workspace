@@ -26,6 +26,7 @@ export interface BrowserConnectionOptions {
   openChromeSettings?: () => Promise<void>;
   createSocket?: (endpoint: string) => BrowserSocket;
   timeoutMs?: number;
+  reconnectDelayMs?: number;
   now?: () => Date;
 }
 
@@ -118,6 +119,9 @@ export function createBrowserConnection(options: BrowserConnectionOptions) {
   let browserVersion: string | undefined;
   let lastVerifiedAt: string | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  let keepConnected = false;
+  let attemptedEndpoint: string | undefined;
   let removeListeners: (() => void) | undefined;
   let connectPromise: Promise<BrowserConnectionStatus> | undefined;
 
@@ -131,7 +135,36 @@ export function createBrowserConnection(options: BrowserConnectionOptions) {
     socket = undefined; endpoint = undefined; verified = false;
     if (ownSocket && ownSocket.readyState < 2) { try { ownSocket.close(); } catch { /* 已关闭。 */ } }
   };
-  const fail = (text: string) => { closeProbe(); phase = 'error'; message = text; };
+  const waitingForChrome = '正在等待日常 Chrome 恢复，检测到调试入口后会自动连接。';
+  function fail(text: string) {
+    const lostVerifiedConnection = verified;
+    closeProbe();
+    phase = keepConnected ? 'reconnecting' : 'error';
+    message = lostVerifiedConnection ? waitingForChrome : text;
+    scheduleReconnect();
+  }
+
+  function stopReconnect() {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = undefined;
+  }
+
+  function scheduleReconnect() {
+    if (!keepConnected || socket || reconnectTimer) return;
+    reconnectTimer = setTimeout(async () => {
+      reconnectTimer = undefined;
+      try {
+        const next = await readEndpoint(file);
+        // 同一个入口的重新授权失败后，等待新的 Chrome 入口或用户手动重试。
+        if (keepConnected && !socket && next && next !== attemptedEndpoint) await connect(next);
+      } catch {
+        // 下一次检查仍会尝试读取 Chrome 调试入口。
+      } finally {
+        scheduleReconnect();
+      }
+    }, options.reconnectDelayMs ?? 2500);
+    reconnectTimer.unref?.();
+  }
 
   async function inspect() {
     const [tool, chrome, publishedEndpoint, reuseEnabled] = await Promise.all([
@@ -143,17 +176,20 @@ export function createBrowserConnection(options: BrowserConnectionOptions) {
   async function status(): Promise<BrowserConnectionStatus> {
     const probe = await inspect();
     if (socket && endpoint !== probe.publishedEndpoint && probe.publishedEndpoint) {
-      closeProbe(); phase = 'ready'; message = 'Chrome 调试入口已变化，请重新连接。';
+      fail('Chrome 调试入口已变化，请重新连接。');
     }
     if (socket && socket.readyState > 1 && (phase === 'connected' || phase === 'connecting')) fail('Chrome 连接已关闭，请重新连接。');
-    if (platform !== 'darwin' || !probe.tool || !probe.chrome) {
-      closeProbe(); phase = 'unavailable';
-      message = platform !== 'darwin' ? '当前日常 Chrome 连接功能仅支持 macOS。'
-        : !probe.tool ? '未找到 agent-browser，请安装浏览器工具后重新检查。' : '未找到日常 Google Chrome，请安装后重新检查。';
-    } else if (phase === 'connected' && socket?.readyState === 1 && verified) {
+    if (phase === 'connected' && socket?.readyState === 1 && verified) {
       message = '已连接日常 Chrome。连接有效期间，后续工作台调用会沿用这次授权。';
     } else if (phase === 'connecting' && socket && socket.readyState < 2) {
       message = '正在连接日常 Chrome；如出现浏览器授权弹窗，请选择允许。';
+    } else if (keepConnected) {
+      phase = 'reconnecting';
+      if (!probe.publishedEndpoint || probe.publishedEndpoint !== attemptedEndpoint) message = waitingForChrome;
+    } else if (platform !== 'darwin' || !probe.tool || !probe.chrome) {
+      phase = 'unavailable';
+      message = platform !== 'darwin' ? '当前日常 Chrome 连接功能仅支持 macOS。'
+        : !probe.tool ? '未找到 agent-browser，请安装浏览器工具后重新检查。' : '未找到日常 Google Chrome，请安装后重新检查。';
     } else if (phase !== 'error') {
       phase = probe.publishedEndpoint ? 'ready' : 'setup_required';
       message = probe.publishedEndpoint ? '已检测到日常 Chrome 调试入口，点击连接并在浏览器中允许。'
@@ -172,11 +208,13 @@ export function createBrowserConnection(options: BrowserConnectionOptions) {
       if (platform !== 'darwin' || !await chromeAvailable()) return status();
       await openChromeSettings();
       if (phase === 'error') { phase = 'setup_required'; message = ''; }
-    } catch { fail('无法打开日常 Chrome 设置，请手动打开远程调试设置后重新检查。'); }
+    } catch {
+      return { ...await status(), message: '无法打开日常 Chrome 设置，请手动打开远程调试设置后重新检查。' };
+    }
     return status();
   }
 
-  function connect(): Promise<BrowserConnectionStatus> {
+  function connect(reconnectEndpoint?: string): Promise<BrowserConnectionStatus> {
     if (connectPromise) return connectPromise;
     const requestedBeforeDisconnect = disconnectGeneration;
     connectPromise = (async () => {
@@ -184,14 +222,21 @@ export function createBrowserConnection(options: BrowserConnectionOptions) {
       if (requestedBeforeDisconnect !== disconnectGeneration) return status();
       if (current.phase === 'connected' || current.phase === 'connecting') return current;
       const intent = ++generation;
-      try { await enableReuse(options.rootDirectory, now().toISOString()); }
-      catch { fail('无法保存浏览器连接设置，请检查工作台目录权限后重试。'); return status(); }
+      if (!reconnectEndpoint) {
+        try { await enableReuse(options.rootDirectory, now().toISOString()); }
+        catch {
+          if (intent === generation) fail('无法保存浏览器连接设置，请检查工作台目录权限后重试。');
+          return status();
+        }
+      }
       const probe = await inspect();
       if (intent !== generation) return status();
       if (platform !== 'darwin' || !probe.tool || !probe.chrome) return status();
+      if (reconnectEndpoint && (probe.publishedEndpoint !== reconnectEndpoint || attemptedEndpoint === reconnectEndpoint)) return status();
       if (!probe.publishedEndpoint) { phase = 'setup_required'; message = ''; return status(); }
       closeProbe(false);
       endpoint = probe.publishedEndpoint;
+      attemptedEndpoint = endpoint;
       try { socket = createSocket(endpoint); }
       catch { fail('无法连接日常 Chrome，请核对远程调试设置和浏览器授权后重试。'); return status(); }
       const ownSocket = socket;
@@ -212,7 +257,8 @@ export function createBrowserConnection(options: BrowserConnectionOptions) {
         }
         if (ownSocket.readyState !== 1) { fail('Chrome 连接已关闭，请重新连接。'); return; }
         relay = createChromeCdpRelay(ownSocket);
-        stopTimer(); verified = true; phase = 'connected';
+        stopTimer(); stopReconnect();
+        verified = true; keepConnected = true; attemptedEndpoint = undefined; phase = 'connected';
         browserVersion = response.result.product.replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 200);
         lastVerifiedAt = now().toISOString();
       };
@@ -237,6 +283,9 @@ export function createBrowserConnection(options: BrowserConnectionOptions) {
 
   async function disconnect(): Promise<BrowserConnectionStatus> {
     disconnectGeneration++;
+    keepConnected = false;
+    attemptedEndpoint = undefined;
+    stopReconnect();
     closeProbe(); phase = 'ready'; message = '';
     return status();
   }
@@ -251,5 +300,6 @@ export function createBrowserConnection(options: BrowserConnectionOptions) {
     else client.destroy();
   }
 
-  return { status, openSettings, connect, disconnect, taskEndpoint, upgrade };
+  return { status, openSettings, connect, disconnect, taskEndpoint, upgrade,
+    keepsConnection: () => keepConnected || !!socket || !!connectPromise };
 }

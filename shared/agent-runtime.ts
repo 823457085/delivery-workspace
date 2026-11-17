@@ -155,6 +155,7 @@ export interface AgentTaskLink {
   title: string;
   source: AgentTaskSource;
   sourceId?: string;
+  taskFlowUrl?: string;
   profileId?: AgentProfileId;
   workflow?: AgentTaskWorkflowLink;
 }
@@ -192,12 +193,27 @@ export interface AgentContinuation {
   forkSourceTurnId?: string;
 }
 
+export const maxAgentConversationWorkspaces = 10;
+
+export interface AgentConversationWorkspaceLocation {
+  workspacePath: string;
+  projectWorkspacePath: string;
+  branch: string;
+}
+
+/** 第一项是执行目录，附加目录与已提交轮次的路径分别保存。 */
+export interface AgentConversationWorkspace extends AgentConversationWorkspaceLocation {
+  additionalWorkspaces?: AgentConversationWorkspaceLocation[];
+}
+
 export interface AgentRun {
   recoveryOfRunId?: string;
   /** 重启只核对原轮次；恢复记录不代表业务验收，也不自动重派任务。 */
   recovery?: {
     previousStatus: 'running' | 'queued' | 'interrupted';
     previousPid: number | null;
+    /** 原执行进程启动时间；用于排除 PID 复用造成的“仍在运行”误判。 */
+    previousPidStartedAt?: string;
     state: 'pending' | 'active' | 'needs-review' | 'completed' | 'resumed';
     checkedAt: string;
     message: string;
@@ -226,6 +242,8 @@ export interface AgentRun {
   providerSwitch?: { from: AgentProvider; context: string };
   /** 权限变化时新建原生会话，保留工作台聊天背景，不继承旧会话的工具限制。 */
   accessTransition?: { fromMode: AgentRunMode; fromAccessMode: AgentAccessMode; context: string };
+  workspaceTransition?: { context: string };
+  additionalWorkspacePaths?: string[];
   /** 宿主已使用本机工具配置启动完全访问；缺省的旧受限 full 会话只迁移一次。 */
   nativeConfiguredTools?: true;
   id: string;
@@ -265,6 +283,8 @@ export interface AgentRun {
   status: AgentRunStatus;
   sessionId: string;
   pid: number | null;
+  /** ps lstart 采集的进程启动时间，仅用于重启后核对原进程身份。 */
+  pidStartedAt?: string;
   result: string;
   /** 仅派生于已持久化的当前结果版本；运行结束但尚在落盘时仍为 false，不写入账本。 */
   readonly resultReady?: boolean;
@@ -347,6 +367,7 @@ export interface AgentRuntimeDashboard {
   runs: AgentRun[];
   codexSessions: CodexSessionSummary[];
   conversationTitles: Record<string, string>;
+  conversationWorkspaces?: Record<string, AgentConversationWorkspace>;
   codexSync: CodexSyncState;
   codexUsage?: AgentUsageLimits;
   apiUsage?: AgentUsageLimits;

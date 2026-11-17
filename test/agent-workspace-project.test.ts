@@ -6,7 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
-import { createAgentRuntimeService, type AgentRuntimeAdapter } from '../server/agent-runtime.js';
+import { agentExecutionPrompt, createAgentRuntimeService, cursorRunArguments, type AgentRuntimeAdapter } from '../server/agent-runtime.js';
+import { createStateBackupStore } from '../server/state-backup.js';
 import type { CodexSessionSource } from '../server/codex-session-source.js';
 import type { AgentRun, CodexSessionSummary } from '../shared/agent-runtime.js';
 import { agentRunContextPath, agentRunProjectPath, buildAgentConversations, buildSyncedCodexConversation } from '../src/features/agent-workbench/conversation.js';
@@ -161,4 +162,115 @@ test('普通目录仍按原目录分组，显式未绑定和旧内部会话目�
     await service?.close();
     await fs.rm(directory, { recursive: true, force: true });
   }
+});
+
+test('运行中的会话可保存新工作区，旧队列完成后在同一会话创建新的执行线程', { timeout: 15000 }, async () => {
+  const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'agent-bind-workspace-')));
+  const runtimeDirectory = path.join(directory, 'data', 'agent-runtimes');
+  const selected = path.join(directory, '本地项目');
+  const linked = path.join(directory, '关联项目');
+  const linkedAlias = path.join(directory, '关联项目别名');
+  const another = path.join(directory, '另一个项目');
+  const calls: { cwd: string; linked?: string[]; resumeSessionId?: string; prompt: string }[] = [];
+  let releaseFirst!: () => void;
+  const firstGate = new Promise<void>(resolve => { releaseFirst = resolve; });
+  const adapter: AgentRuntimeAdapter = {
+    ...fixtureAdapter([]),
+    async execute(context) {
+      calls.push({ cwd: context.run.workspacePath, linked: context.run.additionalWorkspacePaths,
+        resumeSessionId: context.resumeSessionId, prompt: agentExecutionPrompt(context.run) });
+      await context.onSession(context.resumeSessionId || `fixture-${context.run.id}`);
+      if (context.run.objective === '原工作区首轮') await firstGate;
+      return `已完成：${context.run.objective}`;
+    },
+  };
+  const source: CodexSessionSource = { listSessions: async () => [], session: async () => { throw new Error('fixture has no source sessions'); } };
+  let service: Awaited<ReturnType<typeof createAgentRuntimeService>> | undefined;
+  try {
+    await Promise.all([fs.mkdir(selected), fs.mkdir(linked), fs.mkdir(another)]);
+    await fs.symlink(linked, linkedAlias);
+    const stateBackup = await createStateBackupStore(path.dirname(runtimeDirectory));
+    const options = { adapters: [adapter], codexSessionSource: source, stateBackup };
+    service = await createAgentRuntimeService(runtimeDirectory, options);
+    const first = await service.start({ provider: 'codex', mode: 'ask', model: '', objective: '原工作区首轮', workspacePath: '' });
+    const id = first.conversationId!;
+    const queued = await service.resume(first.id, '绑定前已排队');
+    assert.equal(queued.status, 'queued');
+    await assert.rejects(service.bindConversationWorkspace(id, first.workspacePath), /临时目录/);
+    const binding = await service.bindConversationWorkspace(id, [selected, linked, linkedAlias, selected]);
+    assert.deepEqual(binding, { id, workspace: {
+      workspacePath: selected, projectWorkspacePath: selected, branch: '',
+      additionalWorkspaces: [{ workspacePath: linked, projectWorkspacePath: linked, branch: '' }],
+    } });
+    assert.ok(service.knownWorkspacePaths().has(linked));
+    assert.equal(first.status, 'running');
+    assert.equal(queued.workspacePath, first.workspacePath);
+    assert.equal(queued.additionalWorkspacePaths, undefined);
+    await assert.rejects(service.resume(queued.id, '不应在旧目录发送'), /请等待/);
+    await assert.rejects(service.resume(first.id, '不应插入旧轮', undefined, undefined, [], undefined, 'next'), /不能将消息插入/);
+    await assert.rejects(service.pauseForEdit(first.id), /已选择其他工作区/);
+    releaseFirst();
+    await Promise.all([waitForResult(first), waitForResult(queued)]);
+
+    await service.close();
+    service = await createAgentRuntimeService(runtimeDirectory, options);
+    const dashboard = await service.dashboard();
+    assert.deepEqual(dashboard.conversationWorkspaces?.[id], binding.workspace);
+    assert.ok(dashboard.runs.every(run => run.workspacePath === first.workspacePath));
+    assert.equal(queued.sessionId, first.sessionId);
+
+    const next = await service.resume(queued.id, '在新项目继续');
+    await waitForResult(next);
+    assert.equal(next.conversationId, id);
+    assert.equal(next.workspacePath, selected);
+    assert.equal(next.sourceWorkspacePath, selected);
+    assert.deepEqual(next.additionalWorkspacePaths, [linked]);
+    assert.notEqual(next.sessionId, queued.sessionId);
+    assert.deepEqual(calls.map(call => call.cwd), [first.workspacePath, first.workspacePath, selected]);
+    assert.equal(calls[2].resumeSessionId, '');
+    assert.deepEqual(calls[2].linked, [linked]);
+    assert.ok(calls[2].prompt.includes(linked));
+    assert.equal(next.objective, '在新项目继续');
+    assert.match(calls[2].prompt, /绑定前已排队/);
+    assert.match(calls[2].prompt, /旧目录的授权不得迁移到新目录/);
+
+    const followup = await service.resume(next.id, '继续当前项目');
+    await waitForResult(followup);
+    assert.equal(calls[3].resumeSessionId, next.sessionId);
+    assert.equal(followup.workspaceTransition, undefined);
+    await service.bindConversationWorkspace(id, [selected, another]);
+    const relinked = await service.resume(followup.id, '只更换关联项目');
+    await waitForResult(relinked);
+    assert.equal(relinked.workspacePath, selected);
+    assert.notEqual(relinked.sessionId, followup.sessionId);
+    assert.deepEqual(calls[4].linked, [another]);
+    assert.equal(calls[4].resumeSessionId, '');
+    assert.ok(calls[4].prompt.includes('旧目录的授权不得迁移到新目录'));
+    await service.bindConversationWorkspace(id, [selected]);
+    const unlinked = await service.resume(relinked.id, '移除关联项目');
+    await waitForResult(unlinked);
+    assert.equal(calls[5].linked, undefined);
+    assert.equal(calls[5].resumeSessionId, '');
+    const saved = await service.bindConversationWorkspace(id, [selected]);
+    assert.deepEqual((await service.dashboard()).conversationWorkspaces?.[id], saved.workspace);
+    const unchanged = await service.resume(unlinked.id, '确认不重新启动原生会话');
+    await waitForResult(unchanged);
+    assert.equal(calls[6].resumeSessionId, unlinked.sessionId);
+    await service.removeConversation(id);
+    assert.equal((await service.dashboard()).conversationWorkspaces?.[id], undefined);
+    assert.deepEqual(await stateBackup.readJson('agent-runtimes/conversation-workspace-bindings.json'), {});
+  } finally {
+    releaseFirst();
+    await service?.close();
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('Cursor 使用原生参数附加目录，保留主目录和已有访问模式', () => {
+  const args = cursorRunArguments('/primary project', 'agent', '', '', '检查', 'workspace', '/primary project',
+    ['/second project', '/third project']);
+  assert.equal(args[args.indexOf('--workspace') + 1], '/primary project');
+  assert.deepEqual(args.flatMap((flag, index) => flag === '--add-dir' ? [args[index + 1]] : []), ['/second project', '/third project']);
+  assert.equal(args[args.indexOf('--sandbox') + 1], 'enabled');
+  assert.ok(!args.includes('--force'));
 });

@@ -211,11 +211,11 @@ onBeforeUnmount(() => {
 .fix-actions :deep(.el-button + .el-button) { margin-left: 0; }
 .handoff-state { display: block; margin-top: 6px; color: var(--ui-muted); font-size: 11px; }
 
-:global(:root[data-theme='acid']) .fix-telemetry-tile,
-:global(:root[data-theme='acid']) .records-toolbar,
-:global(:root[data-theme='acid']) .records-pills > button,
-:global(:root[data-theme='acid']) .fix-table,
-:global(:root[data-theme='acid']) .fix-copy-chip {
+:root[data-theme='acid'] .fix-telemetry-tile,
+:root[data-theme='acid'] .records-toolbar,
+:root[data-theme='acid'] .records-pills > button,
+:root[data-theme='acid'] .fix-table,
+:root[data-theme='acid'] .fix-copy-chip {
   border-radius: 0 !important;
 }
 

@@ -6,10 +6,12 @@ import ts from 'typescript';
 import { compile, computed, createRenderer, defineComponent, h, nextTick, onBeforeUnmount, reactive, shallowReactive,
   shallowRef, toRefs, watch, type ComputedRef } from 'vue';
 import type { AgentConversation } from '../src/features/agent-workbench/conversation.js';
-import { agentConversationCodePath, agentConversationProjectPath, agentRunStatus } from '../src/features/agent-workbench/conversation.js';
+import { agentConversationCodePaths, agentConversationWorkspacePaths, agentRunStatus } from '../src/features/agent-workbench/conversation.js';
 import { conversationDeliveries } from '../src/features/agent-workbench/conversation-deliveries.js';
+import { agentResultSummary } from '../src/features/agent-workbench/execution-summary.js';
 import { jiraDevTaskDeliveryId, jiraDevTaskWorkspacePaths, matchConversationJiraDevTask } from '../src/features/agent-workbench/jira-dev-context.js';
 import type { JiraDevTaskView } from '../shared/jira-dev.js';
+import { dateTime } from '../src/shared/format.js';
 
 const renderer = createRenderer<object, object>({
   createElement: () => ({}), createText: () => ({}), createComment: () => ({}),
@@ -35,6 +37,7 @@ function task(id = 'task-a', roomId?: string): JiraDevTaskView {
 function conversation(id = 'unbound', bound?: JiraDevTaskView): AgentConversation {
   const run = { id: `run-${id}`, workspacePath: bound?.launch?.workspacePath || `/sessions/${id}`, sourceWorkspacePath: bound?.projectPath || '',
     objective: '检查测试环境的字段来源', result: '', events: [], status: 'running',
+    createdAt: '2026-11-10T00:00:00Z', updatedAt: '2026-11-10T00:00:00Z',
     ...(bound ? { task: { sourceId: `requirement:${bound.taskId}` } } : {}) };
   return { id, title: run.objective, latest: run, runs: [run], source: 'workspace', loaded: true, updatedAt: '2026-11-10T00:00:00Z' } as AgentConversation;
 }
@@ -44,7 +47,7 @@ function deliveryFixture(initialConversation = conversation(), matchedJiraTask?:
   const props = shallowReactive({ conversation: initialConversation, matchedJiraTask,
     // 即使上游误传全量列表，当前会话组件也不能选择其中的任意任务。
     jiraTasks: [task(), task('task-b')], context: { jiraIssues: [], jobs: [], catchup: [], merges: [] },
-    record: undefined, loading: false, active: true, compact: true });
+    record: undefined, runLabel: undefined, loading: false, active: true, compact: true });
   const requestedTargets: string[] = [], displayedTargets = new Set<string>(), displayedCodePaths = new Set<string>();
   const remote = defineComponent({ props: ['targetId'], setup(remoteProps) {
     const id = String(remoteProps.targetId);
@@ -53,25 +56,27 @@ function deliveryFixture(initialConversation = conversation(), matchedJiraTask?:
     return () => h('remote-delivery');
   } });
   const code = defineComponent({ props: ['paths'], setup(codeProps) {
-    const paths = codeProps.paths as string[];
-    paths.forEach(path => displayedCodePaths.add(path));
-    onBeforeUnmount(() => paths.forEach(path => displayedCodePaths.delete(path)));
+    watch(() => codeProps.paths as string[], paths => {
+      displayedCodePaths.clear();
+      paths.forEach(path => displayedCodePaths.add(path));
+    }, { immediate: true });
+    onBeforeUnmount(() => displayedCodePaths.clear());
     return () => h('workspace-code');
   } });
   const stub = defineComponent({ setup: () => () => h('stub') });
   const names = tree.statements.flatMap(node => ts.isVariableStatement(node)
     ? node.declarationList.declarations.flatMap(declaration => ts.isIdentifier(declaration.name) ? [declaration.name.text] : [])
     : ts.isFunctionDeclaration(node) && node.name ? [node.name.text] : []);
-  let state!: { activeJiraTask: ComputedRef<JiraDevTaskView | undefined>; codePaths: ComputedRef<string[]> };
+  let state!: { activeJiraTask: ComputedRef<JiraDevTaskView | undefined>; codePaths: ComputedRef<string[]>; deliveries: ComputedRef<ReturnType<typeof conversationDeliveries>> };
   const app = renderer.createApp({
     components: { AgentRemoteDelivery: remote, AgentWorkspaceCodeArtifacts: code,
       ...Object.fromEntries(['StatusPill', 'AgentChangedFiles', 'AgentMarkdown', 'AgentDeliveryReport', 'DeliveryAcceptanceEditor',
         'CheckCircle2', 'ExternalLink', 'GitMerge', 'PackageCheck', 'ElEmpty', 'ElSkeleton', 'ElSelect', 'ElOption', 'RouterLink'].map(name => [name, stub])) },
     setup() {
-      state = evaluate(tree.statements, tree, { computed, shallowRef, watch, agentConversationCodePath, agentRunStatus,
+      state = evaluate(tree.statements, tree, { computed, shallowRef, watch, agentConversationCodePaths, agentRunStatus, agentResultSummary,
         conversationDeliveries, jiraDevTaskDeliveryId, jiraDevTaskWorkspacePaths,
         defineProps: () => props, defineEmits: () => () => {} }, names);
-      return { ...toRefs(props), ...state, jiraDevTaskDeliveryId };
+      return { ...toRefs(props), ...state, agentRunStatus, dateTime, jiraDevTaskDeliveryId };
     },
     render: compile(source.match(/<template>([\s\S]*)<\/template>/)![1]!),
   });
@@ -118,6 +123,25 @@ test('两个真实关联会话切换时分别使用当前任务或群聊的交�
   } finally { f.close(); }
 });
 
+test('同一会话绑定多个工作区后，现行代码产物切换目录，历史文件仍属于原轮次', async () => {
+  const projectConversation = conversation('project');
+  const run = projectConversation.latest;
+  run.workspacePath = run.sourceWorkspacePath = '/project/current';
+  run.changedFiles = [{ path: 'src/panel.ts', status: 'modified' }];
+  const f = deliveryFixture(projectConversation);
+  try {
+    assert.deepEqual([...f.displayedCodePaths], ['/project/current']);
+    f.props.conversation = { ...projectConversation, workspace: {
+      workspacePath: '/worktree/app', projectWorkspacePath: '/project/app', branch: 'feature/app',
+      additionalWorkspaces: [{ workspacePath: '/worktree/pc', projectWorkspacePath: '/project/pc', branch: 'feature/pc' }],
+    } };
+    await nextTick();
+    assert.deepEqual([...f.displayedCodePaths], ['/worktree/app', '/worktree/pc']);
+    assert.strictEqual(f.state.deliveries.value[0]?.run, run);
+    assert.equal(run.workspacePath, '/project/current');
+  } finally { f.close(); }
+});
+
 function launchFixture() {
   const tree = scriptTree(componentSource('AgentRuntimePanel'));
   const selectedConversation = shallowRef<AgentConversation | undefined>(conversation()), jiraTasks = shallowRef([task(), task('task-b')]);
@@ -127,7 +151,8 @@ function launchFixture() {
   const statements = tree.statements.filter(node => ts.isVariableStatement(node)
     && node.declarationList.declarations.some(declaration => ts.isIdentifier(declaration.name) && selected.has(declaration.name.text)));
   const state = evaluate(statements, tree, { computed, shallowRef, selectedConversation, jiraTasks, creating, workspacePaths, form,
-    matchConversationJiraDevTask, agentConversationProjectPath, jiraDevTaskWorkspacePaths }, ['matchedJiraTask', 'launchWorkspacePaths']) as {
+    matchConversationJiraDevTask, agentConversationWorkspacePaths,
+    jiraDevTaskWorkspacePaths }, ['matchedJiraTask', 'launchWorkspacePaths']) as {
     matchedJiraTask: ComputedRef<JiraDevTaskView | undefined>; launchWorkspacePaths: ComputedRef<string[]>;
   };
   return { ...state, selectedConversation, jiraTasks, creating, workspacePaths, form };
@@ -148,6 +173,11 @@ test('启动工具栏只使用当前关联任务或当前会话项目，不能�
   f.selectedConversation.value = projectConversation;
   assert.equal(f.matchedJiraTask.value, undefined);
   assert.deepEqual(f.launchWorkspacePaths.value, ['/project/current']);
+  f.selectedConversation.value = { ...projectConversation, workspace: {
+    workspacePath: '/worktree/new', projectWorkspacePath: '/project/new', branch: 'feature/new',
+    additionalWorkspaces: [{ workspacePath: '/worktree/other', projectWorkspacePath: '/project/other', branch: 'feature/other' }],
+  } };
+  assert.deepEqual(f.launchWorkspacePaths.value, ['/worktree/new', '/worktree/other']);
   f.selectedConversation.value = undefined;
   assert.deepEqual(f.launchWorkspacePaths.value, []);
 });

@@ -14,6 +14,7 @@ import { useSource, useSourceActions } from '../../shared/api';
 import { deliveryJobQuickPrompt } from './agent-quick-actions';
 import AgentWeeklyReportCard from './AgentWeeklyReportCard.vue';
 import AgentDailyReportCard from './AgentDailyReportCard.vue';
+import AutomationScanDialog from '../auto-delivery/AutomationScanDialog.vue';
 
 const props = defineProps<{ conversationId?: string; scopedJobs: Job[]; dailyReportAvailable: boolean; dailyReportPending: boolean; dailyReportForDate: (date: string) => AgentRun | undefined }>();
 const emit = defineEmits<{ compose: [prompt: string, workspacePath: string]; generateDailyReport: [date: string] }>();
@@ -37,11 +38,10 @@ const blockedCount = computed(() => activeJobs.value.filter((job) => job.status 
 const visibleJobs = computed(() => activeJobs.value.filter((job) => filter.value === 'all'
   || filter.value === 'running' && ['dispatching', 'dispatched', 'running'].includes(job.status)
   || filter.value === 'blocked' && job.status === 'blocked').slice(0, 12));
-const jiraMaintenanceEnabled = computed(() => Boolean(query.data.value?.settings.enabled && query.data.value.settings.autoTransitionJira));
-
-function runScan() {
-  void actions.execute('scan', {}, '确认立即巡检', '巡检会按已保存的自动交付设置读取 Jira 和本地项目，并可能创建 Codex 任务、推进 Jira 或创建合并请求。');
-}
+const jiraMaintenanceEnabled = computed(() => {
+  const settings = query.data.value?.settings;
+  return Boolean(settings?.enabled && (settings.autoTransitionJira || settings.autoAlignJiraEndDates || settings.autoCloseDueSplitTasks));
+});
 
 async function generateWeeklyReport() {
   if (actions.pending.value || query.data.value?.weeklyReport.running) return;
@@ -71,7 +71,9 @@ async function generateWeeklyReport() {
           <div><dt>自动动作</dt><dd>{{ query.data.value.settings.autoCreateCodex ? 'Codex' : '不派发' }} · {{ query.data.value.settings.autoTransitionJira ? 'Jira' : '不改状态' }} · {{ query.data.value.settings.autoCreateMergeRequest ? 'MR' : '不建 MR' }}</dd></div>
         </dl>
         <footer class="automation-actions automation-card-footer">
-          <button type="button" :disabled="actions.pending.value || query.data.value.running" @click="runScan"><Play :size="12" />{{ query.data.value.running ? '巡检中' : '立即巡检' }}</button>
+          <AutomationScanDialog v-slot="{ open, pending }">
+            <button type="button" :disabled="pending || actions.pending.value || query.data.value.running" @click="open"><Play :size="12" />{{ query.data.value.running ? '巡检中' : '预览巡检' }}</button>
+          </AutomationScanDialog>
           <button type="button" :disabled="query.isFetching.value" @click="query.refetch()"><RefreshCw :size="12" />刷新</button>
           <router-link to="/settings"><Settings2 :size="12" />策略设置</router-link>
         </footer>

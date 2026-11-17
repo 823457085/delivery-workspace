@@ -46,23 +46,27 @@ export async function createYunxiaoDeployments(directory: string, options: { fet
   }
   for (const run of runs) if (run.status === 'dispatching') { run.status = 'unknown'; run.error = unknownMessage; }
   if (runs.some(run => run.error === unknownMessage)) await persist();
-  let pending = 0, closing = false, mutations = Promise.resolve();
+  let pendingWrites = 0, closing = false, mutations = Promise.resolve();
+  const readController = new AbortController();
   const tasks = new Set<Promise<unknown>>();
   const refreshing = new Map<string, Promise<DeploymentRun>>();
   function task<T>(work: () => Promise<T>) {
     if (closing) return Promise.reject(new Error('部署服务正在退出'));
-    pending++;
-    const result = work().finally(() => { pending--; tasks.delete(result); });
+    const result = work().finally(() => { tasks.delete(result); });
     tasks.add(result); return result;
   }
   function exclusive<T>(work: () => Promise<T>) {
-    const result = mutations.then(work); mutations = result.then(() => {}, () => {}); return result;
+    pendingWrites++;
+    const result = mutations.then(work).finally(() => { pendingWrites--; });
+    mutations = result.then(() => {}, () => {}); return result;
   }
   const redact = (value: string) => redactJenkins(value, { baseUrl: 'https://openapi-rdc.aliyuncs.com', username: '', token });
   async function api(organizationId: string, pipelineId: string, suffix = '', body?: unknown): Promise<unknown> {
     if (!token) throw new Error('请先在云效设置中保存具有流水线读写权限的个人访问令牌');
+    const timeout = AbortSignal.timeout(20_000);
     const response = await (options.fetcher || fetch)(`https://openapi-rdc.aliyuncs.com/oapi/v1/flow/organizations/${organizationId}/pipelines/${pipelineId}${suffix}`, {
-      method: body === undefined ? 'GET' : 'POST', redirect: 'error', signal: AbortSignal.timeout(20_000),
+      method: body === undefined ? 'GET' : 'POST', redirect: 'error',
+      signal: body === undefined ? AbortSignal.any([timeout, readController.signal]) : timeout,
       headers: { 'x-yunxiao-token': token, 'Content-Type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     const text = await response.text();
@@ -118,6 +122,7 @@ export async function createYunxiaoDeployments(directory: string, options: { fet
         }),
       ]) };
     } catch (error) { update = { error: redact(error instanceof Error ? error.message : '云效状态查询失败') }; }
+    if (closing) return structuredClone(findRun(id));
     return exclusive(async () => {
       const current = findRun(id), next = { ...current, ...update, updatedAt: new Date().toISOString() };
       runs[runs.indexOf(current)] = next; await persist(); return structuredClone(next);
@@ -240,7 +245,14 @@ export async function createYunxiaoDeployments(directory: string, options: { fet
       return readYunxiaoDeploymentLog({ run, jobId, start, redact,
         request: suffix => api(run.organizationId!, run.pipelineId!, suffix) });
     }),
-    isIdle: () => pending === 0 && !runs.some(active),
-    close: async () => { closing = true; if (timer) clearInterval(timer); await Promise.allSettled([...tasks]); await mutations; },
+    // 已受理的云效运行会在启动后按原编号继续查询，重启只需等本机写入完成。
+    isIdle: () => pendingWrites === 0,
+    close: async () => {
+      closing = true;
+      if (timer) clearInterval(timer);
+      readController.abort();
+      await Promise.allSettled([...tasks]);
+      await mutations;
+    },
   };
 }

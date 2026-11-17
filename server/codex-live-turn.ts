@@ -55,7 +55,9 @@ export function runCodexLiveTurn(binary: string, context: LiveContext, prompt: s
     const { run } = context;
     const sandbox = run.mode !== 'agent' ? 'read-only' : run.accessMode === 'full' ? 'danger-full-access' : 'workspace-write';
     const serviceTier = run.serviceTier === 'default' || run.serviceTier === 'priority' ? run.serviceTier : undefined;
+    const fromTaskFlow = run.task?.sourceId?.startsWith('taskflow:');
     const child = spawn(binary, ['app-server', '--stdio', '-c', `sandbox_mode="${sandbox}"`, '-c', 'approval_policy="never"',
+      ...(fromTaskFlow ? ['-c', 'mcp_servers.taskflow.enabled=false'] : []),
       ...(serviceTier ? ['-c', `service_tier="${serviceTier}"`] : []),
       ...(sandbox === 'workspace-write' ? ['-c', 'sandbox_workspace_write.network_access=true'] : [])],
     { cwd: run.workspacePath, env: codexChildEnvironment(), stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32' });

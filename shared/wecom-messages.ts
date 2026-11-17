@@ -23,6 +23,19 @@ export interface WecomMessageRecord {
   attemptedAt: string;
   finishedAt: string;
   message: string;
+  reconciledAt?: string;
+  reconcileNote?: string;
+}
+export interface WecomMessagePartsPreview {
+  batchId: string;
+  title: string;
+  msgtype: WecomMessageType;
+  groupName: string;
+  totalBytes: number;
+  partCount: number;
+  canSend: boolean;
+  parts: WecomMessagePreview[];
+  hash: string;
 }
 export interface WecomMessageSaved extends WecomMessageInput {
   id: string;

@@ -377,7 +377,7 @@ async function copyActiveCodegen() {
   background: color-mix(in srgb, var(--ui-raised) 55%, var(--ui-surface));
 }
 
-:global(:root[data-theme='acid']) .scalar-endpoint-card {
+:root[data-theme='acid'] .scalar-endpoint-card {
   border-radius: 0;
 }
 
@@ -461,7 +461,7 @@ async function copyActiveCodegen() {
   background: var(--ui-surface);
 }
 
-:global(:root[data-theme='acid']) .scalar-url-bar {
+:root[data-theme='acid'] .scalar-url-bar {
   border-radius: 0;
 }
 

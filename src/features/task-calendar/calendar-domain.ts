@@ -29,11 +29,11 @@ export const advancedTaskDefaults = {
   sortOrder: 'default',
 } satisfies Partial<TaskFilter>;
 
-export function taskQueryParams(applied: Record<string, string>) {
-  if (applied.dateField !== 'planned') return applied;
-  // 来源接口没有计划区间查询；只请求已支持的字段，再按原始计划日期筛选本次返回的任务。
-  const { start: _start, end: _end, ...params } = applied;
-  return { ...params, dateField: 'updated', allTime: 'true' };
+export function taskQueryParams(applied: Record<string, string>, window?: { start: string; end: string }) {
+  if (!window) return applied;
+  const start = applied.allTime === 'false' && applied.start > window.start ? applied.start : window.start;
+  const end = applied.allTime === 'false' && applied.end && applied.end < window.end ? applied.end : window.end;
+  return { ...applied, allTime: 'false', start, end };
 }
 
 export function matchesPlannedFilter(issue: JiraIssue, applied: Record<string, string>) {

@@ -16,7 +16,7 @@ export interface AutomationProjectRouting {
   status: 'matched' | 'unmatched' | 'ambiguous' | 'incomplete'; reason: string;
   profile: AutomationProjectProfile | null; candidates: AutomationProjectProfile[];
 }
-export interface IssueResponse { source: string; baseUrl: string; jql: string; total: number; issues: JiraIssue[]; warning?: string }
+export interface IssueResponse { source: string; baseUrl: string; jql: string; total: number; issues: JiraIssue[]; truncated?: boolean; warning?: string }
 export interface Job {
   parentKey?: string;
   id: string; issueKey: string; issueUrl: string; title: string; category: string; categoryLabel: string;
@@ -43,6 +43,11 @@ export interface JiraDevScanPreview {
   taskId?: string; projectPath?: string; error?: string;
   runId?: string; launchStatus?: 'started' | 'existing' | 'awaiting_confirmation' | 'blocked';
 }
+export interface AutomationScanPreview {
+  id: string; issueCount: number; total: number; truncated: boolean;
+  autoCreateCodex?: boolean; autoPrepareJiraDev?: boolean; autoCreateMergeRequest?: boolean;
+  actions: { kind: 'transition' | 'end-date' | 'split-create' | 'split-update'; issueKey: string; from?: string; target: string; reason: string }[];
+}
 export interface ScanRun {
   id: string; trigger: string; source: string; localDate: string; startedAt: string; completedAt: string;
   issueCount: number; workspaceCount: number; dispatchableCount?: number; enqueuedCount: number; alreadyDoneCount: number;
@@ -56,6 +61,7 @@ export interface AutomationSettings {
   jiraDevAutomationApproved?: boolean;
   jiraDevAutomationRouted?: boolean;
   autoCreateCodex: boolean; autoTransitionJira: boolean; autoCreateMergeRequest: boolean;
+  autoAlignJiraEndDates?: boolean; autoCloseDueSplitTasks?: boolean;
   startStatus: string; completedStatus: string; targetBranch: string; reviewer: string;
   runtimeEnvironment?: string; runtimeCommand?: string; browser?: string; repositoryUrl?: string;
   projectProfiles?: AutomationProjectProfile[];

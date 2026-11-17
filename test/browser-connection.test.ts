@@ -159,13 +159,13 @@ test('拒绝、超时、远端关闭和迟到结果不能保留或恢复connecte
   created[1]!.reply({ product: 'Chrome/fixture' });
   assert.equal((await service.status()).phase, 'connected');
   created[1]!.close();
-  assert.equal((await service.status()).phase, 'error');
+  assert.equal((await service.status()).phase, 'reconnecting');
   assert.equal((await service.status()).connectionVerified, false);
   await service.connect(); created[2]!.open();
   await delay(35);
-  assert.equal((await service.status()).phase, 'error');
+  assert.equal((await service.status()).phase, 'reconnecting');
   created[2]!.reply({ product: 'Chrome/too-late' });
-  assert.equal((await service.status()).phase, 'error');
+  assert.equal((await service.status()).phase, 'reconnecting');
   assert.equal((await service.status()).connectionVerified, false);
 });
 
@@ -174,10 +174,11 @@ test('Chrome端点变化会撤销原连接；配置目录链接不能写到工�
   await fs.writeFile(options.debugPortFile, `9222\n${debugPath}\n`);
   const socket = new FakeSocket();
   const service = createBrowserConnection({ ...options, createSocket: () => socket });
+  t.after(() => service.disconnect().then(() => {}));
   await service.connect(); socket.open(); socket.reply({ product: 'Chrome/fixture' });
   assert.equal((await service.status()).phase, 'connected');
   await fs.writeFile(options.debugPortFile, `9333\n${debugPath}\n`);
-  assert.equal((await service.status()).phase, 'ready');
+  assert.equal((await service.status()).phase, 'reconnecting');
   assert.equal(socket.closed, 1);
   const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'delivery-chrome-outside-'));
   t.after(() => fs.rm(outside, { recursive: true, force: true }));
@@ -209,4 +210,46 @@ test('断开可以取消仍在初始可用性检查中的连接请求', async t 
   assert.equal(result.phase, 'ready');
   assert.equal(result.connectionVerified, false);
   assert.equal(connections, 0, '用户断开后不启动迟到的WebSocket连接');
+});
+
+test('已授权的 Chrome 在后台自动恢复，同一入口拒绝后不反复请求，手动断开停止恢复', async t => {
+  const options = await fixture(t);
+  const sockets: FakeSocket[] = [];
+  const service = createBrowserConnection({ ...options, reconnectDelayMs: 10, createSocket: () => {
+    const socket = new FakeSocket();
+    sockets.push(socket);
+    return socket;
+  } });
+  t.after(async () => { await service.disconnect(); });
+  const publish = (port: number) => fs.writeFile(options.debugPortFile, `${port}\n${debugPath}\n`);
+  async function nextSocket(count: number) {
+    for (let i = 0; sockets.length < count && i < 100; i++) await delay(10);
+    assert.equal(sockets.length, count);
+    return sockets[count - 1]!;
+  }
+  function approve(socket: FakeSocket) {
+    socket.open();
+    socket.reply({ product: 'Chrome/fixture' });
+  }
+
+  await publish(9222);
+  await service.connect();
+  approve(await nextSocket(1));
+  await fs.unlink(options.debugPortFile);
+  sockets[0]!.close();
+  assert.equal((await service.status()).phase, 'reconnecting');
+  assert.equal(await service.taskEndpoint(5288), undefined);
+  await publish(9333);
+  (await nextSocket(2)).dispatchEvent(new Event('error'));
+  await delay(60);
+  assert.equal(sockets.length, 2, '拒绝连接后不能反复弹授权');
+  await publish(9444);
+  approve(await nextSocket(3));
+  assert.equal((await service.status()).connectionVerified, true);
+  sockets[2]!.close();
+  await service.disconnect();
+  await publish(9555);
+  await delay(60);
+  assert.equal(sockets.length, 3, '取消自动恢复后不发起新连接');
+  assert.equal((await service.status()).phase, 'ready');
 });

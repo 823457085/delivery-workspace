@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, shallowRef, watch } from 'vue';
+import { computed, nextTick, onScopeDispose, shallowRef, watch } from 'vue';
 import { Check, ChevronDown, Folder, FolderGit2, FolderOpen, GitBranch, Search, X } from '@lucide/vue';
 import { workspacePathLabel, type AgentWorkspaceOption } from './workspace-catalog';
+import { maxAgentConversationWorkspaces } from '../../../shared/agent-runtime';
 
 const props = withDefaults(defineProps<{
   workspaces: AgentWorkspaceOption[];
@@ -9,6 +10,10 @@ const props = withDefaults(defineProps<{
   placement?: 'top-start' | 'bottom-start';
   emptyLabel?: string;
   showInlineTags?: boolean;
+  applySelection?: (paths: string[]) => Promise<boolean>;
+  browseWorkspace?: (initialPath: string) => Promise<string | undefined>;
+  bindingSaved?: boolean;
+  hasActiveRuns?: boolean;
 }>(), {
   disabled: false,
   placement: 'top-start',
@@ -23,11 +28,20 @@ const emit = defineEmits<{ chooseWorkspace: [] }>();
 
 const menuOpen = shallowRef(false);
 const query = shallowRef('');
+const editingPaths = shallowRef<string[]>([]);
+const picking = shallowRef(false);
+const applying = shallowRef(false);
+let disposed = false;
+onScopeDispose(() => { disposed = true; });
 
-watch(menuOpen, open => { if (!open) query.value = ''; });
+watch(menuOpen, open => {
+  if (!open) query.value = '';
+  else if (props.applySelection && !picking.value) editingPaths.value = [...workspacePaths.value];
+});
 
 // Keep workspacePath and workspacePaths synchronized bidirectionally
 watch(workspacePath, next => {
+  if (props.applySelection) return;
   const trimmed = (next || '').trim();
   if (!trimmed) {
     if (workspacePaths.value.length) workspacePaths.value = [];
@@ -39,6 +53,7 @@ watch(workspacePath, next => {
 }, { immediate: true });
 
 watch(workspacePaths, list => {
+  if (props.applySelection) return;
   const primary = list[0] || '';
   if (workspacePath.value !== primary) {
     workspacePath.value = primary;
@@ -63,7 +78,21 @@ function optionFor(path: string): AgentWorkspaceOption {
   };
 }
 
-const selectedOptions = computed(() => workspacePaths.value.map(path => optionFor(path)));
+const selectedPaths = computed({
+  get: () => props.applySelection ? editingPaths.value : workspacePaths.value,
+  set: paths => {
+    if (props.applySelection) editingPaths.value = paths;
+    else {
+      workspacePaths.value = paths;
+      workspacePath.value = paths[0] || '';
+    }
+  },
+});
+const selectionLocked = computed(() => props.disabled || picking.value || applying.value);
+const canApply = computed(() => !selectionLocked.value && selectedPaths.value.length > 0
+  && (!props.bindingSaved || selectedPaths.value.length !== workspacePaths.value.length
+    || selectedPaths.value.some((path, index) => path !== workspacePaths.value[index])));
+const selectedOptions = computed(() => selectedPaths.value.map(path => optionFor(path)));
 const primaryOption = computed(() => selectedOptions.value[0]);
 
 const triggerLabel = computed(() => {
@@ -72,62 +101,88 @@ const triggerLabel = computed(() => {
 });
 
 const filteredWorkspaces = computed(() => {
+  const workspaces = props.applySelection
+    ? [...new Set([...workspacePaths.value, ...selectedPaths.value])].filter(path => !byPath.value.has(path)).map(optionFor).concat(props.workspaces)
+    : props.workspaces;
   const term = query.value.trim().toLowerCase();
-  if (!term) return props.workspaces;
-  return props.workspaces.filter(item =>
+  if (!term) return workspaces;
+  return workspaces.filter(item =>
     `${item.label} ${item.folder || ''} ${item.path} ${item.branch} ${item.repository || ''}`.toLowerCase().includes(term),
   );
 });
 
 function isSelected(path: string): boolean {
-  return workspacePaths.value.includes(path);
+  return selectedPaths.value.includes(path);
 }
 
 function toggleWorkspace(item: AgentWorkspaceOption) {
-  if (props.disabled) return;
-  const current = [...workspacePaths.value];
+  if (selectionLocked.value) return;
+  const current = [...selectedPaths.value];
   const index = current.indexOf(item.path);
   if (index >= 0) {
     current.splice(index, 1);
   } else {
-    if (current.length >= 10) return;
+    if (current.length >= maxAgentConversationWorkspaces) return;
     current.push(item.path);
   }
-  workspacePaths.value = current;
+  selectedPaths.value = current;
+  if (props.applySelection) return;
   const nextPrimary = current[0] || '';
-  workspacePath.value = nextPrimary;
   const primaryMeta = byPath.value.get(nextPrimary);
   if (primaryMeta?.branch) branch.value = primaryMeta.branch;
   else if (!nextPrimary) branch.value = '';
 }
 
 function makePrimary(path: string) {
-  if (props.disabled) return;
-  const rest = workspacePaths.value.filter(item => item !== path);
-  workspacePaths.value = [path, ...rest];
-  workspacePath.value = path;
+  if (selectionLocked.value || !isSelected(path)) return;
+  selectedPaths.value = [path, ...selectedPaths.value.filter(item => item !== path)];
+  if (props.applySelection) return;
   const meta = byPath.value.get(path);
   if (meta?.branch) branch.value = meta.branch;
 }
 
 function removeWorkspace(path: string) {
-  if (props.disabled) return;
-  const next = workspacePaths.value.filter(item => item !== path);
-  workspacePaths.value = next;
-  workspacePath.value = next[0] || '';
+  if (selectionLocked.value) return;
+  selectedPaths.value = selectedPaths.value.filter(item => item !== path);
 }
 
 function clearWorkspaces() {
-  if (props.disabled) return;
-  workspacePaths.value = [];
-  workspacePath.value = '';
+  if (selectionLocked.value) return;
+  selectedPaths.value = [];
+  if (props.applySelection) return;
   branch.value = '';
   menuOpen.value = false;
 }
 
-function chooseOtherFolder() {
+async function chooseOtherFolder() {
+  if (selectionLocked.value) return;
+  if (props.applySelection && props.browseWorkspace) {
+    if (selectedPaths.value.length >= maxAgentConversationWorkspaces) return;
+    picking.value = true;
+    menuOpen.value = false;
+    try {
+      const path = await props.browseWorkspace(selectedPaths.value[0] || '');
+      if (!disposed && path && !isSelected(path)) selectedPaths.value = [...selectedPaths.value, path];
+    } finally {
+      if (!disposed) {
+        menuOpen.value = true;
+        await nextTick();
+        picking.value = false;
+      }
+    }
+    return;
+  }
   menuOpen.value = false;
   emit('chooseWorkspace');
+}
+
+async function applyWorkspaces() {
+  if (!props.applySelection) { menuOpen.value = false; return; }
+  if (!canApply.value) return;
+  applying.value = true;
+  try {
+    if (await props.applySelection([...selectedPaths.value])) menuOpen.value = false;
+  } finally { applying.value = false; }
 }
 </script>
 
@@ -139,9 +194,11 @@ function chooseOtherFolder() {
       :placement="placement"
       width="min(430px, calc(100vw - 24px))"
       :disabled="disabled"
+      :hide-after="applySelection ? 0 : undefined"
       popper-class="agent-workspace-popper"
     >
       <template #reference>
+        <slot name="trigger">
         <button
           type="button"
           class="context-chip workspace-chip"
@@ -155,15 +212,17 @@ function chooseOtherFolder() {
           <span v-if="selectedOptions.length > 1" class="chip-count">+{{ selectedOptions.length - 1 }}</span>
           <ChevronDown :size="12" class="chip-arrow" :class="{ open: menuOpen }" />
         </button>
+        </slot>
       </template>
 
       <div class="workspace-menu">
         <header class="workspace-menu-head">
           <div>
-            <strong>选择项目工作区</strong>
-            <small>支持多选项目，首项作为主执行目录</small>
+            <strong>{{ applySelection ? '绑定项目工作区' : '选择项目工作区' }}</strong>
+            <small v-if="applySelection">可绑定多个目录，主目录用于执行。{{ hasActiveRuns ? '已提交的消息沿用原配置。' : '' }}</small>
+            <small v-else>支持多选项目，首项作为主执行目录</small>
           </div>
-          <button v-if="selectedOptions.length" type="button" class="clear-btn" @click="clearWorkspaces">
+          <button v-if="selectedOptions.length" type="button" class="clear-btn" :disabled="selectionLocked" @click="clearWorkspaces">
             清空 ({{ selectedOptions.length }})
           </button>
         </header>
@@ -189,9 +248,12 @@ function chooseOtherFolder() {
 
         <div class="workspace-options" role="listbox" aria-multiselectable="true">
           <button
+            v-if="!applySelection"
             type="button"
             class="workspace-option no-project-option"
             :class="{ active: !selectedOptions.length }"
+            :aria-selected="!selectedOptions.length"
+            role="option"
             @click="clearWorkspaces"
           >
             <span class="option-check" :class="{ checked: !selectedOptions.length }">
@@ -212,7 +274,10 @@ function chooseOtherFolder() {
             :key="item.path"
             type="button"
             class="workspace-option"
-            :class="{ active: isSelected(item.path), 'is-primary': workspacePaths[0] === item.path }"
+            :class="{ active: isSelected(item.path), 'is-primary': primaryOption?.path === item.path }"
+            :disabled="selectionLocked || (!!applySelection && !isSelected(item.path) && selectedPaths.length >= maxAgentConversationWorkspaces)"
+            :aria-selected="isSelected(item.path)"
+            role="option"
             @click="toggleWorkspace(item)"
           >
             <span class="option-check" :class="{ checked: isSelected(item.path) }">
@@ -223,7 +288,7 @@ function chooseOtherFolder() {
               <span class="option-title-row">
                 <strong>{{ item.label }}</strong>
                 <span v-if="item.folder && item.folder !== item.label" class="option-folder">{{ item.folder }}</span>
-                <span v-if="workspacePaths[0] === item.path && selectedOptions.length > 0" class="option-primary-badge">主目录</span>
+                <span v-if="primaryOption?.path === item.path" class="option-primary-badge">主目录</span>
                 <span
                   v-else-if="isSelected(item.path) && selectedOptions.length > 1"
                   role="button"
@@ -244,13 +309,14 @@ function chooseOtherFolder() {
         </div>
 
         <footer class="workspace-menu-foot">
-          <button type="button" class="choose-folder" @click="chooseOtherFolder">
+          <button type="button" class="choose-folder" :disabled="selectionLocked || (!!applySelection && selectedOptions.length >= maxAgentConversationWorkspaces)" @click="chooseOtherFolder">
             <FolderOpen :size="14" />
             <span>选择其他文件夹…</span>
           </button>
           <div class="foot-right">
             <span class="foot-count">{{ selectedOptions.length ? `已选 ${selectedOptions.length} 个项目` : '未选项目' }}</span>
-            <button type="button" class="done-btn" @click="menuOpen = false">完成</button>
+            <button v-if="applySelection" type="button" class="clear-btn" :disabled="selectionLocked" @click="menuOpen = false">取消</button>
+            <button type="button" class="done-btn" :disabled="!!applySelection && !canApply" @click="applyWorkspaces">{{ applySelection ? applying ? '正在应用…' : '应用工作区' : '完成' }}</button>
           </div>
         </footer>
       </div>
@@ -735,5 +801,9 @@ function chooseOtherFolder() {
 }
 .done-btn:hover {
   opacity: 0.92;
+}
+.workspace-menu button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 </style>

@@ -161,7 +161,7 @@ test('真实巡检入口只对新鲜 Jira 扫描生成研发预览并保存关�
   const entries = runInNewContext(`${section('let prepareJiraDevPreviews;', 'function runAutomationScan(').replace('export function', 'function')}
     ({ connectJiraDevPreviews, performAutomationScan });`, {
     ...core, URLSearchParams, readAutomationState: async () => state,
-    buildJql: () => '', fetchJiraIssues: async () => ({ source, issues: [issue()] }),
+    buildRecentJiraQuery: () => '', fetchJiraIssues: async () => ({ source, issues: [issue()] }),
     getLocalProjects: async () => ({ projects: [workspace()] }),
     ensureAutomationTaskSegments: async () => [], refreshAutomationGitEvidence: async () => undefined,
     mutateAutomationState: async (fn: (current: typeof state) => void) => fn(state),

@@ -37,11 +37,15 @@ test('只有一个计划日期时按单日展示，无排期保留列表但不�
   assert.equal(matchesPlannedFilter(tasks[2], { dateField: 'planned', allTime: 'false', start: '2026-10-01' }), false);
 });
 
-test('计划查询按区间交集筛选且不把未支持的日期字段或时间条件传给来源', () => {
+test('计划查询将月历可见日期和筛选范围一起传给来源，列表保留已有条件', () => {
   const applied = { dateField: 'planned', allTime: 'false', start: '2026-10-15', end: '2026-10-16', projects: 'APEX', includeDone: 'false', maxResults: '5000' };
   assert.equal(matchesPlannedFilter(issue({ startDate: '2026-10-01', endDate: '2026-10-15' }), applied), true);
   assert.equal(matchesPlannedFilter(issue({ startDate: '2026-10-17' }), applied), false);
-  assert.deepEqual(taskQueryParams(applied), { dateField: 'updated', allTime: 'true', projects: 'APEX', includeDone: 'false', maxResults: '5000' });
+  assert.deepEqual(taskQueryParams(applied), applied);
+  const visibleMonth = { start: '2026-09-28', end: '2026-11-01' };
+  assert.deepEqual(taskQueryParams(applied, visibleMonth), applied);
+  assert.deepEqual(taskQueryParams({ ...applied, allTime: 'true' }, visibleMonth), { ...applied, ...visibleMonth });
+  assert.deepEqual(taskQueryParams({ ...applied, start: '2026-09-01', end: '' }, visibleMonth), { ...applied, ...visibleMonth });
   const updated = { ...applied, dateField: 'updated' };
   assert.deepEqual(taskQueryParams(updated), updated);
 });

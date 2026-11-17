@@ -151,7 +151,9 @@ def inspect():
         accounts.cursor_command()
         if not result['available']:
             raise accounts.Error('Cursor 账号管理目前仅支持 macOS。')
-        result['activePids'] = [int(pid) for pid in accounts.active_agents()]
+        # Connection refresh runs CLI probes alongside this request. Only report
+        # real sessions here; ensure_idle still checks all processes before a write.
+        result['activePids'] = [int(pid) for pid in accounts.active_agents(include_probes=False)]
         # Cursor status does not modify the account selection. Never read snapshots here.
         info = manager.verify()
         result['current'] = {'email': info['email'], 'team': info.get('teamName', ''), 'verified': True,

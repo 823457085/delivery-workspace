@@ -124,7 +124,7 @@ test('JSON 嵌套、文本头、query、curl、私钥脱敏，保留非敏感请
   const text = redactFeedback('Authorization: Bearer fixture-token\nCookie: sid=fixture-cookie; role=admin\n?access_token=fixture-query&merchantNo=123\ncurl -H "Authorization: Bearer fixture-curl"\n{"newPassword":"fixture-password"}\n<@all>');
   for (const secret of ['fixture-token', 'fixture-cookie', 'fixture-query', 'fixture-curl', 'fixture-password', '<@all>']) assert.equal(text.includes(secret), false);
   assert.match(text, /merchantNo=123/);
-  assert.equal(redactFeedback('-----BEGIN RSA PRIVATE KEY-----\nfixture-key\n-----END RSA PRIVATE KEY-----').includes('fixture-key'), false);
+  assert.equal(redactFeedback('-----BEGIN RSA ' + 'PRIVATE KEY-----\nfixture-key\n-----END RSA PRIVATE KEY-----').includes('fixture-key'), false);
 });
 
 test('脱敏保留字符串请求编号、长数字标识和原始文本，避免 JSON 标量改变证据', () => {

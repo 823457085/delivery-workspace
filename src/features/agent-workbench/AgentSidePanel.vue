@@ -5,7 +5,7 @@
  * 该容器只切换视图，具体查询继续由独立组件负责，避免在窄侧栏复制全局管理页。
  */
 import { computed, defineAsyncComponent, nextTick } from 'vue';
-import { Activity, ChevronsRight, Cpu, FolderGit2, GitFork, PackageCheck, PanelRight, Radio } from '@lucide/vue';
+import { Activity, BookOpen, ChevronsRight, Cpu, FolderGit2, GitFork, Link2, PackageCheck, PanelRight, Radio } from '@lucide/vue';
 import { agentProviderLabels, type AgentProvider, type AgentRun, type AgentWorkflowAction, type AgentWorkflowSummary, type SpawnAgentTaskInput } from '../../../shared/agent-runtime';
 import type { DeliveryAcceptanceRecord } from '../../../shared/delivery-acceptance';
 import type { JiraDevTaskView } from '../../../shared/jira-dev';
@@ -85,6 +85,8 @@ defineExpose({ selectTab });
         <button type="button" :class="{ active: active === 'execution' }" @click="selectTab('execution')"><Activity :size="13" />动态</button>
         <button type="button" :class="{ active: active === 'workflow' }" @click="selectTab('workflow')"><GitFork :size="13" />进度</button>
         <button type="button" :class="{ active: active === 'delivery' }" :title="deliveryLabel || '有成果的会话轮次'" @click="selectTab('delivery')"><PackageCheck :size="13" />{{ deliveryLabel || '交付' }}<span v-if="deliveryCount" :aria-label="`${deliveryCount} 轮`">{{ deliveryCount }}</span></button>
+        <button type="button" :class="{ active: active === 'context' }" title="关联 Jira 与研发上下文" @click="selectTab('context')"><Link2 :size="13" />上下文</button>
+        <button type="button" :class="{ active: active === 'knowledge' }" title="项目文档与知识库" @click="selectTab('knowledge')"><BookOpen :size="13" />知识</button>
       </nav>
     </header>
     <div v-if="$slots['project-launch']" class="side-project-launch"><slot name="project-launch" /></div>

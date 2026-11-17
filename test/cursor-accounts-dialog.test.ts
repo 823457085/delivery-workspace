@@ -153,6 +153,30 @@ test('有运行中的CLI时三个平台仍可保存和添加账号，仅 Cursor 
   }
 });
 
+test('Cursor 进程退出后，账号窗口通过轮询重新启用切换', async () => {
+  const f = fixture();
+  try {
+    const ready = { ...readySnapshot('cursor'), accounts: [{ name: 'work', email: 'work@example.test', team: '' }] };
+    const blocked = { ...ready, activePids: [9214], blockedReason: '仍有 Cursor Agent 进程运行' };
+    f.component.open.value = true;
+    await f.respond(0, blocked);
+    assert.equal(f.component.canChange.value, false);
+
+    for (const [index, response] of [[1, blocked], [2, ready]] as const) {
+      const timer = f.timers.at(-1);
+      assert.ok(timer);
+      assert.equal(timer.delay, 10_000);
+      assert.equal(timer.cleared, false);
+      timer.callback();
+      assert.equal(f.requests[index].url, '/api/agent-runtimes/accounts/cursor?refresh=1');
+      assert.equal(f.component.canManage.value, true);
+      await f.respond(index, response);
+      assert.equal(f.component.canChange.value, index === 2);
+    }
+    assert.equal(f.timers.every(timer => timer.cleared), true);
+  } finally { f.cleanup(); }
+});
+
 test('登录POST跨平台切换后迟到，重新读取当前平台，不覆盖已完成的账号状态', async () => {
   const f = fixture();
   try {

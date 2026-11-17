@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { compileStyle } from 'vue/compiler-sfc';
 import { integrationCatalog } from '../shared/integration-plugins.js';
 import { registeredWorkspaceSections } from '../src/pages/agent/workspace-navigation.js';
 import { buildCommandPaletteItems, filterCommandPaletteItems } from '../src/pages/agent/command-palette.js';
@@ -200,4 +203,43 @@ test('全视口壁纸透传回归保护：.session-shell、.workbench-column 与
   }
 
   assert.match(indexVue, /<CustomWallpaperStage\b/, 'index.vue must mount <CustomWallpaperStage />');
+});
+
+test('顶栏弹层（连接与额度、多账号管理、随心配色）防裁剪回归保护：禁止 scoped :global(:root) 污染根盒模型', () => {
+  const srcRoot = fileURLToPath(new URL('../src', import.meta.url));
+  const walkVue = (dir: string, acc: string[] = []): string[] => {
+    for (const ent of readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, ent.name);
+      if (ent.isDirectory()) walkVue(full, acc);
+      else if (ent.name.endsWith('.vue')) acc.push(full);
+    }
+    return acc;
+  };
+
+  const leakedRootRules: string[] = [];
+  for (const file of walkVue(srcRoot)) {
+    const sfc = readFileSync(file, 'utf8');
+    const styleRegex = /<style\b([^>]*)>([\s\S]*?)<\/style>/g;
+    let match: RegExpExecArray | null;
+    while ((match = styleRegex.exec(sfc))) {
+      if (!/\bscoped\b/.test(match[1])) continue;
+      const compiled = compileStyle({ source: match[2], filename: file, id: 'data-v-guard', scoped: true });
+      for (const ruleMatch of compiled.code.matchAll(/([^{}]+)\{([^{}]+)\}/g)) {
+        const body = ruleMatch[2].trim();
+        if (body.includes('--')) continue;
+        for (const selector of ruleMatch[1].split(',').map(s => s.trim())) {
+          if (/^(:root|html|body)(\[[^\]]+\]|:not\([^)]+\)|:is\([^)]+\)|\.[a-z0-9-]+)*$/i.test(selector)) {
+            leakedRootRules.push(`${path.relative(srcRoot, file)} -> ${selector} { ${body} }`);
+          }
+        }
+      }
+    }
+  }
+  assert.deepEqual(leakedRootRules, [], `Found scoped CSS rules mutating :root/html/body directly:\n${leakedRootRules.join('\n')}`);
+
+  const themePickerVue = readFileSync(new URL('../src/shared/theme/ThemePicker.vue', import.meta.url), 'utf8');
+  const connStatusVue = readFileSync(new URL('../src/features/agent-workbench/AgentConnectionStatus.vue', import.meta.url), 'utf8');
+  assert.match(themePickerVue, /strategy:\s*'fixed'/, 'ThemePicker el-popover must use fixed positioning strategy');
+  assert.match(connStatusVue, /strategy:\s*'fixed'/, 'AgentConnectionStatus el-popover must use fixed positioning strategy');
+  assert.match(connStatusVue, /import CursorAccountsDialog from '\.\/CursorAccountsDialog\.vue'/, 'CursorAccountsDialog must be statically imported to prevent stale chunk 404');
 });

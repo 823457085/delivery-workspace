@@ -25,11 +25,98 @@ export function normalizeApiBaseUrl(value: string): string {
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value)
   ? value as Record<string, unknown> : {};
 
-export function createApiModelAdapter(options: {
+const retryableHttpStatuses = new Set([429, 502, 503, 504]);
+
+export function parseRetryAfterMs(headerValue: string | null, fallbackMs: number, maxDelayMs = 15_000): number {
+  if (headerValue) {
+    const trimmed = headerValue.trim();
+    if (/^\d+(?:\.\d+)?$/.test(trimmed)) {
+      return Math.min(maxDelayMs, Math.max(0, Math.ceil(Number(trimmed) * 1000)));
+    }
+    const parsedDate = Date.parse(trimmed);
+    if (Number.isFinite(parsedDate)) {
+      return Math.min(maxDelayMs, Math.max(0, parsedDate - Date.now()));
+    }
+  }
+  return Math.min(maxDelayMs, Math.max(0, fallbackMs));
+}
+
+function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted();
+  if (ms <= 0) return Promise.resolve();
+  return new Promise<void>((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason ?? new DOMException('The operation was aborted.', 'AbortError'));
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    timer.unref?.();
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function createIdleWatchdog(parentSignal: AbortSignal, idleTimeoutMs: number) {
+  const controller = new AbortController();
+  let timedOut = false;
+  let detachIdle: (() => void) | undefined;
+  const onParentAbort = () => {
+    detachIdle?.();
+    detachIdle = undefined;
+    controller.abort(parentSignal.reason);
+  };
+  if (parentSignal.aborted) controller.abort(parentSignal.reason);
+  else parentSignal.addEventListener('abort', onParentAbort, { once: true });
+
+  const touch = () => {
+    detachIdle?.();
+    detachIdle = undefined;
+    if (controller.signal.aborted) return;
+    const idleSignal = AbortSignal.timeout(idleTimeoutMs);
+    const onIdleAbort = () => {
+      timedOut = true;
+      controller.abort(idleSignal.reason);
+    };
+    if (idleSignal.aborted) {
+      onIdleAbort();
+      return;
+    }
+    idleSignal.addEventListener('abort', onIdleAbort, { once: true });
+    detachIdle = () => idleSignal.removeEventListener('abort', onIdleAbort);
+  };
+
+  const dispose = () => {
+    detachIdle?.();
+    detachIdle = undefined;
+    parentSignal.removeEventListener('abort', onParentAbort);
+  };
+
+  return {
+    signal: controller.signal,
+    touch,
+    dispose,
+    check() {
+      parentSignal.throwIfAborted();
+      if (timedOut || controller.signal.aborted) throw new Error('模型 API 请求超时，请重试');
+    },
+  };
+}
+
+export interface ApiModelAdapterOptions {
   models(): ApiModelConfig[];
   apiKey(customId: string): Promise<string>;
   history(run: AgentRun): AgentRun[];
-}): AgentRuntimeAdapter {
+  idleTimeoutMs?: number;
+  maxRetries?: number;
+  retryBaseDelayMs?: number;
+}
+
+export function createApiModelAdapter(options: ApiModelAdapterOptions): AgentRuntimeAdapter {
+  const idleTimeoutMs = options.idleTimeoutMs ?? 180_000;
+  const maxRetries = Math.max(0, Math.min(5, options.maxRetries ?? 2));
+  const retryBaseDelayMs = Math.max(0, options.retryBaseDelayMs ?? 600);
   return {
     id: 'api',
     async health() {
@@ -42,11 +129,6 @@ export function createApiModelAdapter(options: {
     },
     async execute(context) {
       const { run } = context;
-      const signal = AbortSignal.any([context.signal, AbortSignal.timeout(180_000)]);
-      const checkSignal = () => {
-        context.signal.throwIfAborted();
-        if (signal.aborted) throw new Error('模型 API 请求超时，请重试');
-      };
       if (run.mode !== 'ask' && run.mode !== 'plan') throw new Error('API 模型当前支持对话和规划模式');
       if (context.imagePaths.length || context.fileAttachments.length) throw new Error('API 模型当前不支持附件，请使用文本消息');
       const model = options.models().find(item => item.modelId === run.model);
@@ -54,12 +136,14 @@ export function createApiModelAdapter(options: {
       const baseUrl = normalizeApiBaseUrl(model.api.baseUrl);
       const endpoint = baseUrl.endsWith('/chat/completions') ? baseUrl : `${baseUrl}/chat/completions`;
       const apiKey = await options.apiKey(model.id);
-      checkSignal();
+      context.signal.throwIfAborted();
       const history = options.history(run).filter(item => item.id !== run.id && item.status === 'completed' && item.result);
+      const workspaceContext = (run.workspaceTransition || history.find(item => item.workspaceTransition)?.workspaceTransition)?.context;
       const messages = [
         { role: 'system', content: `你是工作台的对话助手。${run.mode === 'plan' ? '请分析任务并给出可执行计划。' : '请回答用户的问题。'}当前 API 会话没有本机文件、终端或其他执行工具；不要声称已执行这些操作。` },
         ...(run.knowledgeContext ? [{ role: 'system', content: run.knowledgeContext }] : []),
         ...(run.providerSwitch?.context ? [{ role: 'system', content: run.providerSwitch.context }] : []),
+        ...(workspaceContext ? [{ role: 'system', content: workspaceContext }] : []),
         ...(run.teamContext ? [{ role: 'system', content: run.teamContext }] : []),
         ...history.flatMap(item => [{ role: 'user', content: item.objective }, { role: 'assistant', content: item.result }]),
         { role: 'user', content: run.objective },
@@ -67,19 +151,41 @@ export function createApiModelAdapter(options: {
       await context.onBeforeTurn?.();
       await context.onSession(context.resumeSessionId || `api-${randomUUID()}`);
       context.onEvent('lifecycle', '正在请求模型 API');
-      let response: Response;
+      const requestBody = JSON.stringify({ model: model.modelId, messages, stream: true, stream_options: { include_usage: true } });
+      const requestHeaders = { 'Content-Type': 'application/json', ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) };
+
+      let response!: Response;
+      let watchdog = createIdleWatchdog(context.signal, idleTimeoutMs);
       try {
-        response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json',
-          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) }, body: JSON.stringify({ model: model.modelId,
-          messages, stream: true, stream_options: { include_usage: true } }), signal, redirect: 'error' });
-      } catch {
-        checkSignal();
-        throw new Error('模型 API 连接失败，请检查 Base URL、网络和服务状态');
+        for (let attempt = 0; ; attempt++) {
+          watchdog.touch();
+          try {
+            response = await fetch(endpoint, { method: 'POST', headers: requestHeaders, body: requestBody, signal: watchdog.signal, redirect: 'error' });
+          } catch {
+            watchdog.check();
+            throw new Error('模型 API 连接失败，请检查 Base URL、网络和服务状态');
+          }
+          if (response.ok) {
+            watchdog.touch();
+            break;
+          }
+          const retryAfterHeader = response.headers.get('retry-after');
+          await response.body?.cancel().catch(() => undefined);
+          if (retryableHttpStatuses.has(response.status) && attempt < maxRetries) {
+            watchdog.dispose();
+            const delayMs = parseRetryAfterMs(retryAfterHeader, retryBaseDelayMs * (2 ** attempt));
+            context.onEvent('lifecycle', `模型 API 暂时繁忙（HTTP ${response.status}），将在 ${delayMs}ms 后重试（${attempt + 1}/${maxRetries}）`);
+            await abortableDelay(delayMs, context.signal);
+            watchdog = createIdleWatchdog(context.signal, idleTimeoutMs);
+            continue;
+          }
+          throw new Error(`模型 API 请求失败（HTTP ${response.status}），请检查 API Key、模型 ID 和服务额度`);
+        }
+      } catch (error) {
+        watchdog.dispose();
+        throw error;
       }
-      if (!response.ok) {
-        await response.body?.cancel();
-        throw new Error(`模型 API 请求失败（HTTP ${response.status}），请检查 API Key、模型 ID 和服务额度`);
-      }
+
       let result = '', finished = false;
       const accept = (raw: unknown) => {
         const data = object(raw);
@@ -115,6 +221,7 @@ export function createApiModelAdapter(options: {
           try {
             while (true) {
               const { done, value } = await reader.read();
+              if (!done) watchdog.touch();
               pending += done ? decoder.decode() : decoder.decode(value, { stream: true });
               let boundary: RegExpExecArray | null;
               while (!streamDone && (boundary = /\r?\n\r?\n/.exec(pending))) {
@@ -130,14 +237,17 @@ export function createApiModelAdapter(options: {
           let data: unknown;
           try { data = await response.json(); }
           catch { throw new Error('模型 API 响应格式不正确'); }
+          watchdog.touch();
           accept(data);
         }
       } catch (error) {
-        checkSignal();
+        watchdog.check();
         if (error instanceof Error && error.message.startsWith('模型 API')) throw error;
         throw new Error('模型 API 响应中断，请重试');
+      } finally {
+        watchdog.dispose();
       }
-      checkSignal();
+      watchdog.check();
       if (!finished) throw new Error('模型 API 响应在完成前中断，请重试');
       if (!result.trim()) throw new Error('模型 API 未返回文本回复');
       return result;

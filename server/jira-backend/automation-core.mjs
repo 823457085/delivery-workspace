@@ -26,6 +26,7 @@ export const DEFAULT_AUTOMATION_SETTINGS = Object.freeze({
   jiraDevAutomationRouted: false,
   autoCreateCodex: false,
   autoTransitionJira: false,
+  autoAlignJiraEndDates: false,
   autoCreateMergeRequest: false,
   maxDispatchPerRun: 0,
   startStatus: "进行中",
@@ -104,6 +105,9 @@ export function sanitizeAutomationSettings(value = {}, current = DEFAULT_AUTOMAT
     autoTransitionJira: typeof value.autoTransitionJira === "boolean"
       ? value.autoTransitionJira
       : current.autoTransitionJira,
+    autoAlignJiraEndDates: typeof value.autoAlignJiraEndDates === "boolean"
+      ? value.autoAlignJiraEndDates
+      : Boolean(current.autoAlignJiraEndDates),
     autoCreateMergeRequest: typeof value.autoCreateMergeRequest === "boolean"
       ? value.autoCreateMergeRequest
       : current.autoCreateMergeRequest,
@@ -130,7 +134,8 @@ export function getNextAutomationRun(settings, now = new Date()) {
   for (let offset = 0; offset < 14; offset += 1) {
     const day = new Date(now);
     day.setDate(day.getDate() + offset);
-    if ([0, 6].includes(day.getDay())) continue;
+    const dayIso = localDateIso(day);
+    if (hasChinaWorkCalendarYear(dayIso) ? !isChinaWorkingDay(dayIso) : [0, 6].includes(day.getDay())) continue;
     for (const time of times) {
       const [hour, minute] = time.split(":").map(Number);
       const candidate = new Date(day);
@@ -139,6 +144,99 @@ export function getNextAutomationRun(settings, now = new Date()) {
     }
   }
   return null;
+}
+
+export const MAX_SCHEDULE_SLOT_FAILURES = 5;
+
+export function computeAutomationScheduleBackoffMs(failureCount, baseMs = 120_000, maxMs = 1_800_000) {
+  const step = Math.max(0, Math.floor(Number(failureCount) || 1) - 1);
+  return Math.min(maxMs, Math.max(0, Math.floor(baseMs * (2 ** Math.min(step, 8)))));
+}
+
+export function shouldDeferScheduledScan(state, slot, now = new Date()) {
+  if (!slot || !state) return false;
+  if (state.scheduleFailureSlot !== slot || typeof state.scheduleRetryAfter !== "string" || !state.scheduleRetryAfter) {
+    return false;
+  }
+  const retryAtMs = Date.parse(state.scheduleRetryAfter);
+  const nowMs = (now instanceof Date ? now : new Date(now)).getTime();
+  return Number.isFinite(retryAtMs) && retryAtMs > nowMs;
+}
+
+export function recordAutomationScanFailureState(state, {
+  trigger = "manual",
+  scheduledSlot = "",
+  startedAt = new Date().toISOString(),
+  completedAt = new Date().toISOString(),
+  errorMessage = "巡检执行失败",
+  errorCode,
+  now = new Date(),
+  maxFailures = MAX_SCHEDULE_SLOT_FAILURES,
+  baseDelayMs = 120_000
+} = {}) {
+  const currentNow = now instanceof Date ? now : new Date(now);
+  let consecutiveFailures = 1;
+  let nextRetryAt = "";
+  let exhausted = false;
+
+  if (trigger === "schedule" && scheduledSlot) {
+    consecutiveFailures = state.scheduleFailureSlot === scheduledSlot
+      ? Math.max(0, Math.floor(Number(state.scheduleFailureCount) || 0)) + 1
+      : 1;
+    state.scheduleFailureSlot = scheduledSlot;
+    state.scheduleFailureCount = consecutiveFailures;
+    if (consecutiveFailures >= maxFailures) {
+      exhausted = true;
+      state.lastScheduledDate = localDateIso(currentNow);
+      state.lastScheduledSlot = scheduledSlot;
+      state.scheduleRetryAfter = "";
+    } else {
+      const delayMs = computeAutomationScheduleBackoffMs(consecutiveFailures, baseDelayMs);
+      nextRetryAt = new Date(currentNow.getTime() + delayMs).toISOString();
+      state.scheduleRetryAfter = nextRetryAt;
+    }
+  }
+
+  const failureRun = {
+    id: `${currentNow.getTime()}-${trigger}-failed`,
+    trigger,
+    status: "failed",
+    scheduledSlot: trigger === "schedule" ? scheduledSlot : "",
+    localDate: localDateIso(currentNow),
+    startedAt,
+    completedAt,
+    source: "jira",
+    issueCount: 0,
+    workspaceCount: 0,
+    dispatchableCount: 0,
+    alreadyDoneCount: 0,
+    localAlreadyDoneCount: 0,
+    enqueuedCount: 0,
+    splitCreatedCount: 0,
+    splitUpdatedCount: 0,
+    splitExistingCount: 0,
+    splitBlockedCount: 0,
+    splitResults: [],
+    transitionUpdatedCount: 0,
+    transitionBlockedCount: 0,
+    transitionResults: [],
+    error: String(errorMessage || "巡检执行失败").slice(0, 500),
+    ...(errorCode ? { errorCode } : {}),
+    consecutiveFailures,
+    ...(nextRetryAt ? { nextRetryAt } : {}),
+    ...(exhausted ? { exhausted: true } : {})
+  };
+
+  state.lastRun = failureRun;
+  state.runs = [failureRun, ...(Array.isArray(state.runs) ? state.runs : [])].slice(0, 40);
+  return failureRun;
+}
+
+export function clearAutomationScanFailureState(state) {
+  if (!state || typeof state !== "object") return;
+  state.scheduleFailureSlot = "";
+  state.scheduleFailureCount = 0;
+  state.scheduleRetryAfter = "";
 }
 
 export function getDueAutomationSlot(settings, lastScheduledSlot = "", now = new Date()) {

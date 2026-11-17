@@ -52,6 +52,7 @@
     "config",
     "users",
     "scan",
+    "scan-preview",
     "merge-jira"
   ],
   "apiPrefixes": [
@@ -64,6 +65,7 @@
     "/api/refresh",
     "/api/scan",
     "/api/automation/scan",
+    "/api/automation/scan-preview",
     "/api/automation/dispatch",
     "/api/automation/catchup/merge/jira-completion"
   ],

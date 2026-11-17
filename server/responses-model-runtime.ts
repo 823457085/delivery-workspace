@@ -133,7 +133,11 @@ export function createResponsesModelAdapter(provider: ResponsesProvider, options
           input.splice(0, input.length, ...saved.input, ...saved.output);
         }
         input.push({ role: 'user', content: options.redact(run.objective) });
-        const instructions = `你是本机开发助手。当前轮次${run.mode === 'agent' ? '可用 apply_patch 修改所选工作区' : '只读，不得修改文件'}。文件与命令权限由宿主强制约束。命令只读，禁用网络和子进程；需要外部程序时用 exec 替换 shell，例如 exec node --check file.js。不要重复已完成的工具操作。只根据工具回读报告结果。${options.redact(run.knowledgeContext || '')}\n${options.redact(run.providerSwitch?.context || '')}\n${options.redact(run.teamContext || '')}`;
+        const workspaceContext = (run.workspaceTransition || history.find(item => item.workspaceTransition)?.workspaceTransition)?.context;
+        const linkedContext = run.additionalWorkspacePaths?.length
+          ? `主工作区：${JSON.stringify(run.workspacePath)}。关联工作区：${JSON.stringify(run.additionalWorkspacePaths)}。本机工具仍限于主工作区。`
+          : '';
+        const instructions = `你是本机开发助手。当前轮次${run.mode === 'agent' ? '可用 apply_patch 修改所选工作区' : '只读，不得修改文件'}。文件与命令权限由宿主强制约束。命令只读，禁用网络和子进程；需要外部程序时用 exec 替换 shell，例如 exec node --check file.js。不要重复已完成的工具操作。只根据工具回读报告结果。${options.redact(linkedContext)}\n${options.redact(run.knowledgeContext || '')}\n${options.redact(run.providerSwitch?.context || '')}\n${options.redact(workspaceContext || '')}\n${options.redact(run.teamContext || '')}`;
         const journal = await createToolJournal(journalDirectory, run.id);
         const save = (output: Item[]) => writePrivateJson(privateRunFile(historyDirectory, run.id), clean({
           modelId: model.modelId, customModelId: model.id, permission: { workspacePath: run.workspacePath, mode: run.mode, accessMode: run.accessMode }, input, output }));

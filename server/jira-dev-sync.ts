@@ -9,7 +9,6 @@
 import { createHash, createPublicKey, verify } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { cp, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -17,10 +16,22 @@ import { z } from 'zod';
 
 const execute = promisify(execFile);
 export const jiraDevManifestUrl = 'https://jira-dev-workbench-updates.lizirui230.chatgpt.site/latest.json';
-const publicKey = createPublicKey(`-----BEGIN PUBLIC KEY-----
+export const defaultJiraDevPublicKeyPem = `-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEAx2Yk1e85KMd1m90FvhdD98by3zjNHpAhvRBoeRfk33c=
 -----END PUBLIC KEY-----
-`);
+`;
+
+function normalizeManifestUrl(raw: string): string {
+  let parsed: URL;
+  try { parsed = new URL(raw.trim()); }
+  catch { throw new Error('研发助手更新清单地址无效'); }
+  const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname);
+  if ((parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && loopback))
+    || parsed.username || parsed.password || parsed.hash) {
+    throw new Error('研发助手更新清单地址必须使用 HTTPS（本机测试除外），且不得包含凭据');
+  }
+  return parsed.href;
+}
 const baselineVersion = '1.2.1';
 const maxManifestBytes = 64 * 1024, maxDownloadBytes = 30 * 1024 * 1024;
 const semver = /^\d{1,6}\.\d{1,6}\.\d{1,6}$/;
@@ -83,9 +94,27 @@ with zipfile.ZipFile(archive) as z:
                 dst.write(chunk)
 `;
 
-export function createJiraDevSync(options: { jiraDevDirectory?: string; dataDirectory: string; pluginSource?: string; fetchImpl?: typeof fetch; now?: () => Date }) {
+export function createJiraDevSync(options: {
+  jiraDevDirectory?: string;
+  dataDirectory: string;
+  pluginSource?: string;
+  manifestUrl?: string;
+  publicKeyPem?: string;
+  enabled?: boolean;
+  fetchImpl?: typeof fetch;
+  now?: () => Date;
+}) {
   const jiraDevDirectory = options.jiraDevDirectory || path.join(path.dirname(fileURLToPath(import.meta.url)), 'jira-dev');
-  const pluginSource = options.pluginSource || process.env.JIRA_DEV_PLUGIN_SOURCE || path.join(homedir(), 'Documents/Codex/2026-10-14/jira-dev-workbench-plugin');
+  const pluginSource = options.pluginSource || process.env.JIRA_DEV_PLUGIN_SOURCE || '';
+  const configuredManifestUrl = (options.manifestUrl ?? process.env.DELIVERY_JIRA_DEV_MANIFEST_URL ?? '').trim();
+  const activeManifestUrl = normalizeManifestUrl(configuredManifestUrl || jiraDevManifestUrl);
+  const activePublicKey = createPublicKey((options.publicKeyPem ?? process.env.DELIVERY_JIRA_DEV_PUBLIC_KEY ?? defaultJiraDevPublicKeyPem).trim());
+  // 分享包默认关闭连接外部个人站点的云更新入口；显式配置更新源、开关或注入测试 fetchImpl 时开放。
+  const syncEnabled = options.enabled ?? (
+    Boolean(configuredManifestUrl)
+    || process.env.DELIVERY_JIRA_DEV_SYNC_ENABLED === '1'
+    || Boolean(options.fetchImpl)
+  );
   const fetchImpl = options.fetchImpl || fetch, now = options.now || (() => new Date());
   const stateFile = path.join(jiraDevDirectory, 'sync-state.json');
   const syncRoot = path.join(options.dataDirectory, 'jira-dev', 'sync');
@@ -113,16 +142,22 @@ export function createJiraDevSync(options: { jiraDevDirectory?: string; dataDire
     } finally { clearTimeout(timer); }
   }
   async function latest(): Promise<Release> {
-    const envelope = z.object({ payload: z.string(), signature: z.string() }).strict().parse(JSON.parse((await download(jiraDevManifestUrl, maxManifestBytes)).toString('utf8')));
+    const envelope = z.object({ payload: z.string(), signature: z.string() }).strict().parse(JSON.parse((await download(activeManifestUrl, maxManifestBytes)).toString('utf8')));
     const payload = Buffer.from(envelope.payload, 'base64'), signature = Buffer.from(envelope.signature, 'base64');
-    if (signature.length !== 64 || !verify(null, payload, publicKey, signature)) throw new Error('更新清单签名校验失败，已拒绝同步');
+    if (signature.length !== 64 || !verify(null, payload, activePublicKey, signature)) throw new Error('更新清单签名校验失败，已拒绝同步');
     const release = releaseSchema.parse(JSON.parse(payload.toString('utf8')));
-    if (new URL(release.download.url).origin !== new URL(jiraDevManifestUrl).origin || !release.download.url.startsWith('https://')) throw new Error('安装包必须来自同一更新站点');
+    const expectedOrigin = new URL(activeManifestUrl).origin;
+    const downloadUrl = new URL(release.download.url);
+    const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(downloadUrl.hostname);
+    if (downloadUrl.origin !== expectedOrigin || (downloadUrl.protocol !== 'https:' && !(downloadUrl.protocol === 'http:' && loopback))) {
+      throw new Error('安装包必须来自同一更新站点');
+    }
     return release;
   }
 
   /** 本机插件源码：只在版本与目标一致时提供代码模块，含新增的相对依赖。 */
   async function sourceModules(version: string) {
+    if (!pluginSource) return { available: false as const, reason: '未配置本机插件源码目录（JIRA_DEV_PLUGIN_SOURCE）' };
     const packageFile = path.join(pluginSource, 'package.json');
     if (!await exists(packageFile)) return { available: false as const, reason: `未找到本机插件源码（${pluginSource}）` };
     const sourceVersion = String(JSON.parse(await readFile(packageFile, 'utf8')).version || '');
@@ -151,9 +186,23 @@ export function createJiraDevSync(options: { jiraDevDirectory?: string; dataDire
 
   return {
     async status() {
-      const [state, release] = await Promise.all([readState(), latest()]);
+      const state = await readState();
+      if (!syncEnabled) {
+        const disabledReason = '当前工作台默认关闭外部研发助手云同步；如需启用请配置 DELIVERY_JIRA_DEV_MANIFEST_URL 与对应公钥';
+        return {
+          enabled: false,
+          disabledReason,
+          current: state,
+          latest: { version: state.version, publishedAt: state.syncedAt, notes: [], sha256: state.sha256, size: 0 },
+          updateAvailable: false,
+          code: { available: false as const, reason: disabledReason },
+          running: false,
+        };
+      }
+      const release = await latest();
       const source = await sourceModules(release.version).catch((error: Error) => ({ available: false as const, reason: error.message }));
       return {
+        enabled: true,
         current: state, latest: { version: release.version, publishedAt: release.publishedAt, notes: release.notes, sha256: release.download.sha256.toLowerCase(), size: release.download.size },
         updateAvailable: compare(release.version, state.version) > 0,
         code: source.available ? { available: true, changed: await changedModules(source.names) } : { available: false, reason: source.reason },
@@ -161,6 +210,9 @@ export function createJiraDevSync(options: { jiraDevDirectory?: string; dataDire
       };
     },
     async sync(input: unknown) {
+      if (!syncEnabled) {
+        throw new Error('当前工作台已默认关闭外部研发助手云同步；如需启用请配置受信任的更新源与签名公钥');
+      }
       const { expectedVersion, expectedSha256 } = jiraDevSyncInputSchema.parse(input);
       if (running) throw new Error('已有同步正在进行，请稍后刷新状态');
       const task = (async () => {

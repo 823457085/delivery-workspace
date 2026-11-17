@@ -42,7 +42,17 @@ for name in directories:
             raise SystemExit(f'分享包拒绝符号链接: {relative}')
         if file.is_file() and not file.name.startswith('.env') and file.suffix not in {'.pyc', '.log', '.sqlite', '.db'} and file.name != '.DS_Store':
             files.append(file)
-secrets = re.compile(r'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|\bsk-(?:proj-)?[A-Za-z0-9_-]{32,}|\bgh[pousr]_[A-Za-z0-9]{30,}|\beyJ[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{15,}')
+secrets = re.compile(
+    r'-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----'
+    r'|\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{32,}'
+    r'|\bgh[pousr]_[A-Za-z0-9]{30,}|\bgithub_pat_[A-Za-z0-9_]{40,}'
+    r'|\bglpat-[A-Za-z0-9_-]{20,}'
+    r'|\bATATT3[A-Za-z0-9_=-]{40,}'                       # Atlassian (Jira/Confluence) API token
+    r'|\bxox[abprs]-[A-Za-z0-9-]{20,}'                    # Slack token
+    r'|\bAKIA[0-9A-Z]{16}\b|\bLTAI[0-9A-Za-z]{12,24}\b'   # AWS / 阿里云 AccessKey ID
+    r'|\bAIza[0-9A-Za-z_-]{35}\b'                         # Google API key
+    r'|qyapi\.weixin\.qq\.com/cgi-bin/webhook/send\?key=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'  # 企业微信机器人真实 Key
+    r'|\beyJ[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{15,}')
 for file in files:
     try:
         text = file.read_text()

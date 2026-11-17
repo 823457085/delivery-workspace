@@ -133,7 +133,29 @@ def check_environment():
         raise Error('当前终端覆盖了官方登录配置，请在未设置这些变量的终端使用：' + ', '.join(conflicts))
 
 
-def active_agents():
+def is_metadata_probe(args):
+    if args and Path(args[0]).name in ('bash', 'sh'):
+        args = args[1:]
+    if not args:
+        return False
+    launcher, *args = args
+    name = Path(launcher).name
+    if name == 'cursor' and args[:1] == ['agent']:
+        args = args[1:]
+    elif name != 'cursor-agent' and not (name == 'node' and '/cursor-agent/versions/' in launcher):
+        return False
+
+    # The official launcher execs its bundled Node with argv[0] set to cursor-agent.
+    if args[:1] == ['--use-system-ca']:
+        args = args[1:]
+    if args and '/cursor-agent/versions/' in args[0] and Path(args[0]).name == 'index.js':
+        args = args[1:]
+    elif name == 'node':
+        return args == ['--version']  # Node bootstrap check; it never loads Cursor.
+    return args in (['--version'], ['--list-models'], ['status'], ['status', '--format', 'json'])
+
+
+def active_agents(*, include_probes=True):
     output = subprocess.check_output(['/bin/ps', '-axo', 'pid=,comm='], text=True, errors='replace')
     commands = subprocess.check_output(['/bin/ps', '-axo', 'pid=,args='], text=True, errors='replace')
     args_by_pid = {}
@@ -155,7 +177,7 @@ def active_agents():
         is_agent = name in ('cursor-agent', 'cursor agent')
         is_agent |= any('/cursor-agent/versions/' in arg for arg in args[:2])
         is_agent |= bool(args and Path(args[0]).name == 'cursor' and args[1:2] == ['agent'])
-        if is_agent and int(pid) != os.getpid():
+        if is_agent and int(pid) != os.getpid() and (include_probes or not is_metadata_probe(args)):
             found.append(pid)
     return found
 

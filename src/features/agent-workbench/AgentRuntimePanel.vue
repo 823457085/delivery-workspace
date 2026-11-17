@@ -6,6 +6,7 @@
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, reactive, shallowRef, useTemplateRef, watch } from 'vue';
 import { useQuery } from '@tanstack/vue-query';
 import { GitFork, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Plus, X } from '@lucide/vue';
+import { ElMessage } from 'element-plus';
 import type { AgentAccessMode, AgentApiProvider, AgentAttachment, AgentProvider, AgentQueuePlacement, AgentReasoningEffort, AgentRun, AgentRunMode, AgentServiceTier, SpawnAgentTaskInput, StartAgentRunInput, StartAgentTaskWorkflowInput, AgentWorkflowAction } from '../../../shared/agent-runtime';
 import type { AgentTeamRequest } from './AgentTeamDialog.vue';
 import { codexWorkbenchDefaults, workbenchRuntime } from '../../../shared/agent-runtime';
@@ -30,7 +31,7 @@ const AgentProjectLaunch = defineAsyncComponent(() => import('./AgentProjectLaun
 import AgentPanelResize from './AgentPanelResize.vue';
 import AgentResponsivePanel from './AgentResponsivePanel.vue';
 import { useAgentViewport } from './useAgentViewport';
-import { agentRunStatus, agentConversationContinuation, agentConversationInsertRun, agentConversationRunRounds, agentRunContextPath, agentRunProjectPath, agentConversationProjectPath, buildAgentConversationList, findAgentConversation, reconcileAgentConversation, resumedConversationId, compareAgentConversations,
+import { agentRunStatus, agentConversationBranch, agentConversationContinuation, agentConversationForkSource, agentConversationInsertRun, agentConversationRunRounds, agentConversationWorkspacePaths, agentRunContextPath, agentRunProjectPath, agentConversationProjectPath, buildAgentConversationList, findAgentConversation, reconcileAgentConversation, resumedConversationId, compareAgentConversations,
   type AgentConversation as AgentConversationModel } from './conversation';
 import { readableRunTask } from './execution-summary';
 import { readLastAgentSessionId, saveLastAgentSessionId } from './last-session-state';
@@ -59,7 +60,7 @@ const props = defineProps<{ workbenchOpen?: boolean }>();
 const emit = defineEmits<{ chat: []; ready: [hasSession: boolean]; group: [id: string]; session: [id: string] }>();
 
 const { query, refreshStatus, refreshing, changing, streamStatus, codexDetails, start, spawn, orchestrate, decideWorkflow, stop, pauseForEdit, revise, steer, deleteQueuedRun, retry, resume, resumeCodexSession, fork, syncCodexSessions, loadCodexSession,
-  removeConversation, removeConversations, updateConversationTitle, addCustomModel, removeCustomModel } = useAgentRuntimes();
+  removeConversation, removeConversations, updateConversationTitle, updateConversationWorkspace, addCustomModel, removeCustomModel } = useAgentRuntimes();
 const { data, dataUpdatedAt, error, isPending } = query;
 const acceptanceQuery = useQuery({ queryKey: deliveryAcceptanceQueryKey, retry: false,
   queryFn: ({ signal }) => readDeliveryAcceptances(signal),
@@ -186,7 +187,7 @@ const conversations = computed(() => {
   const groupSessionIds = new Set(groupRuns.flatMap(run => [run.sessionId, run.originSessionId].filter(Boolean)));
   return withTeamChatConversations(buildAgentConversationList(runs.value.filter(run => !groupRunIds.has(run.id)),
     (data.value?.codexSessions || []).filter(session => !groupSessionIds.has(session.id)), codexDetails.value,
-    data.value?.conversationTitles || {}), teamChat.allTasks.value.filter(task => !task.groupRoomId), data.value?.conversationTitles || {}).sort(compareAgentConversations);
+    data.value?.conversationTitles || {}, data.value?.conversationWorkspaces), teamChat.allTasks.value.filter(task => !task.groupRoomId), data.value?.conversationTitles || {}).sort(compareAgentConversations);
 });
 const selectedConversation = computed(() => findAgentConversation(conversations.value, selectedConversationId.value));
 const sideChatOpen = shallowRef(false);
@@ -209,14 +210,7 @@ const projectlessFork = computed(() => {
   const snapshot = data.value;
   return !!snapshot && 'projectlessFork' in snapshot && snapshot.projectlessFork === true;
 });
-const sideForkSource = computed(() => {
-  const conversation = !creating.value && selectedConversation.value;
-  if (!conversation || conversation.source !== 'workspace' || conversation.teamChat
-    || conversation.runs.some(run => run.status === 'running' || run.status === 'queued')) return;
-  const run = conversation.latest;
-  if (run.provider === 'codex' && run.status === 'completed' && run.sessionId && run.codexTurnId
-    && (projectlessFork.value || run.sourceWorkspacePath !== '' || run.branch || run.headSha)) return run;
-});
+const sideForkSource = computed(() => creating.value ? undefined : agentConversationForkSource(selectedConversation.value, projectlessFork.value));
 function openSideConversation(id: string) {
   if (!sideTabIds.value.includes(id)) sideTabIds.value = [...sideTabIds.value, id];
   activeSideId.value = id;
@@ -247,16 +241,21 @@ const selectedDeliveryRecord = computed(() => selectedConversation.value?.latest
     .find(record => record.id === `agent:${selectedConversation.value!.id}`) : undefined);
 const detailRoundNumber = computed(() => !groupMode.value && detail.value
   ? agentConversationRunRounds(selectedConversation.value).get(detail.value.id) || 0 : 0);
-const sideWorkspacePath = computed(() => creating.value ? form.workspacePath : selectedConversation.value ? selectedConversation.value.teamChat ? agentConversationProjectPath(selectedConversation.value) : agentRunContextPath(selectedConversation.value.latest) : '');
+const sideWorkspacePath = computed(() => {
+  if (creating.value) return form.workspacePath;
+  const conversation = selectedConversation.value;
+  if (!conversation) return '';
+  return conversation.teamChat ? agentConversationProjectPath(conversation)
+    : conversation.workspace?.workspacePath ?? agentRunContextPath(conversation.latest);
+});
 const launchWorkspacePaths = computed(() => {
   if (creating.value) return workspacePaths.value.length ? workspacePaths.value : form.workspacePath ? [form.workspacePath] : [];
   const conversation = selectedConversation.value;
-  const projectPath = conversation ? agentConversationProjectPath(conversation) : '';
-  const path = conversation && projectPath ? (conversation.teamChat ? projectPath : conversation.latest.workspacePath) : '';
+  const paths = conversation ? agentConversationWorkspacePaths(conversation) : [];
   if (matchedJiraTask.value) {
-    return [...new Set([...jiraDevTaskWorkspacePaths(matchedJiraTask.value), ...(path ? [path] : [])])];
+    return [...new Set([...jiraDevTaskWorkspacePaths(matchedJiraTask.value), ...paths])];
   }
-  return path ? [path] : [];
+  return paths;
 });
 const desktopDetailsAvailable = computed(() => !props.workbenchOpen && !sideChatVisible.value);
 const desktopDetailsOpen = computed(() => desktopDetailsAvailable.value && !rightCollapsed.value);
@@ -291,7 +290,8 @@ const workspaceOptions = computed<AgentWorkspaceOption[]>(() => {
     if (Date.parse(conversation.updatedAt) < cutoff) continue;
     const path = agentConversationProjectPath(conversation);
     if (!path) continue;
-    recent.push({ path, branch: conversation.latest.baseBranch || conversation.latest.branch });
+    recent.push({ path, branch: agentConversationBranch(conversation) });
+    for (const linked of conversation.workspace?.additionalWorkspaces || []) recent.push({ path: linked.workspacePath, branch: linked.branch });
   }
   return buildWorkspaceCatalog({
     projectsData: projectsData.value,
@@ -595,8 +595,8 @@ async function sendMessage(selection: ConversationSendSelection, side?: {
       reasoningEffort: selection.reasoningEffort || continuation.reasoningEffort,
       objective,
       attachments: sentDraft.attachments,
-      workspacePath: continuation.workspacePath,
-      branch: continuation.branch,
+      workspacePath: conversation.workspace?.workspacePath ?? continuation.workspacePath,
+      branch: conversation.workspace?.branch ?? continuation.branch,
       headSha: '',
       status: nativeBusy ? 'queued' : 'running',
       sessionId: continuation.sessionId,
@@ -693,6 +693,18 @@ async function chooseChatWorkspace() {
     await sendChatMessage(conversation, text, selection.workspacePath, automaticAccessMode.value);
   }
 }
+async function browseConversationWorkspace(initialPath: string) {
+  if (conversationChanging.value || sideSending.value || picker.selecting.value) return;
+  const selection = await picker.choose(initialPath);
+  if (picker.error.value) ElMessage.error(picker.error.value);
+  return selection?.workspacePath;
+}
+async function saveConversationWorkspace(conversation: AgentConversationModel, paths: string[]) {
+  if (!paths.length || conversationChanging.value || sideSending.value) return false;
+  const current = findAgentConversation(conversations.value, conversation.id);
+  if (!current || (selectedConversation.value?.id !== current.id && sideConversation.value?.id !== current.id)) return false;
+  return updateConversationWorkspace(current.id, paths);
+}
 async function stopConversation(run: AgentRun) {
   if (automaticTeam.value && teamChat.active.value) await teamChat.decide('cancel');
   else await stop(run);
@@ -735,11 +747,11 @@ function closeForkDialog() {
   forkAttachments.value = [];
   forkSource.value = undefined;
 }
-async function forkConversation(inSide = false) {
+async function forkConversation(inSide = false, mode?: AgentRunMode) {
   const source = forkSource.value;
   if (!source || forkAttachmentDraft.value.pending) return;
   const requestSelectionRevision = selectionRevision;
-  const next = await fork(source, forkObjective.value, forkAttachments.value.map((item) => item.id));
+  const next = await fork(source, forkObjective.value, forkAttachments.value.map((item) => item.id), mode);
   if (!next) return;
   forkAttachmentDraft.value.discard();
   forkAttachments.value = [];
@@ -892,6 +904,7 @@ onBeforeUnmount(() => {
       <button v-if="!workbenchOpen" type="button" :aria-expanded="mobilePanel === 'details'" @click="mobilePanel = 'details'">详情</button>
       <span id="mobile-connection-status"></span>
     </header>
+    <el-alert v-if="streamStatus === 'reconnecting'" class="workspace-reconnect-banner" title="实时连接已断开，正在重新连接…" type="warning" :closable="false" show-icon role="status" />
     <AgentInitialLoading v-if="isPending && (!groupMode || workbenchOpen)" />
     <div v-else class="agent-body">
       <el-alert v-if="error" :title="error.message" type="error" :closable="false" />
@@ -929,6 +942,7 @@ onBeforeUnmount(() => {
         </AgentNewConversation>
         <AgentConversation :automatic="automaticTeam" v-else v-show="!workbenchOpen" :visible="!workbenchOpen" ref="conversationPane" v-model="draft" v-model:attachments="draftAttachments" class="conversation-column" :conversation="selectedConversation" :pinned="!!selectedConversation && isPinnedAgentSession(pinnedConversationIds, selectedConversation)" :changing="conversationChanging" :runtimes="runtimes"
           :attachment-draft="conversationAttachmentDraft" :team-tasks="teamChat.tasks.value" :team-room="teamChat.room.value" :team-attachments="teamChat.attachments.value" :jira-task="matchedJiraTask"
+          :workspace-options="workspaceOptions" :choosing-workspace="picker.selecting.value" :save-workspace="saveConversationWorkspace" :browse-workspace="browseConversationWorkspace"
           :side-fork-available="!mobile && !!sideForkSource" :projectless-fork="projectlessFork" @fork-side="openForkConversation($event, true)"
           :business-options="businessMentions" @send="sendMessage" @access-change="automaticAccessMode = $event" @stop="stopConversation" @team-decision="teamChat.decide" @team-command="teamChat.command" @choose-team-workspace="chooseChatWorkspace" @steer="steer" @remove-queued="deleteQueuedRun" @retry="retryRun" @fork="openForkConversation"
           @edit="openEditMessage" @pin="togglePinnedConversation" @rename-title="(conversation, title) => updateConversationTitle(conversation.id, title)" @remove="removeAgentConversation" @inspect="detail = $event" @configure-models="openModelSettings()"
@@ -972,6 +986,7 @@ onBeforeUnmount(() => {
           </div>
           <AgentConversation v-if="sideConversation" v-model="sideDraft" v-model:attachments="sideAttachments" :conversation="sideConversation"
             :attachment-draft="sideAttachmentDraft" :business-options="[]" :runtimes="runtimes" :changing="conversationChanging || (sideSending ? 'side:send' : '')"
+            :workspace-options="workspaceOptions" :choosing-workspace="picker.selecting.value" :save-workspace="saveConversationWorkspace" :browse-workspace="browseConversationWorkspace"
             :pinned="isPinnedAgentSession(pinnedConversationIds, sideConversation)" :jira-task="matchConversationJiraDevTask(sideConversation, jiraTasks)" :projectless-fork="projectlessFork"
             @send="sendSideMessage" @stop="stop" @steer="steer" @remove-queued="deleteQueuedRun" @retry="(run, selection) => retryRun(run, selection, true)"
             @fork="openForkConversation($event, true)" @edit="openEditMessage($event, true)" @pin="togglePinnedConversation"
@@ -1013,12 +1028,13 @@ onBeforeUnmount(() => {
   <AgentModelSettings v-if="modelDialog" v-model="modelDialog" :runtimes="runtimes" :changing="changing" :initial-provider="modelDialogProvider" @add="addCustomModel" @remove="removeCustomModel" />
   <AgentForkDialog v-if="forkSource" :open="!!forkSource" v-model:objective="forkObjective" v-model:attachments="forkAttachments" :source="forkSource" :in-side="forkInSide"
     :attachment-draft="forkAttachmentDraft"
-    :submitting="!!forkSource && changing === `fork:${forkSource.id}`" @submit="forkConversation(forkInSide)" @cancel="closeForkDialog" />
+    :submitting="!!forkSource && changing === `fork:${forkSource.id}`" @submit="forkConversation(forkInSide, $event)" @cancel="closeForkDialog" />
   <AgentEditMessageDialog v-if="editDialogOpen" v-model="editObjective" :open="editDialogOpen" :source="editSource"
     :submitting="!!changing" @submit="saveEditedMessage" @close="editDialogOpen = false" />
 </template>
 
 <style scoped>
+.workspace-reconnect-banner { flex: none; border-radius: 0; }
 .session-shell.has-side-chat {
   --chat-pane-min-width: 320px;
   grid-template-columns: var(--visible-session-width, var(--session-column-width))

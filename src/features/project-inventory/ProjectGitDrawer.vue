@@ -823,6 +823,21 @@ async function requestCommitAssist(fillMode: 'auto' | 'subject' | 'full' | 'none
   }
 }
 
+async function stageAllChanges() {
+  const current = snapshot.value;
+  if (current?.truncated) {
+    try {
+      await ElMessageBox.confirm(
+        `当前改动共 ${current.counts.total} 项，列表仅展示前 200 项；全部暂存将同时暂存未展示的文件。`,
+        '确认全部暂存', { type: 'warning', confirmButtonText: '全部暂存', cancelButtonText: '取消', closeOnClickModal: false },
+      );
+    } catch { return; }
+    await runAction({ action: 'stage-all', acknowledgeTruncated: true }, '已全部暂存');
+    return;
+  }
+  await runAction({ action: 'stage-all' }, '已全部暂存');
+}
+
 async function commitChanges() {
   if (!commitMessage.value.trim()) {
     ElMessage.warning('请填写提交说明');
@@ -855,7 +870,18 @@ async function commitChanges() {
     }
     if (!props.modelValue || selectionVersion !== selectedVersion) return;
   }
-  const ok = await runAction({ action: 'commit', message: commitMessage.value.trim() }, '已提交到本地仓库');
+  let acknowledgeTruncated = false;
+  if (snapshot.value?.truncated) {
+    try {
+      await ElMessageBox.confirm(
+        `当前改动共 ${snapshot.value.counts.total} 项，超过展示上限 200 项；本次将提交暂存区全部 ${snapshot.value.counts.staged} 项（可能包含未展示的文件）。\n建议先在终端用 git status 核对暂存内容。`,
+        '改动列表已截断', { type: 'warning', confirmButtonText: '已核对，继续提交', cancelButtonText: '取消', closeOnClickModal: false },
+      );
+    } catch { return; }
+    if (!props.modelValue || selectionVersion !== selectedVersion) return;
+    acknowledgeTruncated = true;
+  }
+  const ok = await runAction({ action: 'commit', message: commitMessage.value.trim(), ...(acknowledgeTruncated ? { acknowledgeTruncated } : {}) }, '已提交到本地仓库');
   if (ok) {
     commitMessage.value = '';
     commitAssist.value = undefined;
@@ -1087,7 +1113,7 @@ watch(
               <el-button link type="danger" size="small" :disabled="gitBusy" @click="abortActiveSequencer">中止</el-button>
             </el-tag>
             <el-tag v-if="snapshot.truncated" type="danger" effect="plain">
-              改动超过 200 项（已截断展示）
+              改动共 {{ snapshot.counts.total }} 项，仅展示前 200 项
             </el-tag>
           </div>
         </div>
@@ -1244,7 +1270,7 @@ watch(
                     link
                     type="primary"
                     :disabled="gitBusy || !!conflictCount"
-                    @click="runAction({ action: 'stage-all' }, '已全部暂存')"
+                    @click="stageAllChanges"
                   >
                     全部暂存
                   </el-button>

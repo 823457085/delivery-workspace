@@ -295,7 +295,7 @@
 :root[data-theme] .markdown-table th { background: var(--ui-raised); color: var(--ui-text); }
 :root[data-theme] .markdown-rule { background: var(--ui-border); }
 
-/* 输入框与正文共享版心；紧凑单行自扩展 Composer Dock。 */
+/* 输入框与正文共享版心；三段式紧凑自扩展 Composer Dock。 */
 .studio-layout .composer { flex-shrink: 0; padding: 6px 20px 10px; border-top: 0; background: transparent; }
 .studio-layout .composer::before { display: none; }
 .studio-layout .composer-inner {
@@ -303,56 +303,77 @@
   max-width: var(--conversation-reading-width);
   grid-template-areas: 'tools hint' 'editor editor' 'mode actions';
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 4px 10px;
-  padding: 7px 12px;
+  gap: 6px 12px;
+  padding: 10px 14px;
   border: 1px solid var(--agent-border);
   border-radius: var(--ds-radius-lg, 14px);
   background: var(--agent-panel-strong);
   box-shadow: var(--ds-shadow);
-  transition: border-color 220ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-.studio-layout .composer-inner:has(.composer-preflight) {
-  grid-template-areas: 'preflight preflight' 'tools hint' 'editor editor' 'mode actions';
+  transition: border-color 220ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 220ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 .studio-layout .composer-inner:has(.composer-reply) {
   grid-template-areas: 'reply reply' 'tools hint' 'editor editor' 'mode actions';
+}
+.studio-layout .composer-inner:has(.composer-preflight) {
+  grid-template-areas: 'preflight preflight' 'tools hint' 'editor editor' 'mode actions';
 }
 .studio-layout .composer-inner:has(.composer-reply):has(.composer-preflight) {
   grid-template-areas: 'reply reply' 'preflight preflight' 'tools hint' 'editor editor' 'mode actions';
 }
 .studio-layout .composer-inner:focus-within { border-color: var(--agent-accent); }
 .studio-layout .composer .prompt-tools { min-width: 0; max-width: 100%; margin: 0; justify-content: flex-start; align-self: center; gap: 3px; }
-.studio-layout .composer .prompt-tools .el-button { height: 24px; margin-left: 0; padding: 2px 6px; border: 0; border-radius: var(--ds-radius-xs, 6px); font-size: 11.5px; line-height: 15px; color: var(--agent-muted); }
+.studio-layout .composer .prompt-tools .el-button { height: 26px; margin-left: 0; padding: 2px 7px; border: 0; border-radius: var(--ds-radius-xs, 6px); font-size: 11.5px; line-height: 15px; color: var(--agent-muted); }
+.studio-layout .composer .prompt-tools .el-button > span { display: inline-flex; align-items: center; gap: 4px; }
 .studio-layout .prompt-tools .el-button:hover,
 .studio-layout .prompt-tools .el-button.active { background: var(--agent-panel); color: var(--agent-accent); }
 .studio-layout .tool-divider { background: var(--agent-border); }
-.studio-layout .composer .el-textarea__inner { min-height: 28px !important; padding: 3px 4px; border: 0; border-radius: 0; background: transparent; box-shadow: none; color: var(--agent-text); font-size: 13px; line-height: 20px; }
+.studio-layout .composer .editor-body { padding-bottom: 6px; border-bottom: 1px solid color-mix(in srgb, var(--ui-divider, var(--agent-border)) 72%, transparent); }
+.studio-layout .composer .el-textarea__inner { min-height: 38px !important; padding: 5px 4px; border: 0; border-radius: 0; background: transparent; box-shadow: none; color: var(--agent-text); font-size: 13.5px; line-height: 21px; }
 .studio-layout .composer .el-textarea__inner:focus { box-shadow: none; }
 .studio-layout .prompt-editor .el-textarea__inner::placeholder { color: var(--agent-muted); }
-.studio-layout .composer-mode { min-width: 0; align-self: center; flex-wrap: wrap; gap: 5px; margin: 0; }
+.studio-layout .composer-mode { min-width: 0; align-self: center; flex-wrap: wrap; gap: 6px; margin: 0; padding-top: 2px; }
 .studio-layout .composer-mode > span,
 .studio-layout .composer-mode .manual-options-inner > span { display: none; }
 .studio-layout .composer-mode > span.automatic-mode-label { display: inline-flex; }
-.studio-layout .composer-provider { width: 112px; flex: 0 0 112px; }
-.studio-layout .composer-model { width: 144px; flex: 1 1 124px; min-width: 108px; max-width: 172px; }
-.studio-layout .composer-effort { width: 104px; flex: 0 0 104px; }
-.studio-layout .composer-mode .el-select__wrapper { min-height: 26px; height: 26px; padding: 1px 7px; border: 1px solid var(--ui-border); border-radius: var(--ds-radius-xs, 7px); background: var(--agent-panel); box-shadow: none; }
+.studio-layout .composer-provider { width: auto; flex: 0 1 auto; min-width: 108px; max-width: 152px; }
+.studio-layout .composer-model { width: auto; flex: 0 1 auto; min-width: 128px; max-width: 204px; }
+.studio-layout .composer-effort { width: auto; flex: 0 1 auto; min-width: 106px; max-width: 140px; }
+.studio-layout .composer-mode .el-select__wrapper { min-height: 28px; height: 28px; padding: 1px 8px; border: 1px solid var(--ui-border); border-radius: var(--ds-radius-xs, 7px); background: var(--agent-panel); box-shadow: none; }
 .studio-layout .composer-mode .el-select__wrapper:hover { border-color: var(--agent-accent); background: var(--agent-raised); }
-.studio-layout .composer-mode .el-select__selected-item { color: var(--agent-secondary); font-size: 11.5px; line-height: 15px; }
+.studio-layout .composer-mode .el-select__selected-item { color: var(--agent-secondary); font-size: 12px; line-height: 16px; }
 /* 切换执行器时高亮所选 CLI，提示发送后将换用该执行器继续。 */
 .studio-layout .composer-provider.switching .el-select__wrapper { background: var(--agent-raised); box-shadow: inset 0 0 0 1px var(--agent-accent); }
 .studio-layout .composer-provider.switching .el-select__selected-item { color: var(--agent-accent); font-weight: 600; }
-.studio-layout .composer-mode .el-button { width: 26px; height: 26px; border-radius: var(--ds-radius-xs, 7px); color: var(--agent-muted); border-color: var(--ui-border); background: var(--agent-panel); }
+.studio-layout .composer-mode .el-button { width: 28px; height: 28px; padding: 0; border: 1px solid var(--ui-border); border-radius: var(--ds-radius-xs, 7px); color: var(--agent-muted); background: var(--agent-panel); }
+.studio-layout .composer-mode .el-button:hover:not(.is-disabled) { border-color: var(--agent-accent); background: var(--agent-raised); color: var(--agent-accent); }
 .studio-layout .composer-footer { display: contents; }
-.studio-layout .composer-footer > span { grid-area: hint; margin-top: 0; font-size: 10.5px; line-height: 15px; }
-.studio-layout .composer-inner .composer-actions { grid-area: actions; min-width: 0; max-width: 100%; align-self: center; margin: 0; flex-wrap: wrap; justify-content: flex-end; }
-.studio-layout .composer-actions { flex-shrink: 0; gap: 5px; }
+.studio-layout .composer-footer > span { grid-area: hint; margin-top: 0; font-size: 11px; line-height: 16px; }
+.studio-layout .composer-inner .composer-actions { grid-area: actions; min-width: 0; max-width: 100%; align-self: center; margin: 0; padding-top: 2px; flex-wrap: wrap; justify-content: flex-end; }
+.studio-layout .composer-actions { flex-shrink: 0; gap: 6px; }
+.studio-layout .composer-actions .el-button > span { display: inline-flex; align-items: center; gap: 5px; }
 .studio-layout .composer-actions .el-button + .el-button { margin-left: 0; }
-.studio-layout .composer-footer .el-button--primary { min-width: 68px; height: 28px; padding: 4px 12px; border-radius: 999px; background: var(--ui-primary); color: var(--ui-on-primary); border-color: var(--ui-primary); box-shadow: none; font-size: 12px; }
+.studio-layout .composer-footer .el-button--danger {
+  min-width: 74px;
+  height: 28px;
+  padding: 0 13px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--ui-danger) 42%, var(--ui-border));
+  background: color-mix(in srgb, var(--ui-danger) 15%, var(--ui-surface));
+  color: var(--ui-danger);
+  box-shadow: none;
+  font-size: 12px;
+  font-weight: 600;
+}
+.studio-layout .composer-footer .el-button--danger:hover:not(.is-disabled) {
+  border-color: var(--ui-danger);
+  background: color-mix(in srgb, var(--ui-danger) 24%, var(--ui-surface));
+  color: var(--ui-danger);
+}
+.studio-layout .composer-footer .el-button--primary { min-width: 74px; height: 28px; padding: 0 14px; border-radius: 999px; background: var(--ui-primary); color: var(--ui-on-primary); border-color: var(--ui-primary); box-shadow: none; font-size: 12px; font-weight: 600; }
 .studio-layout .composer-footer .el-button--primary.is-disabled { opacity: 0.45; }
-.studio-layout .access-trigger { height: 26px; padding-inline: 8px; border-radius: var(--ds-radius-xs, 7px); font-size: 11.5px; line-height: 15px; background: var(--agent-panel); }
+.studio-layout .access-trigger { height: 28px; padding-inline: 9px; gap: 5px; border-radius: var(--ds-radius-xs, 7px); font-size: 12px; line-height: 16px; background: var(--agent-panel); }
 .studio-layout .access-trigger.full { color: var(--ui-warning); background: var(--ui-warning-bg); border-color: color-mix(in srgb, var(--ui-warning) 35%, var(--ui-border)); }
-.studio-layout .agent-model-speed { width: 26px; height: 26px; border-radius: var(--ds-radius-xs, 7px); color: var(--agent-muted); border-color: var(--ui-border); background: var(--agent-panel); }
+.studio-layout .agent-model-speed { width: 28px; height: 28px; border-radius: var(--ds-radius-xs, 7px); color: var(--agent-muted); border-color: var(--ui-border); background: var(--agent-panel); }
 .studio-layout .agent-model-speed.enabled { color: var(--agent-accent); background: var(--agent-raised); }
 .studio-layout .markdown-preview { background: var(--agent-bg); border-color: var(--agent-border); color: var(--agent-text); }
 .studio-layout .mention-picker { border-radius: 10px; background: var(--agent-panel-strong); border-color: var(--agent-border); box-shadow: var(--ui-shadow); }
@@ -482,9 +503,9 @@
 
 @container studio-conversation (max-width: 640px) {
   .studio-layout .composer-inner { grid-template-areas: 'editor' 'mode' 'tools' 'actions' 'hint'; grid-template-columns: minmax(0, 1fr); }
-  .studio-layout .composer-inner:has(.composer-preflight) {
-    grid-template-areas: 'preflight' 'editor' 'mode' 'tools' 'actions' 'hint';
-  }
+  .studio-layout .composer-inner:has(.composer-reply) { grid-template-areas: 'reply' 'editor' 'mode' 'tools' 'actions' 'hint'; }
+  .studio-layout .composer-inner:has(.composer-preflight) { grid-template-areas: 'preflight' 'editor' 'mode' 'tools' 'actions' 'hint'; }
+  .studio-layout .composer-inner:has(.composer-reply):has(.composer-preflight) { grid-template-areas: 'reply' 'preflight' 'editor' 'mode' 'tools' 'actions' 'hint'; }
 }
 
 @media (max-width: 1440px) and (min-width: 1080px) {
@@ -531,10 +552,10 @@
   .studio-layout .user-message .user-card,
   .studio-layout .user-message.team-chat-message > div { max-width: calc(100% - 28px); padding: 7px 13px; }
   .studio-layout .composer { padding: 8px 10px 12px; }
-  .studio-layout .composer-inner { padding: 8px 10px; gap: 4px; grid-template-areas: 'tools tools' 'editor editor' 'settings actions' 'mode mode'; grid-template-columns: minmax(0, 1fr) auto; }
-  .studio-layout .composer-inner:has(.composer-preflight) {
-    grid-template-areas: 'preflight preflight' 'tools tools' 'editor editor' 'settings actions' 'mode mode';
-  }
+  .studio-layout .composer-inner { padding: 8px 10px; gap: 4px; grid-template-areas: 'tools tools' 'editor editor' 'settings actions' 'mode mode' 'hint hint'; grid-template-columns: minmax(0, 1fr) auto; }
+  .studio-layout .composer-inner:has(.composer-reply) { grid-template-areas: 'reply reply' 'tools tools' 'editor editor' 'settings actions' 'mode mode' 'hint hint'; }
+  .studio-layout .composer-inner:has(.composer-preflight) { grid-template-areas: 'preflight preflight' 'tools tools' 'editor editor' 'settings actions' 'mode mode' 'hint hint'; }
+  .studio-layout .composer-inner:has(.composer-reply):has(.composer-preflight) { grid-template-areas: 'reply reply' 'preflight preflight' 'tools tools' 'editor editor' 'settings actions' 'mode mode' 'hint hint'; }
   .studio-layout .composer-inner .composer-mode { margin: 2px 0; }
   .studio-layout .composer .prompt-tools { margin: 0; }
   .studio-layout .composer .prompt-tools .el-button { min-height: 36px; font-size: 12px; line-height: 16px; }
@@ -947,7 +968,7 @@
 
 .workspace-console.is-chat .studio-layout .conversation-pane .composer { padding: 6px clamp(16px, 2.5vw, 32px) 10px; }
 .workspace-console.is-chat .studio-layout .conversation-pane .composer-inner {
-  --composer-editor-min: 28px;
+  --composer-editor-min: 38px;
   --composer-editor-max: clamp(96px, 22dvh, 156px);
   max-width: min(100%, 1080px);
   width: 100%;
@@ -956,14 +977,14 @@
   box-shadow: 0 10px 28px -14px var(--ui-shadow-color);
   grid-template-columns: minmax(0, 1fr) auto;
   grid-template-areas: 'tools hint' 'editor editor' 'mode actions';
-  gap: 4px 10px;
-  padding: 7px 12px;
-}
-.workspace-console.is-chat .studio-layout .conversation-pane .composer-inner:has(.composer-preflight) {
-  grid-template-areas: 'preflight preflight' 'tools hint' 'editor editor' 'mode actions';
+  gap: 6px 12px;
+  padding: 10px 14px;
 }
 .workspace-console.is-chat .studio-layout .conversation-pane .composer-inner:has(.composer-reply) {
   grid-template-areas: 'reply reply' 'tools hint' 'editor editor' 'mode actions';
+}
+.workspace-console.is-chat .studio-layout .conversation-pane .composer-inner:has(.composer-preflight) {
+  grid-template-areas: 'preflight preflight' 'tools hint' 'editor editor' 'mode actions';
 }
 .workspace-console.is-chat .studio-layout .conversation-pane .composer-inner:has(.composer-reply):has(.composer-preflight) {
   grid-template-areas: 'reply reply' 'preflight preflight' 'tools hint' 'editor editor' 'mode actions';
@@ -976,12 +997,12 @@
 .workspace-console.is-chat .studio-layout .conversation-pane .composer :is(.el-textarea__inner, .markdown-preview) {
   min-height: var(--composer-editor-min) !important;
   max-height: var(--composer-editor-max);
-  padding: 3px 4px;
+  padding: 5px 4px;
   border: 1px solid transparent;
   border-radius: 8px;
   background: transparent;
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 13.5px;
+  line-height: 21px;
 }
 .workspace-console.is-chat .studio-layout .conversation-pane .composer .el-textarea__inner:focus {
   outline: none;
@@ -1001,7 +1022,7 @@
 }
 .workspace-console.is-chat .studio-layout .conversation-pane .composer .prompt-tools { margin: 0; flex-wrap: wrap; overflow: visible; }
 .workspace-console.is-chat .studio-layout .conversation-pane .composer .prompt-tools > * { flex-shrink: 0; }
-.workspace-console.is-chat .studio-layout .conversation-pane .composer-footer > span { padding-inline: 2px; font-size: 10.5px; line-height: 15px; }
+.workspace-console.is-chat .studio-layout .conversation-pane .composer-footer > span { padding-inline: 2px; font-size: 11px; line-height: 16px; }
 
 @container studio-conversation (min-width: 900px) {
   .workspace-console.is-chat .studio-layout .conversation-pane .conversation-context {
@@ -1011,15 +1032,15 @@
   }
 }
 
-@container studio-conversation (max-width: 720px) {
+@container studio-conversation (max-width: 780px) {
   .workspace-console.is-chat .studio-layout .conversation-pane .composer-inner {
     grid-template-areas: 'tools tools' 'editor editor' 'mode actions' 'hint hint';
   }
-  .workspace-console.is-chat .studio-layout .conversation-pane .composer-inner:has(.composer-preflight) {
-    grid-template-areas: 'preflight preflight' 'tools tools' 'editor editor' 'mode actions' 'hint hint';
-  }
   .workspace-console.is-chat .studio-layout .conversation-pane .composer-inner:has(.composer-reply) {
     grid-template-areas: 'reply reply' 'tools tools' 'editor editor' 'mode actions' 'hint hint';
+  }
+  .workspace-console.is-chat .studio-layout .conversation-pane .composer-inner:has(.composer-preflight) {
+    grid-template-areas: 'preflight preflight' 'tools tools' 'editor editor' 'mode actions' 'hint hint';
   }
   .workspace-console.is-chat .studio-layout .conversation-pane .composer-inner:has(.composer-reply):has(.composer-preflight) {
     grid-template-areas: 'reply reply' 'preflight preflight' 'tools tools' 'editor editor' 'mode actions' 'hint hint';
@@ -1046,11 +1067,11 @@
     grid-template-areas: 'tools tools' 'editor editor' 'settings actions' 'mode mode' 'hint hint';
     padding: 8px 10px;
   }
-  .workspace-console.is-chat .studio-layout .conversation-pane .composer-inner:has(.composer-preflight) {
-    grid-template-areas: 'preflight preflight' 'tools tools' 'editor editor' 'settings actions' 'mode mode' 'hint hint';
-  }
   .workspace-console.is-chat .studio-layout .conversation-pane .composer-inner:has(.composer-reply) {
     grid-template-areas: 'reply reply' 'tools tools' 'editor editor' 'settings actions' 'mode mode' 'hint hint';
+  }
+  .workspace-console.is-chat .studio-layout .conversation-pane .composer-inner:has(.composer-preflight) {
+    grid-template-areas: 'preflight preflight' 'tools tools' 'editor editor' 'settings actions' 'mode mode' 'hint hint';
   }
   .workspace-console.is-chat .studio-layout .conversation-pane .composer-inner:has(.composer-reply):has(.composer-preflight) {
     grid-template-areas: 'reply reply' 'preflight preflight' 'tools tools' 'editor editor' 'settings actions' 'mode mode' 'hint hint';
@@ -1080,14 +1101,20 @@
     grid-template-columns: minmax(0, 1fr) auto;
     grid-template-areas: 'tools tools' 'editor editor' 'settings actions' 'mode mode' 'hint hint';
   }
+  .workspace-console.is-chat .studio-layout .conversation-pane .composer-inner:has(.composer-reply) {
+    grid-template-areas: 'reply reply' 'tools tools' 'editor editor' 'settings actions' 'mode mode' 'hint hint';
+  }
   .workspace-console.is-chat .studio-layout .conversation-pane .composer-inner:has(.composer-preflight) {
     grid-template-areas: 'preflight preflight' 'tools tools' 'editor editor' 'settings actions' 'mode mode' 'hint hint';
+  }
+  .workspace-console.is-chat .studio-layout .conversation-pane .composer-inner:has(.composer-reply):has(.composer-preflight) {
+    grid-template-areas: 'reply reply' 'preflight preflight' 'tools tools' 'editor editor' 'settings actions' 'mode mode' 'hint hint';
   }
   .workspace-console.is-chat .studio-layout .conversation-pane .composer .el-textarea__inner { font-size: 16px; }
 }
 @media (max-height: 620px) {
   .workspace-console.is-chat .studio-layout .conversation-pane .composer-inner {
-    --composer-editor-min: 26px;
+    --composer-editor-min: 30px;
     --composer-editor-max: clamp(72px, 20dvh, 120px);
   }
 }
@@ -1278,11 +1305,20 @@
   .workspace-console.is-chat .studio-layout .new-composer .composer-model { width: 136px; }
 }
 
-@container studio-conversation (min-width: 660px) {
+@container studio-conversation (min-width: 641px) {
   .workspace-console.is-chat .studio-layout .composer-mode.collaboration-controls {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 6px;
+  }
+  .workspace-console.is-chat .studio-layout .composer-mode.collaboration-controls > .mode-toolbar,
+  .workspace-console.is-chat .studio-layout .composer-mode.collaboration-controls > .manual-options.expanded,
+  .workspace-console.is-chat .studio-layout .composer-mode.collaboration-controls > .manual-options.expanded > .manual-options-inner {
+    display: contents;
+  }
+  .workspace-console.is-chat .studio-layout .composer-mode.collaboration-controls > .manual-options:not(.expanded) {
+    display: none;
   }
   .workspace-console.is-chat .studio-layout .composer-mode .manual-options-inner { padding-top: 0; }
 }

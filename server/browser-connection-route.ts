@@ -1,7 +1,8 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { createBrowserConnection } from './browser-connection.js';
 
-export function createBrowserConnectionRoute(connection: ReturnType<typeof createBrowserConnection>, options: {
+export function createBrowserConnectionRoute(connection: Pick<ReturnType<typeof createBrowserConnection>,
+  'status' | 'openSettings' | 'connect' | 'disconnect'>, options: {
   port: number;
   json: (response: ServerResponse, status: number, value: unknown) => void;
   body: (request: IncomingMessage, limit?: number) => Promise<unknown>;

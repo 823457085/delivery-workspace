@@ -253,10 +253,11 @@ function computedFromSfc(file: string, name: string, bindings: Record<string, un
 
 test('历史协作回复保持可用，新建普通会话必须核对单 Agent 模型与执行器', () => {
   const automatic = ref(true), props = { changing: '', attachmentDraft: { pending: false } };
-  const composer = computedFromSfc('AgentComposer.vue', 'canSend', { automatic, props, hasContent: ref(true), switchingProvider: ref(false), canResume: ref(false), runtime: ref(undefined) });
+  const workspaceChangePending = ref(false);
+  const composer = computedFromSfc('AgentComposer.vue', 'canSend', { automatic, props, workspaceChangePending, hasContent: ref(true), switchingProvider: ref(false), canResume: ref(false), runtime: ref(undefined) });
   assert.equal(composer.value, true);
   props.attachmentDraft.pending = true;
-  const uploading = computedFromSfc('AgentComposer.vue', 'canSend', { automatic, props, hasContent: ref(true) });
+  const uploading = computedFromSfc('AgentComposer.vue', 'canSend', { automatic, props, workspaceChangePending, hasContent: ref(true) });
   assert.equal(uploading.value, false);
   const bindings = { selectedRuntime: ref(undefined), selectedModelOption: ref(undefined), effortOptions: ref([]),
     form: { objective: '你好', provider: 'codex', model: 'test', mode: 'agent', accessMode: 'full' }, newAttachments: ref([]),
@@ -362,7 +363,7 @@ test('从第二个问题进入主输入时保留精确问题身份，最新房�
 
 test('选中问题过期时禁用发送，不把已写回复悄悄作为新的执行目标', () => {
   const props = { changing: '', questionReply: { text: '是否允许提交？', state: 'expired' }, attachmentDraft: { pending: false } };
-  const bindings = { props, automatic: ref(true), draft: ref('不允许'), hasContent: ref(true) };
+  const bindings = { props, automatic: ref(true), draft: ref('不允许'), hasContent: ref(true), workspaceChangePending: ref(false) };
   assert.equal(computedFromSfc('AgentComposer.vue', 'canSend', bindings).value, false);
   props.questionReply.state = 'pending';
   assert.equal(computedFromSfc('AgentComposer.vue', 'canSend', bindings).value, true);

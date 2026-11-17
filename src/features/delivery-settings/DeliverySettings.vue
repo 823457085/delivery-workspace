@@ -96,6 +96,8 @@ function reset() {
     const settings: AutomationSettings = JSON.parse(JSON.stringify(data.value.settings));
     settings.projectProfiles ||= [];
     settings.autoPrepareJiraDev ??= false;
+    settings.autoAlignJiraEndDates ??= false;
+    settings.autoCloseDueSplitTasks ??= false;
     settings.jiraDevAutomationApproved ??= false;
     savedSettingsFingerprint = JSON.stringify(settings);
     form.value = settings;
@@ -110,8 +112,22 @@ watch(
   { immediate: true },
 );
 const valid = computed(() => validDeliverySettings(form.value) && new Set(form.value?.dailyTimes).size === form.value?.dailyTimes.length);
-const approvalPending = computed(() => !!form.value && form.value.enabled && !form.value.jiraDevAutomationApproved
-  && (form.value.autoCreateCodex || form.value.autoTransitionJira || form.value.autoCreateMergeRequest));
+const approvalPending = computed(() => {
+  const value = form.value;
+  const saved = data.value?.settings;
+  if (!value?.enabled) return false;
+  const scopeChanged = !saved?.enabled || JSON.stringify(value.projectProfiles) !== JSON.stringify(saved.projectProfiles || []);
+  const completionChanged = value.completedStatus !== saved?.completedStatus;
+  return Boolean(
+    value.autoCreateCodex && (scopeChanged || !saved?.autoCreateCodex || !value.jiraDevAutomationApproved) ||
+    value.autoTransitionJira && (scopeChanged || !saved?.autoTransitionJira || !value.jiraDevAutomationApproved
+      || value.startStatus !== saved?.startStatus || completionChanged) ||
+    value.autoCreateMergeRequest && (scopeChanged || !saved?.autoCreateMergeRequest || !value.jiraDevAutomationApproved
+      || value.reviewer !== saved?.reviewer) ||
+    value.autoAlignJiraEndDates && (scopeChanged || !saved?.autoAlignJiraEndDates) ||
+    value.autoCloseDueSplitTasks && (scopeChanged || !saved?.autoCloseDueSplitTasks || completionChanged)
+  );
+});
 function addTime() {
   if (!form.value) return;
   const next = ['09:00', '12:00', '18:00', '21:00'].find(time => !form.value!.dailyTimes.includes(time)) || '00:00';
@@ -167,6 +183,8 @@ async function save() {
     autoCreateCodex: value.autoCreateCodex,
     autoPrepareJiraDev: value.autoPrepareJiraDev,
     autoTransitionJira: value.autoTransitionJira,
+    autoAlignJiraEndDates: value.autoAlignJiraEndDates,
+    autoCloseDueSplitTasks: value.autoCloseDueSplitTasks,
     autoCreateMergeRequest: value.autoCreateMergeRequest,
     jiraDevAutomationApproved: value.enabled && (value.autoCreateCodex || value.autoTransitionJira || value.autoCreateMergeRequest),
   };
@@ -175,9 +193,11 @@ async function save() {
     value.enabled && value.autoCreateCodex ? (value.autoPrepareJiraDev
       ? '符合条件的实现事项生成预览，确认后开始。其他自动派发按已有规则执行。'
       : '符合条件且无需 Jira 写入确认的实现事项，可由本机 Codex 通过需求开发或 Jira 修复自动启动。') : '自动创建 Codex 任务关闭或暂停。',
-    value.enabled && value.autoTransitionJira ? `两条流程启动后可将绑定事项推进至「${value.startStatus}」，验证及所选交付步骤通过后可推进至「${value.completedStatus}」。` : '自动推进 Jira 状态关闭或暂停。',
+    value.enabled && value.autoTransitionJira ? `巡检与已绑定的研发流程可将匹配事项推进至「${value.startStatus}」，取得完成证据后可推进至「${value.completedStatus}」。` : '自动推进 Jira 状态关闭或暂停。',
+    value.enabled && value.autoAlignJiraEndDates ? '巡检可把匹配事项的结束日期顺延至关联版本的发布日期。' : '',
+    value.enabled && value.autoCloseDueSplitTasks ? '巡检可按排期完成已标记的到期子任务，无需本地交付证据。' : '',
     value.enabled && value.autoCreateMergeRequest ? `授权符合项目匹配的研发任务在验证通过后提交、推送本次任务分支，并按项目目标分支和审核人「${value.reviewer || '尚未配置'}」创建 MR。` : '自动创建合并请求关闭或暂停。',
-  ].join(' ');
+  ].filter(Boolean).join(' ');
   saving.value = true;
   try {
     const ok = await actions.execute(
@@ -276,9 +296,23 @@ async function save() {
                 <div class="settings-switch">
                   <div>
                     <strong>自动推进 Jira 状态</strong>
-                    <p>巡检按排期推进。需求开发和 Jira 修复按启动和验证结果推进已绑定的 Jira 事项。</p>
+                    <p>巡检只推进匹配项目的研发事项，完成需交付证据或所有交付子任务已完成。需求开发和 Jira 修复按流程推进绑定事项。</p>
                   </div>
                   <el-switch v-model="form.autoTransitionJira" aria-label="自动推进 Jira 状态" @change="dirty = true" />
+                </div>
+                <div class="settings-switch">
+                  <div>
+                    <strong>按版本发布日期顺延 Jira 结束日期</strong>
+                    <p>事项到期且关联版本的发布日期在未来时，将结束日期顺延至该发布日期。</p>
+                  </div>
+                  <el-switch v-model="form.autoAlignJiraEndDates" aria-label="按版本发布日期顺延 Jira 结束日期" />
+                </div>
+                <div class="settings-switch">
+                  <div>
+                    <strong>按排期完成到期切片</strong>
+                    <p>自动完成已标记的到期功能切片。明确排期的切片在结束日 18:00 后可推进。</p>
+                  </div>
+                  <el-switch v-model="form.autoCloseDueSplitTasks" aria-label="按排期完成到期切片" />
                 </div>
                 <div class="settings-switch">
                   <div>
@@ -331,7 +365,7 @@ async function save() {
                 </section>
                 <el-alert v-if="!valid" title="请填写不重复的有效时间、派发数量、状态，以及每个项目的必填配置。" type="error" :closable="false" />
                 <div class="settings-actions">
-                  <span v-if="approvalPending" class="row-secondary">保存并确认后，所选自动动作才会应用到需求开发和 Jira 修复。</span>
+                  <span v-if="approvalPending" class="row-secondary">确认保存后启用所选自动动作。</span>
                   <el-button @click="reset">恢复已保存配置</el-button>
                   <el-button type="primary" :disabled="!valid" :loading="saving" @click="save">保存交付设置</el-button>
                 </div>
@@ -759,11 +793,11 @@ async function save() {
 :global(.project-profile-drawer .el-drawer__header) {
   color: var(--ui-text);
 }
-:global(html[data-ui-skin="acid"]) .settings-readiness-card,
-:global(html[data-ui-skin="acid"]) .settings-unsaved-bar,
-:global(html[data-ui-skin="acid"]) .runtime-summary-tile,
-:global(html[data-ui-skin="acid"]) .runtime-profile-card,
-:global(html[data-ui-skin="acid"]) .runtime-profile-branch {
+:root[data-theme='acid'] .settings-readiness-card,
+:root[data-theme='acid'] .settings-unsaved-bar,
+:root[data-theme='acid'] .runtime-summary-tile,
+:root[data-theme='acid'] .runtime-profile-card,
+:root[data-theme='acid'] .runtime-profile-branch {
   border-radius: 0;
 }
 @media (max-width: 860px) {

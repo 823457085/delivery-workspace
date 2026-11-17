@@ -2531,7 +2531,7 @@ onBeforeUnmount(() => {
   color: var(--ui-accent);
 }
 
-:global(:root[data-theme='acid']) .port-monitor-page :is(.port-slash-kbd, .port-preset-chip, .port-quick-copy) {
+:root[data-theme='acid'] .port-monitor-page :is(.port-slash-kbd, .port-preset-chip, .port-quick-copy) {
   border-radius: 0 !important;
 }
 </style>

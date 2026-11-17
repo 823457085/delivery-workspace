@@ -1,12 +1,29 @@
+import { execFileSync } from 'node:child_process';
 import type { AgentRun } from '../shared/agent-runtime.js';
 import type { CodexSessionSource } from './codex-session-source.js';
 import { desktopTurnFromSnapshot, readCodexDesktopSnapshot } from './codex-desktop-turn.js';
 import { desktopObject as object } from './codex-desktop-ipc.js';
 
-export function processIsAlive(pid: number | null) {
+/** 读取进程启动时间（ps lstart），用于识别服务重启后 PID 被系统复用给无关进程的情况。 */
+export function readProcessStartTime(pid: number | null): string | undefined {
+  if (!pid || !Number.isSafeInteger(pid) || pid < 1) return undefined;
+  try {
+    const output = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] });
+    return output.trim().replace(/\s+/g, ' ') || undefined;
+  } catch { return undefined; }
+}
+
+/**
+ * 进程存活且（如已记录）启动时间一致才视为原执行进程仍在。
+ * 未记录启动时间的旧数据保持原判定，避免误放行重复执行。
+ */
+export function processIsAlive(pid: number | null, expectedStartedAt?: string, readStart: typeof readProcessStartTime = readProcessStartTime) {
   if (!pid || !Number.isSafeInteger(pid) || pid < 1) return false;
-  try { process.kill(pid, 0); return true; }
-  catch (error) { return (error as NodeJS.ErrnoException).code === 'EPERM'; }
+  try { process.kill(pid, 0); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EPERM') return false; }
+  if (!expectedStartedAt) return true;
+  const actual = readStart(pid);
+  return !actual || actual === expectedStartedAt;
 }
 
 /** Only a fresh, exact native turn can repair completion; text similarity and cached replies are not evidence. */
@@ -48,7 +65,7 @@ export async function checkAgentRecovery(run: AgentRun, source: CodexSessionSour
       detail = turn ? '原生轮次尚无完整结束记录。' : '未找到对应原生轮次。';
     } catch { detail = '原生轮次暂时无法读取。'; }
   }
-  const active = alive(recovery.previousPid);
+  const active = alive(recovery.previousPid, recovery.previousPidStartedAt);
   const message = recovery.nativeObservation === 'codex-desktop' ? '暂未确认 Codex 原轮次结束，正在自动核对；未重复派发。'
     : active ? '原执行进程仍存在，禁止重复派发；请等待后重新核对。'
     : recovery.previousStatus === 'queued' ? '该消息重启前尚在排队，未自动派发；确认前序任务后可继续。'

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
+import { Plug } from '@lucide/vue';
 import { pluginReferences, type PluginResource, type CustomPluginInfo } from '../../../shared/custom-plugins';
 import { pluginRequest } from './api';
 const props = defineProps<{ disabled?: boolean }>(), draft = defineModel<string>({ default: '' });
@@ -44,7 +45,7 @@ function remove(reference: string) { draft.value = draft.value.replaceAll('@' + 
 </script>
 <template>
   <div class="plugin-context">
-    <el-button size="small" text :disabled="disabled" @click="preview = undefined; open = true">插件事项</el-button>
+    <el-button size="small" text :disabled="disabled" title="引用插件待办或扩展上下文事项" @click="preview = undefined; open = true"><Plug :size="13" /> 插件事项</el-button>
     <div v-if="references.length" class="resource-chips" aria-label="已选择插件事项"><el-tag v-for="reference in references" :key="reference" :closable="!disabled" @close="remove(reference)" @click="inspect(reference)">{{ titles[reference] || reference }}</el-tag></div>
     <el-dialog v-model="open" title="选择插件事项作为会话上下文" width="min(850px, 95vw)" append-to-body>
       <p>选择时可预览；发送时重新读取最新内容并保存快照。事项内容不会自动授权执行。</p>
@@ -56,4 +57,4 @@ function remove(reference: string) { draft.value = draft.value.replaceAll('@' + 
     </el-dialog>
   </div>
 </template>
-<style scoped>.resource-chips{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}.resource-chips .el-tag{cursor:pointer;max-width:100%;overflow:hidden}.search-row,.resource-row{display:flex;gap:12px;align-items:center;margin-bottom:16px}.resource-row{padding:12px;border-bottom:1px solid var(--ui-border)}.resource-row>div{min-width:0;flex:1}.resource-row small{display:block;color:var(--ui-muted)}.resource-row p{overflow-wrap:anywhere}dl{max-height:260px;overflow:auto}dt{font-weight:600;margin-top:12px}dd{margin:4px 0;white-space:pre-wrap;overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:220px;overflow:auto;padding:12px;background:var(--ui-hover)}</style>
+<style scoped>.plugin-context{display:inline-flex;align-items:center;flex-wrap:wrap;gap:4px}.resource-chips{display:inline-flex;flex-wrap:wrap;gap:4px;margin:0}.resource-chips .el-tag{cursor:pointer;max-width:100%;overflow:hidden}.search-row,.resource-row{display:flex;gap:12px;align-items:center;margin-bottom:16px}.resource-row{padding:12px;border-bottom:1px solid var(--ui-border)}.resource-row>div{min-width:0;flex:1}.resource-row small{display:block;color:var(--ui-muted)}.resource-row p{overflow-wrap:anywhere}dl{max-height:260px;overflow:auto}dt{font-weight:600;margin-top:12px}dd{margin:4px 0;white-space:pre-wrap;overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:220px;overflow:auto;padding:12px;background:var(--ui-hover)}</style>

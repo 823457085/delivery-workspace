@@ -107,8 +107,11 @@ const confirming = shallowRef(false);
 const preparingLocal = shallowRef(false);
 const editingTitle = shallowRef(false);
 const syncingDescription = shallowRef(false);
+const mergingRequest = shallowRef<number>();
 const localMergeSection = ref<HTMLElement>();
-const busy = computed(() => props.busy || previewing.value || preparing.value || creating.value || confirming.value || preparingLocal.value || editingTitle.value || syncingDescription.value);
+const panelBusy = computed(() => previewing.value || preparing.value || creating.value || confirming.value
+  || editingTitle.value || syncingDescription.value || mergingRequest.value !== undefined);
+const busy = computed(() => props.busy || panelBusy.value || preparingLocal.value);
 const candidates = computed(() => props.snapshot.branches.filter(branch => !branch.current));
 const strategyLabel = computed(() => ({ ff: '普通合并（可快进时快进）', 'no-ff': '始终创建合并提交', 'ff-only': '仅允许快进' })[strategy.value]);
 const canMerge = computed(() => !!preview.value && !preview.value.alreadyMerged && props.snapshot.clean
@@ -143,8 +146,7 @@ let requestVersion = 0;
 let listVersion = 0;
 let alive = true;
 
-watch([previewing, preparing, creating, confirming, editingTitle, syncingDescription], () =>
-  emit('busy', previewing.value || preparing.value || creating.value || confirming.value || editingTitle.value || syncingDescription.value), { flush: 'sync' });
+watch(panelBusy, value => emit('busy', value), { flush: 'sync' });
 onBeforeUnmount(() => { alive = false; ++requestVersion; emit('busy', false); });
 watch(sourceRef, () => { preview.value = undefined; }, { flush: 'sync' });
 watch(() => props.snapshot, snapshot => {
@@ -277,6 +279,57 @@ async function syncRequestDescription(request: ListedRequest) {
     ElMessage.error(error instanceof Error ? error.message : '同步变更摘要失败');
     void loadRequestList();
   } finally { syncingDescription.value = false; }
+}
+
+function canMergeRequest(request: NonNullable<RemoteRequest['existing']>) {
+  return isCodeup.value && request.state.toUpperCase() === 'TO_BE_MERGED';
+}
+
+async function mergeRemoteRequest(request: NonNullable<RemoteRequest['existing']>, source: string, target: string) {
+  if (busy.value || loadingRequests.value || !canMergeRequest(request)) return;
+  const path = props.path, remoteName = remote.value, id = Number(request.id);
+  const selectedRepository = () => props.snapshot.remotes.find(item => item.name === remote.value)?.webUrl;
+  const repositoryUrl = URL.parse(selectedRepository() || '')?.href;
+  if (!repositoryUrl || !Number.isSafeInteger(id) || id <= 0) return;
+  const version = requestVersion;
+  const stillSelected = () => alive && props.path === path && remote.value === remoteName && requestVersion === version
+    && URL.parse(selectedRepository() || '')?.href === repositoryUrl;
+  const selection = prepared.value;
+  const preparedMatches = selection?.existing?.id === request.id && selection.sourceBranch === source
+    && selection.targetBranch === target && URL.parse(selection.repositoryUrl)?.href === repositoryUrl;
+  const sourceSha = preparedMatches ? selection.sourceSha : remoteBranches.value.find(branch => branch.name === source)?.sha;
+  const targetSha = preparedMatches ? selection.targetSha : remoteBranches.value.find(branch => branch.name === target)?.sha;
+  if (!sourceSha || !targetSha) {
+    ElMessage.warning('请先获取远端分支或查询对应的合并请求。');
+    return;
+  }
+
+  confirming.value = true;
+  try {
+    await ElMessageBox.confirm(
+      `在 Codeup 合并 #${id}「${request.title}」：${source} (${sourceSha.slice(0, 8)}) → ${target} (${targetSha.slice(0, 8)})。将创建合并提交并保留源分支。`,
+      '确认合并代码', { confirmButtonText: '确认合并', cancelButtonText: '取消', type: 'warning' },
+    );
+  } catch { return; }
+  finally { confirming.value = false; }
+  if (!stillSelected() || busy.value) return;
+
+  mergingRequest.value = id;
+  try {
+    const { request: merged }: { request: ListedRequest } = await jsonRequest('/api/projects/git/merge-request/merge', {
+      path, remote: remoteName, repositoryUrl, id, sourceBranch: source, targetBranch: target,
+      expectedSourceSha: sourceSha, expectedTargetSha: targetSha,
+    }, true);
+    if (!stillSelected()) return;
+    requests.value = requests.value.filter(item => item.id !== id);
+    if (visibleRequest.value?.id === request.id) createdRequest.value = merged;
+    ElMessage.success(`合并请求 #${id} 已合并`);
+    void loadRequestList();
+  } catch (error) {
+    if (!stillSelected()) return;
+    ElMessage.error(error instanceof Error ? error.message : '合并结果尚未确认，请到 Codeup 核对。');
+    void loadRequestList();
+  } finally { mergingRequest.value = undefined; }
 }
 
 async function copyWalkthroughDescription() {
@@ -526,7 +579,7 @@ async function createRequest() {
         </div>
       </div>
       <template v-if="isCodeup">
-        <p class="row-secondary">显示当前仓库未结束的请求。本地合并更新本机目标分支，远端请求由 Codeup 管理。</p>
+        <p class="row-secondary">显示当前仓库未结束的请求。「合并代码」通过 Codeup 更新远端目标分支。</p>
         <p v-if="requestListError" class="row-secondary">{{ requestListError }}</p>
         <el-table v-else v-loading="loadingRequests" :data="requests" row-key="id" size="small" max-height="290" empty-text="没有未结束的合并请求">
           <el-table-column label="合并请求" min-width="270">
@@ -540,9 +593,11 @@ async function createRequest() {
               <el-tag v-if="row.state" size="small" effect="plain">{{ requestStateLabels[row.state.toUpperCase()] ?? row.state }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="操作" min-width="268">
+          <el-table-column label="操作" min-width="326">
             <template #default="{ row }">
               <div class="merge-actions">
+                <el-button v-if="canMergeRequest(row)" link type="primary" :loading="mergingRequest === row.id" :disabled="busy || loadingRequests"
+                  @click="mergeRemoteRequest(row, row.sourceBranch, row.targetBranch)">合并代码</el-button>
                 <el-button link type="primary" :disabled="busy || !snapshot.clean || snapshot.mergeInProgress"
                   @click="prepareLocalRequestMerge(row)">准备本地合并</el-button>
                 <el-button link type="primary" :disabled="busy || loadingRequests" @click="editRequestTitle(row)">编辑标题</el-button>
@@ -698,7 +753,7 @@ async function createRequest() {
           </el-select>
         </el-form-item>
       </el-form>
-      <p class="row-secondary">{{ sourceBranch || '来源分支' }} → {{ targetBranch || '目标分支' }}。创建请求后在代码平台审核与合入。</p>
+      <p class="row-secondary">{{ sourceBranch || '来源分支' }} → {{ targetBranch || '目标分支' }}。{{ isCodeup ? 'Codeup 审核通过后，可在此合入。' : '创建请求后在代码平台审核与合入。' }}</p>
       <div class="merge-actions">
         <el-button :loading="preparing" :disabled="busy || !sourceBranch || !targetBranch || sourceBranch === targetBranch" @click="prepareRequest">{{ queryLabel }}</el-button>
         <el-button :disabled="busy || !remote" @click="execute({ action: 'fetch', remote }, '已获取远端最新分支')">获取远端分支</el-button>
@@ -706,6 +761,8 @@ async function createRequest() {
       <div v-if="visibleRequest" class="request-result">
         <span><strong>#{{ visibleRequest.id }}</strong> {{ visibleRequest.title }}</span>
         <el-tag v-if="visibleRequest.state" size="small" effect="plain">{{ requestStateLabels[visibleRequest.state.toUpperCase()] ?? visibleRequest.state }}</el-tag>
+        <el-button v-if="canMergeRequest(visibleRequest)" type="primary" size="small" :loading="mergingRequest === Number(visibleRequest.id)"
+          :disabled="busy || loadingRequests" @click="mergeRemoteRequest(visibleRequest, sourceBranch, targetBranch)">合并代码</el-button>
         <el-link v-if="safeUrl(visibleRequest.url)" :href="safeUrl(visibleRequest.url)" target="_blank" rel="noopener noreferrer" type="primary">在 Codeup 查看</el-link>
       </div>
       <template v-else-if="prepared">

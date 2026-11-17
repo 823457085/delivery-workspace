@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { listProjectMergeRequests, prepareProjectMergeRequest, reconcileProjectMergeRequest, createProjectMergeRequest, updateProjectMergeRequestTitle } from '../server/project-merge-request.js';
+import { listProjectMergeRequests, prepareProjectMergeRequest, reconcileProjectMergeRequest, createProjectMergeRequest, mergeProjectMergeRequest, updateProjectMergeRequestTitle } from '../server/project-merge-request.js';
 
 const exec = promisify(execFile);
 const git = async (directory: string, ...args: string[]) => (await exec('git', ['-C', directory, ...args])).stdout.trim();
@@ -125,6 +125,54 @@ test('只更新所选合并请求的标题并回读，拒绝过期标题和错�
   await updateProjectMergeRequestTitle(input, f.options);
   await assert.rejects(updateProjectMergeRequestTitle({ ...input, title: '另一个标题' }, f.options), /标题已被修改/);
   assert.equal(f.calls.filter(call => call.method === 'PUT').length, 1);
+});
+
+test('仅合并身份和提交都匹配的待合并 Codeup 请求，丢失响应时以详情回读为准', async t => {
+  const f = await fixture(t);
+  const prepared = await f.prepare();
+  const input = { ...f.input, repositoryUrl, id: 12, expectedSourceSha: prepared.sourceSha, expectedTargetSha: prepared.targetSha };
+  const detail = { ...f.request(), allRequirementsPass: true, conflictCheckStatus: 'NO_CONFLICT' };
+  const calls: string[] = [];
+  let committed = false, loseResponseAfterMerge = false;
+  const fetcher: typeof fetch = async (url, init) => {
+    const endpoint = new URL(String(url)).pathname;
+    if (endpoint.endsWith('/changeRequests/12/merge')) {
+      calls.push('POST');
+      assert.equal(init?.method, 'POST');
+      assert.deepEqual(JSON.parse(String(init?.body)), { mergeType: 'no-fast-forward', removeSourceBranch: false });
+      committed = loseResponseAfterMerge;
+      throw new Error('simulated lost response');
+    }
+    if (endpoint.endsWith('/changeRequests/12')) {
+      calls.push('GET');
+      return Response.json({ ...detail, status: committed ? 'MERGED' : detail.status });
+    }
+    return f.options.fetcher(url, init);
+  };
+  const options = { ...f.options, fetcher };
+  await assert.rejects(mergeProjectMergeRequest({ ...input, targetBranch: 'wrong' }, options), /选择不一致/);
+  detail.status = 'UNDER_REVIEW';
+  await assert.rejects(mergeProjectMergeRequest(input, options), /不处于待合并状态/);
+  detail.status = 'TO_BE_MERGED';
+  detail.allRequirementsPass = false;
+  await assert.rejects(mergeProjectMergeRequest(input, options), /检查尚未全部通过/);
+  detail.allRequirementsPass = true;
+  detail.conflictCheckStatus = 'HAS_CONFLICT';
+  await assert.rejects(mergeProjectMergeRequest(input, options), /检测到合并冲突/);
+  detail.conflictCheckStatus = 'NO_CONFLICT';
+  await assert.rejects(mergeProjectMergeRequest({ ...input, expectedTargetSha: prepared.sourceSha }, options), /远端分支提交已变化/);
+  assert.ok(!calls.includes('POST'));
+
+  await assert.rejects(mergeProjectMergeRequest(input, options), /合并结果尚未确认/);
+  assert.deepEqual(calls.slice(-3), ['GET', 'POST', 'GET']);
+
+  loseResponseAfterMerge = true;
+  const result = await mergeProjectMergeRequest(input, options);
+  assert.equal(result.request.state, 'MERGED');
+  assert.equal(result.alreadyMerged, false);
+  assert.deepEqual(calls.slice(-3), ['GET', 'POST', 'GET']);
+  assert.equal((await mergeProjectMergeRequest(input, options)).alreadyMerged, true);
+  assert.equal(calls.filter(method => method === 'POST').length, 2);
 });
 
 test('Codeup 超时持久保留未知状态，不重试；再次查询找到请求才恢复', async t => {

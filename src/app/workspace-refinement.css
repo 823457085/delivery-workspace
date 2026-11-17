@@ -53,6 +53,10 @@ body,
   padding: 12px 14px !important;
 }
 
+.el-notification.el-notification-fade-leave-active {
+  pointer-events: none !important;
+}
+
 .el-notification__title {
   font-size: 13px !important;
   line-height: 1.4 !important;

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -1178,6 +1179,76 @@ test('未绑定项目的 Codex 侧边会话共享原会话目录', async () => {
     assert.equal(side.sourceWorkspacePath, '');
     assert.equal(await fs.readFile(path.join(side.workspacePath, 'source-only.txt'), 'utf8'), '原会话文件');
   } finally {
+    await service.close();
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('Codex 执行中可继续新建共享工作区的会话，只读并行且写入显示等待原因', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-running-fork-'));
+  const gates = new Map(['原会话第一轮', '原会话第二轮', '并行只读一'].map(objective => {
+    let release!: () => void;
+    const wait = new Promise<void>(resolve => { release = resolve; });
+    return [objective, { wait, release }] as const;
+  }));
+  const calls = new Map<string, { forkSessionId?: string; forkLastTurnId?: string }>();
+  const adapter: AgentRuntimeAdapter = { id: 'codex', health: async () => health('codex'), execute: async context => {
+    const { id, objective } = context.run;
+    const wait = gates.get(objective)?.wait;
+    calls.set(id, { forkSessionId: context.forkSessionId, forkLastTurnId: context.forkLastTurnId });
+    if (objective === '原会话第一轮') await wait;
+    await context.onSession(context.resumeSessionId || `session-${id}`);
+    await context.onTurn?.(randomUUID());
+    await wait;
+    return '完成';
+  } };
+  const service = await createAgentRuntimeService(path.join(directory, 'state'), { adapters: [adapter] });
+  async function settled(id: string) {
+    for (let attempt = 0; attempt < 200; attempt++) {
+      const { runs, activeWorkspaceLocks } = service.snapshot();
+      const run = runs.find(item => item.id === id);
+      if (run?.resultReady && !activeWorkspaceLocks.some(lock => lock.runId === id)) return run;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.fail('测试轮次未完成落盘');
+  }
+  try {
+    const first = await service.start({ provider: 'codex', mode: 'agent', accessMode: 'full', model: 'test-model',
+      objective: '原会话第一轮', workspacePath: directory });
+    assert.equal(first.status, 'running');
+    assert.equal(first.sessionId, '');
+    const fresh = await settled((await service.fork(first.id, '暂无已完成轮次，也能新建')).id);
+    assert.equal(fresh.workspacePath, first.workspacePath);
+    assert.notEqual(fresh.conversationId, first.conversationId);
+    assert.equal(fresh.mode, 'ask');
+    assert.deepEqual(calls.get(fresh.id), { forkSessionId: '', forkLastTurnId: '' });
+    gates.get('原会话第一轮')!.release();
+    const source = await settled(first.id);
+
+    const running = await service.resume(source.id, '原会话第二轮');
+    assert.equal(running.status, 'running');
+    const writer = await service.fork(running.id, '另一个写入任务', undefined, undefined, [], undefined, 'agent');
+    assert.equal(writer.status, 'queued');
+    assert.ok(writer.events.some(event => event.message === '等待同一工作区的写入任务完成'));
+    const expectedAnchor = { forkSessionId: source.sessionId, forkLastTurnId: source.codexTurnId };
+    const firstReader = await service.fork(running.id, '并行只读一');
+    assert.equal(firstReader.mode, 'ask');
+    assert.equal(firstReader.accessMode, 'workspace');
+    const secondReader = await settled((await service.fork(source.id, '在已有侧边会话执行中继续新建')).id);
+    assert.deepEqual(calls.get(firstReader.id), expectedAnchor);
+    assert.deepEqual(calls.get(secondReader.id), expectedAnchor);
+    assert.equal(running.status, 'running');
+    assert.equal(firstReader.status, 'running');
+    assert.equal(writer.status, 'queued');
+    assert.equal(secondReader.workspacePath, source.workspacePath);
+    assert.notEqual(secondReader.sessionId, source.sessionId);
+    assert.notEqual(secondReader.sessionId, firstReader.sessionId);
+
+    gates.get('原会话第二轮')!.release();
+    await settled(writer.id);
+    assert.deepEqual(calls.get(writer.id), expectedAnchor);
+  } finally {
+    for (const { release } of gates.values()) release();
     await service.close();
     await fs.rm(directory, { recursive: true, force: true });
   }

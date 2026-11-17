@@ -140,6 +140,32 @@ class AccountIdentityTests(unittest.TestCase):
         self.assertEqual(app.account_identity({'authInfo': {}}), '')
 
 
+class ActiveAgentTests(unittest.TestCase):
+    def test_status_probes_do_not_look_like_sessions_but_still_guard_writes(self):
+        cli = '/home/user/.local/bin/cursor-agent'
+        bundle = '/home/user/.local/share/cursor-agent/versions/fixture'
+        processes = {
+            101: f'{cli} --use-system-ca {bundle}/index.js --version',
+            102: f'{cli} --use-system-ca {bundle}/index.js status --format json',
+            103: f'{cli} {bundle}/index.js --list-models',
+            104: f'{bundle}/node --use-system-ca --version',
+            105: '/usr/local/bin/cursor agent status',
+            106: f'/bin/bash {cli} status --format json',
+            107: f'{cli} {bundle}/index.js login',
+            108: f'{cli} --use-system-ca {bundle}/index.js -p "check status --version"',
+            109: f'{cli} {bundle}/index.js',
+            110: '/usr/local/bin/cursor agent --resume fixture',
+        }
+        executables = {104: f'{bundle}/node', 105: '/usr/local/bin/cursor',
+                       106: cli, 110: '/usr/local/bin/cursor'}
+        comm = ''.join(f'{pid} {executables.get(pid, cli)}\n' for pid in processes)
+        argv = ''.join(f'{pid} {args}\n' for pid, args in processes.items())
+        with patch.object(app.os, 'getpid', return_value=999), \
+                patch.object(app.subprocess, 'check_output', side_effect=[comm, argv, comm, argv]):
+            self.assertEqual(app.active_agents(include_probes=False), ['107', '108', '109', '110'])
+            self.assertEqual(app.active_agents(), list(map(str, processes)))
+
+
 class AccountTests(unittest.TestCase):
     def setUp(self):
         stack = contextlib.ExitStack()

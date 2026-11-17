@@ -359,7 +359,7 @@ function toggleDaylightFromPalette() {
           <component :is="navigationIcons[group.icon || group.id] || LayoutGrid" :size="14" />
           <span>{{ group.shortLabel || navigationLabels[group.id] || group.label }}</span>
         </button>
-        <el-dropdown v-if="overflowHeaderSections.length" trigger="click" popper-class="hg-more-nav-popper">
+        <el-dropdown v-if="overflowHeaderSections.length" trigger="click" :popper-options="{ strategy: 'fixed' }" popper-class="hg-more-nav-popper">
           <button
             type="button"
             class="hg-more-nav-btn"
@@ -722,7 +722,7 @@ function toggleDaylightFromPalette() {
   color: var(--ui-accent);
   font-weight: 600;
 }
-:global(:root[data-theme='acid']) .hg-zen-trigger {
+:root[data-theme='acid'] .hg-zen-trigger {
   border-radius: 0;
 }
 .hg-cmd-trigger {
@@ -755,8 +755,8 @@ function toggleDaylightFromPalette() {
   color: var(--ui-secondary);
   font: 600 10px/1 var(--mono);
 }
-:global(:root[data-theme='acid']) .hg-cmd-trigger,
-:global(:root[data-theme='acid']) .hg-cmd-trigger kbd {
+:root[data-theme='acid'] .hg-cmd-trigger,
+:root[data-theme='acid'] .hg-cmd-trigger kbd {
   border-radius: 0;
 }
 .hg-footer-sep {

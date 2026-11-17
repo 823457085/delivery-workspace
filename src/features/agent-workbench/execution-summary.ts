@@ -132,7 +132,9 @@ export function agentRunPublicMessages(run: AgentRun) {
 /** 终态不保留“正在执行”的旧动作；工具返回完成不等于命令或业务验收通过。 */
 export function agentRunActivity(run: AgentRun) {
   if (!['running', 'queued'].includes(run.status)) return '';
-  if (run.status === 'queued') return '已提交执行器，等待开始';
+  if (run.status === 'queued') {
+    return [...run.events].reverse().find(event => event.type === 'lifecycle' && !!event.message)?.message || '已提交执行器，等待开始';
+  }
   const latest = [...run.events].reverse().find(event => event.type !== 'session');
   if (!latest) return '等待执行器返回状态';
   if (latest.type === 'message' || latest.type === 'diagnostic') return '';

@@ -114,14 +114,14 @@ export function useAgentRuntimes() {
     const data = await response.json();
     if (!response.ok) throw new Error(data.message || 'Agent 操作失败');
     const revision = Number(response.headers?.get('X-Agent-Revision') || 0);
-    if (revision > 0 && data?.id) {
+    if (revision > 0 && data?.id && data?.status && data?.workspacePath) {
       client.setQueryData<AgentRuntimeDashboard>(['agent-runtimes'], current => streamState.accept(revision, data, current));
       if (!streamConnected.value) runtimeRefresh.request();
     } else if (refresh) await query.refetch();
     return data;
   }
   async function start(input: StartAgentRunInput) {
-    if (changing.value) return undefined;
+    if (changing.value) { ElMessage.warning?.('上一项操作仍在提交，请稍候再发送；输入内容已保留'); return undefined; }
     input = { ...input, attachmentIds: input.attachmentIds ? [...input.attachmentIds] : undefined };
     changing.value = 'start';
     try {
@@ -169,12 +169,19 @@ export function useAgentRuntimes() {
     } catch (error) { ElMessage.error(error instanceof Error ? error.message : String(error)); return undefined; }
     finally { changing.value = ''; }
   }
+  // 停止是安全兜底动作：不受其他会话发送中的全局锁影响，按运行 ID 去重。
+  const stoppingRuns = new Set<string>();
   async function stop(run: AgentRun) {
-    if (changing.value) return;
-    changing.value = run.id;
+    if (stoppingRuns.has(run.id)) return;
+    stoppingRuns.add(run.id);
+    const ownsIndicator = !changing.value;
+    if (ownsIndicator) changing.value = run.id;
     try { await post(`/api/agent-runtimes/runs/${run.id}/stop`, {}); ElMessage.success('正在停止 Agent'); }
     catch (error) { ElMessage.error(error instanceof Error ? error.message : String(error)); }
-    finally { changing.value = ''; }
+    finally {
+      stoppingRuns.delete(run.id);
+      if (ownsIndicator && changing.value === run.id) changing.value = '';
+    }
   }
   async function steer(run: AgentRun) {
     if (changing.value || run.status !== 'queued') return;
@@ -235,7 +242,8 @@ export function useAgentRuntimes() {
   }
   async function resume(run: AgentRun, objective: string, model: string, reasoningEffort: AgentReasoningEffort | '', attachmentIds: string[] = [],
     accessMode: AgentAccessMode = run.accessMode, queuePlacement: AgentQueuePlacement = 'append', serviceTier?: AgentServiceTier, mode?: AgentRunMode) {
-    if (changing.value || (!objective.trim() && !attachmentIds.length)) return undefined;
+    if (!objective.trim() && !attachmentIds.length) return undefined;
+    if (changing.value) { ElMessage.warning?.('上一项操作仍在提交，请稍候再发送；输入内容已保留'); return undefined; }
     changing.value = run.id;
     try { const next = await post(`/api/agent-runtimes/runs/${run.id}/resume`, { objective: objective.trim(), model, reasoningEffort,
       attachmentIds, accessMode, queuePlacement, serviceTier, ...(mode ? { mode } : {}) }, false) as AgentRun;
@@ -255,16 +263,16 @@ export function useAgentRuntimes() {
     } catch (error) { ElMessage.error(error instanceof Error ? error.message : String(error)); return undefined; }
     finally { changing.value = ''; }
   }
-  async function fork(run: AgentRun, objective: string, attachmentIds: string[] = []) {
-    if (changing.value || run.provider !== 'codex' || !run.sessionId || (!objective.trim() && !attachmentIds.length)) return undefined;
+  async function fork(run: AgentRun, objective: string, attachmentIds: string[] = [], mode?: AgentRunMode) {
+    if (changing.value || run.provider !== 'codex' || !run.workspacePath || (!objective.trim() && !attachmentIds.length)) return undefined;
     changing.value = `fork:${run.id}`;
     try {
       const next = await post(`/api/agent-runtimes/runs/${run.id}/fork`, {
         objective: objective.trim(), ...codexWorkbenchDefaults,
         ...((agentModelDefaults.value.provider || 'codex') === 'codex'
-          ? { model: agentModelDefaults.value.model, reasoningEffort: agentModelDefaults.value.reasoningEffort } : {}), attachmentIds,
+          ? { model: agentModelDefaults.value.model, reasoningEffort: agentModelDefaults.value.reasoningEffort } : {}), attachmentIds, mode,
       }, false) as AgentRun;
-      ElMessage.success('已基于原上下文创建新会话');
+      ElMessage.success('已创建新会话');
       return next;
     } catch (error) { ElMessage.error(error instanceof Error ? error.message : String(error)); return undefined; }
     finally { changing.value = ''; }
@@ -319,6 +327,16 @@ export function useAgentRuntimes() {
     try {
       await post(`/api/agent-runtimes/conversations/${conversationId}/title`, { title: title.trim() });
       ElMessage.success('会话标题已修改');
+      return true;
+    } catch (error) { ElMessage.error(error instanceof Error ? error.message : String(error)); return false; }
+    finally { changing.value = ''; }
+  }
+  async function updateConversationWorkspace(conversationId: string, workspacePaths: string[]) {
+    if (changing.value || !workspacePaths.length) return false;
+    changing.value = `workspace:${conversationId}`;
+    try {
+      await post(`/api/agent-runtimes/conversations/${encodeURIComponent(conversationId)}/workspace`, { workspacePaths });
+      ElMessage.success('项目工作区已更新');
       return true;
     } catch (error) { ElMessage.error(error instanceof Error ? error.message : String(error)); return false; }
     finally { changing.value = ''; }
@@ -378,5 +396,5 @@ export function useAgentRuntimes() {
     finally { changing.value = ''; }
   }
   return { query, refreshStatus, refreshing, changing, streamConnected, streamStatus, streamRevision, codexDetails, start, spawn, orchestrate, decideWorkflow, stop, pauseForEdit, revise, steer, deleteQueuedRun, retry, resume, resumeCodexSession, fork, syncCodexSessions, loadCodexSession,
-    removeConversation, removeConversations, updateConversationTitle, addCustomModel, removeCustomModel };
+    removeConversation, removeConversations, updateConversationTitle, updateConversationWorkspace, addCustomModel, removeCustomModel };
 }

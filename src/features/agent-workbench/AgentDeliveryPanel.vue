@@ -8,7 +8,7 @@ import { CheckCircle2, ExternalLink, GitMerge, PackageCheck } from '@lucide/vue'
 import type { JiraDevTaskView } from '../../../shared/jira-dev';
 import type { AgentBusinessContext } from './agent-business-context';
 import { catchupQuickPrompt, deliveryJobQuickPrompt, mergeQuickPrompt } from './agent-quick-actions';
-import { agentConversationCodePath, agentRunStatus, type AgentConversation } from './conversation';
+import { agentConversationCodePaths, agentRunStatus, type AgentConversation } from './conversation';
 import { conversationDeliveries } from './conversation-deliveries';
 import { agentResultSummary, readableDeliveryReport } from './execution-summary';
 import { jiraDevTaskDeliveryId, jiraDevTaskWorkspacePaths } from './jira-dev-context';
@@ -29,8 +29,8 @@ const emit = defineEmits<{ compose: [prompt: string]; openGroup: [roomId: string
 // 会话详情只展示当前关联任务，不能借用全局研发任务作为默认交付。
 const activeJiraTask = computed(() => props.matchedJiraTask);
 const codePaths = computed(() => {
-  const path = agentConversationCodePath(props.conversation);
-  return path && !jiraDevTaskWorkspacePaths(activeJiraTask.value).includes(path) ? [path] : [];
+  const jiraPaths = jiraDevTaskWorkspacePaths(activeJiraTask.value);
+  return agentConversationCodePaths(props.conversation).filter(path => !jiraPaths.includes(path));
 });
 const deliveries = computed(() => conversationDeliveries(props.conversation).map(item => ({ ...item,
   summary: props.compact ? agentResultSummary(item.run.result) : '',
@@ -55,7 +55,7 @@ function byUpdated<T>(items: T[], getUpdatedAt: (item: T) => string) {
 
 <template>
   <section class="delivery-panel" aria-label="Agent 交付结果">
-    <AgentWorkspaceCodeArtifacts v-if="codePaths.length" :paths="codePaths" :active="active" :run-state="conversation?.latest.status" />
+    <AgentWorkspaceCodeArtifacts v-if="conversation && (codePaths.length || !activeJiraTask)" :paths="codePaths" :conversation-id="activeJiraTask ? undefined : conversation.id" :bound="Boolean(conversation.workspace)" :active="active" :run-key="conversation.latest.id" :run-state="conversation.latest.status" />
     <section v-if="activeJiraTask" class="synced-jira-delivery" aria-label="需求开发交付产物">
       <div v-if="activeJiraTask.launch?.groupRoomId" class="jira-delivery-switcher">
         <span class="jira-delivery-badge">当前关联任务</span>

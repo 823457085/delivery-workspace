@@ -1,6 +1,6 @@
 export const CHROME_REMOTE_DEBUGGING_SETTINGS_URL = 'chrome://inspect/#remote-debugging' as const;
 
-export type BrowserConnectionPhase = 'unavailable' | 'setup_required' | 'ready' | 'connecting' | 'connected' | 'error';
+export type BrowserConnectionPhase = 'unavailable' | 'setup_required' | 'ready' | 'connecting' | 'connected' | 'reconnecting' | 'error';
 
 export interface BrowserConnectionStatus {
   phase: BrowserConnectionPhase;

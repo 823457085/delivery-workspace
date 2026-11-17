@@ -1196,7 +1196,10 @@ async function executeProjectGitActionInner(
       );
     } else if (action === 'stage-all') {
       if (current.counts.conflicts) throw fail('请先逐个处理冲突文件，再全部暂存。', 409);
-      if (current.truncated) throw fail('改动列表超过展示上限，请先缩小本次改动范围后再暂存。');
+      // 列表只展示前 200 项；`add -A` 会暂存未展示的文件，必须由用户显式确认总数后才放行。
+      if (current.truncated && input.acknowledgeTruncated !== true) {
+        throw fail(`改动共 ${current.counts.total} 项，超过展示上限 200 项；全部暂存会包含未展示的文件，请确认后重试。`, 409);
+      }
       output = await runGit(directory, ['add', '-A']);
     } else if (action === 'unstage-all') {
       if (current.mergeInProgress || current.counts.conflicts) throw fail('请先完成或中止合并，再全部取消暂存。', 409);
@@ -1263,7 +1266,10 @@ async function executeProjectGitActionInner(
         }
       }
     } else if (action === 'commit') {
-      if (current.truncated) throw fail('改动列表超过展示上限，请先缩小本次改动范围后再提交。');
+      // 提交只写入暂存区内容，与展示截断无关；但截断时需用户确认已核对暂存总数，避免提交未展示的已暂存文件。
+      if (current.truncated && input.acknowledgeTruncated !== true) {
+        throw fail(`改动共 ${current.counts.total} 项（已暂存 ${current.counts.staged} 项），超过展示上限 200 项；请确认已核对暂存内容后再提交。`, 409);
+      }
       if (current.counts.conflicts) throw fail('请先解决冲突，再提交。', 409);
       if (!current.counts.staged && !current.mergeInProgress) throw fail('请先暂存要提交的文件。');
       const message = typeof input.message === 'string' ? input.message.trim() : '';

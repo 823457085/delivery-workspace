@@ -76,6 +76,26 @@ test('已连接且可见时低频刷新，连接失效后清除验证状态并�
   f.state.deactivate(viewer);
 });
 
+test('后台重启期间的读取错误会自动重试，卡片回显恢复状态', async () => {
+  const f = fixture(), viewer = Symbol();
+  f.state.activate(viewer);
+  f.requests[0].reject(new Error('后端正在重启'));
+  await flush();
+  assert.equal(f.state.error.value, '后端正在重启');
+  assert.equal(f.timers[0].delay, 5000);
+  f.timers[0].callback();
+  f.requests[1].resolve(status('reconnecting'));
+  await flush();
+  assert.equal(f.state.error.value, '');
+  assert.equal(f.timers[1].delay, 1500);
+  f.timers[1].callback();
+  f.requests[2].resolve(status('connected', true));
+  await flush();
+  assert.equal(f.state.status.value?.connectionVerified, true);
+  assert.equal(f.timers[2].delay, 10_000);
+  f.state.deactivate(viewer);
+});
+
 test('仅可见且等待授权时短轮询；关闭卡片停止轮询，再打开回读最新状态', async () => {
   const f = fixture(), viewer = Symbol();
   f.state.activate(viewer);
@@ -161,4 +181,31 @@ test('API只访问固定同源浏览器路由，POST不传配置或调试端点�
   assert.equal(calls[1].init?.method, 'POST');
   assert.equal(calls[1].init?.body, '{}');
   assert.equal(calls[1].init?.signal, signal);
+});
+
+test('默认计时器在浏览器中以全局 this 调用，连接成功后安排轮询不抛 Illegal invocation', async () => {
+  const realSet = globalThis.setTimeout, realClear = globalThis.clearTimeout;
+  const scheduled: number[] = [];
+  // 模拟浏览器原生计时器：this 不是全局对象时抛 TypeError: Illegal invocation。
+  globalThis.setTimeout = function (this: unknown, _handler: () => void, delay?: number) {
+    if (this !== undefined && this !== globalThis) throw new TypeError('Illegal invocation');
+    scheduled.push(delay ?? 0);
+    return scheduled.length as unknown as ReturnType<typeof setTimeout>;
+  } as typeof setTimeout;
+  globalThis.clearTimeout = function (this: unknown) {
+    if (this !== undefined && this !== globalThis) throw new TypeError('Illegal invocation');
+  } as typeof clearTimeout;
+  try {
+    const state = createBrowserConnectionState({ read: async () => status('ready'), change: async () => status('connecting') });
+    const viewer = Symbol();
+    state.activate(viewer);
+    await flush();
+    await state.act('connect');
+    assert.equal(state.status.value?.phase, 'connecting');
+    assert.deepEqual(scheduled, [1500]);
+    state.deactivate(viewer);
+  } finally {
+    globalThis.setTimeout = realSet;
+    globalThis.clearTimeout = realClear;
+  }
 });

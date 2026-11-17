@@ -168,3 +168,9 @@ test('最新事件是公开回复时不再次当作活动显示，完成后也�
   assert.equal(agentRunActivity({ ...value, status: 'completed', events: [event('run_command', 'tool')] }), '');
   assert.equal(agentRunActivity(run([])), '等待执行器返回状态');
 });
+
+test('排队中的实时动态显示实际等待原因，旧记录仍可显示默认状态', () => {
+  const reason = '等待同一工作区的写入任务完成';
+  assert.equal(agentRunActivity({ ...run([event(reason), event('session-1', 'session')]), status: 'queued' }), reason);
+  assert.equal(agentRunActivity({ ...run([]), status: 'queued' }), '已提交执行器，等待开始');
+});

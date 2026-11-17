@@ -77,6 +77,12 @@ function matchesExecutionIdentity(threadId: string, conversation: AgentConversat
 }
 
 function conversationProject(conversation: AgentConversation, projects: LocalProject[] = []) {
+  if (conversation.workspace) {
+    const workspacePath = normalizeWorkspacePath(conversation.workspace.workspacePath);
+    const projectPath = normalizeWorkspacePath(conversation.workspace.projectWorkspacePath);
+    return projects.find(project => normalizeWorkspacePath(project.path) === workspacePath)
+      || projects.find(project => normalizeWorkspacePath(project.path) === projectPath);
+  }
   // 只由最近一条用户目标中的项目引用定位，不让旧轮次或 Agent 回复覆盖新选择。
   const reference = [...conversation.runs].reverse().map(run => run.objective)
     .find(value => /@(?:项目|工作区):[^\s@]+/.test(value)) || conversation.title;
