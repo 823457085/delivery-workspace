@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import AgentAvatar from './AgentAvatar.vue';
+import AgentConversationWorkspaceContext from './AgentConversationWorkspaceContext.vue';
+import type { ConversationWorkspace } from '../../../shared/conversation-workspaces';
 /**
  * 设计说明：该组件把一次会话的运行链呈现为用户/Agent 消息，并提供唯一的会话输入口。
  * 它不直接请求后端，发送、停止和详情操作全部通过显式事件交给容器，避免隐藏副作用。
@@ -48,12 +50,12 @@ import { buildConversationClipboardDigest, countKeywordOccurrences, stepSearchMa
 import { useAgentBookmarks, type AgentMessageBookmark } from './useAgentBookmarks';
 import { teamRoomAcceptanceRecord, type AdvancedTeamTask, type TeamRoom, type TeamDecision } from './team-api';
 
-const props = defineProps<{ workspaceName?: string; conversation?: AgentConversation; visible?: boolean; changing: string; runtimes: AgentRuntimeHealth[]; sideForkAvailable?: boolean; projectlessFork?: boolean;
+const props = defineProps<{ workspace?: ConversationWorkspace; workspaceName?: string; conversation?: AgentConversation; visible?: boolean; changing: string; runtimes: AgentRuntimeHealth[]; sideForkAvailable?: boolean; projectlessFork?: boolean;
   pinned: boolean; businessOptions: AgentBusinessMention[]; attachmentDraft?: AgentAttachmentDraft; teamTasks?: AdvancedTeamTask[]; teamRoom?: TeamRoom; teamAttachments?: Record<string, AgentAttachment>; jiraTask?: JiraDevTaskView }>();
 const automatic = defineModel<boolean>('automatic', { default: false });
 const draft = defineModel<string>({ default: '' });
 const attachments = defineModel<AgentAttachment[]>('attachments', { default: () => [] });
-const emit = defineEmits<{ send: [selection: { provider: AgentProvider; mode?: AgentRunMode; model: string; reasoningEffort: AgentReasoningEffort | ''; accessMode: AgentAccessMode;
+const emit = defineEmits<{ manageWorkspace: [id:string]; send: [selection: { provider: AgentProvider; mode?: AgentRunMode; model: string; reasoningEffort: AgentReasoningEffort | ''; accessMode: AgentAccessMode;
   queuePlacement: AgentQueuePlacement; serviceTier?: AgentServiceTier; workflow?: boolean; team?: AgentTeamRequest; question?: TeamQuestionTarget }]; accessChange: [accessMode: AgentAccessMode]; stop: [run: AgentRun]; edit: [run: AgentRun]; steer: [run: AgentRun]; removeQueued: [run: AgentRun]; retry: [run: AgentRun, selection?: Pick<AgentRun, 'mode' | 'accessMode'>]; fork: [run: AgentRun]; forkSide: [run: AgentRun]; pin: [conversation: AgentConversation]; rename: [conversation: AgentConversation]; renameTitle: [conversation: AgentConversation, title: string]; remove: [conversation: AgentConversation]; inspect: [run: AgentRun]; configureModels: []; teamDecision: [action: TeamDecision]; teamCommand: [command: '暂停任务' | '继续执行']; chooseTeamWorkspace: []; providerChange: [provider: AgentProvider]; openGroup: [roomId: string] }>();
 const editingTitle = shallowRef(false);
 const titleDraft = shallowRef('');
@@ -536,15 +538,18 @@ defineExpose({ focusComposer });
           </el-dropdown>
         </div>
       </header>
-      <div class="conversation-toolbar">
+      <div class="conversation-toolbar" :style="workspace ? {flexWrap:'wrap'} : undefined">
       <nav class="studio-conversation-tools" aria-label="会话视图">
         <button type="button" :class="{ active: conversationView === 'chat' }" :aria-pressed="conversationView === 'chat'" @click="conversationView = 'chat'">对话</button>
         <button type="button" :class="{ active: conversationView === 'execution' }" :aria-pressed="conversationView === 'execution'" @click="conversationView = 'execution'"><Activity :size="13" />执行记录</button>
         <button type="button" :class="{ active: conversationView === 'delivery' }" :aria-pressed="conversationView === 'delivery'" @click="conversationView = 'delivery'"><PackageCheck :size="13" />本轮交付<span class="tool-count">{{ currentFileCount }}</span></button>
       </nav>
-      <div class="conversation-context">
+      <div class="conversation-context" :style="workspace ? {flex:'1 1 600px',flexWrap:'wrap',height:'auto',overflow:'visible'} : undefined">
+        <AgentConversationWorkspaceContext v-if="workspace" :workspace="workspace" :disabled="!!changing" @manage="emit('manageWorkspace',$event)"/>
+        <template v-else>
         <div class="context-block project-context" :title="agentConversationProjectPath(conversation) || '当前会话未绑定本地项目'"><Folder :size="13" /><span><small>工作区</small><strong>{{ workspaceName || workspaceLabel }}</strong></span></div>
         <div v-if="(!conversation.teamChat || conversation.teamChat.workspaceBound) && (conversation.latest.baseBranch || conversation.latest.branch)" class="context-block branch-context" :title="conversation.latest.baseBranch || conversation.latest.branch"><GitBranch :size="13" /><span><small>分支</small><strong>{{ conversation.latest.baseBranch || conversation.latest.branch }}</strong></span></div>
+        </template>
         <AgentTerminalButton v-if="!conversation.teamChat || conversation.teamChat.workspaceBound" :workspace-path="conversation.latest.workspacePath" />
         <AgentCursorButton v-if="!conversation.teamChat || conversation.teamChat.workspaceBound" :workspace-path="conversation.latest.workspacePath" />
         <el-dropdown v-if="conversationView === 'chat' && turnOutlineItems.length >= 2" trigger="click" popper-class="studio-turn-outline-popper">

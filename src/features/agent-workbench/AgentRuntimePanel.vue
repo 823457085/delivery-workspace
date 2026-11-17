@@ -218,10 +218,13 @@ watch(() => JSON.stringify([selectedWorkspaceId.value, namedWorkspaces.value.fin
   form.workspacePath = workspacePaths.value[0] || '';
   form.branch = '';
 });
+function conversationWorkspace(conversation?: AgentConversationModel) {
+  if (!conversation) return;
+  const id=conversationWorkspaceId(workspaceStore.state.value,conversation);
+  return namedWorkspaces.value.find(workspace=>workspace.id===id);
+}
 function workspaceName(conversation?: AgentConversationModel) {
-  if (!conversation) return '未分组';
-  const id = conversationWorkspaceId(workspaceStore.state.value, conversation);
-  return namedWorkspaces.value.find(w=>w.id===id)?.name || '未分组';
+  return conversationWorkspace(conversation)?.name || '未分组';
 }
 async function createNamedWorkspace() { openCreate(); await nextTick(); newConversationPane.value?.createWorkspace(); }
 const selectedConversation = computed(() => findAgentConversation(conversations.value, selectedConversationId.value));
@@ -966,7 +969,7 @@ onBeforeUnmount(() => {
           @send="submit" @choose-workspace="chooseWorkspace" @configure-models="openModelSettings()">
           <template #header-actions><span id="new-connection-status"></span></template>
         </AgentNewConversation>
-        <AgentConversation :automatic="automaticTeam" v-else v-show="!workbenchOpen" :visible="!workbenchOpen" ref="conversationPane" v-model="draft" v-model:attachments="draftAttachments" class="conversation-column" :conversation="selectedConversation" :workspace-name="workspaceName(selectedConversation)" :pinned="!!selectedConversation && isPinnedAgentSession(pinnedConversationIds, selectedConversation)" :changing="conversationChanging" :runtimes="runtimes"
+        <AgentConversation :automatic="automaticTeam" v-else v-show="!workbenchOpen" :visible="!workbenchOpen" ref="conversationPane" v-model="draft" v-model:attachments="draftAttachments" class="conversation-column" :conversation="selectedConversation" :workspace-name="workspaceName(selectedConversation)" :workspace="conversationWorkspace(selectedConversation)" @manage-workspace="manageWorkspace" :pinned="!!selectedConversation && isPinnedAgentSession(pinnedConversationIds, selectedConversation)" :changing="conversationChanging" :runtimes="runtimes"
           :attachment-draft="conversationAttachmentDraft" :team-tasks="teamChat.tasks.value" :team-room="teamChat.room.value" :team-attachments="teamChat.attachments.value" :jira-task="matchedJiraTask"
           :side-fork-available="!mobile && !!sideForkSource" :projectless-fork="projectlessFork" @fork-side="openForkConversation($event, true)"
           :business-options="businessMentions" @send="sendMessage" @access-change="automaticAccessMode = $event" @stop="stopConversation" @team-decision="teamChat.decide" @team-command="teamChat.command" @choose-team-workspace="chooseChatWorkspace" @steer="steer" @remove-queued="deleteQueuedRun" @retry="retryRun" @fork="openForkConversation"
@@ -1009,7 +1012,7 @@ onBeforeUnmount(() => {
               <GitFork :size="14" /> 基于主会话新建
             </el-button>
           </div>
-          <AgentConversation v-if="sideConversation" v-model="sideDraft" v-model:attachments="sideAttachments" :conversation="sideConversation" :workspace-name="workspaceName(sideConversation)"
+          <AgentConversation v-if="sideConversation" v-model="sideDraft" v-model:attachments="sideAttachments" :conversation="sideConversation" :workspace-name="workspaceName(sideConversation)" :workspace="conversationWorkspace(sideConversation)" @manage-workspace="manageWorkspace"
             :attachment-draft="sideAttachmentDraft" :business-options="[]" :runtimes="runtimes" :changing="conversationChanging || (sideSending ? 'side:send' : '')"
             :pinned="isPinnedAgentSession(pinnedConversationIds, sideConversation)" :jira-task="matchConversationJiraDevTask(sideConversation, jiraTasks)" :projectless-fork="projectlessFork"
             @send="sendSideMessage" @stop="stop" @steer="steer" @remove-queued="deleteQueuedRun" @retry="(run, selection) => retryRun(run, selection, true)"
