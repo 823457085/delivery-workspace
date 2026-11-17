@@ -168,7 +168,7 @@
   color: var(--ui-text);
 }
 .workspace-console.holy-grail-shell.is-rail-collapsed {
-  --hg-left-width: 64px;
+  --hg-left-width: 60px;
 }
 
 /* Acid Graphics 3D 线框底纹与轻微 CRT 扫描线（受控包裹，不干扰正文对比度） */
@@ -288,6 +288,15 @@
   .workspace-console.is-rail-collapsed .hg-header-brand {
     justify-content: center;
     padding: 0 6px;
+  }
+  .workspace-console.is-rail-collapsed .workspace-brand {
+    justify-content: center;
+    padding: 4px;
+    gap: 0;
+  }
+  .workspace-console.is-rail-collapsed .workspace-brand-symbol {
+    width: 24px;
+    height: 24px;
   }
   .workspace-console.is-rail-collapsed .workspace-brand-name {
     display: none;
@@ -601,9 +610,6 @@
   :root:not([data-theme='holy-grail']) .hg-right-aside:has(.hg-aside-slot:empty) {
     display: none;
   }
-  .hg-body-grid.is-left-collapsed {
-    --hg-left-width: 60px;
-  }
 
   /* Zone 2: Left Navigation Sidebar (240px) */
   .hg-left-rail {
@@ -617,7 +623,7 @@
     padding: 12px;
     border-right: 1px solid var(--ui-border);
     background: var(--ui-raised);
-    overflow-y: auto;
+    overflow: hidden;
     overscroll-behavior: contain;
   }
   :root[data-theme='acid'] .hg-left-rail {
@@ -629,6 +635,22 @@
     justify-content: space-between;
     gap: 6px;
     min-height: 28px;
+  }
+  .hg-rail-top,
+  .hg-rail-studio,
+  .hg-rail-bottom {
+    flex-shrink: 0;
+  }
+  .hg-rail-bottom {
+    display: flex;
+    justify-content: flex-end;
+    width: 100%;
+    margin-top: auto;
+    padding-top: 8px;
+    border-top: 1px solid var(--ui-border);
+  }
+  .hg-body-grid.is-left-collapsed .hg-rail-bottom {
+    justify-content: center;
   }
   .hg-zone-tag {
     font: 700 10px/14px var(--ds-code);

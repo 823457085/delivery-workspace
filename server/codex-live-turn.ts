@@ -7,6 +7,7 @@ import fs from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import { codexChildEnvironment } from './cli-runtime.js';
 import { codexSessionErrorText, codexWriterThreadId } from '../shared/codex-session-error.js';
+import { createCodexRequestDiagnostics } from './codex-request-diagnostics.js';
 import { runCodexDesktopTurn } from './codex-desktop-turn.js';
 import type { AgentRun, AgentRunEvent } from '../shared/agent-runtime.js';
 
@@ -53,6 +54,8 @@ export function runCodexLiveTurn(binary: string, context: LiveContext, prompt: s
   resumeDesktopTurn = runCodexDesktopTurn): Promise<string> {
   return new Promise((resolve, reject) => {
     const { run } = context;
+    const diagnostics = createCodexRequestDiagnostics();
+    let phase = 'initialize';
     const sandbox = run.mode !== 'agent' ? 'read-only' : run.accessMode === 'full' ? 'danger-full-access' : 'workspace-write';
     const serviceTier = run.serviceTier === 'default' || run.serviceTier === 'priority' ? run.serviceTier : undefined;
     const fromTaskFlow = run.task?.sourceId?.startsWith('taskflow:');
@@ -81,6 +84,7 @@ export function runCodexLiveTurn(binary: string, context: LiveContext, prompt: s
     const finish = (error?: Error) => {
       if (settled) return;
       settled = true;
+      if (error && !desktopRunning) context.onEvent('diagnostic', diagnostics.summary(phase));
       context.onSteer?.(undefined);
       context.signal.removeEventListener('abort', abort);
       for (const item of pending.values()) { clearTimeout(item.timer); item.reject(error || new Error('当前轮已结束')); }
@@ -107,6 +111,7 @@ export function runCodexLiveTurn(binary: string, context: LiveContext, prompt: s
     const write = (message: JsonObject) => child.stdin.write(`${JSON.stringify(message)}\n`);
     const request = (method: string, params: JsonObject) => new Promise<JsonObject>((accept, fail) => {
       if (settled) { fail(new Error('当前轮已结束')); return; }
+      if (method !== 'turn/steer') phase = method;
       const id = ++sequence;
       const timer = setTimeout(() => { pending.delete(id); fail(new Error(`${method} 响应超时，请检查运行记录后再操作`)); finishCompletedTurn(); }, 30_000);
       pending.set(id, { method, resolve: accept, reject: fail, timer });
@@ -138,7 +143,7 @@ export function runCodexLiveTurn(binary: string, context: LiveContext, prompt: s
         const item = pending.get(message.id);
         if (!item) return;
         pending.delete(message.id); clearTimeout(item.timer);
-        if (message.error) item.reject(new Error(codexErrorMessage(message.error, 'Codex 请求失败'), { cause: message.error }));
+        if (message.error) { diagnostics.error(message.error); item.reject(new Error(codexErrorMessage(message.error, 'Codex 请求失败'), { cause: message.error })); }
         else item.resolve(object(message.result));
         finishCompletedTurn();
         return;
@@ -173,15 +178,17 @@ export function runCodexLiveTurn(binary: string, context: LiveContext, prompt: s
           context.onEvent('tool', `${message.method === 'item/started' ? '正在执行' : '执行完成'}：${String(item.command || item.tool || item.type)}`);
         }
       }
-      if (message.method === 'error') context.onEvent('diagnostic', codexErrorMessage(params.error, 'Codex 运行错误'));
+      if (message.method === 'error') { diagnostics.error(params.error); context.onEvent('diagnostic', codexErrorMessage(params.error, 'Codex 运行错误')); }
       if (message.method === 'turn/completed' && turn.id === turnId) {
         turnId = '';
+        diagnostics.error(turn.error);
         context.onSteer?.(undefined);
         completion = turn.status === 'completed' ? {} : { error: new Error(codexErrorMessage(turn.error, `Codex 运行${turn.status}`)) };
         finishCompletedTurn();
       }
     });
-    child.stderr.on('data', () => { /* 不向浏览器暴露 app-server 的账户或环境诊断 */ });
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', chunk => diagnostics.stderr(String(chunk)));
     child.stdin.on('error', error => finish(error));
     child.on('error', error => finish(error));
     child.on('close', code => {

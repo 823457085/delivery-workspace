@@ -78,6 +78,8 @@ test('desktop IPC 使用本用户 socket、身份握手与 owner 定向请求，
       const request = p.received.find(message => message.method === 'thread-follower-start-turn');
       assert.equal(request?.targetClientId, ownerId);
       assert.equal(request?.sourceClientId, 'delivery-client'); assert.equal(request?.version, 2);
+      const discovery = p.received.find(message => message.method === 'thread-owner-discovery');
+      assert.equal(discovery?.timeoutMs, 15_000);
       const refusal = p.received.find(message => message.type === 'client-discovery-response');
       assert.deepEqual(refusal?.response, { canHandle: false });
     } finally { desktop.close(); }

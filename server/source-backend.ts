@@ -24,7 +24,7 @@ interface JiraBackendModule {
   getCatchupDashboard(): Promise<CatchupData>;
   readJiraFixIssue(reference: string): Promise<JiraIssue>;
   jiraFixHandoffRequest(key: string, suffix: string, method?: string, body?: unknown): Promise<unknown>;
-  jiraIssueRequest(resource: string, method?: string, body?: unknown): Promise<Response>;
+  jiraIssueRequest(resource: string, method?: string, body?: unknown, options?: { range?: string; signal?: AbortSignal }): Promise<Response>;
   confluenceReadRequest(resource: string): Promise<Response>;
   confluencePublishRequest?(resource: string, method: 'POST' | 'PUT', body: unknown): Promise<Response>;
   getLocalProjects(refresh?: boolean): Promise<ProjectsData>;
@@ -60,7 +60,7 @@ export interface SourceBackend {
   readCatchup(): Promise<CatchupData>;
   readJiraFixIssue(reference: string): Promise<JiraIssue>;
   jiraFixHandoffRequest(key: string, suffix: string, method?: string, body?: unknown): Promise<unknown>;
-  jiraIssueRequest(resource: string, method?: string, body?: unknown): Promise<Response>;
+  jiraIssueRequest(resource: string, method?: string, body?: unknown, options?: { range?: string; signal?: AbortSignal }): Promise<Response>;
   confluenceReadRequest(resource: string): Promise<Response>;
   confluencePublishRequest?(resource: string, method: 'POST' | 'PUT', body: unknown): Promise<Response>;
   readLocalProjects(refresh?: boolean): Promise<ProjectsData>;
@@ -98,7 +98,7 @@ export async function createSourceBackend(port: number): Promise<SourceBackend> 
     readCatchup: () => backend.getCatchupDashboard(),
     readJiraFixIssue: reference => backend.readJiraFixIssue(reference),
     jiraFixHandoffRequest: (key, suffix, method, body) => backend.jiraFixHandoffRequest(key, suffix, method, body),
-    jiraIssueRequest: (resource, method, body) => backend.jiraIssueRequest(resource, method, body),
+    jiraIssueRequest: (resource, method, body, options) => backend.jiraIssueRequest(resource, method, body, options),
     confluenceReadRequest: resource => backend.confluenceReadRequest(resource),
     confluencePublishRequest: (resource, method, body) => {
       if (!backend.confluencePublishRequest) throw new Error('当前 Confluence 连接不支持方案发布');

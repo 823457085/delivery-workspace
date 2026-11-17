@@ -130,6 +130,11 @@ body,
   --hg-right-width: 256px;
 }
 
+:root:not([data-theme='acid']) .workspace-console.holy-grail-shell.is-rail-collapsed {
+  --hg-left-width: 60px;
+}
+
+
 :root:not([data-theme='acid']) .workspace-console .hg-header-actions :is(.hg-frame-pill, .hg-cinema-pill, .hg-cinema-toggle, .hg-acid-cta, .theme-trigger, .el-button) {
   min-height: 30px;
   height: 30px;
@@ -152,8 +157,7 @@ body,
 }
 
 :root:not([data-theme='acid']) .workspace-console .hg-rail-top {
-  min-height: 0;
-  justify-content: flex-end;
+  display: none;
 }
 
 .workspace-console .hg-studio-btn,

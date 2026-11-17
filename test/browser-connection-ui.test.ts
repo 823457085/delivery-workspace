@@ -162,6 +162,12 @@ test('组件仅在handshake已验证且无读取错误时显示连接成功，�
   connection.status.value = status('connecting');
   assert.equal(c.canConnect.value, false);
   assert.equal(c.connectLabel.value, '等待 Chrome 允许');
+  connection.status.value = { ...status('ready'), toolAvailable: false, chromeAvailable: true };
+  assert.equal(c.canConnect.value, true, '浏览器连接不依赖自动化工具');
+  assert.equal(c.verified.value, false);
+  connection.status.value = { ...status('unavailable'), toolAvailable: true, chromeAvailable: true };
+  assert.equal(c.canConnect.value, false, '不支持的平台仍不能连接');
+
 });
 
 test('API只访问固定同源浏览器路由，POST不传配置或调试端点并保留取消信号', async t => {

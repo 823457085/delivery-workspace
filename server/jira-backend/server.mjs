@@ -975,7 +975,7 @@ async function requireJiraReadResponse(response, resource) {
 
 // 明确的读取请求允许一次短暂网络故障恢复；评论、流转和指派绝不自动重放。
 async function fetchJiraHandoff(url, options, readOnly = (options.method || 'GET') === 'GET') {
-  const signal = AbortSignal.timeout(30_000);
+  const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(300_000)]) : AbortSignal.timeout(30_000);
   for (let attempt = 0; ; attempt++) {
     assertPluginEnabled('jira');
     try {
@@ -999,7 +999,7 @@ async function fetchJiraHandoff(url, options, readOnly = (options.method || 'GET
 }
 
 // 事项详情使用同一份本机认证，资源由服务端操作映射生成，浏览器不能传入 URL。
-export async function jiraIssueRequest(resource, method = 'GET', body) {
+export async function jiraIssueRequest(resource, method = 'GET', body, options = {}) {
   if ((resource === 'project' || resource === 'myself') && method !== 'GET') throw new Error('项目信息和当前用户接口仅支持只读');
   if (typeof resource !== 'string' || resource.includes('..') || resource.startsWith('/')
     || !/^(?:issue(?:\/|\?|$)|issueLink(?:Type)?(?:\?|$)|mypermissions\?|myself$|project$|user\/assignable\/search\?|attachment\/content\/\d+$)/.test(resource)
@@ -1020,7 +1020,10 @@ export async function jiraIssueRequest(resource, method = 'GET', body) {
     const download = new URL(metadata.content);
     const attachmentPath = new URL(`secure/attachment/${id}/`, base).pathname;
     if (download.origin !== base.origin || !download.pathname.startsWith(attachmentPath)) throw new Error('附件下载来源不正确');
-    return read(download);
+    if (method !== 'GET' || options.range && !/^bytes=(?:\d+-\d*|-\d+)$/.test(options.range)) throw new Error('附件读取参数不正确');
+    const response = await fetchJiraHandoff(download, { headers: { ...auth, Accept: '*/*', ...(options.range ? { Range: options.range } : {}) }, redirect: 'manual', signal: options.signal });
+    if (response.status !== 416) await requireJiraReadResponse(response, '附件');
+    return response;
   }
   const multipart = body instanceof FormData;
   const response = await fetchJiraHandoff(target, { method, redirect: 'manual', headers: { ...auth, Accept: 'application/json',

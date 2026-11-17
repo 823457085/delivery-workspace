@@ -26,6 +26,7 @@ export type AgentFailureCategory =
   | 'session_or_lock_conflict'
   | 'git_or_merge_conflict'
   | 'verification_or_compile'
+  | 'request_rejected'
   | 'network_or_timeout'
   | 'unknown_runtime_error';
 
@@ -52,7 +53,7 @@ export interface AgentFailureRcaReport {
   blindRetryAdvisable: boolean;
   blindRetryHint: string;
   summary: string;
-  /** 触发失败前最近一次关键工具动作或诊断事件 */
+  /** 失败前最近一次工具动作；不代表该工具造成失败。 */
   causalTrigger?: string;
   /** 从错误与诊断事件中提炼的结构化编译器/测试报错（精确到 file:line） */
   diagnostics: DistilledDiagnostic[];
@@ -77,6 +78,12 @@ interface ClassificationRule {
 }
 
 const FAILURE_RULES: readonly ClassificationRule[] = [
+  {
+    category: 'request_rejected', label: '模型请求被拒绝', severity: 'danger',
+    blindRetryAdvisable: false, blindRetryHint: '先核对请求诊断与客户端配置，不要用业务修复指令重复发送',
+    patterns: [/^\s*\{\s*"detail"\s*:\s*"Bad Request"\s*\}\s*$/i,
+      /(?:unexpected status(?: code)?[:=]?\s*|HTTP[=: ]+)400\b/i, /\binvalid_request_error\b/i],
+  },
   {
     category: 'quota_or_rate_limit',
     label: '额度耗尽或接口限流',
@@ -216,7 +223,7 @@ function compactLine(raw: string, maxChars = 180): string {
 function extractCausalTrigger(events: readonly Pick<AgentRunEvent, 'type' | 'message'>[] = []): string | undefined {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
-    if (!event || (event.type !== 'tool' && event.type !== 'diagnostic')) continue;
+    if (!event || event.type !== 'tool') continue;
     const line = compactLine(event.message, 160);
     if (!line) continue;
     return line;
@@ -232,7 +239,8 @@ function buildSmartRetryPrompt(input: {
   failingTests: readonly string[];
 }): string | undefined {
   if (
-    input.category === 'quota_or_rate_limit'
+    input.category === 'request_rejected'
+    || input.category === 'quota_or_rate_limit'
     || input.category === 'auth_or_account'
     || input.category === 'session_or_lock_conflict'
     || input.category === 'network_or_timeout'
@@ -333,6 +341,13 @@ export function analyzeAgentRunFailure(run: AgentFailureRcaInput): AgentFailureR
   let suggestUpgradeAccess = false;
 
   switch (category) {
+    case 'request_rejected':
+      summary = `${providerLabel} 的模型请求被拒绝：${errorSnippet}。仅凭此错误无法确定具体原因，也不能认定为项目代码错误。`;
+      recoverySteps.push(
+        '查看执行记录中的 Codex 请求诊断，核对模型、客户端版本、HTTP 状态和请求 ID',
+        '先用独立空白会话做无业务操作的连通性检查；若仅原会话失败，保留原记录并核对会话历史，不自动重放任务',
+      );
+      break;
     case 'quota_or_rate_limit':
       summary = `${providerLabel} 当前触发配额窗口或接口速率限制，请求被服务端拒绝。`;
       suggestSwitchProvider = true;

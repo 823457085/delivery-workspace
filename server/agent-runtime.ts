@@ -800,8 +800,13 @@ export function createCodexAdapter(binary = cliBinary, browserRootDirectory?: st
         ? await isChromeReuseEnabled(browserRootDirectory) : process.env.DELIVERY_AGENT_BROWSER_REUSE_CHROME === '1');
       const canReuseChrome = !run.team || (run.accessMode === 'full' && run.task?.role === 'main' && !run.task.workflow);
       const reuseChrome = chromeReuseEnabled && canReuseChrome;
-      const browser = browserRootDirectory && !run.task?.sourceId?.startsWith('taskflow:') ? await prepareAgentBrowserRuntime({ rootDirectory: browserRootDirectory, scope,
-        reuseChrome, chromeEndpoint: reuseChrome ? await chromeTaskEndpoint?.() : undefined }) : undefined;
+      let browser: Awaited<ReturnType<typeof prepareAgentBrowserRuntime>>;
+      try {
+        browser = browserRootDirectory && !run.task?.sourceId?.startsWith('taskflow:') ? await prepareAgentBrowserRuntime({ rootDirectory: browserRootDirectory, scope,
+          reuseChrome, chromeEndpoint: reuseChrome ? await chromeTaskEndpoint?.() : undefined }) : undefined;
+      } catch {
+        browser = { instructions: '可选浏览器通道暂不可用；继续完成普通代码、文件、测试和可用接口任务。仅依赖此通道的网页步骤记为未验证，不自动切换浏览器、复制登录态或修改授权配置。' };
+      }
       if (browser?.config) context.onEvent('lifecycle', '已配置任务浏览器通道；实际连接和页面登录状态在使用时核验');
       else if (browser) context.onEvent('lifecycle', browser.instructions.split('\n')[0]!);
       const browserInstructions = [browser?.instructions, chromeReuseEnabled && !canReuseChrome

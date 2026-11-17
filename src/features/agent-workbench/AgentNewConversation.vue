@@ -25,7 +25,7 @@ import type { AgentAttachmentDraft } from './useAgentAttachments';
 export type { AgentWorkspaceOption };
 
 const { current: currentTheme } = useTheme();
-const props = defineProps<{ workspaceGroups: ConversationWorkspace[]; saveWorkspace: (workspace: Omit<ConversationWorkspace,'id'> & {id?:string}) => Promise<ConversationWorkspace>; runtimes: AgentRuntimeHealth[]; workspaces: AgentWorkspaceOption[]; changing: string; canStart: boolean;
+const props = defineProps<{ workspaceGroups: ConversationWorkspace[]; removeWorkspace?: (id:string)=>Promise<boolean>; saveWorkspace: (workspace: Omit<ConversationWorkspace,'id'> & {id?:string}) => Promise<ConversationWorkspace>; runtimes: AgentRuntimeHealth[]; workspaces: AgentWorkspaceOption[]; changing: string; canStart: boolean;
   businessOptions: AgentBusinessMention[]; attachmentDraft?: AgentAttachmentDraft }>();
 const provider = defineModel<AgentProvider>('provider', { required: true });
 const mode = defineModel<AgentRunMode>('mode', { required: true });
@@ -129,7 +129,7 @@ defineExpose({ createWorkspace: () => workspacePicker.value?.create(),  focusPro
         <section class="new-composer" aria-label="会话编辑区">
           <div class="new-context-panel" role="group" aria-label="工作区和访问权限">
             <div class="new-project">
-              <AgentConversationWorkspacePicker ref="workspacePicker" v-model="workspaceId" :groups="workspaceGroups" :projects="workspaces" :save-workspace="saveWorkspace" :disabled="!!changing" />
+              <AgentConversationWorkspacePicker ref="workspacePicker" v-model="workspaceId" :groups="workspaceGroups" :projects="workspaces" :save-workspace="saveWorkspace" :remove-workspace="removeWorkspace" :disabled="!!changing" />
             </div>
             <div class="new-access"><AgentAccessSelector v-model="accessMode" :mode="mode" :provider="provider" :access-modes="runtime?.accessModes" :disabled="!!changing" /></div>
           </div>

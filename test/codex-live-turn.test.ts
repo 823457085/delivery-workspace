@@ -307,3 +307,16 @@ test('实时补充写入原轮、沿用权限，发送仍排队；失败不产�
     assert.equal(saved.find((item: AgentRun) => item.id === run.id).supplements[0].objective, 'supplement');
   } finally { await service.close(); await fs.rm(directory, { recursive: true, force: true }); }
 });
+
+
+test('Codex 请求拒绝保留原错误并写入不含凭据的诊断，不自动重试', { timeout: 5000 }, async () => {
+  const events: string[] = [];
+  let sessions = 0;
+  await assert.rejects(runCodexLiveTurn(fixture, { run: sample, imagePaths: [],
+    signal: new AbortController().signal, onPid() {}, onSession() { sessions++; },
+    onEvent(_type, message) { events.push(message); },
+  }, 'bad-request-diagnostics-test'), error => error instanceof Error && error.message === '{"detail":"Bad Request"}');
+  assert.equal(sessions, 1);
+  assert.ok(events.some(line => /阶段=turn\/start；分类=other；HTTP=400/.test(line)));
+  assert.ok(events.every(line => !line.includes('fixture-secret')));
+});

@@ -215,6 +215,7 @@ function duplicateWorkspace(id: string) {
 const namedWorkspaces = computed(() => workspaceStore.groups.value.filter(g=>g.id));
 watch(() => JSON.stringify([selectedWorkspaceId.value, namedWorkspaces.value.find(w=>w.id===selectedWorkspaceId.value)?.projectPaths]), () => {
   const group = namedWorkspaces.value.find(w=>w.id===selectedWorkspaceId.value);
+  if (!group && selectedWorkspaceId.value) selectedWorkspaceId.value='';
   workspacePaths.value = [...(group?.projectPaths || [])];
   form.workspacePath = workspacePaths.value[0] || '';
   form.branch = '';
@@ -945,7 +946,7 @@ onBeforeUnmount(() => {
       <button v-if="!workbenchOpen" type="button" :aria-expanded="mobilePanel === 'details'" @click="mobilePanel = 'details'">详情</button>
       <span id="mobile-connection-status"></span>
     </header>
-    <AgentConversationWorkspacePicker ref="workspaceManager" editor-only :groups="namedWorkspaces" :projects="workspaceOptions" :save-workspace="workspaceStore.save" />
+    <AgentConversationWorkspacePicker ref="workspaceManager" editor-only :groups="namedWorkspaces" :projects="workspaceOptions" :save-workspace="workspaceStore.save" :remove-workspace="workspaceStore.remove" />
     <el-alert v-if="streamStatus === 'reconnecting'" class="workspace-reconnect-banner" title="实时连接已断开，正在重新连接…" type="warning" :closable="false" show-icon role="status" />
     <AgentInitialLoading v-if="isPending && (!groupMode || workbenchOpen)" />
     <div v-else class="agent-body">
@@ -966,7 +967,7 @@ onBeforeUnmount(() => {
           <component :is="leftCollapsed ? PanelLeftOpen : PanelLeftClose" :size="16" />
         </button>
         <AgentResponsivePanel id="studio-session-sidebar" class="session-column" :mobile="mobile" :open="mobile ? mobilePanel === 'sessions' : !sessionsCollapsed" side="left" title="会话列表" @close="mobilePanel = ''">
-        <AgentSessionList :workspace-state="workspaceStore.state.value" :workspace-busy="workspaceStore.busy.value" @create-workspace="createNamedWorkspace" @manage-workspace="manageWorkspace" @create-workspace-conversation="createWorkspaceConversation" @rename-workspace="renameWorkspace" @duplicate-workspace="duplicateWorkspace" @move-workspace="workspaceStore.reorder" @move-conversation="workspaceStore.assign" :conversations="conversations" :selected-id="selectedConversationId"
+        <AgentSessionList :workspace-state="workspaceStore.state.value" :workspace-busy="workspaceStore.busy.value" @create-workspace="createNamedWorkspace" @manage-workspace="manageWorkspace" @create-workspace-conversation="createWorkspaceConversation" @rename-workspace="renameWorkspace" @remove-workspace="workspaceStore.remove" @duplicate-workspace="duplicateWorkspace" @move-workspace="workspaceStore.reorder" @move-conversation="workspaceStore.assign" :conversations="conversations" :selected-id="selectedConversationId"
           :changing="changing" :pinned-ids="pinnedConversationIds" @select="mobilePanel = ''; selectConversation($event); emit('chat')" @create="mobilePanel = ''; openCreate(); emit('chat')"
           @groups="openGroups" @sync="syncCodexSessions" @remove="removeAgentConversations" @rename="(id, title) => updateConversationTitle(id, title)">
           <template #navigation><slot name="navigation" placement="sidebar" :close-navigation="() => { mobilePanel = ''; }" :toggle-sessions="toggleSessions" :sessions-collapsed="false" /></template>
@@ -977,7 +978,7 @@ onBeforeUnmount(() => {
         <AgentPanelResize v-show="!mobile && !sessionsCollapsed" v-model="leftWidth" side="left" variant="project-studio" />
         <AgentPanelResize v-show="!mobile && desktopDetailsOpen" v-model="rightWidth" side="right" variant="project-studio" />
         <AgentNewConversation v-if="creating" v-show="!workbenchOpen" ref="newConversationPane" v-model:provider="form.provider" v-model:mode="form.mode" v-model:access-mode="form.accessMode" v-model:model="form.model" v-model:service-tier="form.serviceTier" v-model:reasoning-effort="form.reasoningEffort"
-          v-model:workspace-id="selectedWorkspaceId" :workspace-groups="namedWorkspaces" :save-workspace="workspaceStore.save" v-model:objective="form.objective" v-model:attachments="newAttachments" v-model:workspace-path="form.workspacePath" v-model:workspace-paths="workspacePaths" class="conversation-column"
+          v-model:workspace-id="selectedWorkspaceId" :workspace-groups="namedWorkspaces" :save-workspace="workspaceStore.save" :remove-workspace="workspaceStore.remove" v-model:objective="form.objective" v-model:attachments="newAttachments" v-model:workspace-path="form.workspacePath" v-model:workspace-paths="workspacePaths" class="conversation-column"
           :runtimes="runtimes" :workspaces="workspaceOptions" :business-options="businessMentions" :changing="submittingNew ? 'start' : changing || teamChat.changing.value" :can-start="canStart && workspaceStore.ready.value && !workspaceStore.busy.value" :attachment-draft="newAttachmentDraft"
           @send="submit" @choose-workspace="chooseWorkspace" @configure-models="openModelSettings()">
           <template #header-actions><span id="new-connection-status"></span></template>

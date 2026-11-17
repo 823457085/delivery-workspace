@@ -478,11 +478,8 @@ function toggleDaylightFromPalette() {
           <div class="hg-body-grid" :class="{ 'is-embedded': fullHeightPanel, 'is-left-collapsed': railCollapsed }">
             <!-- Zone 2: Left Fixed Navigation Sidebar (240px) -->
             <aside class="hg-left-rail" aria-label="功能目录导航栏">
-              <div class="hg-rail-top">
+              <div v-if="!railCollapsed" class="hg-rail-top">
                 <span class="hg-zone-tag">功能目录</span>
-                <button type="button" class="workspace-rail-toggle" :aria-label="railCollapsed ? '展开左侧栏' : '收起左侧栏'" :title="railCollapsed ? '展开左侧栏' : '收起左侧栏'" @click="toggleRail">
-                  <component :is="railCollapsed ? PanelLeftOpen : PanelLeftClose" :size="14" />
-                </button>
               </div>
 
               <div class="hg-rail-studio">
@@ -541,6 +538,11 @@ function toggleDaylightFromPalette() {
                   </div>
                 </div>
               </nav>
+              <div class="hg-rail-bottom">
+                <button type="button" class="workspace-rail-toggle" :aria-label="railCollapsed ? '展开左侧栏' : '收起左侧栏'" :aria-expanded="!railCollapsed" :title="railCollapsed ? '展开左侧栏' : '收起左侧栏'" @click="toggleRail">
+                  <component :is="railCollapsed ? PanelLeftOpen : PanelLeftClose" :size="14" />
+                </button>
+              </div>
             </aside>
 
             <!-- Zone 3: Fluid Main Content Column (minmax(0, 1fr)) -->
