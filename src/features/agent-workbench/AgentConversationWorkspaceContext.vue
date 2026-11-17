@@ -33,6 +33,7 @@ function manage(){open.value=false;emit('manage',props.workspace.id);}
     </section>
     <p v-if="!projects.length">此工作区暂未添加项目。</p>
    </div>
+   <slot name="execution"/>
    <div class="workspace-details-footer"><small>* 为项目默认主分支；配置调整用于新会话。</small><button type="button" :disabled="disabled" @click="manage"><Settings2 :size="13"/>管理项目与分支</button></div>
   </div>
  </el-popover>

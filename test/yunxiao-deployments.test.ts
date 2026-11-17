@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { createYunxiaoDeployments } from '../server/yunxiao-deployments.js';
 
 const repository = 'aaaaaaaaaaaaaaaaaaaaaaaa/Raytheon_project/demo';
@@ -16,6 +17,7 @@ async function fixture(t: { after(callback: () => Promise<void>): void }, dispat
     projectUrl: `https://codeup.aliyun.com/${repository}/pipeline`, environments: [{ environment: 'pre', name: '接口流水线名称', url: 'https://flow.aliyun.com/pipelines/123/current' }] }]));
   const calls: { url: string; method: string; body?: unknown }[] = [];
   let status = 'RUNNING', wrongId = false, jobId = 7, logContent = '构建中 L_RAW fixture-pat\n';
+  let onStatusRead: ((signal: AbortSignal | null | undefined) => Promise<void>) | undefined;
   const fetcher = (async (input, init) => {
     const url = String(input), method = init?.method || 'GET';
     assert.equal(new Headers(init?.headers).get('x-yunxiao-token'), 'fixture-pat');
@@ -28,8 +30,11 @@ async function fixture(t: { after(callback: () => Promise<void>): void }, dispat
     }
     if (url.endsWith(`/runs/42/job/${jobId}/log`)) return Response.json({ content: logContent, last: 17, more: false });
     if (/\/job\/\d+\/log$/.test(url)) return Response.json({ message: 'InvalidPipelineRun.JobIdNotFound' }, { status: 404 });
-    if (url.endsWith('/runs/42')) return Response.json({ pipelineId: wrongId ? 999 : 123, pipelineRunId: 42, status,
-      stages: [{ name: '接口阶段名称', stageInfo: { status, jobs: [{ id: jobId, name: '构建任务', status }] } }] });
+    if (url.endsWith('/runs/42')) {
+      await onStatusRead?.(init?.signal);
+      return Response.json({ pipelineId: wrongId ? 999 : 123, pipelineRunId: 42, status,
+        stages: [{ name: '接口阶段名称', stageInfo: { status, jobs: [{ id: jobId, name: '构建任务', status }] } }] });
+    }
     return Response.json({ name: '接口流水线名称', pipelineConfig: { sources: [{ data: { repo, branch: 'pre' } }] } });
   }) as typeof fetch;
   let service = await createYunxiaoDeployments(directory, { fetcher, pollIntervalMs: 0 });
@@ -37,6 +42,7 @@ async function fixture(t: { after(callback: () => Promise<void>): void }, dispat
   return { directory, calls, get service() { return service; }, setStatus(value: string) { status = value; }, mismatch() { wrongId = true; },
     setLogContent(value: string) { logContent = value; },
     setJobId(value: number) { jobId = value; },
+    setStatusRead(handler?: typeof onStatusRead) { onStatusRead = handler; },
     async restart() { await service.close(); service = await createYunxiaoDeployments(directory, { fetcher, pollIntervalMs: 0 }); return service; } };
 }
 
@@ -79,6 +85,31 @@ test('重启只恢复运行查询，只有明确SUCCESS才成功，未知状态�
   f.setStatus('WAITING_APPROVAL'); assert.equal((await f.service.getRun(run.id)).status, 'unknown');
   f.setStatus('SUCCESS'); assert.equal((await f.service.getRun(run.id)).status, 'success');
   assert.equal(f.service.isIdle(), true);
+  assert.equal(f.calls.filter(call => call.method === 'POST').length, 1);
+});
+
+test('重启等待云效提交落盘，可中止状态查询并继续跟踪同一次运行', async t => {
+  const f = await fixture(t); await f.service.saveConfig({ token: 'fixture-pat' });
+  const submitting = f.service.startRun({ ...target, requestId: randomUUID(), branches: {} });
+  assert.equal(f.service.isIdle(), false);
+  const run = await submitting;
+  assert.equal(f.service.isIdle(), true);
+  const running = await f.service.getRun(run.id);
+  assert.equal(running.status, 'running');
+  let readSignal: AbortSignal | null | undefined;
+  f.setStatusRead(signal => {
+    readSignal = signal;
+    return delay(500, undefined, { signal: signal ?? undefined });
+  });
+  const reading = f.service.getRun(run.id);
+  assert.equal(f.service.isIdle(), true);
+  await f.restart();
+  assert.equal(readSignal?.aborted, true);
+  assert.deepEqual(await reading, running);
+  assert.deepEqual((await f.service.snapshot()).runs, [JSON.parse(JSON.stringify(running))]);
+  f.setStatusRead();
+  f.setStatus('SUCCESS');
+  assert.equal((await f.service.getRun(run.id)).status, 'success');
   assert.equal(f.calls.filter(call => call.method === 'POST').length, 1);
 });
 

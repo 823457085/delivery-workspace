@@ -17,6 +17,8 @@ import AgentComposer from './AgentComposer.vue';
 import type { AgentTeamRequest } from './AgentTeamDialog.vue';
 import AgentTerminalButton from './AgentTerminalButton.vue';
 import AgentCursorButton from './AgentCursorButton.vue';
+import AgentWorkspaceSelector from './AgentWorkspaceSelector.vue';
+import type { AgentWorkspaceOption } from './workspace-catalog';
 import AgentChangedFiles from './AgentChangedFiles.vue';
 import AgentLiveRunActivity from './AgentLiveRunActivity.vue';
 import AgentPlanChecklistCard from './AgentPlanChecklistCard.vue';
@@ -36,7 +38,7 @@ const AgentTaskPromptDrawer = defineAsyncComponent(() => import('./AgentTaskProm
 import { jiraTaskPromptTitle } from './message-text';
 import AgentTranslatedText from './AgentTranslatedText.vue';
 import AgentTranslateToggle from './AgentTranslateToggle.vue';
-import { agentConversationCodePath, agentConversationStatus, canSteerAgentRun, agentRunErrorText, agentConversationProjectPath, agentRunStatus, isLegacyRestartContinuation, isRestartableAgentRun, isRetryableSessionBusyRun, type AgentConversation } from './conversation';
+import { agentConversationBranch, agentConversationCodePaths, agentConversationForkSource, agentConversationStatus, agentConversationWorkspacePath, agentConversationWorkspacePaths, canSteerAgentRun, agentRunErrorText, agentConversationProjectPath, agentRunStatus, isLegacyRestartContinuation, isRestartableAgentRun, isRetryableSessionBusyRun, type AgentConversation } from './conversation';
 import { downloadConversation } from './conversation-export';
 import { conversationFileDeliveries, conversationResultDownloads } from './conversation-deliveries';
 import type { AgentBusinessMention } from './agent-business-context';
@@ -51,6 +53,9 @@ import { useAgentBookmarks, type AgentMessageBookmark } from './useAgentBookmark
 import { teamRoomAcceptanceRecord, type AdvancedTeamTask, type TeamRoom, type TeamDecision } from './team-api';
 
 const props = defineProps<{ workspace?: ConversationWorkspace; workspaceName?: string; conversation?: AgentConversation; visible?: boolean; changing: string; runtimes: AgentRuntimeHealth[]; sideForkAvailable?: boolean; projectlessFork?: boolean;
+  workspaceOptions?: AgentWorkspaceOption[]; choosingWorkspace?: boolean;
+  saveWorkspace?: (conversation: AgentConversation, paths: string[]) => Promise<boolean>;
+  browseWorkspace?: (initialPath: string) => Promise<string | undefined>;
   pinned: boolean; businessOptions: AgentBusinessMention[]; attachmentDraft?: AgentAttachmentDraft; teamTasks?: AdvancedTeamTask[]; teamRoom?: TeamRoom; teamAttachments?: Record<string, AgentAttachment>; jiraTask?: JiraDevTaskView }>();
 const automatic = defineModel<boolean>('automatic', { default: false });
 const draft = defineModel<string>({ default: '' });
@@ -78,8 +83,8 @@ function commitTitleEdit() {
 const jiraTaskIssue = computed(() => props.jiraTask ? jiraDevTaskIssue(props.jiraTask) : undefined);
 const jiraTaskProjects = computed(() => props.jiraTask ? jiraDevTaskProjects(props.jiraTask) : []);
 const codePaths = computed(() => {
-  const path = agentConversationCodePath(props.conversation);
-  return path && !jiraDevTaskWorkspacePaths(props.jiraTask).includes(path) ? [path] : [];
+  const jiraPaths = jiraDevTaskWorkspacePaths(props.jiraTask);
+  return agentConversationCodePaths(props.conversation).filter(path => !jiraPaths.includes(path));
 });
 const messageViewport = useTemplateRef<HTMLDivElement>('messageViewport');
 const composer = useTemplateRef<InstanceType<typeof AgentComposer>>('composer');
@@ -127,9 +132,7 @@ const searchQueries = new Map<string, string>();
 const scrollPositions = new Map<string, number>();
 let copyTimer: ReturnType<typeof setTimeout> | undefined;
 const latest = computed(() => props.conversation?.latest);
-const canFork = computed(() => props.conversation?.source === 'workspace' && latest.value?.provider === 'codex'
-  && latest.value.status === 'completed' && !!latest.value.sessionId && !!latest.value.codexTurnId
-  && (props.projectlessFork || latest.value.sourceWorkspacePath !== '' || !!latest.value.branch || !!latest.value.headSha));
+const forkSource = computed(() => agentConversationForkSource(props.conversation, props.projectlessFork));
 const status = computed(() => props.conversation && agentConversationStatus(props.conversation));
 const runtime = computed(() => props.runtimes.find((item) => item.provider === latest.value?.provider));
 const teamTasks = computed(() => (props.teamTasks || []).filter(task => task.parentConversationId === props.conversation?.id).map(task => props.teamRoom?.task.id === task.id ? props.teamRoom.task : task));
@@ -197,10 +200,20 @@ const modeLabel = computed(() => props.conversation?.source === 'codex' ? '历�
 const accessLabel = computed(() => effectiveAutomatic.value ? nextAccessMode.value === 'full' ? '下一轮完全访问' : '下一轮工作区访问' : !latest.value || latest.value.mode !== 'agent' ? '只读访问'
   : latest.value.accessMode === 'full' ? '完全访问' : '工作区访问');
 const selectedModelLabel = computed(() => runtime.value?.models.find((model) => model.id === latest.value?.model)?.label || latest.value?.model || 'CLI 默认');
+const projectPath = computed(() => props.conversation ? agentConversationProjectPath(props.conversation) : '');
+const workspacePath = computed(() => props.conversation ? agentConversationWorkspacePath(props.conversation) : '');
+const workspacePaths = computed(() => props.conversation ? agentConversationWorkspacePaths(props.conversation) : []);
+const workspaceBranch = computed(() => props.conversation ? agentConversationBranch(props.conversation) : '');
+const workspacePickerLabel = computed(() => projectPath.value ? '更换项目工作区' : '绑定项目工作区');
+const canChangeWorkspace = computed(() => !!props.saveWorkspace && props.conversation?.source === 'workspace' && !props.conversation.teamChat
+  && !pausedRun.value && !props.conversation.runs.some(run => run.team || run.task));
+const workspacePickerDisabled = computed(() => !!props.changing || props.choosingWorkspace);
+async function applyWorkspaceSelection(paths: string[]) {
+  return props.conversation && props.saveWorkspace ? props.saveWorkspace(props.conversation, paths) : false;
+}
 const workspaceLabel = computed(() => {
-  const path = props.conversation ? agentConversationProjectPath(props.conversation) : '';
-  const parts = path.replaceAll('\\', '/').split('/').filter(Boolean);
-  const leaf = parts.at(-1) || '未指定工作区';
+  const parts = projectPath.value.replaceAll('\\', '/').split('/').filter(Boolean);
+  const leaf = parts.at(-1) || '未绑定项目';
   return ['admin', 'delivery-admin'].includes(leaf.toLowerCase()) ? parts.at(-2) || leaf : leaf;
 });
 const visibleEntries = computed(() => teamChatEntries(props.conversation?.runs || [], teamTasks.value, searchQuery.value, props.teamRoom?.runs || [], props.teamRoom));
@@ -457,14 +470,24 @@ async function askCodeBlockToComposer(payload: { language: string | undefined; c
   composer.value?.focusPrompt();
 }
 
-async function askChangedFile(file: AgentChangedFile, line?: number) {
-  const reference = formatChangedFileReference(file.path, line);
+async function askChangedFile(file: AgentChangedFile, line?: number, runWorkspace?: string) {
+  const binding = props.conversation?.workspace;
+  // 历史改动的相对路径以当轮目录为准，避免在新工作区引用同名文件。
+  const filePath = binding && runWorkspace && runWorkspace !== binding.workspacePath && !/^(?:[/\\]|[a-z]:[/\\])/i.test(file.path)
+    ? `${runWorkspace.replace(/[\\/]+$/, '')}/${file.path}` : file.path;
+  const reference = formatChangedFileReference(filePath, line);
   if (!draft.value.includes(reference)) {
     draft.value = `${draft.value}${draft.value && !/\s$/.test(draft.value) ? ' ' : ''}${reference} `;
   }
   if (conversationView.value !== 'chat') conversationView.value = 'chat';
   await nextTick();
   composer.value?.focusPrompt();
+}
+
+function applyChangedFileReviewPrompt(prompt: string, runWorkspace: string) {
+  const binding = props.conversation?.workspace;
+  return applyPromptFromDelivery(binding && binding.workspacePath !== runWorkspace
+    ? `这份批注来自该会话的历史工作区 ${runWorkspace}。以下相对路径以该目录为准。\n\n${prompt}` : prompt);
 }
 
 function toggleRunBookmark(run: AgentRun, entryIndex: number) {
@@ -524,8 +547,8 @@ defineExpose({ focusComposer });
           <el-dropdown trigger="click" popper-class="studio-conversation-menu">
             <button type="button" class="studio-panel-toggle" aria-label="更多会话操作" title="更多会话操作"><Ellipsis :size="18" /></button>
             <template #dropdown><el-dropdown-menu>
-              <el-dropdown-item v-if="canFork" :disabled="running || !!changing" @click="emit('fork', conversation.latest)"><GitFork :size="14" />基于此会话新建</el-dropdown-item>
-              <el-dropdown-item v-if="sideForkAvailable" :disabled="!!changing" @click="emit('forkSide', conversation.latest)"><GitFork :size="14" />在侧边新建继承会话</el-dropdown-item>
+              <el-dropdown-item v-if="forkSource" :disabled="!!changing" @click="emit('fork', forkSource)"><GitFork :size="14" />基于此会话新建</el-dropdown-item>
+              <el-dropdown-item v-if="sideForkAvailable && forkSource" :disabled="!!changing" @click="emit('forkSide', forkSource)"><GitFork :size="14" />在侧边新建继承会话</el-dropdown-item>
               <el-dropdown-item :disabled="!!changing" @click="startTitleEdit"><Pencil :size="14" />修改标题</el-dropdown-item>
               <el-dropdown-item @click="emit('pin', conversation)"><Pin :size="14" />{{ pinned ? '取消置顶' : '置顶会话' }}</el-dropdown-item>
               <el-dropdown-item @click="emit('inspect', conversation.latest)"><Info :size="14" />会话信息</el-dropdown-item>
@@ -539,19 +562,45 @@ defineExpose({ focusComposer });
         </div>
       </header>
       <div class="conversation-toolbar" :style="workspace ? {flexWrap:'wrap'} : undefined">
+        <a v-if="conversation.latest.task?.taskFlowUrl" class="context-block" :href="conversation.latest.task.taskFlowUrl"
+          target="_blank" rel="noopener noreferrer">查看 TaskFlow 任务</a>
       <nav class="studio-conversation-tools" aria-label="会话视图">
         <button type="button" :class="{ active: conversationView === 'chat' }" :aria-pressed="conversationView === 'chat'" @click="conversationView = 'chat'">对话</button>
         <button type="button" :class="{ active: conversationView === 'execution' }" :aria-pressed="conversationView === 'execution'" @click="conversationView = 'execution'"><Activity :size="13" />执行记录</button>
         <button type="button" :class="{ active: conversationView === 'delivery' }" :aria-pressed="conversationView === 'delivery'" @click="conversationView = 'delivery'"><PackageCheck :size="13" />本轮交付<span class="tool-count">{{ currentFileCount }}</span></button>
       </nav>
       <div class="conversation-context" :style="workspace ? {flex:'1 1 600px',flexWrap:'wrap',height:'auto',overflow:'visible'} : undefined">
-        <AgentConversationWorkspaceContext v-if="workspace" :workspace="workspace" :disabled="!!changing" @manage="emit('manageWorkspace',$event)"/>
+        <AgentConversationWorkspaceContext v-if="workspace" :workspace="workspace" :disabled="!!changing" @manage="emit('manageWorkspace',$event)">
+          <template #execution>
+            <div class="workspace-execution-context">
+              <strong>当前会话执行目录</strong><small>{{workspacePath || '未绑定目录'}}<template v-if="workspaceBranch"> · {{workspaceBranch}}</template></small>
+              <AgentWorkspaceSelector v-if="canChangeWorkspace" :key="conversation.id" :workspace-path="workspacePaths[0] || ''"
+                :workspace-paths="workspacePaths" :workspaces="workspaceOptions || []" :disabled="workspacePickerDisabled"
+                :has-active-runs="!!stoppableRun" :show-inline-tags="false" placement="bottom-start"
+                :apply-selection="applyWorkspaceSelection" :browse-workspace="browseWorkspace" :binding-saved="!!conversation.workspace">
+                <template #trigger><button type="button" class="context-block project-context-trigger" :disabled="workspacePickerDisabled" aria-label="调整此会话执行目录"><Folder :size="13"/><span>调整此会话执行目录</span><ChevronDown :size="12"/></button></template>
+              </AgentWorkspaceSelector>
+            </div>
+          </template>
+        </AgentConversationWorkspaceContext>
         <template v-else>
-        <div class="context-block project-context" :title="agentConversationProjectPath(conversation) || '当前会话未绑定本地项目'"><Folder :size="13" /><span><small>工作区</small><strong>{{ workspaceName || workspaceLabel }}</strong></span></div>
-        <div v-if="(!conversation.teamChat || conversation.teamChat.workspaceBound) && (conversation.latest.baseBranch || conversation.latest.branch)" class="context-block branch-context" :title="conversation.latest.baseBranch || conversation.latest.branch"><GitBranch :size="13" /><span><small>分支</small><strong>{{ conversation.latest.baseBranch || conversation.latest.branch }}</strong></span></div>
+        <AgentWorkspaceSelector v-if="canChangeWorkspace" :key="conversation.id" :workspace-path="workspacePaths[0] || ''"
+          :workspace-paths="workspacePaths" :workspaces="workspaceOptions || []" :disabled="workspacePickerDisabled"
+          :has-active-runs="!!stoppableRun" :show-inline-tags="false" placement="bottom-start"
+          :apply-selection="applyWorkspaceSelection" :browse-workspace="browseWorkspace" :binding-saved="!!conversation.workspace">
+          <template #trigger>
+            <button type="button" class="context-block project-context project-context-trigger" :disabled="workspacePickerDisabled"
+              :aria-label="workspacePickerLabel" :title="[workspacePickerLabel, ...workspacePaths].join('\n')">
+              <Folder :size="13" /><span><strong>{{ workspaceLabel }}</strong></span>
+              <span v-if="workspacePaths.length > 1" class="tool-count">+{{ workspacePaths.length - 1 }}</span><ChevronDown :size="12" />
+            </button>
+          </template>
+        </AgentWorkspaceSelector>
+        <div v-else class="context-block project-context" :title="projectPath || '当前会话未绑定本地项目'"><Folder :size="13" /><span><strong>{{ workspaceLabel }}</strong></span></div>
+        <div v-if="(!conversation.teamChat || conversation.teamChat.workspaceBound) && workspaceBranch" class="context-block branch-context" :title="workspaceBranch"><GitBranch :size="13" /><span><small>分支</small><strong>{{ workspaceBranch }}</strong></span></div>
         </template>
-        <AgentTerminalButton v-if="!conversation.teamChat || conversation.teamChat.workspaceBound" :workspace-path="conversation.latest.workspacePath" />
-        <AgentCursorButton v-if="!conversation.teamChat || conversation.teamChat.workspaceBound" :workspace-path="conversation.latest.workspacePath" />
+        <AgentTerminalButton v-if="!conversation.teamChat || conversation.teamChat.workspaceBound" :workspace-path="workspacePath" />
+        <AgentCursorButton v-if="!conversation.teamChat || conversation.teamChat.workspaceBound" :workspace-path="workspacePath" />
         <el-dropdown v-if="conversationView === 'chat' && turnOutlineItems.length >= 2" trigger="click" popper-class="studio-turn-outline-popper">
           <button type="button" class="context-block turn-outline-trigger" title="对话轮次目录 · 快速跳转到任意提问轮次">
             <ListOrdered :size="12" />
@@ -651,17 +700,17 @@ defineExpose({ focusComposer });
           <span class="delivery-pipeline-sep">→</span>
           <RouterLink class="delivery-pipeline-link" :to="{ path: '/agent', query: { view: 'deployments' } }">3. 环境部署与验证</RouterLink>
         </div>
-        <AgentWorkspaceCodeArtifacts v-if="codePaths.length" :paths="codePaths" :active="visible" :run-state="conversation.latest.status" />
+        <AgentWorkspaceCodeArtifacts v-if="codePaths.length || !jiraTask" :paths="codePaths" :bound="Boolean(conversation.workspace)" :conversation-id="jiraTask ? undefined : conversation.id" :active="visible" :run-key="conversation.latest.id" :run-state="conversation.latest.status" />
         <AgentRemoteDelivery v-if="jiraTask" :key="jiraDevTaskDeliveryId(jiraTask)" :target-id="jiraDevTaskDeliveryId(jiraTask)" :active="visible !== false && conversationView === 'delivery'" />
         <AgentConversationDeliveryBrief :conversation="conversation" :paused="!!pausedRun" @ask-test="applyPromptFromDelivery" />
         <h2>本轮交付</h2>
-        <AgentChangedFiles v-for="item in currentFileDeliveries" :key="item.run.id" :files="item.run.changedFiles!" :run-id="item.run.id" :can-ask="!pausedRun" @ask-file="askChangedFile" @apply-review-prompt="applyPromptFromDelivery" />
+        <AgentChangedFiles v-for="item in currentFileDeliveries" :key="item.run.id" :files="item.run.changedFiles!" :run-id="item.run.id" :can-ask="!pausedRun" @ask-file="(file, line) => askChangedFile(file, line, item.run.workspacePath)" @apply-review-prompt="applyChangedFileReviewPrompt($event, item.run.workspacePath)" />
         <el-empty v-if="!currentFileDeliveries.length && !jiraTask" description="本轮暂无记录的改动文件" :image-size="56" />
         <details v-if="historicalFileDeliveries.length" class="delivery-file-history">
           <summary>历史文件</summary>
           <section v-for="item in historicalFileDeliveries" :key="item.run.id">
             <h3>第 {{ item.round }} 轮 · {{ dateTime(item.run.updatedAt) }}</h3>
-            <AgentChangedFiles :files="item.run.changedFiles!" :run-id="item.run.id" :can-ask="!pausedRun" @ask-file="askChangedFile" @apply-review-prompt="applyPromptFromDelivery" />
+            <AgentChangedFiles :files="item.run.changedFiles!" :run-id="item.run.id" :can-ask="!pausedRun" @ask-file="(file, line) => askChangedFile(file, line, item.run.workspacePath)" @apply-review-prompt="applyChangedFileReviewPrompt($event, item.run.workspacePath)" />
           </section>
         </details>
       </section>
@@ -679,10 +728,10 @@ defineExpose({ focusComposer });
                 <button v-if="conversation.source !== 'codex' && (run.pausedForEdit || (!pausedRun && (run.status === 'running' || run.id === conversation.latest.id && ['queued', 'cancelled', 'interrupted', 'failed'].includes(run.status))))"
                   type="button" class="event-link" :disabled="!!changing" @click="emit('edit', run)"><Pencil :size="11" /> {{ ['running', 'queued'].includes(run.status) ? '暂停并编辑' : '编辑' }}</button>
                 <span v-if="run.revisesRunId" class="event-link">已修订</span>
-                <button v-if="canFork"
-                  type="button" class="event-link" :disabled="running || !!changing"
+                <button v-if="forkSource && run.status === 'completed' && run.provider === 'codex' && run.codexTurnId"
+                  type="button" class="event-link" :disabled="!!changing"
                   title="继承当前会话已完成的上下文，原会话保留不变"
-                  @click="emit('fork', conversation.latest)"><GitFork :size="11" /> 分叉</button>
+                  @click="emit('fork', forkSource)"><GitFork :size="11" /> 分叉</button>
                 <button type="button" class="message-copy" title="复制消息" @click="copyMessage(`user:${run.id}`, run.objective)"><Check v-if="copiedMessageId === `user:${run.id}`" :size="12" /><Copy v-else :size="12" /></button>
               </div></div></article>
             <article v-for="supplement in run.supplements || []" :key="supplement.id" class="chat-message user-message">
@@ -690,7 +739,7 @@ defineExpose({ focusComposer });
                 <div v-if="supplement.attachments.length" class="message-images"><a v-for="attachment in supplement.attachments" :key="attachment.id" :href="attachment.url" target="_blank" rel="noopener"><img v-if="isAgentImageAttachment(attachment)" :src="attachment.url" :alt="attachment.name" loading="lazy" decoding="async" /><span v-else class="message-file"><File :size="20" /></span><span>{{ attachment.name }}</span></a></div><AgentTranslatedText :source="supplement.objective" replace><AgentMessageText :source="supplement.objective" :knowledge-context="supplement.knowledgeContext" :search-query="searchQuery" /></AgentTranslatedText>
               </div></div>
             </article>
-            <article class="chat-message agent-message"><AgentAvatar :provider="run.provider" :model="run.model" class="message-avatar" /><div class="message-card agent-card"><header><strong>{{ run.provider === 'codex' ? 'GPT / Codex' : run.provider === 'claude' ? 'Claude Code' : run.provider === 'kiro' ? 'Kiro CLI' : run.provider === 'antigravity' ? 'Antigravity CLI' : run.provider === 'api' ? '模型 API' : run.provider === 'deepseek' ? 'DeepSeek（官方 API）' : run.provider === 'workbuddy' ? '腾讯 WorkBuddy' : run.provider === 'grok' ? 'Grok（xAI）' : 'Cursor Agent' }}</strong><small class="message-model">{{ run.model || 'CLI 默认' }}</small><StatusPill v-bind="agentRunStatus(run)" /><small v-if="legacyContinuations.has(run.id)" class="continuation-label" title="沿用上一轮的 Codex 会话">续跑</small><time>{{ dateTime(run.updatedAt) }}</time></header><AgentLiveRunActivity :run="run" @inspect="emit('inspect', run)" /><AgentTranslatedText v-if="run.result" :source="agentReplyText(run.result)" :stable="!['queued', 'running'].includes(run.status)" markdown replace><AgentMarkdown class="agent-result" :source="agentReplyText(run.result)" :can-ask-code="!pausedRun && conversation.source !== 'codex'" @ask-code="askCodeBlockToComposer" /></AgentTranslatedText><AgentPlanChecklistCard v-if="run.status === 'completed' && run.result" :run="run" :reply-text="agentReplyText(run.result)" :can-apply-prompt="!pausedRun && conversation.source !== 'codex'" @apply-prompt="applyPromptFromDelivery" /><AgentTranslatedText v-if="run.error" :source="agentRunErrorText(run)" replace><p class="agent-error">{{ agentRunErrorText(run) }}</p></AgentTranslatedText><AgentFailureRcaCard v-if="run.status === 'failed' || run.status === 'interrupted'" :run="run" compact :can-apply-prompt="!pausedRun && conversation.source !== 'codex'" @apply-prompt="applyPromptFromDelivery" /><template v-else-if="!run.result && !['queued', 'running'].includes(run.status) && !run.events.length"><p class="agent-progress">该轮没有保存最终回复</p></template><AgentChangedFiles v-if="run.changedFiles" :files="run.changedFiles" :run-id="run.id" :can-ask="!pausedRun" @ask-file="askChangedFile" @apply-review-prompt="applyPromptFromDelivery" /><div class="message-tools"><button v-if="run.result || run.error" type="button" class="event-link copy-md-link" title="复制 Markdown 原文" @click="copyMessage(`agent:${run.id}`, agentReplyText(run.result) || agentRunErrorText(run))"><Check v-if="copiedMessageId === `agent:${run.id}`" :size="12" /><Copy v-else :size="12" /> {{ copiedMessageId === `agent:${run.id}` ? '已复制' : '复制' }}</button><button v-if="run.result" type="button" class="event-link" title="去除 Markdown 格式复制纯文本（适合粘贴至企微或 Jira）" @click="copyMessage(`plain:${run.id}`, stripMarkdownPlain(agentReplyText(run.result)))"><Check v-if="copiedMessageId === `plain:${run.id}`" :size="12" /><FileText v-else :size="12" /> {{ copiedMessageId === `plain:${run.id}` ? '已复制纯文本' : '纯文本' }}</button><button v-if="!pausedRun && (run.result || run.error)" type="button" class="event-link" title="将该回复作为引用块填入输入框继续追问" @click="quoteTextToComposer(agentReplyText(run.result) || agentRunErrorText(run))"><Quote :size="12" /> 引用</button><button v-if="run.result || run.error" type="button" class="event-link" :class="{ 'is-bookmarked': bookmarkStore.isBookmarked(conversation.id, run.id) }" :title="bookmarkStore.isBookmarked(conversation.id, run.id) ? '取消重点收藏' : '收藏这条关键回复（可在顶部收藏夹或跨会话随时复用）'" @click="toggleRunBookmark(run, entryIndex)"><Bookmark :size="12" /> {{ bookmarkStore.isBookmarked(conversation.id, run.id) ? '已收藏' : '收藏' }}</button><PluginRecordQuickSave v-if="run.result" :title="run.objective" :content="agentReplyText(run.result)" /><button v-if="canSteerAgentRun(run, activeRun, conversation.runs)" type="button" class="event-link" :disabled="!!changing" title="停止当前轮，并提前执行此消息" @click="emit('steer', run)"><CornerUpLeft :size="12" /> 调整方向</button><button v-if="conversation.source !== 'codex' && run.status === 'queued' && run.parentRunId" type="button" class="event-link danger-link" :disabled="!!changing" title="从当前会话删除这条排队消息" @click="emit('removeQueued', run)"><Trash2 :size="12" /> {{ changing === `delete:${run.id}` ? '删除中' : '删除' }}</button><button v-if="!pausedRun && continuableRun?.id === run.id" type="button" class="event-link" :disabled="!!changing" title="在原轮次继续，沿用已保存的会话和权限" @click="retryRun(run, true)"><Play :size="12" /> 继续执行</button>
+            <article class="chat-message agent-message"><AgentAvatar :provider="run.provider" :model="run.model" class="message-avatar" /><div class="message-card agent-card"><header><strong>{{ run.provider === 'codex' ? 'GPT / Codex' : run.provider === 'claude' ? 'Claude Code' : run.provider === 'kiro' ? 'Kiro CLI' : run.provider === 'antigravity' ? 'Antigravity CLI' : run.provider === 'api' ? '模型 API' : run.provider === 'deepseek' ? 'DeepSeek（官方 API）' : run.provider === 'workbuddy' ? '腾讯 WorkBuddy' : run.provider === 'grok' ? 'Grok（xAI）' : 'Cursor Agent' }}</strong><small class="message-model">{{ run.model || 'CLI 默认' }}</small><StatusPill v-bind="agentRunStatus(run)" /><small v-if="legacyContinuations.has(run.id)" class="continuation-label" title="沿用上一轮的 Codex 会话">续跑</small><time>{{ dateTime(run.updatedAt) }}</time></header><AgentLiveRunActivity :run="run" @inspect="emit('inspect', run)" /><AgentTranslatedText v-if="run.result" :source="agentReplyText(run.result)" :stable="!['queued', 'running'].includes(run.status)" markdown replace><AgentMarkdown class="agent-result" :source="agentReplyText(run.result)" :can-ask-code="!pausedRun && conversation.source !== 'codex'" @ask-code="askCodeBlockToComposer" /></AgentTranslatedText><AgentPlanChecklistCard v-if="run.status === 'completed' && run.result" :run="run" :reply-text="agentReplyText(run.result)" :can-apply-prompt="!pausedRun && conversation.source !== 'codex'" @apply-prompt="applyPromptFromDelivery" /><AgentTranslatedText v-if="run.error" :source="agentRunErrorText(run)" replace><p class="agent-error">{{ agentRunErrorText(run) }}</p></AgentTranslatedText><AgentFailureRcaCard v-if="run.status === 'failed' || run.status === 'interrupted'" :run="run" compact :can-apply-prompt="!pausedRun && conversation.source !== 'codex'" @apply-prompt="applyPromptFromDelivery" /><template v-else-if="!run.result && !['queued', 'running'].includes(run.status) && !run.events.length"><p class="agent-progress">该轮没有保存最终回复</p></template><AgentChangedFiles v-if="run.changedFiles" :files="run.changedFiles" :run-id="run.id" :can-ask="!pausedRun" @ask-file="(file, line) => askChangedFile(file, line, run.workspacePath)" @apply-review-prompt="applyChangedFileReviewPrompt($event, run.workspacePath)" /><div class="message-tools"><button v-if="run.result || run.error" type="button" class="event-link copy-md-link" title="复制 Markdown 原文" @click="copyMessage(`agent:${run.id}`, agentReplyText(run.result) || agentRunErrorText(run))"><Check v-if="copiedMessageId === `agent:${run.id}`" :size="12" /><Copy v-else :size="12" /> {{ copiedMessageId === `agent:${run.id}` ? '已复制' : '复制' }}</button><button v-if="run.result" type="button" class="event-link" title="去除 Markdown 格式复制纯文本（适合粘贴至企微或 Jira）" @click="copyMessage(`plain:${run.id}`, stripMarkdownPlain(agentReplyText(run.result)))"><Check v-if="copiedMessageId === `plain:${run.id}`" :size="12" /><FileText v-else :size="12" /> {{ copiedMessageId === `plain:${run.id}` ? '已复制纯文本' : '纯文本' }}</button><button v-if="!pausedRun && (run.result || run.error)" type="button" class="event-link" title="将该回复作为引用块填入输入框继续追问" @click="quoteTextToComposer(agentReplyText(run.result) || agentRunErrorText(run))"><Quote :size="12" /> 引用</button><button v-if="run.result || run.error" type="button" class="event-link" :class="{ 'is-bookmarked': bookmarkStore.isBookmarked(conversation.id, run.id) }" :title="bookmarkStore.isBookmarked(conversation.id, run.id) ? '取消重点收藏' : '收藏这条关键回复（可在顶部收藏夹或跨会话随时复用）'" @click="toggleRunBookmark(run, entryIndex)"><Bookmark :size="12" /> {{ bookmarkStore.isBookmarked(conversation.id, run.id) ? '已收藏' : '收藏' }}</button><PluginRecordQuickSave v-if="run.result" :title="run.objective" :content="agentReplyText(run.result)" /><button v-if="canSteerAgentRun(run, activeRun, conversation.runs)" type="button" class="event-link" :disabled="!!changing" title="停止当前轮，并提前执行此消息" @click="emit('steer', run)"><CornerUpLeft :size="12" /> 调整方向</button><button v-if="conversation.source !== 'codex' && run.status === 'queued' && run.parentRunId" type="button" class="event-link danger-link" :disabled="!!changing" title="从当前会话删除这条排队消息" @click="emit('removeQueued', run)"><Trash2 :size="12" /> {{ changing === `delete:${run.id}` ? '删除中' : '删除' }}</button><button v-if="!pausedRun && continuableRun?.id === run.id" type="button" class="event-link" :disabled="!!changing" title="在原轮次继续，沿用已保存的会话和权限" @click="retryRun(run, true)"><Play :size="12" /> 继续执行</button>
               <button v-else-if="isRestartableAgentRun(run) && !pausedRun && !canContinueStoppedCodexRun(run)" type="button" class="event-link" :disabled="!!changing" :title="isRetryableSessionBusyRun(run) ? '尝试续接原会话；真实运行中的任务不会被中断' : '从已保存状态重新执行该任务'" @click="retryRun(run)"><RotateCcw :size="12" /> 重新执行</button><button v-if="run.events.length" type="button" class="event-link" @click="emit('inspect', run)">{{ run.events.length }} 条运行事件</button></div></div></article>
             </template>
           </div>
@@ -739,7 +788,7 @@ defineExpose({ focusComposer });
                 <el-button :disabled="!!changing" @click="emit('teamDecision','takeover')">我来接手</el-button><el-button :disabled="!!changing" @click="emit('teamDecision','cancel')">取消任务</el-button>
               </div></details>
             </div>
-            <AgentChangedFiles v-for="item in currentFileDeliveries" :key="item.run.id" :files="item.run.changedFiles!" :run-id="item.run.id" :can-ask="!pausedRun" @ask-file="askChangedFile" @apply-review-prompt="applyPromptFromDelivery" />
+            <AgentChangedFiles v-for="item in currentFileDeliveries" :key="item.run.id" :files="item.run.changedFiles!" :run-id="item.run.id" :can-ask="!pausedRun" @ask-file="(file, line) => askChangedFile(file, line, item.run.workspacePath)" @apply-review-prompt="applyChangedFileReviewPrompt($event, item.run.workspacePath)" />
           </section>
           <div v-if="!conversation.loaded" class="history-loading"><el-skeleton :rows="2" animated /></div>
           <el-empty v-if="searchQuery && !visibleEntries.length" description="当前会话没有匹配内容" :image-size="56" />
@@ -779,6 +828,8 @@ defineExpose({ focusComposer });
 </template>
 
 <style scoped>
+.workspace-execution-context{display:grid;gap:6px;padding-top:10px;font-size:12px}.workspace-execution-context small{color:var(--ui-muted);font-size:11px;overflow-wrap:anywhere}.workspace-execution-context .project-context-trigger{justify-self:start;width:max-content;max-width:100%;cursor:pointer}
+
 .jump-to-latest{align-self:center;position:relative;margin:-36px 0 8px;z-index:2;display:inline-flex;align-items:center;gap:6px;padding:5px 12px;border:1px solid var(--ui-border);border-radius:var(--ds-radius-sm,999px);background:var(--ui-surface);color:var(--ui-text);box-shadow:var(--ui-shadow);font:600 12px/18px var(--sans);cursor:pointer}
 .jump-to-latest:hover{color:var(--ui-accent);border-color:var(--ui-accent)}
 .team-more-actions{font-size:12px;color:var(--ui-muted)}.team-more-actions summary{cursor:pointer;line-height:32px}.team-more-actions .team-chat-decisions{margin-top:4px}
@@ -796,6 +847,10 @@ defineExpose({ focusComposer });
 .tool-count{display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:15px;padding:0 4px;border-radius:var(--ds-radius-xs,999px);background:var(--ui-accent-soft);color:var(--ui-accent);font:600 10px/1 var(--mono)}
 .role-kicker{font:700 9.5px/1 var(--mono);letter-spacing:0.14em;color:var(--ui-accent)}
 .conversation-toolbar{display:contents}
+.project-context-trigger{cursor:pointer}
+.project-context-trigger svg{flex-shrink:0}
+.project-context-trigger:hover:not(:disabled){border-color:var(--ui-accent);color:var(--ui-accent)}
+.project-context-trigger:disabled{opacity:.6;cursor:not-allowed}
 .conversation-jira-task{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:8px 20px;border-bottom:1px solid var(--ui-border);background:color-mix(in srgb,var(--ui-accent-soft) 35%,var(--ui-surface));color:var(--ui-secondary);font-size:12px;line-height:16px}
 .conversation-workflow-pill{display:inline-flex;align-items:center;padding:2px 8px;border-radius:var(--ds-radius-xs,999px);background:var(--ui-accent);color:var(--ui-on-primary,#fff);font-size:11px;font-weight:600;white-space:nowrap}
 .conversation-issue-pill{display:inline-flex;align-items:center;padding:2px 8px;border:1px solid color-mix(in srgb,var(--ui-accent) 32%,var(--ui-border));border-radius:var(--ds-radius-xs,6px);background:var(--ui-surface);color:var(--ui-accent);font:600 11px/16px var(--mono);text-decoration:none;white-space:nowrap}
@@ -824,8 +879,8 @@ defineExpose({ focusComposer });
 .user-turn-stack{display:flex;flex-direction:column;align-items:flex-end;width:100%;max-width:100%;min-width:0}
 .user-turn-stamp{align-self:center;margin:0 0 6px;color:var(--ui-muted);font:400 11px/15px var(--sans);font-variant-numeric:tabular-nums;opacity:0.86}
 .user-card-header{display:none!important}
-:global(:root[data-theme='acid']) .user-card-header{display:flex!important}
-:global(:root[data-theme='acid']) .user-turn-stamp{display:none}
+:root[data-theme='acid'] .user-card-header{display:flex!important}
+:root[data-theme='acid'] .user-turn-stamp{display:none}
 .user-message-tools{justify-content:flex-end;flex-wrap:wrap;gap:4px;margin-top:0;padding-top:0;border-top:0;max-height:0;overflow:hidden;opacity:0;pointer-events:none;transition:opacity 140ms ease,max-height 140ms ease,margin-top 140ms ease}.user-message:hover .user-message-tools,.user-message:focus-within .user-message-tools,.user-message-tools.is-pinned{margin-top:3px;max-height:40px;opacity:0.9;pointer-events:auto}.user-message .user-message-tools .message-copy{position:static}
 .danger-link{border-color:color-mix(in srgb,var(--ui-danger) 48%,var(--ui-border));background:var(--ui-danger-bg);color:var(--ui-danger)}
 .conversation-pane{display:flex;flex-direction:column;min-width:0;min-height:0;height:100%;overflow:hidden;background:transparent;color:var(--ui-text)}.conversation-header{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:40px;padding:6px 16px;border-bottom:1px solid var(--ui-border);background:color-mix(in srgb,var(--ui-surface) 92%,transparent);backdrop-filter:blur(16px)}.conversation-actions{display:flex;align-items:center;gap:4px;flex-shrink:0}.conversation-actions:deep(.el-button){height:26px;margin-left:0;padding:4px 8px;border-radius:var(--ds-radius-xs,6px);color:var(--ui-secondary);font:500 11.5px/15px var(--sans)}.conversation-actions:deep(.el-button:hover){background:var(--ui-raised);color:var(--ui-text)}.conversation-context{display:flex;align-items:center;gap:6px;min-height:30px;padding:4px 16px;border-bottom:1px solid var(--ui-border);overflow:hidden;background:var(--ui-surface)}.context-block{display:inline-flex;align-items:center;gap:5px;min-width:0;height:24px;padding:0 8px;border:1px solid var(--ui-border);border-radius:var(--ds-radius-xs,6px);background:var(--ui-raised);color:var(--ui-muted)}.context-block>span{display:flex;align-items:center;min-width:0;gap:4px}.context-block small{color:var(--ui-muted);font:500 10.5px/14px var(--mono);white-space:nowrap}:is(.project-context,.branch-context) small{display:none}.context-block strong{overflow:hidden;color:var(--ui-text);font:500 11.5px/15px var(--mono);text-overflow:ellipsis;white-space:nowrap}.project-context{max-width:200px;flex:0 1 auto}.branch-context{max-width:260px;flex:0 1 auto;border-color:color-mix(in srgb,var(--ui-accent) 28%,var(--ui-border));background:var(--ui-accent-soft)}.branch-context svg{flex:0 0 auto;color:var(--ui-accent)}.workspace-context{flex:1;min-width:0}.message-search{display:flex;align-items:center;gap:4px;width:168px;height:24px;margin-left:auto;padding:0 8px;flex-shrink:0;border:1px solid var(--ui-border);border-radius:var(--ds-radius-xs,6px);background:var(--ui-raised);color:var(--ui-muted);transition:width 160ms ease,border-color 160ms ease,box-shadow 160ms ease,background 160ms ease}.message-search.has-query{width:258px}.message-search:focus-within{border-color:var(--ui-accent);background:var(--ui-surface);color:var(--ui-accent);box-shadow:0 0 0 2px var(--ui-accent-soft)}.message-search input{width:100%;min-width:0;border:0;outline:0;background:transparent;color:var(--ui-text);font:400 11.5px/15px var(--sans)}.message-search input::placeholder{color:var(--ui-muted)}.message-search input[type="search"]::-webkit-search-cancel-button{-webkit-appearance:none;display:none}.message-search-counter{flex-shrink:0;padding:0 4px;border-radius:4px;background:var(--ui-accent-soft);color:var(--ui-accent);font:600 10px/15px var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap}.message-search-step,.message-search-clear{display:grid;place-items:center;width:16px;height:16px;padding:0;border:0;border-radius:999px;background:transparent;color:var(--ui-muted);cursor:pointer;flex-shrink:0}.message-search-step:hover,.message-search-clear:hover{background:var(--ui-hover);color:var(--ui-text)}

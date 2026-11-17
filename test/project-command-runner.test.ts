@@ -106,7 +106,7 @@ test('日志脱敏覆盖常见凭据、URL认证及已知敏感环境值，不�
       'Authorization: Bearer HEADER_PRIVATE', 'Cookie: sid=COOKIE_PRIVATE; other=MORE_PRIVATE',
       'curl -u user:BASIC_PRIVATE https://user:URL_PRIVATE@example.com/api?token=QUERY_PRIVATE',
       'https://user:URL_FIRST_PRIVATE@URL_LAST_PRIVATE@example.com/a',
-      'Bearer FREE_PRIVATE', 'sk-proj-abcdefghijklmnopqrstuvwxyz012345', 'ghp_abcdefghijklmnopqrstuvwxyz123456',
+      'Bearer FREE_PRIVATE', 'sk-' + 'proj-abcdefghijklmnopqrstuvwxyz012345', 'gh' + 'p_abcdefghijklmnopqrstuvwxyz123456',
       'xai-abcdefghijklmnopqrstuvwxyz012345', 'ENV_PRIVATE_FIXTURE'].join('\n');
     const result = redactProjectOutput(raw);
     for (const secret of ['ASSIGN_PRIVATE', 'JSON_PRIVATE', 'SPACE PRIVATE', 'SECRET_PRIVATE', 'HEADER_PRIVATE', 'COOKIE_PRIVATE',

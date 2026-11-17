@@ -765,14 +765,14 @@ async function confirm(title: string, detail: string) {
 .deploy-log-ln{text-align:right;color:var(--ui-muted);user-select:none;font-variant-numeric:tabular-nums;opacity:.72}
 .deploy-log-txt{white-space:pre-wrap;overflow-wrap:anywhere}
 
-:global(:root[data-theme='acid']) .deployment-layout,
-:global(:root[data-theme='acid']) .environment-card,
-:global(:root[data-theme='acid']) .deploy-tier-badge,
-:global(:root[data-theme='acid']) .deploy-provider-pill,
-:global(:root[data-theme='acid']) .deploy-copy-chip,
-:global(:root[data-theme='acid']) .deployment-execution,
-:global(:root[data-theme='acid']) .deployment-log,
-:global(:root[data-theme='acid']) .deploy-kbd {
+:root[data-theme='acid'] .deployment-layout,
+:root[data-theme='acid'] .environment-card,
+:root[data-theme='acid'] .deploy-tier-badge,
+:root[data-theme='acid'] .deploy-provider-pill,
+:root[data-theme='acid'] .deploy-copy-chip,
+:root[data-theme='acid'] .deployment-execution,
+:root[data-theme='acid'] .deployment-log,
+:root[data-theme='acid'] .deploy-kbd {
   border-radius: 0 !important;
 }
 

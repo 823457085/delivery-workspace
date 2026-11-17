@@ -838,16 +838,16 @@ async function saveAccounts() {
 .catalog-loading { padding: var(--catalog-pad); }
 .system-catalog .catalog-empty { padding-block: 26px; }
 
-:global(:root[data-theme='acid']) .catalog-env-pill,
-:global(:root[data-theme='acid']) .catalog-layout-switch,
-:global(:root[data-theme='acid']) .catalog-layout-switch > button,
-:global(:root[data-theme='acid']) .catalog-matrix-card,
-:global(:root[data-theme='acid']) .catalog-pin-btn,
-:global(:root[data-theme='acid']) .env-tier-badge,
-:global(:root[data-theme='acid']) .env-branch-chip,
-:global(:root[data-theme='acid']) .catalog-copy-chip,
-:global(:root[data-theme='acid']) .visit-system,
-:global(:root[data-theme='acid']) .catalog-kbd {
+:root[data-theme='acid'] .catalog-env-pill,
+:root[data-theme='acid'] .catalog-layout-switch,
+:root[data-theme='acid'] .catalog-layout-switch > button,
+:root[data-theme='acid'] .catalog-matrix-card,
+:root[data-theme='acid'] .catalog-pin-btn,
+:root[data-theme='acid'] .env-tier-badge,
+:root[data-theme='acid'] .env-branch-chip,
+:root[data-theme='acid'] .catalog-copy-chip,
+:root[data-theme='acid'] .visit-system,
+:root[data-theme='acid'] .catalog-kbd {
   border-radius: 0 !important;
 }
 

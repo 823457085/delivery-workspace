@@ -12,7 +12,7 @@ import { agentProviderLabels, type AgentRuntimeDashboard } from '../../../shared
 import type { PortSnapshot } from '../../../shared/port-monitor';
 import type { ThemePreference } from '../../shared/theme/theme';
 import { dateTime } from '../../shared/format';
-import { buildAgentConversationList } from '../../features/agent-workbench/conversation';
+import { agentConversationBranch, agentConversationProjectPath, agentConversationWorkspacePath, buildAgentConversationList } from '../../features/agent-workbench/conversation';
 import { readGroupDashboard } from '../../features/agent-workbench/group-chat-api';
 import { useAgentBookmarks } from '../../features/agent-workbench/useAgentBookmarks';
 import type { WorkspaceSection } from './workspace-navigation';
@@ -125,11 +125,13 @@ const liveThreads = computed<CommandPaletteThread[]>(() => {
       runtimeData.codexSessions || [],
       {},
       runtimeData.conversationTitles || {},
+      runtimeData.conversationWorkspaces,
     );
     for (const conv of conversations) {
       if (conv.archived) continue;
       const providerLabel = agentProviderLabels[conv.latest.provider] || conv.latest.provider;
-      const folder = leafFolder(conv.latest.workspacePath) || '未绑定项目';
+      const projectPath = agentConversationProjectPath(conv);
+      const folder = leafFolder(projectPath) || '未绑定项目';
       entries.push({
         updatedMs: Date.parse(conv.updatedAt) || 0,
         thread: {
@@ -138,7 +140,7 @@ const liveThreads = computed<CommandPaletteThread[]>(() => {
           title: conv.title || '未命名会话',
           subtitle: `${providerLabel} · ${folder} · ${dateTime(conv.updatedAt)}`,
           badge: providerLabel,
-          keywords: `${conv.latest.workspacePath} ${conv.latest.branch} ${conv.latest.provider}`,
+          keywords: `${projectPath} ${agentConversationWorkspacePath(conv)} ${agentConversationBranch(conv)} ${conv.latest.provider}`,
           active: props.isChatActive && props.chatMode === 'session' && props.activeSessionId === conv.id,
         },
       });
@@ -595,7 +597,7 @@ const filterTabs = computed<{ id: 'all' | CommandCategory; label: string }[]>(()
   box-shadow: 0 24px 64px rgba(0, 0, 0, 0.26), 0 2px 8px rgba(0, 0, 0, 0.08);
 }
 
-:global(:root[data-theme='acid']) .cmd-palette-panel {
+:root[data-theme='acid'] .cmd-palette-panel {
   border-radius: 0;
   border-color: var(--ui-accent);
   box-shadow: 6px 6px 0 var(--acid-violet, #a020f0);
@@ -734,7 +736,7 @@ const filterTabs = computed<{ id: 'all' | CommandCategory; label: string }[]>(()
   background: var(--ui-raised);
 }
 
-:global(:root[data-theme='acid']) .cmd-item.is-selected {
+:root[data-theme='acid'] .cmd-item.is-selected {
   border-radius: 0;
   border-color: var(--ui-accent);
   background: var(--ui-accent-soft);

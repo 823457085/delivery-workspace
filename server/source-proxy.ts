@@ -6,6 +6,7 @@ import type { SourceBackend } from './source-backend.js';
 export const READ_ROUTES: Record<string, string> = {
   config: '/api/config', issues: '/api/issues', users: '/api/users',
   automation: '/api/automation', catchup: '/api/automation/catchup',
+  'scan-preview': '/api/automation/scan-preview',
   merge: '/api/automation/catchup/merge-plan', projects: '/api/local-projects',
   meeting: '/meeting-snapshot.json', 'merge-jira': '/api/automation/catchup/merge/jira-completion',
   artifact: '/api/automation/artifact', document: '/api/automation/catchup/document',

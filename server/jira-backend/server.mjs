@@ -3,6 +3,7 @@ import http from "node:http";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile, execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { homedir } from "node:os";
 import { promisify } from "node:util";
@@ -18,6 +19,7 @@ import {
   buildRequirementSegmentTitles,
   buildTaskDateSegments,
   classifyAutomationTask,
+  clearAutomationScanFailureState,
   dateReached,
   findMatchingManagedSegmentSubtask,
   getNextAutomationRun,
@@ -27,6 +29,7 @@ import {
   isScheduledSliceIssue,
   isThreeDaySplitTask,
   localDateIso,
+  recordAutomationScanFailureState,
   resolveDispatchLimit,
   sanitizeAutomationSettings,
   shouldCompleteIssue,
@@ -519,7 +522,7 @@ function sanitizeUserQuery(value) {
 }
 
 function sanitizeDateField(value) {
-  const allowed = new Set(["updated", "created", "duedate", "resolutiondate"]);
+  const allowed = new Set(["updated", "created", "duedate", "resolutiondate", "planned"]);
   return allowed.has(value) ? value : "updated";
 }
 
@@ -552,7 +555,17 @@ function parseVersionFilter(value) {
   return [...new Set(versions)].slice(0, 20);
 }
 
-function buildJql(params) {
+function plannedDateCondition(start, end) {
+  const plannedStart = "cf[10109]";
+  const plannedEnd = "cf[10110]";
+  // Jira 计划结束日期优先，缺省时依次使用截止日期及唯一的计划开始日期。
+  return [
+    isDate(start) && `(${plannedEnd} >= "${start}" OR (${plannedEnd} is EMPTY AND (duedate >= "${start}" OR (duedate is EMPTY AND ${plannedStart} >= "${start}"))))`,
+    isDate(end) && `(${plannedStart} <= "${end}" OR (${plannedStart} is EMPTY AND (${plannedEnd} <= "${end}" OR (${plannedEnd} is EMPTY AND duedate <= "${end}"))))`,
+  ].filter(Boolean);
+}
+
+function buildJql(params, { recentDays = 0, retainedKeys = [] } = {}) {
   const dateField = sanitizeDateField(params.get("dateField"));
   const sortOrder = sanitizeSortOrder(params.get("sortOrder"));
   const start = params.get("start");
@@ -564,17 +577,24 @@ function buildJql(params) {
   const includeDone = params.get("includeDone") === "true";
   const includeSubtasks = params.get("includeSubtasks") !== "false";
   const allTime = params.get("allTime") === "true";
-  const maxResults = Math.min(Math.max(Number(params.get("maxResults") || (allTime ? 2000 : 500)), 1), 5000);
+  const defaultLimit = allTime ? 2000 : 500;
+  const requestedLimit = Number(params.get("maxResults") || defaultLimit);
+  const maxResults = Number.isFinite(requestedLimit) ? Math.min(Math.max(Math.floor(requestedLimit), 1), 5000) : defaultLimit;
 
   const parts = [`assignee = ${assignee}`];
+  const issueKey = (params.get("issueKey") || "").toUpperCase();
+  if (/^[A-Z][A-Z0-9_]*-\d+$/.test(issueKey)) parts.push(`key = ${issueKey}`);
 
-  if (!allTime && isDate(start)) {
-    parts.push(`${dateField} >= "${start}"`);
-  }
-
-  if (!allTime && isDate(end)) {
-    const endValue = dateField === "duedate" ? end : `${end} 23:59`;
-    parts.push(`${dateField} <= "${endValue}"`);
+  if (!allTime) {
+    if (dateField === "planned") {
+      parts.push(...plannedDateCondition(start, end));
+    } else {
+      if (isDate(start)) parts.push(`${dateField} >= "${start}"`);
+      if (isDate(end)) {
+        const endValue = dateField === "duedate" ? end : `${end} 23:59`;
+        parts.push(`${dateField} <= "${endValue}"`);
+      }
+    }
   }
 
   if (projects.length > 0) {
@@ -596,6 +616,9 @@ function buildJql(params) {
 
   if (!includeDone) {
     parts.push("statusCategory != Done");
+  } else if (recentDays) {
+    const retained = retainedKeys.length ? ` OR key in (${retainedKeys.join(", ")})` : "";
+    parts.push(`(statusCategory != Done OR updated >= "-${recentDays}d"${retained})`);
   }
 
   return {
@@ -624,7 +647,7 @@ function buildOrderBy(dateField, allTime, sortOrder = "default") {
     return "cf[10110] DESC, priority DESC, updated DESC";
   }
 
-  if (allTime) return "updated DESC";
+  if (allTime || dateField === "planned") return "updated DESC";
 
   const sortFields = [
     `${dateField} ASC`,
@@ -836,8 +859,19 @@ async function hydrateIssueFixVersionDetails(issues, authHeaders) {
   });
 }
 
+// 活跃事项保留全量。已完成事项只取近 30 天更新及仍有关联本地队列的事项。
+function buildRecentJiraQuery(jobs = []) {
+  const retainedKeys = [...new Set(jobs
+    .filter((job) => ["waiting", "pending", "dispatching", "dispatched", "running", "blocked", "review"].includes(job.status))
+    .map((job) => String(job.issueKey || "").toUpperCase())
+    .filter((key) => /^[A-Z][A-Z0-9_]*-\d+$/.test(key)))].sort();
+  return buildJql(new URLSearchParams({ allTime: "true", includeDone: "true", maxResults: "5000" }), {
+    recentDays: 30, retainedKeys
+  });
+}
+
 export async function readWorkspaceReportIssues() {
-  return fetchJiraIssues(buildJql(new URLSearchParams({ allTime: "true", includeSubtasks: "true", includeDone: "true", maxResults: "5000" })));
+  return fetchJiraIssues(buildRecentJiraQuery());
 }
 
 const inflightJiraIssueSearches = new Map();
@@ -856,12 +890,12 @@ async function fetchJiraIssues(query) {
 
   const task = (async () => {
     const maxResults = query.maxResults;
-    const issues = [];
+    const issuesByKey = new Map();
     let startAt = 0;
-    let total = 0;
+    let total;
 
-    while (issues.length < maxResults) {
-      const pageSize = Math.min(50, maxResults - issues.length);
+    while (startAt < maxResults) {
+      const pageSize = Math.min(50, maxResults - startAt);
       const response = await fetchJiraHandoff(`${jiraBaseUrl}/rest/api/2/search`, {
         method: "POST",
         headers: {
@@ -878,14 +912,20 @@ async function fetchJiraIssues(query) {
       }, true); // Jira search 使用 POST，但只读取任务；只允许这一明确的读取请求有限重试。
 
       const payload = await readJiraResponse(response, "任务");
-      total = payload.total || 0;
-      const pageIssues = Array.isArray(payload.issues) ? payload.issues : [];
-      issues.push(...pageIssues.map(normalizeIssue));
+      if (!Number.isInteger(payload.total) || payload.total < 0 || !Array.isArray(payload.issues)) {
+        throw new Error("读取 Jira 任务失败：分页响应缺少有效的数量或事项列表");
+      }
+      total = Math.max(total ?? 0, payload.total);
+      const pageIssues = payload.issues.slice(0, pageSize);
+      for (const item of pageIssues) {
+        if (item?.key) issuesByKey.set(item.key, normalizeIssue(item));
+      }
 
-      if (pageIssues.length === 0 || issues.length >= total) break;
       startAt += pageIssues.length;
+      if (pageIssues.length === 0 || startAt >= total) break;
     }
 
+    const issues = [...issuesByKey.values()];
     await hydrateIssueFixVersionDetails(issues, authHeaders);
 
     return {
@@ -894,6 +934,7 @@ async function fetchJiraIssues(query) {
       jql: query.jql,
       sortOrder: query.sortOrder,
       total,
+      truncated: issues.length < total,
       issues
     };
   })().finally(() => {
@@ -2867,10 +2908,10 @@ function managedParallelFunctionalSegments(parent, children, maxDays) {
   return managed.length === children.length ? managed : [];
 }
 
-async function ensureAutomationTaskSegments(issues, settings) {
+async function ensureAutomationTaskSegments(issues, settings, { preview = false, approved } = {}) {
   if (!settings.autoSplitLongTasks) return [];
-  const authHeaders = getAuthHeaders();
-  if (!authHeaders) throw new Error(jiraAuthUnavailableMessage());
+  const authHeaders = preview ? null : getAuthHeaders();
+  if (!preview && !authHeaders) throw new Error(jiraAuthUnavailableMessage());
 
   const ignoredIssueKeys = getIgnoredAutomationIssueKeys(issues);
   const childIssuesByParent = new Map();
@@ -2888,6 +2929,10 @@ async function ensureAutomationTaskSegments(issues, settings) {
     if (segments.length === 0) continue;
 
     const knownChildren = childIssuesByParent.get(issue.key) || [];
+    if (issue.subtasks?.some(({ key }) => !knownChildren.some((child) => child.key === key))) {
+      results.push({ parentKey: issue.key, status: "blocked", message: "部分子任务不在巡检读取范围内，无法核对已有切片" });
+      continue;
+    }
     const orderedChildren = [...knownChildren].sort(automationChildOrder);
     const parallelSegments = knownChildren.length > segments.length
       ? managedParallelFunctionalSegments(issue, orderedChildren, settings.maxTaskSpanDays)
@@ -2925,6 +2970,12 @@ async function ensureAutomationTaskSegments(issues, settings) {
           });
           continue;
         }
+        const action = buildSplitScanAction(issue, segment, existing);
+        if (preview) {
+          results.push({ action });
+          continue;
+        }
+        if (approved && !approved.has(JSON.stringify(action))) continue;
         try {
           await updateAutomationTaskSegment(existing, segment, authHeaders);
           results.push({
@@ -2946,6 +2997,12 @@ async function ensureAutomationTaskSegments(issues, settings) {
         continue;
       }
 
+      const action = buildSplitScanAction(issue, segment);
+      if (preview) {
+        results.push({ action });
+        continue;
+      }
+      if (approved && !approved.has(JSON.stringify(action))) continue;
       try {
         const created = await createAutomationTaskSegment(
           issue,
@@ -2987,16 +3044,43 @@ async function ensureAutomationTaskSegments(issues, settings) {
   return results;
 }
 
+function buildSplitScanAction(parent, segment, existing) {
+  return {
+    kind: existing ? "split-update" : "split-create",
+    issueKey: existing?.key || parent.key,
+    target: `${segment.startDate} ～ ${segment.endDate}`,
+    reason: taskSegmentSummary(parent, segment)
+  };
+}
+
+function isJiraMaintenanceItem(item) {
+  return item.projectRouting?.status === "matched"
+    && item.category !== "unsupported"
+    && (isJiraSubtask(item.issue) || /^(?:任务|开发任务|需求|需求单|缺陷|故障|故事|用户故事|Task|Story|Bug)$/i.test(item.issue.issueType));
+}
+
 async function executeAutomationTransitions(plan, settings, today, {
-  transition = transitionJiraIssue, alignEndDate = updateJiraIssueEndDate
+  transition = transitionJiraIssue, alignEndDate = updateJiraIssueEndDate, now = new Date(), preview = false, approved
 } = {}) {
-  if (!settings.autoTransitionJira && !settings.autoCloseDueSplitTasks) return [];
+  if (!settings.autoTransitionJira && !settings.autoAlignJiraEndDates && !settings.autoCloseDueSplitTasks) return [];
 
   const results = [];
   const transitionedDone = new Set();
   const versionManaged = new Set();
   const planByKey = new Map(plan.map((item) => [item.issue.key, item]));
+  const maintenanceItems = plan.filter(isJiraMaintenanceItem);
   const execute = async (item, targetStatus, reason) => {
+    const { issue } = item;
+    const action = { kind: "transition", issueKey: issue.key, from: issue.status, target: targetStatus, reason };
+    if (item.issue.status === targetStatus) return { status: "skipped" };
+    if (preview) {
+      results.push({ action });
+      issue.status = targetStatus;
+      issue.statusCategory = /完成|关闭|done|closed/i.test(targetStatus) ? "Done" : "In Progress";
+      if (targetStatus === settings.completedStatus) transitionedDone.add(issue.key);
+      return { status: "planned" };
+    }
+    if (approved && !approved.has(JSON.stringify(action))) return { status: "blocked" };
     try {
       const result = await transition(item.issue, targetStatus, { followCompletionPath: targetStatus === settings.completedStatus });
       results.push({ ...result, reason });
@@ -3017,18 +3101,18 @@ async function executeAutomationTransitions(plan, settings, today, {
     }
   };
   if (settings.autoTransitionJira) {
-    for (const item of plan) {
+    for (const item of maintenanceItems) {
       if (shouldStartIssue(item.issue, today)) {
         await execute(item, settings.startStatus, "目标开始日期已到");
       }
     }
   }
 
-  for (const item of plan) {
+  for (const item of maintenanceItems) {
     const parentIssue = planByKey.get(item.issue.parent?.key)?.issue || null;
     if (isScheduledSliceIssue(item.issue)) {
       versionManaged.add(item.issue.key);
-      if (shouldCompleteScheduledSlice(item.issue)) {
+      if (settings.autoCloseDueSplitTasks && isJiraSubtask(item.issue) && shouldCompleteScheduledSlice(item.issue, now)) {
         await execute(item, settings.completedStatus, "明确排期子任务已过结束日 18:00");
       }
       continue;
@@ -3036,7 +3120,7 @@ async function executeAutomationTransitions(plan, settings, today, {
     if (isThreeDaySplitTask(item.issue)) {
       versionManaged.add(item.issue.key);
       const endDate = item.issue.endDate || item.issue.dueDate;
-      if (settings.autoCloseDueSplitTasks && dateReached(endDate, today)) {
+      if (settings.autoCloseDueSplitTasks && isJiraSubtask(item.issue) && dateReached(endDate, today)) {
         if (shouldStartIssue(item.issue, today)) {
           const startResult = await execute(
             item,
@@ -3053,7 +3137,6 @@ async function executeAutomationTransitions(plan, settings, today, {
       }
       continue;
     }
-    if (!settings.autoTransitionJira) continue;
     const hasFixVersion = item.issue.fixVersionDetails?.length > 0
       || (!item.issue.fixVersionDetails?.length && parentIssue?.fixVersionDetails?.length > 0);
     const versionAction = getVersionDateAction(item.issue, today, parentIssue);
@@ -3062,6 +3145,7 @@ async function executeAutomationTransitions(plan, settings, today, {
 
     versionManaged.add(item.issue.key);
     if (versionAction.action === "complete") {
+      if (!settings.autoTransitionJira) continue;
       if (shouldCompleteIssue(item, settings, today)) {
         await execute(
           item,
@@ -3083,6 +3167,17 @@ async function executeAutomationTransitions(plan, settings, today, {
       continue;
     }
 
+    // 版本尚未到期时继续阻止完成；只有日期开关允许改写排期。
+    if (!settings.autoAlignJiraEndDates) continue;
+    const action = {
+      kind: "end-date", issueKey: item.issue.key, from: item.issue.endDate || item.issue.dueDate || "",
+      target: versionAction.releaseDate, reason: "当前结束日期已到，关联版本尚未发布"
+    };
+    if (preview) {
+      results.push({ action });
+      continue;
+    }
+    if (approved && !approved.has(JSON.stringify(action))) continue;
     try {
       const result = await alignEndDate(item.issue, versionAction.releaseDate);
       results.push({
@@ -3102,14 +3197,14 @@ async function executeAutomationTransitions(plan, settings, today, {
 
   if (!settings.autoTransitionJira) return results;
 
-  for (const item of plan) {
+  for (const item of maintenanceItems) {
     if (versionManaged.has(item.issue.key)) continue;
     if (shouldCompleteIssue(item, settings, today)) {
       await execute(item, settings.completedStatus, "目标结束日期已到且完成证据齐全");
     }
   }
 
-  for (const item of plan.filter((candidate) => (
+  for (const item of maintenanceItems.filter((candidate) => (
     candidate.hasChildren
     && !isIssueDone(candidate.issue)
     && !versionManaged.has(candidate.issue.key)
@@ -3136,119 +3231,195 @@ export function connectJiraDevPreviews(handler) {
   prepareJiraDevPreviews = handler;
 }
 
-async function performAutomationScan(trigger = "manual", scheduledSlot = "") {
+function assertCompleteJiraScan(payload) {
+  if (payload.truncated || payload.total > payload.issues.length) {
+    throw Object.assign(new Error(`Jira 只返回 ${payload.issues.length} / ${payload.total} 项，查询结果不完整`), {
+      code: "JIRA_SCAN_INCOMPLETE"
+    });
+  }
+}
+
+async function buildAutomationScanPreview(state, jiraPayload, localPayload, now) {
+  const { settings, jobs } = state;
+  const actions = [];
+  const truncated = Boolean(jiraPayload.truncated || jiraPayload.total > jiraPayload.issues.length);
+  if (!truncated) {
+    const issues = structuredClone(jiraPayload.issues);
+    const splits = await ensureAutomationTaskSegments(issues, settings, { preview: true });
+    const plan = buildAutomationPlan(issues, localPayload.projects, jobs, settings);
+    const transitions = await executeAutomationTransitions(plan, settings, localDateIso(now), { now, preview: true });
+    for (const result of [...splits, ...transitions]) {
+      if (result.action) actions.push(result.action);
+    }
+  }
+  const issueVersions = jiraPayload.issues
+    .map(({ key, status, updated, startDate, endDate, dueDate }) => [key, status, updated, startDate, endDate, dueDate])
+    .sort(([left], [right]) => left.localeCompare(right));
+  const id = truncated ? "" : createHash("sha256").update(JSON.stringify([settings, issueVersions, actions])).digest("hex");
+  return {
+    id, actions, truncated, issueCount: jiraPayload.issues.length, total: jiraPayload.total,
+    autoCreateCodex: settings.autoCreateCodex,
+    autoPrepareJiraDev: settings.autoPrepareJiraDev,
+    autoCreateMergeRequest: settings.enabled && settings.autoCreateMergeRequest
+  };
+}
+
+async function previewAutomationScan() {
   const state = await readAutomationState();
-  if (!state.settings.enabled && trigger === "schedule") {
+  const [jiraPayload, localPayload] = await Promise.all([
+    fetchJiraIssues(buildRecentJiraQuery(state.jobs)),
+    getLocalProjects(false)
+  ]);
+  return buildAutomationScanPreview(state, jiraPayload, localPayload, new Date());
+}
+
+async function performAutomationScan(trigger = "manual", scheduledSlot = "", previewId = "") {
+  let state = await readAutomationState({ forWrite: true });
+  if (!state.settings.enabled && trigger !== "manual") {
     return { skipped: true, reason: "自动巡检已暂停" };
   }
 
   const startedAt = new Date().toISOString();
-  const query = buildJql(new URLSearchParams({
-    allTime: "true",
-    includeDone: "true",
-    includeSubtasks: "true",
-    assignee: "currentUser()",
-    maxResults: "5000"
-  }));
-  let [jiraPayload, localPayload] = await Promise.all([
-    fetchJiraIssues(query),
-    getLocalProjects(true)
-  ]);
-  const splitResults = jiraPayload.source === "jira"
-    ? await ensureAutomationTaskSegments(jiraPayload.issues, state.settings)
-    : [];
-  if (splitResults.some((item) => item.status === "created")) {
-    jiraPayload = await fetchJiraIssues(query);
-  }
-  await refreshAutomationGitEvidence(
-    jiraPayload.issues,
-    localPayload.projects,
-    state.jobs,
-    state.settings
-  );
-  let synchronized;
-
-  await mutateAutomationState((latestState) => {
-    synchronized = synchronizeAutomationJobs(latestState, jiraPayload.issues, localPayload.projects);
-  });
-
-  const latestState = await readAutomationState();
-  const plan = buildAutomationPlan(jiraPayload.issues, localPayload.projects, latestState.jobs, latestState.settings);
-  let jiraDevPreviews, jiraDevPreviewError;
-  const mode = latestState.settings.autoPrepareJiraDev ? "preview"
-    : ["manual", "schedule"].includes(trigger) && latestState.settings.enabled && latestState.settings.autoCreateCodex
-      && latestState.settings.jiraDevAutomationApproved === true ? "start" : "";
-  if (mode && jiraPayload.source === "jira" && prepareJiraDevPreviews) {
-    const occupied = new Set(latestState.jobs.filter(job => ["dispatching", "dispatched", "running", "review", "completed"].includes(job.status))
-      .map(job => job.issueKey));
-    const candidates = plan.filter(item => item.category === "implementation" && item.dispatchable
-      && !item.deliveryOnly && !occupied.has(item.issue.key));
-    const approvedProfiles = JSON.stringify(latestState.settings.projectProfiles);
-    const approvedLimit = latestState.settings.maxDispatchPerRun;
-    const mayStart = mode === "start" ? async () => {
-      const { settings } = await readAutomationState();
-      return settings.enabled && settings.autoCreateCodex && !settings.autoPrepareJiraDev && settings.jiraDevAutomationApproved === true
-        && settings.maxDispatchPerRun === approvedLimit && JSON.stringify(settings.projectProfiles) === approvedProfiles;
-    } : undefined;
-    try {
-      jiraDevPreviews = await prepareJiraDevPreviews(compactAutomationPlan(candidates), approvedLimit, mode, mayStart);
-    } catch {
-      jiraDevPreviewError = "无法读取本地研发任务记录，请在下次巡检前核对。";
+  try {
+    const query = buildRecentJiraQuery(state.jobs);
+    let [jiraPayload, localPayload] = await Promise.all([
+      fetchJiraIssues(query),
+      getLocalProjects(!previewId)
+    ]);
+    assertCompleteJiraScan(jiraPayload);
+    const now = new Date();
+    let approved;
+    if (previewId) {
+      state = await readAutomationState({ forWrite: true });
+      const current = await buildAutomationScanPreview(state, jiraPayload, localPayload, now);
+      if (current.id !== previewId) {
+        throw Object.assign(new Error("巡检策略或拟执行动作已变化，请重新打开巡检预览"), { code: "JIRA_SCAN_STALE" });
+      }
+      approved = new Set(current.actions.map((action) => JSON.stringify(action)));
     }
-  }
-  const transitionResults = jiraPayload.source === "jira"
-    ? await executeAutomationTransitions(plan, latestState.settings, localDateIso())
-    : [];
-  const completedAt = new Date().toISOString();
-  const run = {
-    id: `${Date.now()}-${trigger}`,
-    trigger,
-    scheduledSlot: trigger === "schedule" ? scheduledSlot : "",
-    localDate: localDateIso(),
-    startedAt,
-    completedAt,
-    source: jiraPayload.source,
-    issueCount: jiraPayload.issues.length,
-    workspaceCount: localPayload.projects.length,
-    dispatchableCount: plan.filter((item) => item.dispatchable).length,
-    alreadyDoneCount: plan.filter((item) => (
-      isIssueDone(item.issue)
-      || item.localAlreadyDone
-      || ["completed", "review", "skipped"].includes(item.job?.status)
-    )).length,
-    localAlreadyDoneCount: plan.filter((item) => item.localAlreadyDone).length,
-    enqueuedCount: synchronized.enqueued,
-    ...(jiraDevPreviews ? { jiraDevPreviews } : {}),
-    ...(jiraDevPreviewError ? { jiraDevPreviewError } : {}),
-    splitCreatedCount: splitResults.filter((item) => item.status === "created").length,
-    splitUpdatedCount: splitResults.filter((item) => item.status === "updated").length,
-    splitExistingCount: splitResults.filter((item) => item.status === "skipped").length,
-    splitBlockedCount: splitResults.filter((item) => item.status === "blocked").length,
-    splitResults,
-    transitionUpdatedCount: transitionResults.filter((item) => item.status === "updated").length,
-    transitionBlockedCount: transitionResults.filter((item) => item.status === "blocked").length,
-    transitionResults
-  };
-
-  await mutateAutomationState((finalState) => {
-    finalState.plan = compactAutomationPlan(
-      buildAutomationPlan(jiraPayload.issues, localPayload.projects, finalState.jobs, finalState.settings)
+    const settingsFingerprint = JSON.stringify(state.settings);
+    const permitsActions = (settings) => settingsFingerprint === JSON.stringify(settings);
+    const splitResults = jiraPayload.source === "jira"
+      ? await ensureAutomationTaskSegments(jiraPayload.issues, state.settings, { approved })
+      : [];
+    if (splitResults.some((item) => item.status === "created")) {
+      jiraPayload = await fetchJiraIssues(query);
+      assertCompleteJiraScan(jiraPayload);
+    }
+    await refreshAutomationGitEvidence(
+      jiraPayload.issues,
+      localPayload.projects,
+      state.jobs,
+      state.settings
     );
-    finalState.lastRun = run;
-    if (trigger === "schedule") {
-      finalState.lastScheduledDate = run.localDate;
-      finalState.lastScheduledSlot = scheduledSlot;
-    }
-    finalState.runs = [run, ...finalState.runs].slice(0, 40);
-  });
+    let synchronized = { enqueued: 0 };
 
-  return run;
+    await mutateAutomationState((latestState) => {
+      if (permitsActions(latestState.settings)) {
+        synchronized = synchronizeAutomationJobs(latestState, jiraPayload.issues, localPayload.projects);
+      }
+    });
+
+    const latestState = await readAutomationState();
+    const plan = buildAutomationPlan(jiraPayload.issues, localPayload.projects, latestState.jobs, latestState.settings);
+    let jiraDevPreviews, jiraDevPreviewError;
+    const mode = latestState.settings.autoPrepareJiraDev ? "preview"
+      : ["manual", "schedule"].includes(trigger) && latestState.settings.enabled && latestState.settings.autoCreateCodex
+        && latestState.settings.jiraDevAutomationApproved === true ? "start" : "";
+    if (mode && jiraPayload.source === "jira" && permitsActions(latestState.settings) && prepareJiraDevPreviews) {
+      const occupied = new Set(latestState.jobs.filter(job => ["dispatching", "dispatched", "running", "review", "completed"].includes(job.status))
+        .map(job => job.issueKey));
+      const candidates = plan.filter(item => item.category === "implementation" && item.dispatchable
+        && !item.deliveryOnly && !occupied.has(item.issue.key));
+      const approvedProfiles = JSON.stringify(latestState.settings.projectProfiles);
+      const approvedLimit = latestState.settings.maxDispatchPerRun;
+      const mayStart = mode === "start" ? async () => {
+        const { settings } = await readAutomationState();
+        return permitsActions(settings) && settings.enabled && settings.autoCreateCodex && !settings.autoPrepareJiraDev && settings.jiraDevAutomationApproved === true
+          && settings.maxDispatchPerRun === approvedLimit && JSON.stringify(settings.projectProfiles) === approvedProfiles;
+      } : undefined;
+      try {
+        jiraDevPreviews = await prepareJiraDevPreviews(compactAutomationPlan(candidates), approvedLimit, mode, mayStart);
+      } catch {
+        jiraDevPreviewError = "无法读取本地研发任务记录，请在下次巡检前核对。";
+      }
+    }
+    const { settings: transitionSettings } = await readAutomationState();
+    const transitionResults = jiraPayload.source === "jira" && permitsActions(transitionSettings)
+      && permitsActions(latestState.settings)
+      ? await executeAutomationTransitions(plan, transitionSettings, localDateIso(now), { now, approved })
+      : [];
+    const completedAt = new Date().toISOString();
+    const run = {
+      id: `${Date.now()}-${trigger}`,
+      trigger,
+      status: "completed",
+      scheduledSlot: trigger === "schedule" ? scheduledSlot : "",
+      localDate: localDateIso(),
+      startedAt,
+      completedAt,
+      source: jiraPayload.source,
+      issueCount: jiraPayload.issues.length,
+      workspaceCount: localPayload.projects.length,
+      dispatchableCount: plan.filter((item) => item.dispatchable).length,
+      alreadyDoneCount: plan.filter((item) => (
+        isIssueDone(item.issue)
+        || item.localAlreadyDone
+        || ["completed", "review", "skipped"].includes(item.job?.status)
+      )).length,
+      localAlreadyDoneCount: plan.filter((item) => item.localAlreadyDone).length,
+      enqueuedCount: synchronized.enqueued,
+      ...(jiraDevPreviews ? { jiraDevPreviews } : {}),
+      ...(jiraDevPreviewError ? { jiraDevPreviewError } : {}),
+      splitCreatedCount: splitResults.filter((item) => item.status === "created").length,
+      splitUpdatedCount: splitResults.filter((item) => item.status === "updated").length,
+      splitExistingCount: splitResults.filter((item) => item.status === "skipped").length,
+      splitBlockedCount: splitResults.filter((item) => item.status === "blocked").length,
+      splitResults,
+      transitionUpdatedCount: transitionResults.filter((item) => item.status === "updated").length,
+      transitionBlockedCount: transitionResults.filter((item) => item.status === "blocked").length,
+      transitionResults
+    };
+
+    await mutateAutomationState((finalState) => {
+      finalState.plan = compactAutomationPlan(
+        buildAutomationPlan(jiraPayload.issues, localPayload.projects, finalState.jobs, finalState.settings)
+      );
+      finalState.lastRun = run;
+      clearAutomationScanFailureState(finalState);
+      if (trigger === "schedule") {
+        finalState.lastScheduledDate = run.localDate;
+        finalState.lastScheduledSlot = scheduledSlot;
+      }
+      finalState.runs = [run, ...finalState.runs].slice(0, 40);
+    });
+
+    return run;
+  } catch (error) {
+    if (error.code === "JIRA_SCAN_STALE") throw error;
+    const completedAt = new Date().toISOString();
+    const errorMessage = cleanAutomationText(error?.message || String(error), 500);
+    await mutateAutomationState((finalState) => {
+      recordAutomationScanFailureState(finalState, {
+        trigger,
+        scheduledSlot,
+        startedAt,
+        completedAt,
+        errorMessage,
+        errorCode: error.code
+      });
+    }).catch(() => {});
+    throw error;
+  }
 }
 
-function runAutomationScan(trigger = "manual", scheduledSlot = "") {
+function runAutomationScan(trigger = "manual", scheduledSlot = "", previewId = "") {
   if (automationRestartHeld) return Promise.reject(new Error("工作台正在重启，稍后再执行扫描"));
+  if (previewId && automationScanPromise) {
+    return Promise.reject(Object.assign(new Error("已有巡检正在运行，请完成后重新预览"), { code: "JIRA_SCAN_STALE" }));
+  }
   if (!automationScanPromise) {
-    automationScanPromise = performAutomationScan(trigger, scheduledSlot)
+    automationScanPromise = performAutomationScan(trigger, scheduledSlot, previewId)
       .finally(() => {
         automationScanPromise = null;
       });
@@ -3259,14 +3430,8 @@ function runAutomationScan(trigger = "manual", scheduledSlot = "") {
 async function performWeeklyReport(trigger = "manual", scheduledSlot = "") {
   const state = await readAutomationState();
   try {
-    const query = buildJql(new URLSearchParams({
-      allTime: "true",
-      includeDone: "true",
-      includeSubtasks: "true",
-      assignee: "currentUser()",
-      maxResults: "5000"
-    }));
-    const jiraPayload = await fetchJiraIssues(query);
+    const jiraPayload = await fetchJiraIssues(buildRecentJiraQuery());
+    assertCompleteJiraScan(jiraPayload);
     const run = createWeeklyReportRun({
       issues: jiraPayload.issues,
       jobs: state.jobs,
@@ -3411,6 +3576,7 @@ function sendAutomationArtifact(response, artifact) {
 async function claimAutomationJobs(requestedLimit) {
   return mutateAutomationState((state) => {
     if (!state.settings.enabled || !state.settings.autoCreateCodex) return [];
+    if (state.lastRun?.errorCode === "JIRA_SCAN_INCOMPLETE") return [];
     const limit = resolveDispatchLimit(requestedLimit, state.settings.maxDispatchPerRun);
     const now = new Date().toISOString();
     const subtaskKeys = automationSubtaskKeys(state.plan);
@@ -4267,7 +4433,8 @@ export async function handleJiraTaskCalendarRequest(request, response) {
       }
 
       const body = await readJsonBody(request);
-      if ((body?.jiraDevAutomationApproved === true || body?.jiraDevAutomationRouted === true)
+      if ((body?.jiraDevAutomationApproved === true || body?.jiraDevAutomationRouted === true
+        || body?.autoTransitionJira === true || body?.autoAlignJiraEndDates === true || body?.autoCloseDueSplitTasks === true)
         && !isConfirmedAutomationBrowserRequest(request)) {
         sendError(response, 403, "请在本机工作台确认研发自动交付设置");
         return;
@@ -4284,17 +4451,27 @@ export async function handleJiraTaskCalendarRequest(request, response) {
       return;
     }
 
+    if (url.pathname === "/api/automation/scan-preview" && request.method === "GET") {
+      sendJson(response, 200, await previewAutomationScan());
+      return;
+    }
+
     if (url.pathname === "/api/automation/scan") {
       if (request.method !== "POST") {
         sendError(response, 405, "Method not allowed");
         return;
       }
 
-      if ((await readAutomationState()).settings.jiraDevAutomationApproved === true && !isConfirmedAutomationBrowserRequest(request)) {
-        sendError(response, 403, "请在本机工作台确认立即巡检");
+      if (!isConfirmedAutomationBrowserRequest(request)) {
+        sendError(response, 403, "请在本机工作台确认拟执行动作");
         return;
       }
-      const run = await runAutomationScan("manual");
+      const { previewId } = (await readJsonBody(request)) || {};
+      if (typeof previewId !== "string" || !/^[a-f0-9]{64}$/.test(previewId)) {
+        sendError(response, 409, "请先读取本轮拟执行动作，再确认巡检");
+        return;
+      }
+      const run = await runAutomationScan("manual", "", previewId);
       sendJson(response, 200, { run, dashboard: await getAutomationDashboard() });
       return;
     }
@@ -4395,7 +4572,12 @@ export async function handleJiraTaskCalendarRequest(request, response) {
 
     await serveStatic(request, response, url);
   } catch (error) {
-    sendError(response, error.code === "JIRA_AUTH_UNAVAILABLE" ? 503 : 500, "Request failed", error.message);
+    const status = {
+      JIRA_AUTH_UNAVAILABLE: 503,
+      JIRA_SCAN_INCOMPLETE: 409,
+      JIRA_SCAN_STALE: 409,
+    }[error.code] || 500;
+    sendError(response, status, "Request failed", error.message);
   }
 }
 

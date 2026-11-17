@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { jiraFixInputSchema, jiraFixStartSchema, jiraReferenceSchema, jiraIssueKey, jiraFixPrompt, matchJiraFixProjects, repositoryIdentity,
+import { jiraFixInputSchema, jiraFixReconcileSchema, jiraFixStartSchema, jiraReferenceSchema, jiraIssueKey, jiraFixPrompt, matchJiraFixProjects, repositoryIdentity,
   type JiraFixRecord, type JiraFixProject, type JiraFixContext, type JiraFixInput } from '../shared/jira-fix.js';
 import type { AgentRun, StartAgentRunInput } from '../shared/agent-runtime.js';
 import type { JiraIssue, ProjectsData } from '../shared/hub.js';
@@ -11,6 +11,7 @@ import { resolveRenamedWorkspace } from './generated-workspace.js';
 interface Runtime {
   startJiraFix(input: StartAgentRunInput, sourceId: string, title: string): Promise<AgentRun>;
   findJiraFix(sourceId: string): AgentRun | undefined;
+  getRun?(id: string): AgentRun | undefined;
 }
 interface Source {
   readJiraFixIssue(reference: string): Promise<JiraIssue>;
@@ -122,7 +123,35 @@ export async function createJiraFixService(directory: string, runtime: Runtime, 
     records.set(record.id, record);
     return reconcile(record);
   }
-  return { resolve, start, adopt, list: () => [...records.values()].map(reconcile).sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+  /** 人工只读核对后解除 uncertain 锁定：确认已启动则绑定核实到的会话，确认未启动则转为 failed 并留痕。 */
+  async function reconcileUncertain(id: string, raw: unknown): Promise<JiraFixRecord> {
+    if (shutdown.signal.aborted) throw new Error('服务正在退出，请稍后重试');
+    if (pending.has(id)) throw new Error('该修复记录仍在处理中，请稍候再核对');
+    const input = jiraFixReconcileSchema.parse(raw);
+    const record = records.get(id);
+    if (!record) throw Object.assign(new Error('找不到 Jira 修复记录'), { statusCode: 404 });
+    const current = reconcile(record);
+    if (current.status !== 'uncertain') throw new Error('当前修复记录不处于待核对状态，无需人工解除');
+    const matchedRun = runtime.findJiraFix(record.id) || (input.runId ? runtime.getRun?.(input.runId) : undefined);
+    const reconciledAt = new Date().toISOString();
+    if (input.outcome === 'started') {
+      if (!matchedRun) throw new Error('未核实到已启动的修复会话，请确认会话编号或选择“确认未启动”');
+      record.status = 'started';
+      record.runId = matchedRun.id;
+      record.error = '';
+      record.reconciledAt = reconciledAt;
+      record.reconcileNote = input.note;
+    } else {
+      if (runtime.findJiraFix(record.id)) throw new Error('检测到该记录已有修复会话，不能标记为未启动');
+      record.status = 'failed';
+      record.error = `人工核对确认未启动，已解除锁定${input.note ? `：${input.note}` : ''}`;
+      record.reconciledAt = reconciledAt;
+      record.reconcileNote = input.note;
+    }
+    await save(record.id, record);
+    return reconcile(record);
+  }
+  return { resolve, start, adopt, reconcileUncertain, list: () => [...records.values()].map(reconcile).sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     isIdle: () => !pending.size,
     close: async () => { shutdown.abort(); await Promise.allSettled([...pending.values()]); } };
 }

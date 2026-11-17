@@ -9,8 +9,8 @@ import { parseDeploymentLinks } from './src/features/deployments/native-deployme
 // 本地服务直接读取 dist；保留本次与最近上一代带 hash 的资源，让已打开页面在热更新后仍能加载异步模块，同时自动清理更早的陈旧构建产物。
 export default defineConfig(async ({ command }) => {
   const build = await createWorkspaceBuild(fileURLToPath(new URL('.', import.meta.url)), command === 'serve');
-  // 本机项目关联不进入源码分享包，也不包含云效凭据。
-  const links = await fs.readFile(new URL('./.local/data/yunxiao-deployments.json', import.meta.url), 'utf8')
+  // 本机项目关联不进入源码分享包，也不包含云效凭据；DELIVERY_SHARE_BUILD=1 时完全不读取本机数据目录。
+  const links = process.env.DELIVERY_SHARE_BUILD === '1' ? '[]' : await fs.readFile(new URL('./.local/data/yunxiao-deployments.json', import.meta.url), 'utf8')
     .catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return '[]'; throw error; });
   const deploymentLinks = JSON.stringify(parseDeploymentLinks(JSON.parse(links)));
   let resolvedOutDir = '';

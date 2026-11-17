@@ -34,6 +34,8 @@ export interface BackendFeedbackRecord {
   attemptedAt: string;
   finishedAt: string;
   message: string;
+  reconciledAt?: string;
+  reconcileNote?: string;
 }
 
 export const feedbackStatusLabels = { sending: '发送中', sent: '机器人已接收', failed: '发送失败', unknown: '发送结果待确认' } as const;

@@ -31,7 +31,14 @@ export const requirementDevelopmentStartSchema = z.object({
   requestId: z.uuid(), input: requirementDevelopmentInputSchema,
   authorization: z.literal('create-jira-design-transition-and-develop'),
 }).strict();
+export const requirementReconcileSchema = z.object({
+  outcome: z.enum(['started', 'not_started']),
+  runId: text(200).min(1).optional(),
+  note: text(500).default(''),
+  authorization: z.literal('reconcile-uncertain-requirement'),
+}).strict();
 export type RequirementDevelopmentStart = z.infer<typeof requirementDevelopmentStartSchema>;
+export type RequirementReconcileInput = z.infer<typeof requirementReconcileSchema>;
 export interface RequirementDevelopmentRecord {
   id: string;
   input: RequirementDevelopmentInput;
@@ -47,6 +54,8 @@ export interface RequirementDevelopmentRecord {
   runStatus?: import('./agent-runtime.js').AgentRunStatus; runError?: string;
   conversationMissing?: boolean;
   deletedAt?: string;
+  reconciledAt?: string;
+  reconcileNote?: string;
 }
 
 export function requirementConversationTarget(record: RequirementDevelopmentRecord) {

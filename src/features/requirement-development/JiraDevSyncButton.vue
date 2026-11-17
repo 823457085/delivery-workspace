@@ -6,6 +6,8 @@ import { RefreshCw } from '@lucide/vue';
 import { dateTime } from '../../shared/format';
 
 type SyncStatus = {
+  enabled?: boolean;
+  disabledReason?: string;
   current: { version: string; syncedAt: string };
   latest: { version: string; publishedAt: string; notes: string[]; sha256: string; size: number };
   updateAvailable: boolean; running: boolean;
@@ -46,9 +48,10 @@ onMounted(() => { void check(true); });
 </script>
 
 <template>
-  <el-button :class="{ 'has-update': status?.updateAvailable }" @click="show"><RefreshCw :size="14" />{{ label }}</el-button>
+  <el-button v-if="status?.enabled !== false" :class="{ 'has-update': status?.updateAvailable }" @click="show"><RefreshCw :size="14" />{{ label }}</el-button>
   <el-dialog v-model="open" title="同步 Jira 研发助手" width="min(640px, 94vw)" append-to-body :close-on-click-modal="!syncing" :show-close="!syncing">
     <el-skeleton v-if="checking && !status" :rows="4" animated />
+    <el-alert v-else-if="status?.enabled === false" type="info" :closable="false" :title="status.disabledReason || '外部研发助手云同步已默认关闭'" />
     <template v-else-if="status">
       <dl class="sync-versions">
         <div><dt>工作台当前</dt><dd>{{ status.current.version }}<small v-if="status.current.syncedAt">同步于 {{ dateTime(status.current.syncedAt) }}</small></dd></div>

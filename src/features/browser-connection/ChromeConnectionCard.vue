@@ -11,12 +11,16 @@ const label = computed(() => {
   if (error.value) return '连接状态待确认';
   if (!status.value) return '读取连接状态';
   if (verified.value) return '已连接日常 Chrome';
-  return { unavailable: '连接工具不可用', setup_required: '等待开启远程调试', ready: '可以连接', connecting: '正在连接，等待 Chrome 授权', connected: '连接尚未验证', error: '连接未成功' }[status.value.phase];
+  return { unavailable: '连接工具不可用', setup_required: '等待开启远程调试', ready: '可以连接',
+    connecting: '正在连接，等待 Chrome 授权', connected: '连接尚未验证', reconnecting: '等待连接恢复', error: '连接未成功' }[status.value.phase];
 });
 const labelType = computed(() => verified.value ? 'success' : error.value || status.value?.phase === 'error' ? 'warning' : 'info');
 const canConnect = computed(() => !busy.value && status.value?.phase !== 'connecting'
+  && (status.value?.phase !== 'reconnecting' || status.value.debuggingEnabled)
   && (!status.value || status.value.toolAvailable && status.value.chromeAvailable));
-const connectLabel = computed(() => status.value?.phase === 'connecting' ? '等待 Chrome 允许' : verified.value ? '重新检测' : '连接 Chrome');
+const canDisconnect = computed(() => verified.value || status.value?.phase === 'connecting' || status.value?.phase === 'reconnecting');
+const connectLabel = computed(() => status.value?.phase === 'connecting' ? '等待 Chrome 允许'
+  : verified.value ? '重新检测' : status.value?.phase === 'reconnecting' ? '立即重连' : '连接 Chrome');
 const checkedAt = computed(() => {
   const value = status.value?.checkedAt;
   const date = value ? new Date(value) : undefined;
@@ -38,11 +42,11 @@ async function perform(action: BrowserConnectionAction) {
     <div class="chrome-actions">
       <el-button size="small" :disabled="!!busy || status?.chromeAvailable === false" :loading="busy === 'open-settings'" @click="perform('open-settings')">打开 Chrome 设置</el-button>
       <el-button size="small" type="primary" :disabled="!canConnect" :loading="busy === 'connect'" @click="perform('connect')">{{ connectLabel }}</el-button>
-      <el-button v-if="verified || status?.phase === 'connecting'" size="small" :disabled="!!busy" :loading="busy === 'disconnect'" @click="perform('disconnect')">断开 Chrome</el-button>
+      <el-button v-if="canDisconnect" size="small" :disabled="!!busy" :loading="busy === 'disconnect'" @click="perform('disconnect')">断开 Chrome</el-button>
     </div>
     <p v-if="status?.phase === 'setup_required'" class="chrome-help">在 Chrome 设置中开启远程调试，再点击“连接 Chrome”；授权弹窗出现时请选择允许。</p>
     <p v-else-if="status?.phase === 'connecting'" class="chrome-help">请在日常 Chrome 中允许连接，工作台会自动更新检测结果。</p>
-    <p v-if="verified" class="chrome-help">后续 Codex 主会话会复用此连接。关闭 Chrome、重启工作台或主动断开后，需要重新连接并授权。</p>
+    <p v-if="verified" class="chrome-help">刷新页面或重启工作台会保留此连接。连接中断后会自动尝试恢复。如 Chrome 弹出授权，请点允许。</p>
     <p class="chrome-footnote">浏览器连接、目标站点登录和业务验证分别记录。<span v-if="checkedAt"> 检测于 {{ checkedAt }}</span><span v-if="status?.browserVersion"> · {{ status.browserVersion }}</span></p>
   </section>
 </template>

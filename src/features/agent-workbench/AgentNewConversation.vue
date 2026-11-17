@@ -426,9 +426,9 @@ defineExpose({ createWorkspace: () => workspacePicker.value?.create(),  focusPro
   background: color-mix(in srgb, var(--ui-accent-soft) 58%, var(--ui-surface));
   font-weight: 600;
 }
-:global(:root[data-theme='acid']) .new-launchpad-strip,
-:global(:root[data-theme='acid']) .new-launchpad-chip,
-:global(:root[data-theme='acid']) .new-launchpad-chip code {
+:root[data-theme='acid'] .new-launchpad-strip,
+:root[data-theme='acid'] .new-launchpad-chip,
+:root[data-theme='acid'] .new-launchpad-chip code {
   border-radius: 0 !important;
 }
 

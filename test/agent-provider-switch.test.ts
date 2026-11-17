@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { AgentRun } from '../shared/agent-runtime.js';
-import { agentConversationContinuation, agentConversationInsertRun, buildAgentConversations, canSteerAgentRun } from '../src/features/agent-workbench/conversation.js';
+import { agentConversationContinuation, agentConversationInsertRun, agentConversationWorkspaceChanged, buildAgentConversations, canSteerAgentRun } from '../src/features/agent-workbench/conversation.js';
 import { providerSwitchInput } from '../src/features/agent-workbench/provider-switch.js';
 
 const run: AgentRun = { id: 'source', provider: 'codex', mode: 'agent', accessMode: 'full', model: 'codex-model', reasoningEffort: 'high',
@@ -78,6 +78,18 @@ test('同一原生会话的普通排队续聊仍允许向当前轮插入', () =>
   const conversation = buildAgentConversations([active, queued])[0];
   assert.equal(agentConversationContinuation(conversation).id, queued.id);
   assert.equal(agentConversationInsertRun(conversation)?.id, active.id);
+});
+
+test('主目录不变时更换关联目录也不能向旧轮次插入', () => {
+  const active = { ...run, status: 'running' as const, additionalWorkspacePaths: ['/worktree/secondary'] };
+  const conversation = buildAgentConversations([active])[0];
+  const additional = { workspacePath: '/worktree/secondary', projectWorkspacePath: '/project/secondary', branch: 'feature/extra' };
+  conversation.workspace = { workspacePath: active.workspacePath, projectWorkspacePath: '/project/main',
+    branch: active.branch, additionalWorkspaces: [additional] };
+  assert.equal(agentConversationInsertRun(conversation)?.id, active.id);
+  conversation.workspace.additionalWorkspaces = [{ ...additional, workspacePath: '/worktree/other' }];
+  assert.equal(agentConversationWorkspaceChanged(conversation, active), true);
+  assert.equal(agentConversationInsertRun(conversation), undefined);
 });
 
 test('乱序完成后的预备隔离上下文优先于创建更晚的同执行器消息', () => {

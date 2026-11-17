@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { requirementDevelopmentStartSchema, requirementDevelopmentPrompt, requirementProgressInputSchema, requirementProgressImportSchema, requirementProgressSchema,
+import { requirementDevelopmentStartSchema, requirementReconcileSchema, requirementDevelopmentPrompt, requirementProgressInputSchema, requirementProgressImportSchema, requirementProgressSchema,
   readRequirementProgressReport, type RequirementDevelopmentRecord, type RequirementDevelopmentInput, type RequirementProgressData } from '../shared/requirement-development.js';
 import type { AgentRun, StartAgentRunInput } from '../shared/agent-runtime.js';
 import { createGeneratedWorkspace, resolveRenamedWorkspace } from './generated-workspace.js';
@@ -220,7 +220,43 @@ export async function createRequirementDevelopmentService(directory: string, run
     deleting.set(id, work);
     return work;
   }
-  return { start, adopt, updateProgress, importProgress, remove,
+  async function reconcileUncertain(id: string, raw: unknown): Promise<RequirementDevelopmentRecord> {
+    const conflict = (message: string, statusCode = 409) => Object.assign(new Error(message), { statusCode });
+    if (shutdown.signal.aborted) throw conflict('服务正在退出，暂不能核对需求开发记录');
+    if (pending.has(id) || progressWrites.has(id) || deleting.has(id)) throw conflict('开发记录正在处理，请稍后重试');
+    const input = requirementReconcileSchema.parse(raw);
+    const record = records.get(id);
+    if (!record || record.deletedAt) throw conflict('需求开发记录不存在或已删除', 404);
+    const current = reconcile(record);
+    if (current.status !== 'uncertain') throw conflict('当前需求开发记录不处于待核对状态，无需人工解除');
+    const matchedRun = findRun(record) || (input.runId ? runtime.getRun?.(input.runId) : undefined);
+    const reconciledAt = new Date().toISOString();
+    let next: RequirementDevelopmentRecord;
+    if (input.outcome === 'started') {
+      if (!matchedRun) throw conflict('未核实到已启动的需求开发会话，请确认会话编号或选择“确认未启动”');
+      next = {
+        ...record,
+        status: 'started',
+        runId: matchedRun.id,
+        error: '',
+        reconciledAt,
+        reconcileNote: input.note,
+      };
+    } else {
+      if (findRun(record)) throw conflict('检测到该记录已关联需求开发会话，不能标记为未启动');
+      next = {
+        ...record,
+        status: 'failed',
+        error: `人工核对确认未启动，已解除锁定${input.note ? `：${input.note}` : ''}`,
+        reconciledAt,
+        reconcileNote: input.note,
+      };
+    }
+    await save(next);
+    records.set(id, next);
+    return structuredClone(reconcile(next));
+  }
+  return { start, adopt, reconcileUncertain, updateProgress, importProgress, remove,
     synchronizeGroup: async (id: string) => { const record = records.get(id); const run = record && findRun(record);
       if (record && !record.deletedAt && !deleting.has(id) && run?.status === 'completed') await saveProgress(id, run.id, undefined, undefined); },
     isIdle: () => !pending.size && !progressWrites.size && !deleting.size, close: async () => {

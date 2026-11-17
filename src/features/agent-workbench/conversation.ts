@@ -2,7 +2,7 @@
  * 设计说明：后端按每次 CLI 运行保存记录，而会话窗口需要展示连续对话，因此这里优先按持久会话 ID
  * 聚合；旧记录才沿可见 parentRunId 链分组。它不修改运行状态，也不按 CLI session 合并独立会话。
  */
-import type { AgentRun, CodexSessionDetail, CodexSessionSummary } from '../../../shared/agent-runtime';
+import type { AgentConversationWorkspace, AgentRun, CodexSessionDetail, CodexSessionSummary } from '../../../shared/agent-runtime';
 import type { AgentContextUsage } from '../../../shared/agent-usage';
 import type { TeamTaskState } from '../../../shared/agent-team';
 import { codexRunningMessage, codexWriterHeldMessage } from '../../../shared/codex-session-error';
@@ -23,6 +23,7 @@ export interface AgentConversation {
   /** 群聊成员发言的展示序号；同一次发言的重试沿用该序号。 */
   runRounds?: Record<string, { round: number; current: boolean }>;
   archived?: boolean;
+  workspace?: AgentConversationWorkspace;
   teamChat?: { state: TeamTaskState; lastUserAt: string; workspaceBound?: boolean; workspacePath?: string };
 }
 
@@ -129,18 +130,27 @@ export function agentConversationContinuation(conversation: AgentConversation) {
   return conversation.latest.continuation && conversation.latest.provider === submitted.provider ? conversation.latest : submitted;
 }
 
+export function agentConversationForkSource(conversation?: AgentConversation, projectlessFork = false) {
+  if (!conversation || conversation.source !== 'workspace' || conversation.teamChat) return;
+  const source = agentConversationContinuation(conversation);
+  if (source.provider === 'codex' && source.workspacePath
+    && (projectlessFork || source.sourceWorkspacePath !== '' || source.branch || source.headSha)) return source;
+}
+
 export function agentConversationInsertRun(conversation: AgentConversation) {
   const source = agentConversationContinuation(conversation);
   return conversation.runs.find(run => run.status === 'running' && run.provider === source.provider
+    && !agentConversationWorkspaceChanged(conversation, run)
     && (run.id === source.id || !!source.sessionId && run.sessionId === source.sessionId));
 }
 
 export function canSteerAgentRun(run: AgentRun, activeRun: AgentRun | undefined, runs: AgentRun[]) {
-  if (run.status !== 'queued' || activeRun?.status !== 'running' || run.provider !== activeRun.provider) return false;
+  if (run.status !== 'queued' || activeRun?.status !== 'running' || run.provider !== activeRun.provider
+    || run.workspacePath !== activeRun.workspacePath) return false;
   const seen = new Set<string>();
   let current: AgentRun | undefined = run;
   while (current && current.id !== activeRun.id && !seen.has(current.id)) {
-    if (current.provider !== activeRun.provider || current.providerSwitch) return false;
+    if (current.provider !== activeRun.provider || current.providerSwitch || current.workspaceTransition) return false;
     seen.add(current.id);
     current = runs.find(item => item.id === current!.parentRunId);
   }
@@ -178,13 +188,45 @@ export function agentRunProjectPath(run: AgentRun) {
 export function agentConversationProjectPath(conversation: AgentConversation) {
   if (conversation.teamChat) return conversation.teamChat.workspaceBound ? conversation.teamChat.workspacePath || '' : '';
   if (conversation.runs.some(run => run.team?.interactionMode === 'chat')) return '';
-  return agentRunProjectPath(conversation.latest);
+  return conversation.workspace?.projectWorkspacePath ?? agentRunProjectPath(conversation.latest);
+}
+
+export function agentConversationWorkspacePath(conversation: AgentConversation) {
+  return conversation.workspace?.workspacePath ?? conversation.latest.workspacePath;
+}
+
+export function agentConversationWorkspacePaths(conversation: AgentConversation) {
+  const { workspace } = conversation;
+  if (workspace) return [workspace.workspacePath, ...(workspace.additionalWorkspaces || []).map(item => item.workspacePath)];
+  const project = agentConversationProjectPath(conversation);
+  return project ? [conversation.teamChat ? project : conversation.latest.workspacePath || project] : [];
+}
+
+export function agentConversationWorkspaceChanged(conversation: AgentConversation, source: AgentRun) {
+  const { workspace } = conversation;
+  if (!workspace) return false;
+  const previous = source.additionalWorkspacePaths || [];
+  const next = workspace.additionalWorkspaces || [];
+  return workspace.workspacePath !== (source.continuation?.workspacePath || source.workspacePath)
+    || previous.length !== next.length || next.some((item, index) => item.workspacePath !== previous[index]);
+}
+
+export function agentConversationBranch(conversation: AgentConversation) {
+  const { latest, workspace } = conversation;
+  return workspace && latest.workspacePath !== workspace.workspacePath ? workspace.branch
+    : latest.baseBranch || latest.branch || '';
 }
 
 export function agentConversationCodePath(conversation?: AgentConversation) {
   if (!conversation) return '';
-  const project = agentConversationProjectPath(conversation);
+  const project = conversation.workspace ? agentRunProjectPath(conversation.latest) : agentConversationProjectPath(conversation);
   return project ? (conversation.teamChat ? project : conversation.latest.workspacePath || project) : '';
+}
+
+export function agentConversationCodePaths(conversation?: AgentConversation) {
+  if (conversation?.workspace) return agentConversationWorkspacePaths(conversation);
+  const path = agentConversationCodePath(conversation);
+  return path ? [path] : [];
 }
 
 const legacyActiveWriterError = /^thread [0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12} already has an active writer$/i;
@@ -284,7 +326,8 @@ export function buildSyncedCodexConversation(session: CodexSessionSummary, detai
 }
 
 export function buildAgentConversationList(runs: AgentRun[], sessions: CodexSessionSummary[],
-  details: Record<string, CodexSessionDetail>, titles: Record<string, string> = {}): AgentConversation[] {
+  details: Record<string, CodexSessionDetail>, titles: Record<string, string> = {},
+  workspaces: Record<string, AgentConversationWorkspace> = {}): AgentConversation[] {
   const sessionById = new Map(sessions.map((session) => [session.id, session]));
   const importedSessionIds = new Set<string>();
   const localSessionIds = new Set<string>();
@@ -313,5 +356,6 @@ export function buildAgentConversationList(runs: AgentRun[], sessions: CodexSess
   return [...local, ...synced].map((conversation) => ({
     ...conversation,
     title: titles[conversation.id] || conversation.title,
+    ...(Object.hasOwn(workspaces, conversation.id) ? { workspace: workspaces[conversation.id] } : {}),
   })).sort(compareAgentConversations);
 }

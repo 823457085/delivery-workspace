@@ -445,3 +445,32 @@ test('Round 8 · OpenAPI 多语言客户端与契约测试工坊：生成强类�
   assert.match(aiPrompt, /参考 TypeScript SDK 调用骨架/);
   assert.match(aiPrompt, /postOrdersByOrderIdItems/);
 });
+
+test('Composer 输入框网格契约：所有断点与 Studio 覆盖均显式声明 preflight / reply 网格区域，防止隐式第 3 列挤压控件', async () => {
+  const root = path.resolve(import.meta.dirname, '..');
+  const files = [
+    'src/features/agent-workbench/AgentComposer.vue',
+    'src/features/agent-workbench/agent-studio.css',
+    'src/features/agent-workbench/agent-mobile.css',
+  ];
+
+  for (const relative of files) {
+    const content = await fs.readFile(path.join(root, relative), 'utf8');
+    const baseDeclarations = [...content.matchAll(/\.composer-inner\s*\{[^}]*grid-template-areas\s*:[^;}]+/g)];
+    assert.ok(baseDeclarations.length > 0, `${relative} 应包含 .composer-inner 的 grid-template-areas 定义`);
+
+    const preflightDeclarations = [...content.matchAll(/\.composer-inner:has\(\.composer-preflight\)\s*\{[^}]*grid-template-areas\s*:[^;}]*preflight/g)];
+    const bothDeclarations = [...content.matchAll(/\.composer-inner:has\(\.composer-reply\):has\(\.composer-preflight\)\s*\{[^}]*grid-template-areas\s*:[^;}]*reply[^;}]*preflight/g)];
+
+    assert.equal(
+      preflightDeclarations.length,
+      baseDeclarations.length,
+      `${relative} 中每一处重写 .composer-inner grid-template-areas 的断点都必须同步声明 :has(.composer-preflight)`,
+    );
+    assert.equal(
+      bothDeclarations.length,
+      baseDeclarations.length,
+      `${relative} 中每一处重写 .composer-inner grid-template-areas 的断点都必须同步声明 :has(.composer-reply):has(.composer-preflight)`,
+    );
+  }
+});

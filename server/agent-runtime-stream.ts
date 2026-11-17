@@ -4,10 +4,12 @@
  */
 import type { AgentRun } from '../shared/agent-runtime.js';
 
-/** 团队岗位提示只在服务端执行和归档，聊天快照和增量不传输它。 */
+/** 团队岗位提示与 TaskFlow 材料快照由服务端传给执行器。 */
 export function browserAgentRun(run: AgentRun): AgentRun {
-  if (run.teamContext === undefined) return run;
+  const taskFlow = run.task?.sourceId?.startsWith('taskflow:');
+  if (run.teamContext === undefined && !taskFlow) return run;
   const { teamContext: _teamContext, ...visible } = run;
+  if (taskFlow) delete visible.workflowContext;
   return visible;
 }
 

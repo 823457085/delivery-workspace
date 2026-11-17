@@ -9,7 +9,9 @@ interface BrowserConnectionApi {
 
 /** 设置页与会话弹层共用一次探测；没有可见入口时停止轮询及在途读取。 */
 export function createBrowserConnectionState(api: BrowserConnectionApi = { read: readBrowserConnection, change: changeBrowserConnection },
-  timers = { set: setTimeout, clear: clearTimeout }) {
+  // 原生计时器必须以全局对象为 this 调用；直接存成对象方法会在浏览器中抛出 Illegal invocation。
+  timers: { set: (handler: () => void, ms: number) => ReturnType<typeof setTimeout>; clear: (id: ReturnType<typeof setTimeout>) => void }
+    = { set: (handler, ms) => setTimeout(handler, ms), clear: id => clearTimeout(id) }) {
   const status = shallowRef<BrowserConnectionStatus>();
   const busy = shallowRef<BrowserConnectionAction | 'read' | ''>('');
   const error = shallowRef('');
@@ -32,9 +34,9 @@ export function createBrowserConnectionState(api: BrowserConnectionApi = { read:
   function schedule() {
     stopPolling();
     const phase = status.value?.phase;
-    if (viewers.size && !error.value && (phase === 'connecting' || phase === 'connected')) {
-      timer = timers.set(() => { timer = undefined; void refresh(); }, phase === 'connecting' ? 1500 : 10_000);
-    }
+    const interval = error.value ? 5000 : phase === 'connected' ? 10_000
+      : phase === 'connecting' || phase === 'reconnecting' ? 1500 : 0;
+    if (viewers.size && interval) timer = timers.set(() => { timer = undefined; void refresh(); }, interval);
   }
   async function run(action?: BrowserConnectionAction) {
     if (!viewers.size || busy.value && busy.value !== 'read') return;

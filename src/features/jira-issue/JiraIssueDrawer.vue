@@ -197,7 +197,7 @@ watch([visible,key],([open])=>{controller?.abort();controller=new AbortControlle
 .issue-heading-meta>a:hover{text-decoration:underline}
 .issue-copy-pill{display:inline-flex;align-items:center;gap:4px;height:21px;padding:0 7px;border:1px solid var(--ui-border);border-radius:5px;background:var(--ui-surface);color:var(--ui-secondary);font:500 11px/1 var(--mono,monospace);cursor:pointer}
 .issue-copy-pill:hover{border-color:var(--ui-accent);color:var(--ui-accent)}
-:global(:root[data-theme='acid']) .issue-copy-pill{border-radius:0!important}
+:root[data-theme='acid'] .issue-copy-pill{border-radius:0!important}
 .issue-heading h2{margin:5px 0 0;font:600 15.5px/1.4 var(--sans,sans-serif);letter-spacing:-0.015em;color:var(--ui-text);overflow-wrap:anywhere}
 .issue-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:6px;padding:0 0 12px;border-bottom:1px solid var(--ui-divider)}
 .issue-toolbar :deep(.el-button:not(.is-text)){min-height:28px;height:28px;padding:0 10px;font-size:12px;border-radius:6px}

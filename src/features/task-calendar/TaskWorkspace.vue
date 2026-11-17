@@ -16,7 +16,7 @@ import QueryState from '../../shared/ui/QueryState.vue';
 import MetricStrip from '../../shared/ui/MetricStrip.vue';
 import StatusPill from '../../shared/ui/StatusPill.vue';
 import TaskFilters from './TaskFilters.vue';
-import { advancedTaskDefaults, groupTasksByDate, matchesPlannedFilter, taskQueryParams, type TaskFilter } from './calendar-domain';
+import { advancedTaskDefaults, buildMonthCalendar, groupTasksByDate, matchesPlannedFilter, taskQueryParams, type TaskFilter } from './calendar-domain';
 import {
   buildIssueKanbanColumns,
   classifyIssueStage,
@@ -24,7 +24,7 @@ import {
   suggestIssueBranchName,
   type IssueStageId,
 } from './task-triage-studio';
-import { summarizeTaskHealth } from './calendar-timeline-studio';
+import { buildGanttWindowDays, summarizeTaskHealth } from './calendar-timeline-studio';
 
 const JiraIssueDrawer = defineAsyncComponent(() => import('../jira-issue/JiraIssueDrawer.vue'));
 const WorkdayCalendar = defineAsyncComponent(() => import('./WorkdayCalendar.vue'));
@@ -47,14 +47,18 @@ const { filters, applied, page, tableScrollTop, calendarDate, activeDateField, l
 const quickSearchInputRef = ref<InputInstance>();
 const focusedIssueKey = shallowRef('');
 const copiedBranchKey = shallowRef('');
+const calendarMode = shallowRef<'month' | 'gantt'>('month');
 let copiedBranchTimer: ReturnType<typeof setTimeout> | undefined;
 
 const localQuery = computed(() => typeof route.query.q === 'string' ? route.query.q.toLowerCase() : '');
 const locatingIssue = computed(() => /^[a-z][a-z0-9_]*-\d+$/i.test(localQuery.value));
 // 编号定位不受之前的日期、项目或未完成筛选影响；清除定位后恢复原筛选。
-const queryParams = computed(() => locatingIssue.value
-  ? { allTime: 'true', includeSubtasks: 'true', includeDone: 'true', maxResults: '5000' }
-  : taskQueryParams(applied.value));
+const queryParams = computed<Record<string, string>>(() => {
+  if (locatingIssue.value) return { issueKey: localQuery.value.toUpperCase(), allTime: 'true', includeDone: 'true', maxResults: '1' };
+  if (props.mode !== 'calendar') return applied.value;
+  const cells = calendarMode.value === 'gantt' ? buildGanttWindowDays(calendarDate.value) : buildMonthCalendar(calendarDate.value);
+  return taskQueryParams(applied.value, { start: cells[0].day, end: cells.at(-1)!.day });
+});
 const query = useSource<IssueResponse>('issues', queryParams);
 const { data, isPending, isFetching, error } = query;
 const selected = shallowRef<JiraIssue>(), drawer = shallowRef(false);
@@ -392,7 +396,7 @@ watch(drawer, open => { if (!open && route.query.task) { const { task: _task, ..
             </section>
           </div>
         </div>
-        <div v-else-if="mode === 'calendar'" class="surface task-calendar"><WorkdayCalendar v-model="calendarDate" :items-by-day="dated" :items="items" :date-field="activeDateField" @inspect="inspect" @select-day="inspectDay" /><p class="source-footnote calendar-note">当前按{{ dateFieldLabel }}归入日历与双周甘特；周六、周日按休息日展示，没有对应日期的任务仍保留在任务列表中。</p></div>
+        <div v-else-if="mode === 'calendar'" class="surface task-calendar"><WorkdayCalendar v-model="calendarDate" v-model:mode="calendarMode" :items-by-day="dated" :items="items" :date-field="activeDateField" @inspect="inspect" @select-day="inspectDay" /><p class="source-footnote calendar-note">当前按{{ dateFieldLabel }}归入日历与双周甘特；周六、周日按休息日展示，没有对应日期的任务仍保留在任务列表中。</p></div>
         <div v-else class="task-stats-studio">
           <div class="task-health-strip">
             <article class="surface task-health-tile">
@@ -441,7 +445,7 @@ watch(drawer, open => { if (!open && route.query.task) { const { task: _task, ..
             </section>
           </div>
         </div>
-        <p class="source-footnote task-source"><span>来源 {{ data?.source }} · 页面读取于 {{ dateTime(query.dataUpdatedAt.value) }}</span><span class="task-source-query" :title="data?.jql">{{ data?.jql }}</span><span v-if="activeDateField === 'planned' && data && data.total > data.issues.length">当前仅返回 {{ data.issues.length }} / {{ data.total }} 项，计划日历可能不完整，请缩小项目或人员范围。</span></p>
+        <p class="source-footnote task-source"><span>来源 {{ data?.source }} · 页面读取于 {{ dateTime(query.dataUpdatedAt.value) }}</span><span class="task-source-query" :title="data?.jql">{{ data?.jql }}</span><span v-if="data && (data.truncated || data.total > data.issues.length)">当前仅返回 {{ data.issues.length }} / {{ data.total }} 项，请缩小查询范围。</span></p>
       </QueryState>
     </div>
   </div>
@@ -783,14 +787,14 @@ watch(drawer, open => { if (!open && route.query.task) { const { task: _task, ..
   color: var(--ui-muted);
 }
 
-:global(:root[data-theme='acid']) .task-stage-pill,
-:global(:root[data-theme='acid']) .task-view-switch,
-:global(:root[data-theme='acid']) .task-view-switch > button,
-:global(:root[data-theme='acid']) .task-key-pill,
-:global(:root[data-theme='acid']) .task-micro-chip,
-:global(:root[data-theme='acid']) .task-kanban-lane,
-:global(:root[data-theme='acid']) .task-kanban-card,
-:global(:root[data-theme='acid']) .task-kbd-hint {
+:root[data-theme='acid'] .task-stage-pill,
+:root[data-theme='acid'] .task-view-switch,
+:root[data-theme='acid'] .task-view-switch > button,
+:root[data-theme='acid'] .task-key-pill,
+:root[data-theme='acid'] .task-micro-chip,
+:root[data-theme='acid'] .task-kanban-lane,
+:root[data-theme='acid'] .task-kanban-card,
+:root[data-theme='acid'] .task-kbd-hint {
   border-radius: 0 !important;
 }
 
@@ -839,7 +843,7 @@ watch(drawer, open => { if (!open && route.query.task) { const { task: _task, ..
 .day-issue strong{flex:1;min-width:0;font-size:13px;line-height:1.5;font-weight:500;color:var(--ui-text)}
 :global(.task-daily-drawer.el-drawer) { color: var(--ui-text); background: var(--ui-bg); }
 :global(.task-daily-drawer .el-drawer__header) { margin-bottom: 0; padding: 14px 18px; border-bottom: 1px solid var(--ui-border); color: var(--ui-text); }
-:global(:root[data-theme='acid']) .stat-row-btn { border-radius: 0 !important; }
+:root[data-theme='acid'] .stat-row-btn { border-radius: 0 !important; }
 @media(max-width:1000px){.task-stats{grid-template-columns:1fr}.task-health-strip{grid-template-columns:repeat(2,minmax(0,1fr))}.task-calendar{overflow:hidden}.task-shortcut-hint{display:none}}
 @container workspace-page (max-width:780px){.task-shortcut-hint{display:none}.task-kanban-board{grid-template-columns:repeat(2,minmax(210px,1fr))}}
 @container workspace-page (max-width:600px){.task-heading{margin-bottom:16px}.task-workspace .task-list .table-footer{align-items:flex-start;flex-wrap:wrap;gap:8px}}

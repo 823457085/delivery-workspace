@@ -133,11 +133,11 @@ function applySecretRedaction() {
 
 <style scoped>
 .composer-preflight {
-  grid-column: 1 / -1;
   grid-area: preflight;
   display: flex;
   flex-direction: column;
   gap: 6px;
+  width: 100%;
   min-width: 0;
 }
 
@@ -227,23 +227,29 @@ function applySecretRedaction() {
   justify-content: space-between;
   gap: 6px 12px;
   flex-wrap: wrap;
-  padding: 3px 8px;
-  border-radius: 6px;
-  border: 1px solid color-mix(in srgb, var(--ui-border) 72%, transparent);
-  background: color-mix(in srgb, var(--ui-raised) 62%, var(--ui-surface));
+  min-width: 0;
+  padding: 2px 4px 6px;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--ui-divider, var(--ui-border)) 75%, transparent);
+  border-radius: 0;
+  background: transparent;
   font-size: 11px;
   line-height: 1.4;
   color: var(--ui-secondary);
 }
 
 .context-meter-strip[data-level='heavy'] {
-  border-color: color-mix(in srgb, var(--ui-warning) 35%, var(--ui-border));
-  background: color-mix(in srgb, var(--ui-warning) 8%, var(--ui-surface));
+  padding: 4px 10px;
+  border: 1px solid color-mix(in srgb, var(--ui-warning) 32%, var(--ui-border));
+  border-radius: var(--ds-radius-xs, 8px);
+  background: color-mix(in srgb, var(--ui-warning) 9%, var(--ui-surface));
 }
 
 .context-meter-strip[data-level='compaction_needed'] {
-  border-color: color-mix(in srgb, var(--ui-danger) 38%, var(--ui-border));
-  background: var(--ui-danger-bg);
+  padding: 4px 10px;
+  border: 1px solid color-mix(in srgb, var(--ui-danger) 34%, var(--ui-border));
+  border-radius: var(--ds-radius-xs, 8px);
+  background: color-mix(in srgb, var(--ui-danger) 10%, var(--ui-surface));
 }
 
 .context-meter-left {
@@ -255,16 +261,17 @@ function applySecretRedaction() {
 }
 
 .context-meter-label {
-  font-weight: 600;
+  font-weight: 500;
   color: var(--ui-muted);
+  white-space: nowrap;
 }
 
 .context-meter-track {
   display: inline-block;
-  width: 64px;
-  height: 5px;
+  width: 56px;
+  height: 4px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--ui-border) 85%, var(--ui-text) 8%);
+  background: color-mix(in srgb, var(--ui-border) 82%, var(--ui-text) 8%);
   overflow: hidden;
   flex-shrink: 0;
 }
@@ -289,18 +296,26 @@ function applySecretRedaction() {
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
   color: var(--ui-secondary);
+  white-space: nowrap;
 }
 
 .context-meter-badge {
-  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-weight: 500;
   font-size: 11px;
+  line-height: 1.45;
 }
 
 .context-meter-badge.is-warning {
   color: var(--ui-warning);
+  background: color-mix(in srgb, var(--ui-warning) 14%, transparent);
 }
 
 .context-meter-badge.is-danger {
   color: var(--ui-danger);
+  background: color-mix(in srgb, var(--ui-danger) 14%, transparent);
 }
 </style>

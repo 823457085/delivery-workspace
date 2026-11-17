@@ -156,7 +156,7 @@ test('抽屉打开时后台 refetch 不 reset，关闭后的新回读仍可刷�
   } finally { f.close(); }
 });
 
-test('草稿编辑和应用不远端写入，最终保存仅发送原设置 payload 的已应用配置', async () => {
+test('草稿编辑只保存已应用配置，新增自动写入策略须确认', async () => {
   const f = fixture();
   try {
     f.state.editProject(f.state.form.value.projectProfiles![0]); f.state.projectDraft.value!.name = '已应用名字';
@@ -172,6 +172,7 @@ test('草稿编辑和应用不远端写入，最终保存仅发送原设置 payl
       runtimeEnvironment: value.runtimeEnvironment, runtimeCommand: value.runtimeCommand, browser: value.browser, repositoryUrl: value.repositoryUrl,
       projectProfiles: value.projectProfiles, enabled: value.enabled, autoCreateCodex: value.autoCreateCodex,
       autoPrepareJiraDev: value.autoPrepareJiraDev, autoTransitionJira: value.autoTransitionJira,
+      autoAlignJiraEndDates: false, autoCloseDueSplitTasks: false,
       autoCreateMergeRequest: value.autoCreateMergeRequest, jiraDevAutomationApproved: value.jiraDevAutomationApproved,
     });
     assert.equal(f.writes[0].confirmation[0], '确认保存自动交付设置');
@@ -184,7 +185,14 @@ test('草稿编辑和应用不远端写入，最终保存仅发送原设置 payl
     await f.state.save();
     assert.equal(f.writes.length, 2);
     assert.deepEqual(f.writes[1].confirmation[2], { skipConfirm: false }, '首次开启外部自动执行时必须弹窗确认');
+    f.state.form.value.autoCreateCodex = false;
+    f.state.form.value.autoAlignJiraEndDates = true;
+    await f.state.save();
+    assert.equal(f.writes.length, 3);
+    assert.equal(f.writes[2].payload.autoAlignJiraEndDates, true);
+    assert.equal(f.writes[2].payload.autoCloseDueSplitTasks, false);
+    assert.deepEqual(f.writes[2].confirmation[2], { skipConfirm: false }, '单独开启排期写入时仍须确认');
     f.state.form.value.dailyTimes.push('09:00'); await f.state.save();
-    assert.equal(f.writes.length, 2, '无效总表单仍由原保存校验阻止写入');
+    assert.equal(f.writes.length, 3, '无效总表单仍由原保存校验阻止写入');
   } finally { f.close(); }
 });

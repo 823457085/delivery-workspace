@@ -27,6 +27,7 @@ import StatusPill from '../../shared/ui/StatusPill.vue';
 import WorkspaceContextLinks from '../../shared/ui/WorkspaceContextLinks.vue';
 import { deliveryJobQuickPrompt, jiraQuickPrompt } from '../agent-workbench/agent-quick-actions';
 import ExecutionTable from './ExecutionTable.vue';
+import AutomationScanDialog from './AutomationScanDialog.vue';
 const props = defineProps<{ mode: string }>();
 const route = useRoute();
 const router = useRouter();
@@ -180,7 +181,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onExecutionSlashKey)
 </script>
 <template>
   <PageHeading title="执行中心" description="查看 AI 正在跑的任务、待派发计划和自动巡检记录。" :loading="isFetching || (mode === 'queue' && executionFetching)" @refresh="refresh">
-    <el-button v-if="mode !== 'queue'" type="primary" :loading="actions.pending.value" :disabled="!integrations.capability('issues.read')" title="需要已接入的任务提供者" @click="actions.execute('scan', {}, '确认立即巡检', '巡检会按现有策略执行，可能创建 AI 任务、推进 Jira 或创建合并请求。确认立即巡检吗？')">立即巡检</el-button>
+    <AutomationScanDialog v-if="mode !== 'queue'" v-slot="{ open, pending }">
+      <el-button type="primary" :loading="pending" :disabled="!!data?.running || !integrations.capability('issues.read')" @click="open">预览巡检</el-button>
+    </AutomationScanDialog>
   </PageHeading>
   <section ref="center" class="execution-center" aria-label="执行中心">
     <div class="execution-board">

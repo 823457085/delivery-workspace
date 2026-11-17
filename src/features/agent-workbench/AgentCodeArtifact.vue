@@ -4,12 +4,12 @@ import { RouterLink } from 'vue-router';
 import { safeUrl, shortPath } from '../../shared/format';
 import AgentCursorButton from './AgentCursorButton.vue';
 
-defineProps<{ path: string; fileCount: number; branch: string; remote?: string; url?: string; head?: string; ahead?: number | null; pushTarget?: boolean }>();
+defineProps<{ path: string; fileCount: number; branch: string; title?: string; remote?: string; url?: string; head?: string; ahead?: number | null; pushTarget?: boolean }>();
 </script>
 
 <template>
   <article class="code-artifact" aria-label="代码产物">
-    <header><strong>代码</strong><slot /></header>
+    <header><strong>{{ title || '代码' }}</strong><slot /></header>
     <p>{{ fileCount }} 个待提交文件<template v-if="ahead && ahead > 0"> · {{ ahead }} 个领先提交</template></p>
     <p :title="path">{{ shortPath(path) }}</p>
     <p v-if="pushTarget">目标：{{ remote || '未配置远端' }} / {{ branch || '未识别分支' }}</p>

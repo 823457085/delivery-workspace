@@ -498,13 +498,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onPluginKeydown));
 :global(.plugin-config-dialog .el-dialog__title) {
   color: var(--ui-text);
 }
-:global(html[data-ui-skin="acid"]) .plugin-row,
-:global(html[data-ui-skin="acid"]) .plugin-icon,
-:global(html[data-ui-skin="acid"]) .plugin-filter-pill,
-:global(html[data-ui-skin="acid"]) .plugin-cap-chip,
-:global(html[data-ui-skin="acid"]) .plugin-kbd-hint,
-:global(html[data-ui-skin="acid"]) .plugin-links :deep(.el-button.is-link),
-:global(html[data-ui-skin="acid"]) .plugin-actions :deep(.el-button) {
+:root[data-theme='acid'] .plugin-row,
+:root[data-theme='acid'] .plugin-icon,
+:root[data-theme='acid'] .plugin-filter-pill,
+:root[data-theme='acid'] .plugin-cap-chip,
+:root[data-theme='acid'] .plugin-kbd-hint,
+:root[data-theme='acid'] .plugin-links :deep(.el-button.is-link),
+:root[data-theme='acid'] .plugin-actions :deep(.el-button) {
   border-radius: 0;
 }
 @media (max-width: 600px) {

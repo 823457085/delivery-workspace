@@ -14,6 +14,7 @@ import { deliveryAcceptanceRecordSchema } from '../shared/delivery-acceptance.js
 import { requirementProgressSchema } from '../shared/requirement-development.js';
 import { overseasRequirementStateSchema } from '../shared/overseas-requirements.js';
 import { jiraCommentSavedDraftSchema } from '../shared/jira-fix-handoff.js';
+import { maxAgentConversationWorkspaces } from '../shared/agent-runtime.js';
 
 const exec = promisify(execFile);
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -29,7 +30,7 @@ export const stateBackupFiles = [
   'agent-runtimes/codex-sessions.json', 'agent-runtimes/hidden-codex-sessions.json',
   'agent-runtimes/group-chat.json', 'agent-runtimes/team-tasks.json', 'agent-runtimes/agent-profiles.json', 'agent-runtimes/collaboration-state.json',
   'agent-runtimes/agent-usage-daily.json', 'agent-runtimes/agent-evaluations.json', 'agent-runtimes/agent-delivery-drafts.json',
-  'agent-runtimes/conversation-titles.json', 'agent-runtimes/agent-workflows.json', 'cli-queue.json', 'api-integration.json',
+  'agent-runtimes/conversation-titles.json', 'agent-runtimes/conversation-workspace-bindings.json', 'agent-runtimes/agent-workflows.json', 'cli-queue.json', 'api-integration.json',
   'apex-bff-review.json', 'jira-fix/projects.json', 'agent-notes/vault.json', 'refactor-control/state.json', 'overseas-requirements/requirements.json',
 ] as const;
 const dynamicDirectories = ['jira-fix', 'requirement-development', 'jira-fix-handoffs', 'delivery-acceptance'];
@@ -75,6 +76,13 @@ export function validateStateJson(relative: string, value: unknown): void {
       break;
     case 'agent-runtimes/hidden-codex-sessions.json': valid = arrayOf(value, item => typeof item === 'string'); break;
     case 'agent-runtimes/conversation-titles.json': valid = recordOf(value, item => typeof item === 'string'); break;
+    case 'agent-runtimes/conversation-workspace-bindings.json': {
+      const location = (item: unknown) => isObject(item) && strings(item, ['workspacePath', 'projectWorkspacePath', 'branch']);
+      valid = recordOf(value, item => isObject(item) && location(item) && (item.additionalWorkspaces === undefined
+        || Array.isArray(item.additionalWorkspaces) && item.additionalWorkspaces.length < maxAgentConversationWorkspaces
+        && arrayOf(item.additionalWorkspaces, location)));
+      break;
+    }
     case 'agent-runtimes/agent-workflows.json':
       valid = arrayOf(value, item => isObject(item) && strings(item, ['id', 'templateId', 'parentConversationId', 'objective', 'createdAt'])
         && Array.isArray(item.decisions));

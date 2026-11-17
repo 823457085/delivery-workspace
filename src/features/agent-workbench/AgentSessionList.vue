@@ -70,7 +70,8 @@ const quickFilterCounts = computed(() =>
 function matchesConversation(conversation: AgentConversation, term: string) {
   if (!term) return true;
   return [conversation.title, conversation.latest.baseBranch || conversation.latest.branch, conversation.latest.sessionId,
-    agentConversationProjectPath(conversation),
+    agentConversationProjectPath(conversation), conversation.workspace?.workspacePath, conversation.workspace?.branch,
+    ...(conversation.workspace?.additionalWorkspaces || []).flatMap(item => [item.workspacePath, item.branch]),
     ...conversation.runs.flatMap((run) => [run.objective, run.result, run.error])]
     .some((value) => (value || '').toLowerCase().includes(term));
 }

@@ -5,7 +5,7 @@
  */
 import { computed, nextTick, ref, shallowRef, useTemplateRef } from 'vue';
 import { GitBranch } from '@lucide/vue';
-import { agentConversationRoundCount, agentConversationStatus, type AgentConversation } from './conversation';
+import { agentConversationBranch, agentConversationRoundCount, agentConversationStatus, type AgentConversation } from './conversation';
 import StatusPill from '../../shared/ui/StatusPill.vue';
 import { dateTime } from '../../shared/format';
 import { agentProviderLabels } from '../../../shared/agent-runtime';
@@ -48,7 +48,7 @@ const compactUpdated = computed(() => {
     ? `${pad(parsed.getHours())}:${pad(parsed.getMinutes())}`
     : `${pad(parsed.getMonth() + 1)}/${pad(parsed.getDate())}`;
 });
-const branchName = computed(() => props.conversation.latest.baseBranch || props.conversation.latest.branch || '');
+const branchName = computed(() => agentConversationBranch(props.conversation));
 const emit = defineEmits<{ select: [id: string]; toggle: [id: string]; rename: [id: string, title: string] }>();
 const editing = shallowRef(false);
 const titleDraft = ref('');
@@ -180,7 +180,7 @@ function cancelRename() {
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
 }
 
-:global(:root:not([data-theme='acid'])) .session-item.selected::before {
+:root:not([data-theme='acid']) .session-item.selected::before {
   content: '';
   position: absolute;
   left: 0;

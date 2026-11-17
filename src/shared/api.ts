@@ -42,10 +42,9 @@ export function useSourceActions() {
   const client = useQueryClient();
   const pending = shallowRef(false);
   const execute = createSourceActionExecutor({
-    confirm: async (title, impact, key, data) => {
-      // 修改本地项目别名已在输入框完成确认；在 Finder 打开目录不改文件；未开启外部自动派发/流转/MR 的纯本机设置直接保存，避免重复弹窗。
+    confirm: async (title, impact, key) => {
+      // 修改本地项目别名已在输入框完成确认；在 Finder 打开目录不改文件。
       if (key === 'project-label' || key === 'project-open') return true;
-      if (key === 'settings' && !(data && typeof data === 'object' && (data as Record<string, unknown>).jiraDevAutomationApproved)) return true;
       try { await ElMessageBox.confirm(impact, title, { confirmButtonText: '确认执行', cancelButtonText: '取消', type: 'warning', closeOnClickModal: false }); return true; }
       catch { return false; }
     },

@@ -1,16 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 // @ts-expect-error 原 Jira 后端为 ESM JavaScript。
-import { executeAutomationTransitions, transitionJiraIssue } from '../server/jira-backend/server.mjs';
+import { buildJql, executeAutomationTransitions, transitionJiraIssue } from '../server/jira-backend/server.mjs';
 // @ts-expect-error 原 Jira 后端为 ESM JavaScript。
-import { buildAutomationPlan, DEFAULT_AUTOMATION_SETTINGS } from '../server/jira-backend/automation-core.mjs';
+import { buildAutomationPlan, DEFAULT_AUTOMATION_SETTINGS, sanitizeAutomationSettings } from '../server/jira-backend/automation-core.mjs';
+
+const demoProfile = {
+ id:'demo', name:'Demo', jiraProjects:['DEMO'], repositoryUrl:'https://example.invalid/demo/repo.git',
+ runtimeCommand:'pnpm dev', runtimeEnvironment:'test', targetBranch:'test',
+};
 
 test('到期子任务按 Jira 可用流转经过预发布，所有交付子任务完成后才推进到期父任务', async () => {
  const today = '2026-11-12';
- const settings = { ...DEFAULT_AUTOMATION_SETTINGS, autoTransitionJira:true, autoCloseDueSplitTasks:true };
+ const settings = {
+  ...DEFAULT_AUTOMATION_SETTINGS, autoTransitionJira:true, autoAlignJiraEndDates:true, autoCloseDueSplitTasks:true,
+  projectProfiles:[demoProfile],
+ };
  const issue = (key: string, status: string, extra = {}) => ({
   key, status, statusCategory:status === '已完成' ? 'Done' : 'In Progress',
-  summary:'实现功能', endDate:'2026-11-11', issueType:'任务', ...extra,
+  project:'DEMO', summary:'实现功能', endDate:'2026-11-11', issueType:'任务', ...extra,
  });
  const issues = [
   issue('DEMO-1','开发中'),
@@ -71,4 +79,37 @@ test('缺少已知前置流转时报告阻塞，不按操作名称误选不同�
  }), /无法从“测试中”推进到“已完成”/);
  assert.equal(writes, 0);
  assert.equal(issue.status, '测试中');
+});
+
+test('旧状态开关只预览匹配事项的流转，日期和切片需分别开启且预览不调用写入', async () => {
+ const now = new Date(2026, 10, 16, 19);
+ const startable = { key:'DEMO-1', project:'DEMO', issueType:'任务', status:'待开始', statusCategory:'To Do', startDate:'2026-11-15' };
+ const issues = [
+  startable,
+  { ...startable, key:'TEST-1', project:'TEST' },
+  { ...startable, key:'DEMO-2', issueType:'史诗' },
+  { ...startable, key:'DEMO-3', status:'进行中', statusCategory:'In Progress', endDate:'2026-11-15',
+    fixVersionDetails:[{releaseDate:'2026-11-18'}] },
+  { ...startable, key:'DEMO-4', issueType:'子任务', status:'进行中', statusCategory:'In Progress',
+    endDate:'2026-11-16', description:'schedule-group: demo\nschedule-slice: 1' },
+ ];
+ const settings = sanitizeAutomationSettings({ autoTransitionJira:true, projectProfiles:[demoProfile] });
+ const preview = async (overrides = {}) => {
+  const config = { ...settings, ...overrides };
+  const write = async () => assert.fail('预览调用了 Jira 写入');
+  const results = await executeAutomationTransitions(buildAutomationPlan(structuredClone(issues), [], [], config),
+   config, '2026-11-16', { now, preview:true, transition:write, alignEndDate:write });
+  return results.map(({ action }: { action: {issueKey:string; kind:string} }) => [action.issueKey, action.kind]);
+ };
+ assert.deepEqual(await preview(), [['DEMO-1','transition']]);
+ assert.deepEqual(await preview({ autoTransitionJira:false, autoAlignJiraEndDates:true }), [['DEMO-3','end-date']]);
+ assert.deepEqual(await preview({ autoTransitionJira:false, autoCloseDueSplitTasks:true }), [['DEMO-4','transition']]);
+});
+
+test('计划日期查询在 Jira 端匹配跨月区间及单日回退字段', () => {
+ const { jql } = buildJql(new URLSearchParams({ dateField:'planned', start:'2026-10-26', end:'2026-12-06' }));
+ assert.match(jql, /cf\[10110\] >= "2026-10-26"/);
+ assert.match(jql, /cf\[10109\] <= "2026-12-06"/);
+ assert.match(jql, /duedate is EMPTY AND cf\[10109\] >= "2026-10-26"/);
+ assert.match(jql, /cf\[10110\] is EMPTY AND duedate <= "2026-12-06"/);
 });

@@ -110,7 +110,7 @@ export function useWorkspaceVersionNotice() {
     const message = current.restartRequired || current.buildRequired
       ? h('div', [h('p', { style: 'margin: 0 0 8px; line-height: 1.5;' }, hintText), h(WorkspaceRestartButton)])
       : h(ElButton, { size: 'small', type: 'primary', onClick: reloadWorkspacePage }, () => '立即刷新页面');
-    notification = ElNotification({ title: current.label, message, type: 'warning', duration: 0 }, appContext);
+    notification = ElNotification({ title: current.label, message, type: 'warning', duration: 0, position: 'bottom-right', offset: 48 }, appContext);
   }, { immediate: true });
   onScopeDispose(() => notification?.close());
 }

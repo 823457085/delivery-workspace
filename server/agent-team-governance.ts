@@ -304,8 +304,8 @@ export async function createAgentTeamGovernance(directory: string, runtime: Runt
       const prefix = `eval:${evaluation.id}:${variant.id}:`;
       const runs = runtime.teamRuns(`eval:${evaluation.id}`).filter(run => run.team?.stageKey.startsWith(prefix));
       const intents = team.ledger.snapshot().intents.filter(intent => intent.workflowId === `eval:${evaluation.id}` && intent.stageKey.startsWith(prefix));
-      if (runs.some(run => ['running', 'queued'].includes(run.status) || processIsAlive(run.pid) || processIsAlive(run.recovery?.previousPid || null))) return 'active';
-      if (runs.some(run => run.status === 'interrupted' && !(run.recovery?.state === 'needs-review' && run.recovery.previousPid && !processIsAlive(run.recovery.previousPid)))) return 'unknown';
+      if (runs.some(run => ['running', 'queued'].includes(run.status) || processIsAlive(run.pid, run.pidStartedAt) || processIsAlive(run.recovery?.previousPid || null, run.recovery?.previousPidStartedAt))) return 'active';
+      if (runs.some(run => run.status === 'interrupted' && !(run.recovery?.state === 'needs-review' && run.recovery.previousPid && !processIsAlive(run.recovery.previousPid, run.recovery.previousPidStartedAt)))) return 'unknown';
       if (intents.some(intent => !intent.settled && intent.state !== 'abandoned' && !runs.some(run => run.team?.stageKey === intent.stageKey))) return 'unknown';
       return 'safe';
     } });

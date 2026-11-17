@@ -217,7 +217,7 @@ async function removeWallpaper() {
 </script>
 
 <template>
-  <el-popover v-model:visible="visible" trigger="click" :width="568" placement="bottom-end" popper-class="theme-popover" :show-arrow="false">
+  <el-popover v-model:visible="visible" trigger="click" :width="568" placement="bottom-end" :popper-options="{ strategy: 'fixed' }" popper-class="theme-popover" :show-arrow="false">
     <template #reference>
       <button ref="trigger" class="theme-trigger" aria-label="切换皮肤" :aria-expanded="visible" @keydown.esc.stop="closeWithKeyboard"><Palette :size="15" /><span>{{ current.name }}</span></button>
     </template>

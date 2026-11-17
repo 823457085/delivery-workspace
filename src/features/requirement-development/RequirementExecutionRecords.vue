@@ -463,14 +463,14 @@ onBeforeUnmount(() => {
 .record-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; flex-shrink: 0; }
 .record-actions .el-button + .el-button { margin-left: 0; }
 
-:global(:root[data-theme='acid']) .spec-telemetry-tile,
-:global(:root[data-theme='acid']) .records-toolbar,
-:global(:root[data-theme='acid']) .records-pills > button,
-:global(:root[data-theme='acid']) .record-card,
-:global(:root[data-theme='acid']) .record-copy-chip,
-:global(:root[data-theme='acid']) .record-stage-pill,
-:global(:root[data-theme='acid']) .record-spec-meter,
-:global(:root[data-theme='acid']) .records-kbd {
+:root[data-theme='acid'] .spec-telemetry-tile,
+:root[data-theme='acid'] .records-toolbar,
+:root[data-theme='acid'] .records-pills > button,
+:root[data-theme='acid'] .record-card,
+:root[data-theme='acid'] .record-copy-chip,
+:root[data-theme='acid'] .record-stage-pill,
+:root[data-theme='acid'] .record-spec-meter,
+:root[data-theme='acid'] .records-kbd {
   border-radius: 0 !important;
 }
 

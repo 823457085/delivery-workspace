@@ -1,14 +1,13 @@
 <script setup lang="ts">
 /** 全局入口随页头移动，复用当前执行器快照，不额外请求或估算额度。 */
-import { computed, defineAsyncComponent, shallowRef, useTemplateRef } from 'vue';
+import { computed, shallowRef, useTemplateRef } from 'vue';
 import { Bell, BellRing, Gauge, RotateCw, Users } from '@lucide/vue';
 import type { AgentApiProvider, AgentRuntimeHealth, AgentUsageLimits, AntigravityUsageLimits } from '../../../shared/agent-runtime';
 import AgentUsageQuota from './AgentUsageQuota.vue';
 import AgentAntigravityQuota from './AgentAntigravityQuota.vue';
 import { useCompletionNotifyPreference } from './useAgentCompletionNotify';
 import ChromeConnectionCard from '../browser-connection/ChromeConnectionCard.vue';
-
-const CursorAccountsDialog = defineAsyncComponent(() => import('./CursorAccountsDialog.vue'));
+import CursorAccountsDialog from './CursorAccountsDialog.vue';
 
 interface UsageCard { key: string; label: string; usage?: AgentUsageLimits }
 
@@ -40,7 +39,7 @@ function restoreAccountFocus() {
 
 <template>
   <div class="connection-controls">
-    <el-popover v-model:visible="visible" trigger="click" placement="bottom-end" :width="880" :show-arrow="false" popper-class="agent-connection-popper" persistent>
+    <el-popover v-model:visible="visible" trigger="click" placement="bottom-end" :width="880" :show-arrow="false" :popper-options="{ strategy: 'fixed' }" popper-class="agent-connection-popper" persistent>
       <template #reference>
         <button ref="trigger" type="button" class="connection-trigger" aria-label="连接与额度" title="连接与额度" :aria-expanded="visible" @keydown.esc.stop="closeWithKeyboard">
           <Gauge :size="16" /><span>连接与额度</span>

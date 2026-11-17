@@ -5,7 +5,7 @@ import type { IssueResponse, JiraIssue } from '../../../shared/hub';
 import { overseasRequirementFromJira, overseasRequirementPayload, type OverseasRequirement } from '../../../shared/overseas-requirements';
 import { readSource } from '../../shared/api';
 import TaskFilters from '../task-calendar/TaskFilters.vue';
-import { advancedTaskDefaults, matchesPlannedFilter, taskQueryParams, type TaskFilter } from '../task-calendar/calendar-domain';
+import { advancedTaskDefaults, matchesPlannedFilter, type TaskFilter } from '../task-calendar/calendar-domain';
 
 const props = defineProps<{ existing: OverseasRequirement[]; systems: string[] }>();
 const emit = defineEmits<{ close: []; imported: [items: OverseasRequirement[]] }>();
@@ -25,7 +25,7 @@ async function search(next: TaskFilter) {
   loading.value = true;
   try {
     const params = Object.fromEntries(Object.entries(next).map(([key, value]) => [key, String(value)]));
-    data.value = await readSource<IssueResponse>('issues', taskQueryParams(params), undefined, true);
+    data.value = await readSource<IssueResponse>('issues', params, undefined, true);
     applied.value = params;
     selection.value = []; page.value = 1; queryRevision.value++;
   } catch (error) { ElMessage.error(error instanceof Error ? error.message : 'Jira 查询失败'); }

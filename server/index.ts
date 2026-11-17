@@ -29,17 +29,18 @@ import { createAgentUsageStore } from './agent-usage.js';
 import { createAgentTeamGovernance } from './agent-team-governance.js';
 import { createAgentTeamRoutes } from './agent-team-routes.js';
 import { createAgentRuntimeService, resolveWorkspace } from './agent-runtime.js';
-import { createBrowserConnection } from './browser-connection.js';
+import { createBrowserConnectionHost } from './browser-connection-host.js';
 import { createBrowserConnectionRoute } from './browser-connection-route.js';
-import { chromeRelayPrefix } from './chrome-cdp-relay.js';
 import { createCursorAccountsService } from './cursor-accounts.js';
 import { createCursorAccountsRoute } from './cursor-accounts-route.js';
 import { createDesktopAccountsService, createDesktopAccountsRoute, DesktopAccountError } from './desktop-accounts.js';
 import { accountProviders, type AccountProvider } from '../shared/cursor-accounts.js';
+import { createTaskFlowWorkbenchRoute } from './taskflow-workbench.js';
+import { createTaskFlowBridgeRoute, ensureTaskFlowBridgeToken } from './taskflow-bridge.js';
 import { agentAccessSchema, agentAttachmentIdsSchema, agentReasoningSchema, agentServiceTierSchema, agentStartSchema, agentCustomModelSchema } from './agent-runtime-input.js';
 import { browserAgentRun, createAgentRuntimeStream } from './agent-runtime-stream.js';
 import { createAgentAttachmentStore } from './agent-attachments.js';
-import { isAgentImageAttachment, maxAgentAttachmentBytes, type AgentRun } from '../shared/agent-runtime.js';
+import { isAgentImageAttachment, maxAgentAttachmentBytes, maxAgentConversationWorkspaces, type AgentRun } from '../shared/agent-runtime.js';
 import { listCodexSkills } from './codex-skills.js';
 import { parseMentionGroundingQuery, searchWorkspaceMentionGrounding } from './workspace-mention-grounding.js';
 import { createWorkspacePickerRoute } from './workspace-picker.js';
@@ -118,6 +119,7 @@ import {
   prepareProjectMergeRequest,
   reconcileProjectMergeRequest,
   createProjectMergeRequest,
+  mergeProjectMergeRequest,
   updateProjectMergeRequestTitle,
   updateProjectMergeRequestDescription,
 } from './project-merge-request.js';
@@ -200,7 +202,7 @@ const integrationRuntime = createIntegrationRuntime({ root, directory: dataDirec
 const systemCatalogRoutes = createSystemCatalogRoutes(systemCatalog, { json, body, port });
 const interfaceCenterRoutes = createInterfaceCenterRoutes(interfaceCenter, { json, body, port });
 const agentTranslate = createAgentTranslateService();
-const browserConnection = createBrowserConnection({ rootDirectory: root });
+const browserConnection = createBrowserConnectionHost({ rootDirectory: root, dataDirectory });
 const browserConnectionRoute = createBrowserConnectionRoute(browserConnection, { json, body, port });
 // 团队流程派发前读取各执行器额度，账号切换时以 runtimeStatusVersion 隔离缓存，防止旧账号空额度阻塞新账号。
 let currentRuntimeStatusVersion = () => 0;
@@ -258,7 +260,7 @@ const customPlugins = await createCustomPluginRuntime(customPluginsDirectory, wo
 const pluginJira = await createPluginJira(customPluginsDirectory, customPlugins, sourceBackend.jiraIssueRequest);
 const agentRuntimes = await createAgentRuntimeService(path.join(dataDirectory, 'agent-runtimes'), {
   browserRootDirectory: root,
-  chromeTaskEndpoint: () => browserConnection.taskEndpoint(port),
+  chromeTaskEndpoint: browserConnection.taskEndpoint,
   workspaceSnapshotExclusions: [dataDirectory, path.join(root, '.local', 'logs'),
     ...(process.env.DELIVERY_SOURCE_DATA_DIR ? [process.env.DELIVERY_SOURCE_DATA_DIR] : [])],
   readProviderUsage: providerUsageReaders,
@@ -272,6 +274,14 @@ const agentRuntimes = await createAgentRuntimeService(path.join(dataDirectory, '
   removeAttachments: agentAttachments.remove,
 });
 currentRuntimeStatusVersion = () => agentRuntimes.runtimeStatusVersion();
+const taskFlowWorkbenchRoute = createTaskFlowWorkbenchRoute({
+  taskFlowApi: process.env.DELIVERY_TASKFLOW_API_URL || 'http://127.0.0.1:5187',
+  runtime: agentRuntimes, body, json,
+});
+const taskFlowBridgeRoute = createTaskFlowBridgeRoute({
+  token: (await ensureTaskFlowBridgeToken(path.join(dataDirectory, 'taskflow-bridge'))).token,
+  runtime: agentRuntimes, body, json,
+});
 const pluginApplications = createPluginApplications(customPlugins, (app, directory) => app === 'terminal' ? openWorkspaceTerminal(directory) : openWorkspaceCursor(directory, path.join(dataDirectory, 'cursor-workspaces')), () => projectWorkspaces);
 const conversationWorkspaces = await createConversationWorkspaces(path.join(dataDirectory, 'conversation-workspaces.json'));
 const conversationWorkspaceRoutes = createConversationWorkspaceRoutes(conversationWorkspaces, { port, json, body });
@@ -615,7 +625,7 @@ async function restartBlockers() {
   if (!requirementDevelopment.isIdle() || !jiraFix.isIdle() || !jiraFixHandoff.isIdle() || !jiraDev.isIdle()) blockers.push('需求、修复或交接处理');
   if (Object.values(accountServices).some(accounts => !accounts.isIdle())) blockers.push('账号操作');
   if (!deployments.isIdle()) blockers.push('Jenkins 部署或日志读取');
-  if (!yunxiaoDeployments.isIdle()) blockers.push('云效部署或状态读取');
+  if (!yunxiaoDeployments.isIdle()) blockers.push('云效部署提交或本机写入');
   return blockers;
 }
 const workspaceRestart = createWorkspaceRestart({
@@ -701,6 +711,8 @@ const server = http.createServer(async (request, response) => {
       } catch (error) {
         json(response, 409, { message: (error as Error).message, code: 'PLUGIN_UNAVAILABLE' }); return;
       }
+      if (await taskFlowWorkbenchRoute(request, response, url)) return;
+      if (await taskFlowBridgeRoute(request, response, url)) return;
       if (await customPluginRoutes(request, response, url)) return;
       if (await systemCatalogRoutes(request, response, url)) return;
       if (await interfaceCenterRoutes(request, response, url)) return;
@@ -758,8 +770,11 @@ const server = http.createServer(async (request, response) => {
         if (request.method === 'GET' && url.pathname === '/api/projects/git/commit-detail') {
           json(response, 200, await readProjectCommitDetail(url.searchParams.get('path') || '', url.searchParams.get('sha') || '')); return;
         }
-        if (request.method === 'POST' && ['/api/projects/git/merge-request/list', '/api/projects/git/merge-request/prepare', '/api/projects/git/merge-request/reconcile', '/api/projects/git/merge-request/create', '/api/projects/git/merge-request/title', '/api/projects/git/merge-request/description'].includes(url.pathname)) {
+        if (request.method === 'POST' && ['/api/projects/git/merge-request/list', '/api/projects/git/merge-request/prepare', '/api/projects/git/merge-request/reconcile', '/api/projects/git/merge-request/create', '/api/projects/git/merge-request/title', '/api/projects/git/merge-request/description', '/api/projects/git/merge-request/merge'].includes(url.pathname)) {
           if (![`http://localhost:${port}`, `http://127.0.0.1:${port}`].includes(request.headers.origin || '')) { json(response, 403, { message: '请求来源不匹配' }); return; }
+          if (url.pathname.endsWith('/merge') && request.headers['x-delivery-confirmed'] !== 'yes') {
+            json(response, 403, { message: '请在合并请求面板确认合并代码' }); return;
+          }
           if ((url.pathname.endsWith('/title') || url.pathname.endsWith('/description') || url.pathname.endsWith('/reconcile')) && request.headers['x-delivery-confirmed'] !== 'yes') {
             json(response, 403, {
               message: url.pathname.endsWith('/reconcile')
@@ -772,6 +787,7 @@ const server = http.createServer(async (request, response) => {
           }
           const input = (await body(request)) as Record<string, unknown>;
           const operation = url.pathname.endsWith('/list') ? listProjectMergeRequests
+            : url.pathname.endsWith('/merge') ? mergeProjectMergeRequest
             : url.pathname.endsWith('/title') ? updateProjectMergeRequestTitle
             : url.pathname.endsWith('/description') ? updateProjectMergeRequestDescription
             : url.pathname.endsWith('/reconcile') ? reconcileProjectMergeRequest
@@ -893,9 +909,18 @@ const server = http.createServer(async (request, response) => {
         }
         if (url.pathname === '/api/integration-wecom/messages/library/delete' && request.method === 'POST') { json(response, 200, await wecomIntegration.deleteMessage(await body(request, 1000))); return; }
         if (url.pathname === '/api/integration-wecom/messages/preview' && request.method === 'POST') { json(response, 200, wecomIntegration.messagePreview(await body(request, 60_000))); return; }
+        if (url.pathname === '/api/integration-wecom/messages/preview-parts' && request.method === 'POST') { json(response, 200, wecomIntegration.messagePartsPreview(await body(request, 100_000))); return; }
         if (url.pathname === '/api/integration-wecom/messages/send' && request.method === 'POST') {
           if (request.headers['x-delivery-confirmed'] !== 'yes') { json(response, 403, { message: '请先预览并确认发送到企业微信群' }); return; }
           json(response, 200, await wecomIntegration.sendMessage(await body(request, 60_000))); return;
+        }
+        if (url.pathname === '/api/integration-wecom/messages/send-parts' && request.method === 'POST') {
+          if (request.headers['x-delivery-confirmed'] !== 'yes') { json(response, 403, { message: '请先预览并确认分段发送到企业微信群' }); return; }
+          json(response, 200, await wecomIntegration.sendMessageParts(await body(request, 100_000))); return;
+        }
+        if (url.pathname === '/api/integration-wecom/reconcile' && request.method === 'POST') {
+          if (request.headers['x-delivery-confirmed'] !== 'yes') { json(response, 403, { message: '请先核对群内送达情况并确认解除待确认状态' }); return; }
+          json(response, 200, await wecomIntegration.reconcileUnknown(await body(request, 10_000))); return;
         }
         if (url.pathname === '/api/integration-wecom/config') {
           if (request.method === 'GET') { json(response, 200, wecomIntegration.config()); return; }
@@ -1053,6 +1078,10 @@ const server = http.createServer(async (request, response) => {
           if (request.method === 'GET') { json(response, 200, { records: jiraFix.list().map(record => ({ ...record, handoff: jiraFixHandoff.state(record.id) })) }); return; }
           if (request.method === 'POST') { json(response, 202, jiraFix.start(await body(request))); return; }
         }
+        const reconcileJiraFixRecord = url.pathname.match(/^\/api\/agent-runtimes\/jira-fix\/([0-9a-f-]{36})\/reconcile$/);
+        if (reconcileJiraFixRecord && request.method === 'POST') {
+          json(response, 200, await jiraFix.reconcileUncertain(reconcileJiraFixRecord[1], await body(request))); return;
+        }
         const draft = url.pathname.match(/^\/api\/agent-runtimes\/jira-fix\/([0-9a-f-]{36})\/handoff\/draft$/);
         if (draft && request.method === 'POST') {
           const controller = new AbortController();
@@ -1078,6 +1107,10 @@ const server = http.createServer(async (request, response) => {
         if (url.pathname === '/api/agent-runtimes/requirement-development') {
           if (request.method === 'GET') { json(response, 200, { records: requirementDevelopment.list() }); return; }
           if (request.method === 'POST') { json(response, 202, await requirementDevelopment.start(await body(request))); return; }
+        }
+        const reconcileRequirementRecord = url.pathname.match(/^\/api\/agent-runtimes\/requirement-development\/([0-9a-f-]{36})\/reconcile$/);
+        if (reconcileRequirementRecord && request.method === 'POST') {
+          json(response, 200, await requirementDevelopment.reconcileUncertain(reconcileRequirementRecord[1], await body(request))); return;
         }
         const removeRequirementRecord = url.pathname.match(/^\/api\/agent-runtimes\/requirement-development\/([0-9a-f-]{36})\/delete$/);
         if (removeRequirementRecord && request.method === 'POST') {
@@ -1348,8 +1381,8 @@ const server = http.createServer(async (request, response) => {
             json(response, 202, await agentRuntimes.retry(id, input.cursorTrustPath, input)); return;
           }
           if (action === 'fork') {
-            const input = agentResumeSchema.parse(await body(request));
-            json(response, 202, await agentRuntimes.fork(id, input.objective, input.model, input.reasoningEffort, input.attachmentIds, input.serviceTier)); return;
+            const input = agentContinueSchema.parse(await body(request));
+            json(response, 202, await agentRuntimes.fork(id, input.objective, input.model, input.reasoningEffort, input.attachmentIds, input.serviceTier, input.mode)); return;
           }
           const input = agentContinueSchema.parse(await body(request));
           sendAcceptedRun(response, await agentRuntimes.resume(id, input.objective, input.model, input.reasoningEffort, input.attachmentIds, input.accessMode,
@@ -1368,6 +1401,16 @@ const server = http.createServer(async (request, response) => {
         if (request.method === 'POST' && agentConversationTitle) {
           const input = agentConversationTitleSchema.parse(await body(request));
           json(response, 200, await agentRuntimes.updateConversationTitle(agentConversationTitle[1], input.title)); return;
+        }
+        const agentConversationWorkspace = url.pathname.match(/^\/api\/agent-runtimes\/conversations\/([0-9a-f-]{36})\/workspace$/);
+        if (request.method === 'POST' && agentConversationWorkspace) {
+          const workspacePath = z.string().trim().min(1).max(1000);
+          const input = z.union([
+            z.object({ workspacePaths: z.array(workspacePath).min(1).max(maxAgentConversationWorkspaces) }).strict(),
+            z.object({ workspacePath }).strict(),
+          ]).parse(await body(request));
+          const workspacePaths = 'workspacePaths' in input ? input.workspacePaths : [input.workspacePath];
+          json(response, 200, await agentRuntimes.bindConversationWorkspace(agentConversationWorkspace[1], workspacePaths)); return;
         }
         json(response, 404, { message: 'Agent 执行接口不存在' }); return;
       }
@@ -1438,10 +1481,6 @@ const server = http.createServer(async (request, response) => {
     if (mutation) pendingMutations--;
   }
 });
-server.on('upgrade', (request, socket, head) => {
-  if (request.url?.startsWith(chromeRelayPrefix)) browserConnection.upgrade(request, socket, head, port);
-  else socket.destroy();
-});
 server.listen(port, '127.0.0.1', () => {
   if (process.env.DELIVERY_SCHEDULER_DISABLED !== '1') sourceBackend.start();
   workspaceReports.start();
@@ -1450,26 +1489,47 @@ server.listen(port, '127.0.0.1', () => {
   console.log(`Delivery Workspace: http://localhost:${port} · unified backend · Mastra lab /lab`);
 });
 let shutdownTask: Promise<void> | undefined;
+/** 单个服务关闭失败只记录日志，不得跳过后续关闭、状态备份与租约释放。 */
+async function closeStep(label: string, action: () => unknown) {
+  try { await action(); }
+  catch (error) { console.error(`关闭 ${label} 失败，继续关闭其余服务：`, error instanceof Error ? error.message : error); }
+}
 function shutdown() {
   return shutdownTask ??= (async () => {
-    workspaceRestart.close();
-    closeActiveSseStreams();
-    server.close();
-    server.closeIdleConnections?.();
-    server.closeAllConnections?.();
-    await browserConnection.disconnect();
-    unsubscribeJiraDevRuns(); unsubscribeJiraDevTeams();
-    await jiraDevAutomation?.close();
-    await projectLaunch.close();
-    await projectWorkspaces.close();
-    await remoteDelivery.close();
-    await systemCatalog.close();
-    await interfaceCenter.close();
-    await pluginJira.close();
-    await pluginApplications.close();
-    pluginDistribution.close();
-    await customPlugins.close();
-    await workspaceReports.close(); await groupChat?.close(); await refactorControl.close(workspaceRestart.isRestarting()); await refactorWorkspace.close(); await agentTeams?.close(); await teamGovernance.close(); sourceBackend.close(); await Promise.all(Object.values(accountServices).map(accounts => accounts.close())); await stopStateBackup(); await Promise.all([requirementDevelopment.close(), deliveryAcceptance.close(), jiraFix.close(), jiraFixHandoff.close(), jiraDev.close()]); await Promise.all([cliQueue.close(), agentRuntimes.close(), designExecutor.close(), integration.close(), integrationRuntime.close(), apexBffReview.close(), wecomIntegration.close(), reportBot.close(), deployments.close(), yunxiaoDeployments.close()]); await vite?.close(); await agentUsage.close(); await service.close(); await stateBackup.close(); await releaseStateLease(); process.exit(0);
+    // 极端情况下关闭卡死时，30 秒后强制退出，避免 PM2 等待无限期挂起。
+    const forceExit = setTimeout(() => { console.error('关闭超时，强制退出'); process.exit(1); }, 30_000);
+    forceExit.unref();
+    try {
+      await closeStep('重启控制', () => workspaceRestart.close());
+      await closeStep('SSE 连接', () => closeActiveSseStreams());
+      await closeStep('HTTP 服务', () => { server.close(); server.closeIdleConnections?.(); server.closeAllConnections?.(); });
+      await closeStep('浏览器连接', () => browserConnection.disconnect());
+      await closeStep('研发订阅', () => { unsubscribeJiraDevRuns(); unsubscribeJiraDevTeams(); });
+      await closeStep('研发自动交付', () => jiraDevAutomation?.close());
+      for (const [label, action] of [
+        ['项目启动', () => projectLaunch.close()], ['项目工作区', () => projectWorkspaces.close()], ['远程交付', () => remoteDelivery.close()],
+        ['系统目录', () => systemCatalog.close()], ['接口中心', () => interfaceCenter.close()], ['插件 Jira', () => pluginJira.close()],
+        ['插件应用', () => pluginApplications.close()], ['插件安装任务', () => pluginDistribution.close()],
+        ['自定义插件', () => customPlugins.close()], ['工作台报告', () => workspaceReports.close()], ['团队群聊', () => groupChat?.close()],
+        ['重构管理', () => refactorControl.close(workspaceRestart.isRestarting())], ['重构工作区', () => refactorWorkspace.close()],
+        ['自动协作', () => agentTeams?.close()], ['团队治理', () => teamGovernance.close()], ['内嵌后端', () => sourceBackend.close()],
+      ] as const) await closeStep(label, action);
+      await closeStep('账号服务', () => Promise.all(Object.values(accountServices).map(accounts => accounts.close())));
+      await closeStep('定时备份', () => stopStateBackup());
+      await Promise.allSettled([requirementDevelopment.close(), deliveryAcceptance.close(), jiraFix.close(), jiraFixHandoff.close(), jiraDev.close()]);
+      await Promise.allSettled([cliQueue.close(), agentRuntimes.close(), designExecutor.close(), integration.close(), integrationRuntime.close(), apexBffReview.close(), wecomIntegration.close(), reportBot.close(), deployments.close(), yunxiaoDeployments.close()]);
+      await closeStep('Vite', () => vite?.close());
+      await closeStep('用量统计', () => agentUsage.close());
+      await closeStep('工作流服务', () => service.close());
+    } finally {
+      await closeStep('状态备份', () => stateBackup.close());
+      await closeStep('状态租约', () => releaseStateLease());
+      clearTimeout(forceExit);
+      process.exit(0);
+    }
   })();
 }
 for (const signal of ['SIGTERM', 'SIGINT'] as const) process.once(signal, () => { void shutdown(); });
+process.on('unhandledRejection', reason => {
+  console.error('未处理的异步异常（服务继续运行）：', reason instanceof Error ? reason.stack || reason.message : reason);
+});

@@ -416,7 +416,7 @@ onBeforeUnmount(() => {
   color: var(--ui-secondary);
   flex-shrink: 0;
 }
-:global(:root[data-theme='acid']) .attention-icon {
+:root[data-theme='acid'] .attention-icon {
   border-radius: 0 !important;
 }
 .overview-project-main {
@@ -482,10 +482,10 @@ onBeforeUnmount(() => {
 }
 .overview-issue-title:hover { color: var(--ui-accent); text-decoration: underline; }
 
-:global(:root[data-theme='acid']) .overview-pulse-chip,
-:global(:root[data-theme='acid']) .overview-micro-btn,
-:global(:root[data-theme='acid']) .overview-key-pill,
-:global(:root[data-theme='acid']) .overview-kbd {
+:root[data-theme='acid'] .overview-pulse-chip,
+:root[data-theme='acid'] .overview-micro-btn,
+:root[data-theme='acid'] .overview-key-pill,
+:root[data-theme='acid'] .overview-kbd {
   border-radius: 0 !important;
 }
 
