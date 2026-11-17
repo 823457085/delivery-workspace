@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useQueryClient } from '@tanstack/vue-query';
-import { useRouter } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, type InputInstance } from 'element-plus';
 import { Plug, ListChecks, BookOpen, MessageSquare, Braces, FolderGit2, Layers, Search } from '@lucide/vue';
 import { integrationCatalog } from '../../../shared/integration-plugins';
@@ -11,10 +11,13 @@ import WorkspaceRestartButton from '../../shared/version/WorkspaceRestartButton.
 import { useWorkspaceRestart } from '../../shared/version/useWorkspaceRestart';
 import { filterIntegrationPlugins, summarizePluginRegistry, type PluginFilterTab } from './plugin-registry-studio';
 interface Plugin {
+  connection?: { type: string; label: string; openLabel: string; openPath?: string };
+  transport?: 'http' | 'mcp' | 'github';
+  githubKind?: 'market' | 'plugin'; githubPath?: string; githubPolicy?: 'stable' | 'all' | 'pinned'; githubRef?: string; githubToken?: string; githubTokenConfigured?: boolean; clearGithubToken?: boolean;
   local?: boolean; localPort?: number; id: string; name: string; description: string; enabled: boolean; baseUrl: string; username: string;
   installed: boolean; runningEnabled: boolean; runningConfigured: boolean; views: {id: string; label: string}[]; groupName: string; configured: boolean; restartRequired: boolean; source: string; token?: string; webhook?: string;
 }
-const client = useQueryClient(), router = useRouter();
+const client = useQueryClient(), router = useRouter(), route = useRoute();
 const { query: restartQuery, busy: restarting, restart: triggerWorkspaceRestart } = useWorkspaceRestart();
 const plugins = ref<Plugin[]>([]), busy = ref(false), autoApplying = ref(false);
 const draft = ref<Plugin>();
@@ -55,7 +58,7 @@ function status(plugin: Plugin) {
   if (plugin.local && !plugin.runningConfigured) return { value: 'pending', label: '当前端口不可用' };
   return plugin.runningConfigured ? { value: 'completed', label: '已启用' } : { value: 'pending', label: '待配置' };
 }
-function edit(plugin: Plugin) { draft.value = { ...plugin, token: '', webhook: '' }; }
+function edit(plugin: Plugin) { draft.value = { ...plugin, transport: plugin.transport || 'http', githubKind: plugin.githubKind || 'market', githubPolicy: plugin.githubPolicy || 'stable', githubToken: '', clearGithubToken: false, token: '', webhook: '' }; }
 function closeEditor() { if (!busy.value) draft.value = undefined; }
 async function load() {
   busy.value = true;
@@ -93,7 +96,11 @@ watch(restarting, async (nowBusy, wasBusy) => {
 async function act(plugin: Plugin, action: 'configure' | 'test') {
   busy.value = true;
   try {
-    const config = plugin.id === 'wecom'
+    const config = plugin.connection?.type === 'catalog'
+      ? { enabled: plugin.enabled, baseUrl: plugin.baseUrl, transport: plugin.transport || 'http', ...(plugin.transport === 'github' ? { githubKind: plugin.githubKind || 'market', githubPath: plugin.githubPath || '', githubPolicy: plugin.githubPolicy || 'stable', githubRef: plugin.githubRef || '', githubToken: plugin.githubToken || '', clearGithubToken: !!plugin.clearGithubToken } : {}) }
+      : plugin.connection?.type === 'link'
+      ? { enabled: plugin.enabled, baseUrl: plugin.baseUrl }
+      : plugin.id === 'wecom'
       ? { enabled: plugin.enabled, groupName: plugin.groupName, webhook: plugin.webhook || '' }
       : { enabled: plugin.enabled, baseUrl: plugin.baseUrl, username: plugin.username, token: plugin.token || '' };
     const response = await fetch(`/api/plugins/${plugin.id}/${action}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) });
@@ -103,11 +110,11 @@ async function act(plugin: Plugin, action: 'configure' | 'test') {
       const merged = withFallbackLocalModules(result.plugins);
       const saved = merged.find((item: Plugin) => item.id === plugin.id);
       plugins.value = merged;
-      if (saved) Object.assign(plugin, saved, { token: '', webhook: '' });
+      if (saved) Object.assign(plugin, saved, { token: '', webhook: '', githubToken: '', clearGithubToken: false });
       if (action === 'configure') draft.value = undefined;
     }
     await client.invalidateQueries({queryKey: ['integration-plugins']});
-    if (action === 'configure') maybeAutoApplyRestart(result.message);
+    if (action === 'configure' && !['link', 'catalog'].includes(plugin.connection?.type || '')) maybeAutoApplyRestart(result.message);
     else ElMessage.success(result.message);
   } catch (e) {
     ElMessage.error(e instanceof Error ? e.message : '插件操作失败');
@@ -131,7 +138,8 @@ async function change(plugin: Plugin, input: {enabled?: boolean; installed?: boo
   }
   plugins.value = withFallbackLocalModules(result.plugins);
   await client.invalidateQueries({queryKey: ['integration-plugins']});
-  maybeAutoApplyRestart(result.message);
+  if (['link', 'catalog'].includes(plugin.connection?.type || '')) ElMessage.success(result.message);
+  else maybeAutoApplyRestart(result.message);
  } catch(e) { ElMessage.error(e instanceof Error ? e.message : '插件状态修改失败'); } finally {busy.value = false;}
 }
 function onPluginKeydown(event: KeyboardEvent) {
@@ -143,6 +151,14 @@ function onPluginKeydown(event: KeyboardEvent) {
     searchInputRef.value?.focus();
   }
 }
+watch([() => route.query.configurePlugin, plugins], ([id]) => {
+  if (typeof id !== 'string') return;
+  const plugin = plugins.value.find(item => item.id === id);
+  if (!plugin) return;
+  edit(plugin);
+  const { configurePlugin: _, ...query } = route.query;
+  void router.replace({ query });
+}, { immediate: true });
 onMounted(() => {
   void load();
   window.addEventListener('keydown', onPluginKeydown);
@@ -152,7 +168,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onPluginKeydown));
 <template>
   <section class="surface integration-plugins" aria-label="服务接入与内置模块插件" :aria-busy="busy">
     <div class="surface-header">
-      <div><h2>外部服务与功能页面开关</h2><p>按需开启或隐藏不常用的功能页面；配置 Jira、Confluence 和企微连接后会自动生效。</p></div>
+      <div><h2>固定插件与外部集成</h2><p>Jira、Confluence 和企微属于固定外部集成，使用现有连接配置；内置功能页面可按需开启或隐藏。</p></div>
       <el-button :loading="busy" @click="load">刷新</el-button>
     </div>
     <div class="plugin-registry-bar" role="region" aria-label="插件生态筛选栏">
@@ -202,7 +218,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onPluginKeydown));
       </div>
     </div>
     <div class="plugin-group-block" v-if="servicePlugins.length">
-      <div class="plugin-group-heading"><strong>外部服务连接</strong><span>连接 Jira、Confluence 与企微机器人</span></div>
+      <div class="plugin-group-heading"><strong>外部服务连接</strong><span>配置外部服务连接与访问链接</span></div>
       <div class="plugin-list">
         <article v-for="plugin in servicePlugins" :key="plugin.id" class="plugin-row" :aria-label="plugin.name">
           <span class="plugin-icon"><component :is="icons[plugin.id as keyof typeof icons] || Plug" :size="20" /></span>
@@ -212,7 +228,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onPluginKeydown));
             <div v-if="(capabilitiesById[plugin.id] || []).length" class="plugin-cap-chips">
               <span v-for="cap in (capabilitiesById[plugin.id] || []).slice(0, 3)" :key="cap" class="plugin-cap-chip">{{ cap }}</span>
             </div>
-            <p class="plugin-meta">{{ plugin.configured ? '已填写账号连接' : '尚未配置连接' }}</p>
+            <p class="plugin-meta">{{ ['link', 'catalog'].includes(plugin.connection?.type || '') ? (plugin.configured ? '已配置连接' : '尚未配置连接') : (plugin.configured ? '已填写账号连接' : '尚未配置连接') }}</p>
             <p v-if="!plugin.installed" class="plugin-meta">配置和历史数据已保留，可随时恢复。</p>
             <div v-else-if="plugin.restartRequired" class="plugin-restart-inline">
               <p v-if="restarting || autoApplying" class="plugin-meta">配置已保存，正在后台自动切换生效，正在运行的任务不受影响…</p>
@@ -224,9 +240,15 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onPluginKeydown));
             <div v-if="plugin.installed && plugin.runningEnabled && plugin.runningConfigured && plugin.views.length" class="plugin-links">
               <el-button v-for="view in plugin.views" :key="view.id" link type="primary" @click="router.push({path:'/agent', query:{view:view.id}})">{{ view.label }}</el-button>
             </div>
+            <div v-if="plugin.connection?.openPath" class="plugin-links">
+              <el-button link type="primary" @click="router.push(plugin.connection.openPath)">{{ plugin.connection.openLabel }}</el-button>
+            </div>
+            <div v-if="plugin.connection?.type === 'link' && plugin.installed && plugin.runningEnabled && plugin.runningConfigured" class="plugin-links">
+              <a :href="plugin.baseUrl" target="_blank" rel="noopener noreferrer">{{ plugin.connection.openLabel }}</a>
+            </div>
           </div>
           <div class="plugin-actions">
-            <el-button :disabled="busy" :aria-label="`配置 ${plugin.name}`" @click="edit(plugin)">配置连接</el-button>
+            <el-button :disabled="busy" :aria-label="`配置 ${plugin.name}`" @click="edit(plugin)">{{ plugin.connection?.type === 'link' ? '配置链接' : '配置连接' }}</el-button>
             <el-button v-if="!plugin.installed" :disabled="busy" @click="change(plugin, {installed: true, enabled: true})">恢复接入</el-button>
             <template v-else>
               <el-button :disabled="busy" @click="change(plugin, {enabled: !plugin.runningEnabled})">{{ plugin.runningEnabled ? '停用' : '启用' }}</el-button>
@@ -240,8 +262,26 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onPluginKeydown));
   </section>
   <el-dialog :model-value="!!draft" :title="draft ? `配置 ${draft.name}` : '配置连接'" width="min(560px, 92vw)" class="plugin-config-dialog" append-to-body :close-on-click-modal="false" :close-on-press-escape="!busy" :show-close="!busy" @update:model-value="!$event && closeEditor()" @closed="closeEditor">
     <el-form v-if="draft" label-position="top" :disabled="busy" class="plugin-form" @submit.prevent="act(draft, 'configure')">
-      <p class="editor-description">{{ draft.description }}。保存后会自动生效，正在运行的任务不受影响。</p>
-      <template v-if="draft.id !== 'wecom'">
+      <p class="editor-description">{{ draft.description.replace(/[。.]$/, '') }}。保存后会自动生效，正在运行的任务不受影响。</p>
+      <template v-if="draft.connection?.type === 'catalog'">
+        <el-form-item label="连接方式"><el-select v-model="draft.transport" aria-label="市场连接方式"><el-option label="HTTP（默认）" value="http" /><el-option label="MCP（Streamable HTTP）" value="mcp" /><el-option label="GitHub 仓库" value="github" /></el-select></el-form-item>
+        <el-form-item :label="draft.transport === 'github' ? 'GitHub 仓库地址' : draft.connection.label"><el-input v-model="draft.baseUrl" :placeholder="draft.transport === 'github' ? 'https://github.com/owner/repository' : draft.transport === 'mcp' ? 'http://127.0.0.1:5499/mcp' : 'http://127.0.0.1:5499'" /></el-form-item>
+        <template v-if="draft.transport === 'github'">
+          <el-form-item label="仓库类型"><el-select v-model="draft.githubKind" aria-label="GitHub 仓库类型"><el-option label="市场仓库（catalog.json）" value="market" /><el-option label="单插件仓库（plugin.json）" value="plugin" /></el-select></el-form-item>
+          <el-form-item label="目录路径（选填）"><el-input v-model="draft.githubPath" placeholder="留空为仓库根目录，例如 releases" /></el-form-item>
+          <el-form-item label="版本策略"><el-select v-model="draft.githubPolicy" aria-label="GitHub 版本策略"><el-option label="稳定发布" value="stable" /><el-option label="包含预发布" value="all" /><el-option label="固定 Release 标签" value="pinned" /></el-select></el-form-item>
+          <el-form-item v-if="draft.githubPolicy === 'pinned'" label="Release 标签"><el-input v-model="draft.githubRef" placeholder="v1.0.0" /></el-form-item>
+          <el-form-item label="GitHub Token（私有仓库选填）"><el-input v-model="draft.githubToken" type="password" show-password autocomplete="new-password" :placeholder="draft.githubTokenConfigured ? '同一仓库留空保留现有凭据' : '公有仓库可留空，仅需 Contents 读取权限'" /></el-form-item>
+          <el-checkbox v-if="draft.githubTokenConfigured" v-model="draft.clearGithubToken">清除已保存的 GitHub 凭据</el-checkbox>
+          <p class="editor-description">读取发布标签下的声明，仅安装 Releases 中的 .dwp 包；不运行仓库源码。更换仓库会清除旧凭据。仅支持 github.com。</p>
+        </template>
+        <p class="editor-description">市场只提供目录与发布包，安装仍由本机检查并请求授权。HTTP 仅允许本机回环地址，远端须使用 HTTPS。</p>
+      </template>
+      <template v-else-if="draft.connection?.type === 'link'">
+        <el-form-item :label="draft.connection.label"><el-input v-model="draft.baseUrl" placeholder="https://market.example.com/plugins" /></el-form-item>
+        <p class="editor-description">在新标签页打开网站，不向网站开放本机安装管理权限。</p>
+      </template>
+      <template v-else-if="draft.id !== 'wecom'">
         <el-form-item label="服务地址"><el-input v-model="draft.baseUrl" placeholder="https://your-site.example.com" /></el-form-item>
         <el-form-item label="用户名 / 邮箱"><el-input v-model="draft.username" autocomplete="off" placeholder="使用 Bearer Token 时留空" /></el-form-item>
         <el-form-item label="Token"><el-input v-model="draft.token" type="password" show-password autocomplete="new-password" :placeholder="draft.configured ? '站点和账号不变时，留空保留现有凭据' : '输入认证 Token'" /></el-form-item>
@@ -255,7 +295,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onPluginKeydown));
     </el-form>
     <template #footer>
       <div v-if="draft" class="editor-actions">
-        <el-button :disabled="busy" @click="act(draft, 'test')">{{ draft.id === 'wecom' ? '检查地址格式' : '测试连接' }}</el-button>
+        <el-button :disabled="busy" @click="act(draft, 'test')">{{ draft.connection?.type === 'link' ? '检查链接格式' : draft.id === 'wecom' ? '检查地址格式' : '测试连接' }}</el-button>
         <span class="editor-spacer" />
         <el-button :disabled="busy" @click="closeEditor">取消</el-button>
         <el-button type="primary" :loading="busy" @click="act(draft, 'configure')">保存并生效</el-button>
@@ -316,7 +356,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onPluginKeydown));
 .plugin-restart-inline { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 6px; }
 .plugin-restart-inline .plugin-meta { margin: 0; color: var(--ui-warning); }
 .plugin-links { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-.plugin-links :deep(.el-button.is-link) {
+.plugin-links a { text-decoration: none; }
+.plugin-links a, .plugin-links :deep(.el-button.is-link) {
   display: inline-flex;
   align-items: center;
   min-height: 24px;
@@ -330,7 +371,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onPluginKeydown));
   color: var(--ui-text);
   transition: border-color 140ms ease, background-color 140ms ease;
 }
-.plugin-links :deep(.el-button.is-link:hover) {
+.plugin-links a:hover, .plugin-links :deep(.el-button.is-link:hover) {
   border-color: color-mix(in srgb, var(--ui-text) 24%, var(--ui-border));
   background: var(--ui-hover);
   color: var(--ui-text);

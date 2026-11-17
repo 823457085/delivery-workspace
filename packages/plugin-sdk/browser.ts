@@ -1,4 +1,4 @@
-import { createThemeChannel, type PluginTheme } from './theme';
+import { createThemeChannel, type PluginTheme } from './theme.js';
 declare global { interface Window { __deliveryToken: string; __deliveryTheme: Record<string, string>; __deliveryThemeSnapshot?: PluginTheme; __deliveryThemeMode?: 'full' | 'mode' | 'independent' } }
 const initial = window.__deliveryThemeSnapshot || { id: 'legacy', mode: 'light' as const, version: 0, instance: window.__deliveryToken, tokens: { background: '', surface: '', text: '', muted: '', border: '', accent: '' } };
 const channel = createThemeChannel(initial);
@@ -8,6 +8,7 @@ function applyTheme(values: Record<string, string>, snapshot?: PluginTheme) {
   const mode = window.__deliveryThemeMode || 'full';
   if (mode === 'independent') return;
   if (snapshot) document.documentElement.style.colorScheme = snapshot.mode;
+  if (snapshot && mode === 'full') for (const [key, value] of Object.entries(snapshot.tokens)) document.documentElement.style.setProperty('--ui-' + (key === 'background' ? 'bg' : key), value);
   if (mode === 'full') for (const [name, value] of Object.entries(values || {})) if (/^--(?:ui-|el-|sans$|mono$)/.test(name)) document.documentElement.style.setProperty(name, value);
 }
 applyTheme(window.__deliveryTheme || {}, initial);
@@ -37,9 +38,17 @@ export function hostCall<T = any>(method: string, input?: unknown): Promise<T> {
   });
 }
 // Listen before synchronizing, so changes during initialization are never missed.
-if (window.__deliveryThemeSnapshot) void hostCall<PluginTheme>('theme.get').then(value => channel.accept(value)).catch(() => {});
+if (window.__deliveryThemeSnapshot) void hostCall<PluginTheme>('theme.get').then(value => { if (channel.accept(value)) applyTheme({}, value); }).catch(() => {});
 export const host = {
   theme: { get: channel.get, subscribe: channel.subscribe },
+  configuration: { get: () => hostCall<{ values: Record<string, string>; secrets: Record<string, boolean>; revision: string }>('configuration.get') },
+  menu: { get: () => hostCall<{ visible: boolean; icon?: string; group?: string }>('menu.get') },
+  storage: {
+    list: () => hostCall('storage.list'),
+    save: (record: { id?: string; expectedVersion?: string; values: Record<string, unknown> }) => hostCall('storage.save', record),
+    remove: (record: { id: string; expectedVersion: string }) => hostCall('storage.remove', record),
+  },
+  capabilities: { call: (name: string, method: string, input?: unknown, provider?: string) => hostCall('capabilities.call', { name, version: 1, method, input, provider }) },
   request: <T = any>(method: string, input?: unknown) => hostCall<T>('plugin.request', { method, input }),
   compose: (prompt: string, workspacePath?: string) => hostCall('conversation.compose', { prompt, workspacePath }),
   openWorkspace: (app: 'terminal' | 'cursor', workspacePath: string) => hostCall('workspace.open', { app, workspacePath }),

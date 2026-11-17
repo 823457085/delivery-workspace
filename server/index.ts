@@ -66,7 +66,6 @@ import { assertIntegrationRequest } from './plugins/definitions.mjs';
 import { createPluginStore } from './plugins/store.mjs';
 import { createCustomPluginRuntime } from './plugins/custom-runtime.js';
 import { createPluginApplications } from './plugins/applications.js';
-import { discoverBundledPlugins } from './plugins/bundled-packages.js';
 import { createPluginDistribution } from './plugins/distribution.js';
 import { servePluginCenter } from './plugins/management-assets.js';
 import { createCustomPluginRoutes } from './plugins/custom-routes.js';
@@ -273,13 +272,11 @@ const agentRuntimes = await createAgentRuntimeService(path.join(dataDirectory, '
 currentRuntimeStatusVersion = () => agentRuntimes.runtimeStatusVersion();
 const pluginApplications = createPluginApplications(customPlugins, (app, directory) => app === 'terminal' ? openWorkspaceTerminal(directory) : openWorkspaceCursor(directory, path.join(dataDirectory, 'cursor-workspaces')));
 const pluginCenterDirectory = path.resolve(process.env.DELIVERY_PLUGIN_CENTER_DIR || path.join(root, 'vendor/plugin-center'));
-const pluginDistribution = createPluginDistribution(customPlugins, path.join(customPluginsDirectory, 'install-tasks'), [
-  { id: 'bundled', name: '内附发布目录', location: path.join(pluginCenterDirectory, 'releases/catalog.json') },
-  ...(process.env.DELIVERY_PLUGIN_CATALOGS || '').split(',').filter(Boolean).map((location, i) => ({ id: `remote-${i}`, name: `配置的目录 ${i + 1}`, location: location.trim() })),
-], id => pluginApplications.stop(id));
+const pluginDistribution = createPluginDistribution(customPlugins, path.join(customPluginsDirectory, 'install-tasks'),
+  () => integrationPlugins.catalogSources(), id => pluginApplications.stop(id));
 const customPluginRoutes = createCustomPluginRoutes(customPlugins, pluginJira, {
   json, body, port, applications: pluginApplications,
-  examples: await discoverBundledPlugins(path.join(root, 'plugins')), distribution: pluginDistribution,
+  examples: [], distribution: pluginDistribution,
   citations: reference => agentRuntimes.knowledgeCitations(reference),
 });
 const desktopAccounts = createDesktopAccountsService();
@@ -381,6 +378,7 @@ const [integration, apexBffReview, wecomIntegration, overseasRequirements, repor
   }),
 ]);
 const integrationPlugins = await createPluginStore({
+  catalogProbe: config => pluginDistribution.checkConnection({ id: 'connection-check', name: '市场连接', location: config.baseUrl || '', transport: config.transport || 'http', githubKind: config.githubKind, githubPath: config.githubPath, githubPolicy: config.githubPolicy, githubRef: config.githubRef, githubToken: config.githubToken }),
   port,
   wecomConfig: () => wecomIntegration.config(),
   legacyProbe: id => id === 'jira'
@@ -1447,6 +1445,7 @@ function shutdown() {
     await interfaceCenter.close();
     await pluginJira.close();
     await pluginApplications.close();
+    pluginDistribution.close();
     await customPlugins.close();
     await workspaceReports.close(); await groupChat?.close(); await refactorControl.close(workspaceRestart.isRestarting()); await refactorWorkspace.close(); await agentTeams?.close(); await teamGovernance.close(); sourceBackend.close(); await Promise.all(Object.values(accountServices).map(accounts => accounts.close())); await stopStateBackup(); await Promise.all([requirementDevelopment.close(), deliveryAcceptance.close(), jiraFix.close(), jiraFixHandoff.close(), jiraDev.close()]); await Promise.all([cliQueue.close(), agentRuntimes.close(), designExecutor.close(), integration.close(), integrationRuntime.close(), apexBffReview.close(), wecomIntegration.close(), reportBot.close(), deployments.close(), yunxiaoDeployments.close()]); await vite?.close(); await agentUsage.close(); await service.close(); await stateBackup.close(); await releaseStateLease(); process.exit(0);
   })();

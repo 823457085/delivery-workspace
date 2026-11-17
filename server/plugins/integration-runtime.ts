@@ -4,14 +4,12 @@ import type { SourceBackend } from '../source-backend.js';
 import { assertPluginEnabled } from './definitions.mjs';
 import { createExtension as jira } from '../../plugins/jira/server.js';
 import { createExtension as confluence } from '../../plugins/confluence/server.js';
-import { createExtension as goLearning } from '../../plugins/go-learning/server.js';
-import { createExtension as signHub } from '../../plugins/sign-hub/server.js';
 export interface IntegrationHost { root?: string; directory: string; source: Pick<SourceBackend, 'jiraIssueRequest' | 'confluenceReadRequest'>; port: number;
  json(response: ServerResponse, status: number, value: unknown): void; body(request: IncomingMessage, limit?: number): Promise<unknown> }
 export interface IntegrationExtension { id: string; contentTypes?: string[]; matches(url: URL): boolean;
  route(request: IncomingMessage, response: ServerResponse, url: URL): Promise<boolean>;
  hasReference?(objective: string): boolean; resolveKnowledge?(objective: string): Promise<string>; close(): Promise<void> }
-export function createIntegrationRuntime(host: IntegrationHost, factories = [jira, confluence, goLearning, signHub]) {
+export function createIntegrationRuntime(host: IntegrationHost, factories = [jira, confluence]) {
  const extensions = factories.map(create => create(host));
  if (new Set(extensions.map(extension => extension.id)).size !== extensions.length) throw new Error('重复的接入插件 ID');
  return {

@@ -50,9 +50,9 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', onSettingsKeydown);
   settingsResize?.disconnect();
 });
-const settingsTabs = ['connections', 'plugins', 'models', 'automation', 'reports', 'runtime'];
+const settingsTabs = ['connections', 'integrations', 'plugins', 'models', 'automation', 'reports', 'runtime'];
 const activeTab = computed({
-  get: () => typeof route.query.settingsTab === 'string' && settingsTabs.includes(route.query.settingsTab) ? route.query.settingsTab : 'connections',
+  get: () => route.query.settingsTab === 'legacy-integrations' ? 'integrations' : typeof route.query.settingsTab === 'string' && settingsTabs.includes(route.query.settingsTab) ? route.query.settingsTab : 'connections',
   set: value => { void router.replace({ query: { ...route.query, settingsTab: value } }); },
 });
 
@@ -224,7 +224,8 @@ async function save() {
     </section>
     <el-tabs v-model="activeTab" :tab-position="settingsTabPosition" class="settings-tabs" aria-label="设置分类">
       <el-tab-pane label="连接与项目" name="connections" tabindex="0"><ChromeConnectionCard :active="activeTab === 'connections'" /><ShareConnectionCard /></el-tab-pane>
-      <el-tab-pane label="接入插件" name="plugins" lazy tabindex="0"><IntegrationPluginsCard /><CustomPluginManager /></el-tab-pane>
+      <el-tab-pane label="固定插件" name="integrations" lazy tabindex="0"><p>管理工作台提供的固定外部集成及内置模块；连接配置持续保留，无需从自定义插件市场重复安装。</p><IntegrationPluginsCard /></el-tab-pane>
+      <el-tab-pane label="自定义插件" name="plugins" lazy tabindex="0"><CustomPluginManager /></el-tab-pane>
       <el-tab-pane label="模型与执行" name="models" lazy tabindex="0"><AgentModelDefaultsCard /><CliExecutorCard /></el-tab-pane>
       <el-tab-pane label="自动交付" name="automation" lazy tabindex="0"><p v-if="!integrations.capability('issues.read')" role="status">任务提供者未接入或不可用。原策略保留，相关巡检与派发已暂停，请先在插件管理中恢复连接。</p>
         <QueryState :loading="isPending" :error="error" :has-data="!!data && !!form" @retry="query.refetch()">

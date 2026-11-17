@@ -8,7 +8,7 @@ export const capabilitySchema = z.enum([
   'workspace.todos.write',
   'jira.read',
   'jira.create',
-  'conversation.context', 'application.local', 'conversation.compose', 'workspace.open',
+  'conversation.context', 'application.local', 'conversation.compose', 'workspace.open', 'capabilities.call',
 ]);
 export const pluginFieldTypeSchema = z.enum([
   'text',
@@ -80,6 +80,8 @@ export const pluginManifestSchema = z.object({
   compatibility: z.object({ protocol: z.literal(1), sdk: z.literal('2.1.0') }).strict().optional(),
   theme: z.enum(['full', 'mode', 'independent']).optional(),
   dependencies: z.array(z.string().max(300)).max(20).optional(),
+  provides: z.array(z.object({ name: z.string().regex(/^[a-z][a-z0-9.-]{1,79}$/), version: z.literal(1), methods: z.array(z.string().regex(/^[a-z][a-z0-9/-]{0,80}$/)).min(1).max(30) }).strict()).max(20).optional(),
+  consumes: z.array(z.object({ name: z.string().regex(/^[a-z][a-z0-9.-]{1,79}$/), version: z.literal(1), methods: z.array(z.string().regex(/^[a-z][a-z0-9/-]{0,80}$/)).min(1).max(30) }).strict()).max(20).optional(),
   capabilities: z.array(z.object({
     id: capabilitySchema, required: z.boolean(), purpose: z.string().min(1).max(300), scope: z.string().min(1).max(300),
   }).strict()).max(10).optional(),
@@ -99,6 +101,8 @@ export const pluginManifestSchema = z.object({
   }).strict()).max(10).default([]),
 }).strict().superRefine((m, ctx) => {
   const error = (message: string) => ctx.addIssue({ code: 'custom', message });
+  if (m.provides?.length && !m.application) error('公开能力需要应用后端');
+  if (m.consumes?.length && !m.permissions.includes('capabilities.call')) error('调用其他插件能力必须声明 capabilities.call');
   if (m.capabilities && (new Set(m.capabilities.map(c => c.id)).size !== m.capabilities.length || m.permissions.some(p => !m.capabilities!.some(c => c.id === p)) || m.capabilities.some(c => !m.permissions.includes(c.id)))) error('能力说明必须与权限清单一一对应');
   if (m.capabilities && m.application && !m.capabilities.some(c => c.id === 'application.local' && c.required)) error('本机应用执行必须声明为必需能力');
   if (m.configuration && new Set(m.configuration.fields.map(f => f.key)).size !== m.configuration.fields.length) error('配置字段不能重复');

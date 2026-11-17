@@ -5,14 +5,16 @@ import { ElMessage } from 'element-plus';
 import { ArrowUp, ArrowDown, GripVertical } from '@lucide/vue';
 import { integrationCatalog } from '../../../shared/integration-plugins';
 import { menuIconNames, type NavigationPreferences } from '../../../shared/workspace-navigation';
-import { navigationPreferencesForSave, registeredWorkspaceSections, workspaceMenuSections, type WorkspaceSection } from '../../pages/agent/workspace-navigation';
+import { navigationPreferencesForSave, registeredWorkspaceSections, type WorkspaceSection } from '../../pages/agent/workspace-navigation';
 import { menuIcons, menuIconLabels, workspaceMenuIcons } from '../../shared/menu-icons';
 import { useIntegrationPlugins } from '../../plugins/runtime';
 import { customPluginsQueryKey, pluginRequest, useCustomPlugins } from './api';
+withDefaults(defineProps<{ hideTrigger?: boolean }>(), { hideTrigger: false });
+const emit = defineEmits<{ saved: [] }>();
 const client = useQueryClient(), custom = useCustomPlugins(), integrations = useIntegrationPlugins();
 const opened = ref(false), saving = ref(false), rows = ref<WorkspaceSection[]>([]), selected = ref(''), dragged = ref(''), dropTarget = ref('');
 const draft = ref<NavigationPreferences>({ order: [], icons: {} });
-const visibleIds = computed(() => new Set(workspaceMenuSections(integrations.active.value.map(p => p.id), custom.plugins.value).map(s => s.id)));
+const visibleIds = computed(() => new Set(registeredWorkspaceSections(integrations.active.value.map(p => p.id), custom.plugins.value).map(s => s.id)));
 const reordered = ref(false);
 function iconComponent(id: string) {
   const row = rows.value.find(row => row.id === id);
@@ -20,7 +22,7 @@ function iconComponent(id: string) {
 }
 function open() {
   reordered.value = false;
-  draft.value = structuredClone({ order: [...custom.navigation.value.order], icons: { ...custom.navigation.value.icons } });
+  draft.value = structuredClone({ order: [...custom.navigation.value.order], icons: { ...custom.navigation.value.icons }, ...(custom.navigation.value.groups ? { groups: { ...custom.navigation.value.groups } } : {}) });
   rows.value = registeredWorkspaceSections(integrationCatalog.map(p => p.id), custom.plugins.value.map(p => ({ ...p, enabled: true, showInMenu: true, error: undefined })), { ...draft.value, icons: {} });
   selected.value = rows.value[0]?.id || ''; opened.value = true;
 }
@@ -46,7 +48,7 @@ function finishDrag(event: PointerEvent) {
 function drop(target: string) { move(rows.value.findIndex(row => row.id === dragged.value), rows.value.findIndex(row => row.id === target)); dragged.value = ''; }
 function reset() {
   reordered.value = false;
-  draft.value = { order: [], icons: {} };
+  draft.value = { ...draft.value, order: [], icons: {} };
   rows.value = registeredWorkspaceSections(integrationCatalog.map(p => p.id), custom.plugins.value.map(p => ({ ...p, enabled: true, showInMenu: true, error: undefined })));
 }
 async function save() {
@@ -54,13 +56,14 @@ async function save() {
   try {
     const ids = rows.value.map(row => row.id);
     const result = await pluginRequest('navigation/settings', navigationPreferencesForSave(draft.value, ids, reordered.value));
-    client.setQueryData(customPluginsQueryKey, result); opened.value = false; ElMessage.success('菜单设置已保存');
+    client.setQueryData(customPluginsQueryKey, result); opened.value = false; emit('saved'); ElMessage.success('菜单设置已保存');
   } catch (error) { ElMessage.error(error instanceof Error ? error.message : '菜单保存失败'); }
   finally { saving.value = false; }
 }
+defineExpose({ open });
 </script>
 <template>
-  <el-button :disabled="custom.query.isPending.value || !!custom.query.error.value" @click="open">菜单外观与顺序</el-button>
+  <el-button v-if="!hideTrigger" :disabled="custom.query.isPending.value || !!custom.query.error.value" @click="open">菜单外观与顺序</el-button>
   <el-dialog v-model="opened" title="菜单外观与顺序" width="min(820px, 94vw)" append-to-body :close-on-click-modal="false" :close-on-press-escape="!saving" :show-close="!saving">
     <p class="menu-help">拖动菜单或使用上下箭头调整顺序，点击菜单选择图标。“会话”固定在首位；未显示的菜单将在启用后按此顺序出现。</p>
     <div class="menu-editor">

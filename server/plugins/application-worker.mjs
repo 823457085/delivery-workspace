@@ -1,8 +1,11 @@
 // Trusted local code runs in its own process, not in the workspace server.
 import { connectStdioMcp } from './application-mcp.mjs';
+import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 const [entry, dataDirectory, workspaceDirectory] = process.argv.slice(2);
 let application, configuration = {};
+const calls = new Map();
+const capabilities = { call(name, method, input, provider) { return new Promise((resolve,reject) => { const id=randomUUID(); const timer=setTimeout(()=>{calls.delete(id);reject(new Error('能力调用超时，结果待核对'));},60000); calls.set(id,{resolve,reject,timer}); process.send?.({type:'host-capability',id,input:{name,version:1,method,input,provider}}); }); } };
 const connections = new Set(), shutdown = new AbortController();
 const mcp = { async connect(options) {
   const connection = await connectStdioMcp({ ...options, signal: shutdown.signal });
@@ -12,10 +15,11 @@ const mcp = { async connect(options) {
   return connection;
 } };
 process.on('message', async message => {
+  if (message?.type === 'host-capability-result') { const call=calls.get(message.id); if(call){clearTimeout(call.timer);calls.delete(message.id);message.error?call.reject(new Error(message.error)):call.resolve(message.result);} return; }
   if (message?.type === 'initialize') { configuration = Object.freeze(message.configuration || {}); return; }
   if (!message || message.type !== 'request') return;
   try {
-    application ||= Promise.resolve(import(pathToFileURL(entry).href)).then(module => module.createPlugin({ dataDirectory, workspaceDirectory, configuration, mcp }));
+    application ||= Promise.resolve(import(pathToFileURL(entry).href)).then(module => module.createPlugin({ dataDirectory, workspaceDirectory, configuration, mcp, capabilities }));
     const result = await (await application).request(message.method, message.input);
     process.send?.({ id: message.id, result });
   } catch (error) { process.send?.({ id: message.id, error: error instanceof Error ? error.message : '插件执行失败' }); }

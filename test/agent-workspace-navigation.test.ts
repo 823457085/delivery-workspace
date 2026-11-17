@@ -11,7 +11,7 @@ test('所有工作入口可以定位且旧链接保留具体任务参数', () =>
   assert.deepEqual(workspaceLocation('/deployments', { project: 'project-1' }), { path: '/agent', query: { project: 'project-1', view: 'deployments' } });
   const project = { q: '项目名', workspace: '/code/task', git: '1' };
   assert.deepEqual(workspaceLocation('/projects', project), { path: '/agent', query: { ...project, view: 'projects' } });
-  assert.deepEqual(workspaceLocation('/go-studio'), { path: '/agent', query: { view: 'go-studio' } });
+  assert.equal(workspaceLocation('/go-studio'), undefined, 'Go 实训由自定义插件菜单注册，不恢复固定宿主入口');
   assert.deepEqual(workspaceLocation('/settings', { settingsTab: 'plugins' }), { path: '/agent', query: { view: 'settings', settingsTab: 'plugins' } });
 });
 test('Jira 接入恢复原菜单和子页，停用时旧链接仍可定位', () => {
@@ -61,12 +61,12 @@ test('custom plugin menus use independent identities while preserving existing r
     assert.equal(workspaceView(url.searchParams.get('view'), plugins, url.searchParams.get('plugin'))?.id, item.id);
     assert.equal(url.searchParams.get('plugin'), item.customPluginId);
   }
-  assert.equal(workspaceView('plugins', plugins)?.id, 'plugins');
+  assert.equal(workspaceView('plugins', plugins), undefined, '管理旧链接由路由跳转到设置页');
   assert.equal(workspaceView('plugins', plugins, 'unknown')?.id, 'plugins');
   assert.equal(customPluginViews([{ ...note, showInMenu: false }, { ...todo, enabled: false }]).length, 0);
   assert.equal(customPluginViews([{ ...note, error: '不可用' }]).length, 0);
   assert.equal(workspaceView('plugins', [{ ...note, enabled: false }], note.manifest.id)?.id, 'plugins');
-  assert.equal(registeredWorkspaceSections([], plugins).flatMap(section => section.items).filter(item => item.id === 'plugins').length, 1);
+  assert.equal(registeredWorkspaceSections([], plugins).flatMap(section => section.items).filter(item => item.id === 'plugins').length, 0);
 });
 
 test('menu preferences order both built-in and plugin menus without losing new or hidden entries', async () => {
@@ -99,8 +99,9 @@ test('saving default order or only an icon leaves future menus in their default 
   assert.deepEqual(saved.order, []);
   const expanded = [{ id: 'today', label: '今日', items: [] }, { id: 'custom:new', label: '新插件', items: [] }, { id: 'automation', label: '设置', items: [] }];
   assert.deepEqual(applyNavigationPreferences(expanded, saved).map(s => s.id), ['today', 'custom:new', 'automation']);
-  const previous = { order: ['hidden', 'today', 'automation'], icons: {} };
+  const previous = { order: ['hidden', 'today', 'automation'], icons: {}, groups: { 'custom:go-learning': '学习' } };
   assert.deepEqual(navigationPreferencesForSave(previous, ['automation', 'today'], true).order, ['automation', 'today', 'hidden']);
+  assert.deepEqual(navigationPreferencesForSave(previous, ['automation', 'today'], true).groups, previous.groups);
   assert.deepEqual(navigationPreferencesForSave(previous, ['today', 'automation'], false), previous);
 });
 
@@ -139,4 +140,18 @@ test('对话入口查询参数按最近会话或群聊模式恢复当前房间',
   assert.deepEqual(workspaceChatQuery('session', 'sess-12', 'room-9'), { session: 'sess-12' });
   assert.deepEqual(workspaceChatQuery('group', 'sess-12', ''), { group: '1' });
   assert.deepEqual(workspaceChatQuery('group', 'sess-12', 'room-9'), { group: '1', room: 'room-9' });
+});
+
+test('插件管理只保留设置入口，旧链接兼容且插件业务深链接不跳转', async () => {
+  const { pluginManagementRedirect } = await import('../src/pages/agent/workspace-navigation');
+  assert.equal(registeredWorkspaceSections(['jira']).flatMap(section => section.items).some(view => view.id === 'plugins'), false);
+  assert.deepEqual(pluginManagementRedirect('/agent', { view: 'plugins', q: 'notes', settingsTab: 'connections' }), {
+    path: '/agent', query: { view: 'settings', q: 'notes', settingsTab: 'plugins' },
+  });
+  assert.deepEqual(pluginManagementRedirect('/agent', { view: 'plugins', plugin: '' }), {
+    path: '/agent', query: { view: 'settings', settingsTab: 'plugins' },
+  });
+  assert.equal(pluginManagementRedirect('/agent', { view: 'plugins', plugin: 'todos', record: 'record-1' }), undefined);
+  assert.equal(pluginManagementRedirect('/agent', { view: 'settings', settingsTab: 'integrations' }), undefined);
+  assert.equal(workspaceView('plugins', [], 'disabled-plugin')?.id, 'plugins', '未知或停用插件仍显示状态页，不退回聊天');
 });

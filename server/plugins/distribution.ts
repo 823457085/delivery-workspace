@@ -1,3 +1,4 @@
+import { readCatalogRemote, type CatalogSource } from './catalog-transport.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
@@ -11,7 +12,7 @@ const sha = (value: Buffer) => createHash('sha256').update(value).digest('hex');
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const releaseSchema = z.object({ id: z.string(), version: z.string(), manifest: pluginManifestSchema, package: z.string().regex(/^[a-z0-9][a-z0-9.-]*\.dwp$/), sha256: hashSchema }).strict();
 const catalogSchema = z.object({ protocol: z.literal(1), releases: z.array(releaseSchema).max(500) }).strict();
-type Source = { id: string; name: string; location: string };
+type Source = CatalogSource;
 type Task = { id: string; status: 'awaiting-confirmation' | 'installing' | 'installed' | 'failed' | 'cancelled'; token: string; createdAt: number; source: string; directory: string; digest: string; permissionsDigest: string; manifest: z.infer<typeof pluginManifestSchema>; replaceDigest?: string; message?: string };
 
 /** Constrained JSON envelope, not a general archive: no paths, links, scripts or install hooks. */
@@ -42,25 +43,17 @@ async function localBytes(file: string, limit: number) {
   if (bytes.length > limit) throw new Error('文件超过大小上限');
   return bytes;
 }
-async function remoteBytes(location: string, limit: number) {
-  const url = new URL(location);
-  if (url.protocol !== 'https:' || url.username || url.password || url.hash) throw new Error('远端目录必须使用不含凭据的 HTTPS 地址');
-  const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(20_000), headers: { Accept: 'application/json' } });
-  if (!response.ok || !response.body) throw new Error(`目录或发布包请求失败：HTTP ${response.status}`);
-  if (Number(response.headers.get('content-length')) > limit) { await response.body.cancel(); throw new Error('下载超过大小上限'); }
-  const reader = response.body.getReader(), chunks: Uint8Array[] = []; let total = 0;
-  try { for (;;) { const { value, done } = await reader.read(); if (done) break; if ((total += value.length) > limit) throw new Error('下载超过大小上限'); chunks.push(value); } }
-  finally { await reader.cancel().catch(() => {}); }
-  return Buffer.concat(chunks);
-}
 
-export function createPluginDistribution(runtime: CustomPluginRuntime, directory: string, sources: Source[], stop: (id: string) => void) {
+export function createPluginDistribution(runtime: CustomPluginRuntime, directory: string, sources: Source[] | (() => Promise<Source[]>), stop: (id: string) => void, remoteReader: typeof readCatalogRemote = readCatalogRemote) {
+  const getSources = () => typeof sources === 'function' ? sources() : Promise.resolve(sources);
+  const remote = (source: Source) => !!source.transport || /^https?:/.test(source.location);
   const busy = new Set<string>();
   const taskPath = (id: string) => path.join(directory, z.uuid().parse(id) + '.json');
   const load = async (id: string): Promise<Task> => { const value = await readJson(taskPath(id), null); if (!value) throw new Error('安装任务不存在或已过期'); return value; };
   const save = (task: Task) => privateJson(taskPath(task.id), task);
   async function catalog(source: Source) {
-    const bytes = source.location.startsWith('https:') ? await remoteBytes(source.location, maxCatalog) : await localBytes(source.location, maxCatalog);
+    if (source.error) throw new Error(source.error);
+    const bytes = remote(source) ? await remoteReader(source, maxCatalog) : await localBytes(source.location, maxCatalog);
     const value = catalogSchema.parse(JSON.parse(bytes.toString('utf8')));
     for (const r of value.releases) if (r.id !== r.manifest.id || r.version !== r.manifest.version) throw new Error('目录身份与发布声明不一致');
     if (new Set(value.releases.map(r => `${r.id}@${r.version}`)).size !== value.releases.length) throw new Error('目录包含重复版本');
@@ -76,13 +69,27 @@ export function createPluginDistribution(runtime: CustomPluginRuntime, directory
     if (task.status === 'awaiting-confirmation' && Date.now() - task.createdAt > 15 * 60_000) { task.status = 'cancelled'; task.message = '预览已过期，请重新检查'; await save(task); await fs.rm(task.directory, { recursive: true, force: true }); }
     return task;
   }
+  async function cleanup() {
+    const entries = await fs.readdir(directory).catch(() => []);
+    let awaiting = 0;
+    for (const name of entries) {
+      if (!/^[a-f0-9-]{36}\.json$/.test(name)) continue;
+      const task = await getTask(name.slice(0, -5));
+      if (task.status === 'awaiting-confirmation') awaiting++;
+    }
+    return awaiting;
+  }
+  const janitor = setInterval(() => { void cleanup().catch(() => {}); }, 60_000); janitor.unref();
   return {
+    close() { clearInterval(janitor); },
     async catalogs() {
-      const results = await Promise.all(sources.map(async source => { try { return { id: source.id, name: source.name, location: source.location, ...(await catalog(source)) }; } catch (error) { return { id: source.id, name: source.name, releases: [], error: error instanceof Error ? error.message : '目录不可达' }; } }));
+      const results = await Promise.all((await getSources()).map(async source => { try { return { id: source.id, name: source.name, location: source.location, ...(await catalog(source)) }; } catch (error) { return { id: source.id, name: source.name, releases: [], error: error instanceof Error ? error.message : '目录不可达' }; } }));
       return { protocol: 1, sources: results };
     },
     getTask,
+    async checkConnection(source: Source) { const result = await catalog(source); return { message: `市场连接成功，读取到 ${result.releases.length} 个发布版本` }; },
     async preview(raw: unknown) {
+      if (await cleanup() >= 32) throw new Error('待确认安装过多，请取消旧预览后重试');
       const input = z.union([
         z.object({ localPath: z.string().max(4000) }).strict(),
         z.object({ catalogId: z.string(), id: z.string(), version: z.string(), sha256: hashSchema }).strict(),
@@ -105,19 +112,22 @@ export function createPluginDistribution(runtime: CustomPluginRuntime, directory
             if ((await runtime.inspect(staging)).digest !== checked.digest) throw new Error('包在读取过程中变化');
           } else await unpackRelease(await localBytes(source, maxBytes), staging);
         } else {
-          const origin = sources.find(s => s.id === input.catalogId); if (!origin) throw new Error('未配置该目录来源');
+          const origin = (await getSources()).find(s => s.id === input.catalogId); if (!origin) throw new Error('未配置该目录来源');
           expected = (await catalog(origin)).releases.find(r => r.id === input.id && r.version === input.version);
           if (!expected || expected.sha256 !== input.sha256) throw new Error('选定版本或目录摘要已经变化，请刷新目录');
-          source = origin.location.startsWith('https:') ? new URL(expected.package, origin.location).href : path.join(path.dirname(origin.location), expected.package);
-          const bytes = source.startsWith('https:') ? await remoteBytes(source, maxBytes) : await localBytes(source, maxBytes);
+          source = remote(origin) ? `${origin.transport || 'http'}: ${origin.location} / ${expected.package}` : path.join(path.dirname(origin.location), expected.package);
+          const bytes = remote(origin) ? await remoteReader(origin, maxBytes, expected.package) : await localBytes(source, maxBytes);
           if (sha(bytes) !== expected.sha256) throw new Error('发布包摘要校验失败');
           await unpackRelease(bytes, staging);
         }
         const checked = await runtime.inspect(staging);
         if (expected && fingerprint(checked.manifest) !== fingerprint(expected.manifest)) throw new Error('发布包声明与目录元数据不一致');
         const previous = runtime.list().plugins.find(p => p.manifest.id === checked.manifest.id);
-        const task: Task = { id, createdAt: Date.now(), status: 'awaiting-confirmation', token: randomUUID(), source, directory: staging, manifest: checked.manifest, digest: checked.digest, permissionsDigest: fingerprint({ permissions: checked.manifest.permissions, capabilities: checked.manifest.capabilities }), ...(previous ? { replaceDigest: previous.digest } : {}) };
-        await save(task); return { ...task, currentGrants: previous?.grants || [] };
+        const task: Task = { id, createdAt: Date.now(), status: 'awaiting-confirmation', token: randomUUID(), source, directory: staging, manifest: checked.manifest, digest: checked.digest, permissionsDigest: fingerprint({ permissions: checked.manifest.permissions, capabilities: checked.manifest.capabilities, consumes: checked.manifest.consumes, provides: checked.manifest.provides }), ...(previous ? { replaceDigest: previous.digest } : {}) };
+        await save(task); return { ...task, currentGrants: (previous?.grants || []).filter(grant => {
+          const before = previous?.manifest.capabilities?.find(c => c.id === grant), after = checked.manifest.capabilities?.find(c => c.id === grant);
+          return fingerprint(before ?? null) === fingerprint(after ?? null) && (grant !== 'capabilities.call' || fingerprint(previous?.manifest.consumes ?? null) === fingerprint(checked.manifest.consumes ?? null));
+        }) };
       } catch (error) { await fs.rm(staging, { recursive: true, force: true }); throw error; }
     },
     async cancel(id: string) {

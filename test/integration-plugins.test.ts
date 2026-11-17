@@ -205,3 +205,71 @@ test('disabled backend Jira and Confluence adapters reject before fetch', async 
   assert.match(responseBody, /插件已停用/);
   assert.equal(calls, 0);
 });
+
+test('external links persist without credentials or network requests and apply immediately', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'plugins-links-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'plugins.json');
+  const env = {};
+  const store = await createPluginStore({ file, env, fetchImpl: async () => { throw new Error('unexpected network request'); } });
+  const get = async () => (await store.list()).find(item => item.id === 'plugin-market')!;
+  assert.equal((await get()).local, undefined);
+  assert.equal((await get()).configured, false);
+  assert.equal((await get()).connection?.type, 'catalog');
+  const baseUrl = 'https://market.example.test/catalog.json';
+  assert.match((await store.test('plugin-market', { enabled: true, baseUrl })).message, /未访问外部服务/);
+  await assert.rejects(fs.stat(file), { code: 'ENOENT' });
+  await store.save('plugin-market', { enabled: true, baseUrl });
+  assert.equal((await get()).baseUrl, baseUrl);
+  assert.equal((await get()).runningConfigured, true);
+  assert.equal((await get()).restartRequired, false);
+  await store.state('plugin-market', { enabled: false });
+  assert.equal((await get()).runningEnabled, false);
+  await store.state('plugin-market', { installed: false });
+  await store.save('plugin-market', { enabled: false, baseUrl });
+  assert.equal((await get()).installed, false);
+  const reloadedEnv = {};
+  applyPluginEnvironment(await readPluginFile(file), reloadedEnv);
+  const reloaded = await createPluginStore({ file, env: reloadedEnv });
+  assert.equal((await reloaded.list()).find(item => item.id === 'plugin-market')!.baseUrl, baseUrl);
+  await reloaded.state('plugin-market', { installed: true, enabled: true });
+  assert.equal((await reloaded.list()).find(item => item.id === 'plugin-market')!.runningEnabled, true);
+  await reloaded.save('plugin-market', { enabled: true, baseUrl: '' });
+  assert.equal((await reloaded.list()).find(item => item.id === 'plugin-market')!.configured, false);
+});
+
+test('external links reject unsafe URLs and credential fields without overwriting saved settings', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'plugins-links-invalid-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'plugins.json');
+  const store = await createPluginStore({ file, env: {} });
+  await store.save('plugin-market', { enabled: true, baseUrl: 'http://localhost:9000/catalog' });
+  const before = await fs.readFile(file, 'utf8');
+  for (const baseUrl of ['javascript:alert(1)', 'file:///tmp/catalog', '//example.test', 'https://user:password@example.test', 'https://example.test\n']) {
+    await assert.rejects(store.save('plugin-market', { enabled: true, baseUrl }));
+  }
+  await assert.rejects(store.save('plugin-market', { enabled: true, token: 'unexpected' }));
+  await assert.rejects(store.test('plugin-market', { enabled: true, baseUrl: '' }), /请先填写链接/);
+  assert.equal(await fs.readFile(file, 'utf8'), before);
+});
+
+
+test('catalog connection preserves old link config, switches protocols, and rejects remote plaintext', async t => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'plugins-catalog-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'plugins.json');
+  const previous = { version: 1, plugins: { 'plugin-market': { enabled: true, baseUrl: 'https://example.test/old#page' } } };
+  await fs.writeFile(file, JSON.stringify(previous));
+  const store = await createPluginStore({ file, env: {}, catalogProbe: async c => ({ message: `checked:${c.transport}` }) });
+  const old = (await store.list()).find(p => p.id === 'plugin-market')!;
+  assert.equal(old.name, '自定义插件');
+  assert.equal(old.baseUrl, previous.plugins['plugin-market'].baseUrl);
+  assert.equal(old.transport, 'http');
+  for (const baseUrl of ['http://example.test', 'http://192.168.1.10', 'http://127.0.0.2', 'https://example.test#secret']) {
+    await assert.rejects(store.save('plugin-market', { enabled: true, baseUrl }));
+  }
+  await store.save('plugin-market', { enabled: true, baseUrl: 'http://127.0.0.1:5499/mcp', transport: 'mcp' });
+  assert.equal((await store.list()).find(p=>p.id==='plugin-market')!.transport, 'mcp');
+  assert.equal((await store.test('plugin-market', { enabled: true, baseUrl: 'http://127.0.0.1:5499/mcp', transport: 'mcp' })).message, 'checked:mcp');
+  await assert.rejects(store.save('plugin-market', { enabled: true, baseUrl: '', transport: 'ssh' }));
+});

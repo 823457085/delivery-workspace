@@ -1,3 +1,4 @@
+import { applicationManifest } from './plugin-application-fixture.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -34,7 +35,7 @@ test('host worker owns MCP lifetime and revoking native permission kills its chi
  const {createPluginApplications}=await import('../server/plugins/applications.js');
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'mcp-lifecycle-')),pack=path.join(root,'package');await fs.mkdir(pack);
  const fixture=path.join(root,'fixture.mjs');await fs.writeFile(fixture,`import readline from 'node:readline';readline.createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line);if(!m.id)return;console.log(JSON.stringify({jsonrpc:'2.0',id:m.id,result:m.method==='initialize'?{protocolVersion:'2025-03-26',capabilities:{tools:{}}}:{pid:process.pid}}))});`);
- const manifest=JSON.parse(await fs.readFile('plugins/alert-hub/plugin.json','utf8'));manifest.id='mcp-fixture';delete manifest.configuration;
+ const manifest=applicationManifest();manifest.id='mcp-fixture';
  await fs.writeFile(path.join(pack,'plugin.json'),JSON.stringify(manifest));await fs.writeFile(path.join(pack,'ui.js'),'');await fs.writeFile(path.join(pack,'ui.css'),'');
  await fs.writeFile(path.join(pack,'server.mjs'),`export async function createPlugin(host){const c=await host.mcp.connect({command:${JSON.stringify(process.execPath)},args:[${JSON.stringify(fixture)}]});return {request:()=>c.callTool('pid')}}`);
  const runtime=await createCustomPluginRuntime(path.join(root,'plugins'),await createWorkspaceTodos(path.join(root,'todos'))),apps=createPluginApplications(runtime,async()=>{});

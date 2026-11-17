@@ -7,13 +7,32 @@ import { z } from 'zod';
 import { applicationHashes, readApplicationPackage } from './application-package.js';
 import { fingerprint, type CustomPluginRuntime } from './custom-runtime.js';
 
-type Worker = { child: ChildProcess; pending: Map<string, { resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }> };
+type Worker = { digest: string; child: ChildProcess; pending: Map<string, { resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }> };
 export function createPluginApplications(runtime: CustomPluginRuntime, open: (app: 'terminal' | 'cursor', directory: string) => Promise<void>) {
   const workers = new Map<string, Worker>();
   const starting = new Map<string, Promise<Worker>>();
   const epochs = new Map<string, number>();
   const queues = new Map<string, Promise<unknown>>();
   let closing = false;
+  const capabilityTargets = new Map<string, number>();
+  async function capabilityCall(caller: string, raw: unknown): Promise<unknown> {
+    const input = z.object({name:z.string(),version:z.literal(1),method:z.string(),input:z.unknown().optional(),provider:z.string().optional()}).strict().parse(raw);
+    const callerEpoch = epochs.get(caller) || 0;
+    const checkCaller = () => {
+      if (callerEpoch !== (epochs.get(caller) || 0)) throw new Error('调用者授权或状态已变化');
+      const source = runtime.assertCapability(caller, 'capabilities.call');
+      if (!source.manifest.consumes?.some(c => c.name === input.name && c.version === input.version && c.methods.includes(input.method))) throw new Error('未声明该能力及操作范围');
+    };
+    checkCaller();
+    if (capabilityTargets.has(caller)) throw new Error('不支持嵌套能力调用，避免循环依赖');
+    const matches = runtime.list().plugins.filter(p => p.enabled && p.grants.includes('application.local') && p.manifest.id !== caller && (!input.provider || input.provider === p.manifest.id) && p.manifest.provides?.some(c => c.name === input.name && c.version === input.version && c.methods.includes(input.method)));
+    if (matches.length !== 1) throw new Error(matches.length ? '存在多个能力提供者，请显式选择' : '能力提供者未安装、未启用或未授权');
+    const target = matches[0].manifest.id;
+    capabilityTargets.set(target, (capabilityTargets.get(target) || 0) + 1);
+    try { return await call(target, { method: input.method, input: input.input }, checkCaller); }
+    finally { const count = (capabilityTargets.get(target) || 1) - 1; if (count) capabilityTargets.set(target, count); else capabilityTargets.delete(target); }
+  }
+
   function stop(id: string) {
     epochs.set(id, (epochs.get(id) || 0) + 1);
     const worker = workers.get(id);
@@ -34,7 +53,8 @@ export function createPluginApplications(runtime: CustomPluginRuntime, open: (ap
   }
   async function start(id: string): Promise<Worker> {
     if (closing) throw new Error('工作台正在关闭');
-    runtime.applicationEntry(id);
+    const installed = runtime.applicationEntry(id);
+    if (workers.has(id) && workers.get(id)!.digest !== installed.digest) stop(id);
     if (workers.has(id)) return workers.get(id)!;
     if (starting.has(id)) return starting.get(id)!;
     const epoch = epochs.get(id) || 0;
@@ -51,8 +71,12 @@ export function createPluginApplications(runtime: CustomPluginRuntime, open: (ap
         stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
       });
       child.send({ type: 'initialize', configuration });
-      const worker: Worker = { child, pending: new Map() }; workers.set(id, worker);
+      const worker: Worker = { digest: entry.digest, child, pending: new Map() }; workers.set(id, worker);
       child.on('message', (message: any) => {
+        if (message?.type === 'host-capability') {
+          void capabilityCall(id, message.input).then(result => { if (child.connected) child.send({ type: 'host-capability-result', id: message.id, result }); }, error => { if (child.connected) child.send({type:'host-capability-result',id:message.id,error:error.message}); });
+          return;
+        }
         const item = worker.pending.get(message?.id); if (!item) return;
         worker.pending.delete(message.id); clearTimeout(item.timer);
         message.error ? item.reject(new Error(String(message.error))) : item.resolve(message.result);
@@ -71,16 +95,15 @@ export function createPluginApplications(runtime: CustomPluginRuntime, open: (ap
     if (actual !== root && !actual.startsWith(root + path.sep) || !(await fs.stat(actual)).isDirectory()) throw new Error('只能使用该插件的工作目录');
     return actual;
   }
-  return {
-    stop,
-    async page(id: string) { const { files, entry } = await verified(id); return { themeMode: entry.manifest.theme || 'full', javascript: files['ui.js'].toString('utf8'), css: files['ui.css'].toString('utf8') }; },
-    call(id: string, raw: unknown) {
+function call(id: string, raw: unknown, guard = () => {}) {
       const input = z.object({ method: z.string().regex(/^[a-z][a-z0-9/-]{0,80}$/), input: z.unknown().optional() }).strict().parse(raw);
       runtime.applicationEntry(id);
       const epoch = epochs.get(id) || 0;
       const task = (queues.get(id) || Promise.resolve()).then(async () => {
         if (epoch !== (epochs.get(id) || 0)) throw new Error('插件状态已变化，请重试');
+        guard();
         const worker = await start(id);
+        guard();
         runtime.applicationEntry(id);
         return new Promise((resolve, reject) => {
           const requestId = randomUUID();
@@ -91,7 +114,11 @@ export function createPluginApplications(runtime: CustomPluginRuntime, open: (ap
       });
       queues.set(id, task.catch(() => {}));
       return task;
-    },
+    }
+  return {
+    stop,
+    async page(id: string) { const { files, entry } = await verified(id); return { themeMode: entry.manifest.theme || 'full', javascript: files['ui.js'].toString('utf8'), css: files['ui.css'].toString('utf8') }; },
+    call, capabilityCall,
     async compose(id: string, raw: unknown) {
       runtime.assertCapability(id, 'conversation.compose');
       const input = z.object({ prompt: z.string().min(1).max(30000), workspacePath: z.string().max(2000).optional() }).strict().parse(raw);

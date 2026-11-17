@@ -10,8 +10,6 @@ import { agentWorkspaceContext } from '../../shared/agent-workspace-context';
 import { normalizePluginTags, type CustomPluginField, type CustomPluginInfo, type PluginRecord } from '../../../shared/custom-plugins';
 import { dateTime, safeUrl } from '../../shared/format';
 import PageHeading from '../../shared/ui/PageHeading.vue';
-const CustomPluginManager = defineAsyncComponent(() => import('./CustomPluginManager.vue'));
-const IntegrationPluginsCard = defineAsyncComponent(() => import('../delivery-settings/IntegrationPluginsCard.vue'));
 const PluginJiraDialog = defineAsyncComponent(() => import('./PluginJiraDialog.vue'));
 
 defineProps<{ dedicated?: boolean }>();
@@ -244,7 +242,7 @@ onMounted(() => run(load));
       :loading="busy"
       @refresh="refreshWorkspace"
     >
-      <el-button v-if="id" @click="router.push({ query: { view: 'plugins' } })">返回插件中心</el-button>
+      <el-button v-if="id" @click="router.push({ query: { view: 'settings', settingsTab: 'plugins' } })">返回插件中心</el-button>
       <el-button @click="router.push({ query: { view: 'settings', settingsTab: 'plugins' } })">连接与凭据设置</el-button>
     </PageHeading>
 
@@ -253,17 +251,13 @@ onMounted(() => run(load));
         :model-value="id"
         placeholder="切换到已安装的自定义插件工作区…"
         clearable
-        @change="$event ? router.push({ query: { view: 'plugins', plugin: $event } }) : router.push({ query: { view: 'plugins' } })"
+        @change="$event ? router.push({ query: { view: 'plugins', plugin: $event } }) : router.push({ query: { view: 'settings', settingsTab: 'plugins' } })"
       >
         <el-option v-for="p in plugins" :key="p.manifest.id" :value="p.manifest.id" :label="p.manifest.name + (p.enabled ? '' : '（已停用）')" />
       </el-select>
     </div>
 
-    <template v-if="!dedicated && !id">
-      <CustomPluginManager @changed="run(load)" />
-      <IntegrationPluginsCard />
-    </template>
-    <el-skeleton v-else-if="busy && !plugin" :rows="3" animated />
+    <el-skeleton v-if="busy && !plugin" :rows="3" animated />
     <el-empty v-else-if="!plugin || !plugin.enabled" :description="id ? '插件已停用或移除，历史引用快照仍保留在会话中' : '请先在插件中心添加或启用插件'" />
     <PluginApplicationFrame v-else-if="plugin.manifest.page.kind === 'application'" ref="applicationFrame" :key="plugin.manifest.id" :plugin-id="plugin.manifest.id" />
     <template v-else>

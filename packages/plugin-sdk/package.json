@@ -3,14 +3,29 @@
   "version": "2.1.0",
   "type": "module",
   "exports": {
-    "./browser": "./browser.ts",
-    "./server": "./server.ts",
-    "./theme": "./theme.ts",
-    "./protocol": "./protocol.ts",
-    "./manifest": "./manifest.ts"
+    "./browser": {
+      "types": "./dist/browser.d.ts",
+      "import": "./dist/browser.js"
+    },
+    "./server": {
+      "types": "./dist/server.d.ts",
+      "import": "./dist/server.js"
+    },
+    "./theme": {
+      "types": "./dist/theme.d.ts",
+      "import": "./dist/theme.js"
+    },
+    "./protocol": {
+      "types": "./dist/protocol.d.ts",
+      "import": "./dist/protocol.js"
+    },
+    "./manifest": {
+      "types": "./dist/manifest.d.ts",
+      "import": "./dist/manifest.js"
+    }
   },
   "files": [
-    "*.ts",
+    "dist",
     "README.md"
   ],
   "dependencies": {

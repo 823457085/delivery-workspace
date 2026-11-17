@@ -3,7 +3,7 @@
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import AgentWorkspace from '../../features/agent-workbench/AgentWorkspace.vue';
-import { registeredWorkspaceSections, workspaceChatQuery, workspaceMenuSections, workspaceView } from './workspace-navigation';
+import { registeredWorkspaceSections, workspaceChatQuery, workspaceView } from './workspace-navigation';
 import { agentWorkspaceContext } from '../../shared/agent-workspace-context';
 import { useIntegrationPlugins, integrationComponents } from '../../plugins/runtime';
 
@@ -47,7 +47,7 @@ const { activeScene, loopEnabled, daylightEnabled: videoDaylightEnabled, dayligh
 const route = useRoute(), router = useRouter();
 const integrations = useIntegrationPlugins();
 const customPlugins = useCustomPlugins();
-const workspaceSections = computed(() => workspaceMenuSections(integrations.active.value.map(plugin => plugin.id), customPlugins.plugins.value, customPlugins.navigation.value));
+const workspaceSections = computed(() => registeredWorkspaceSections(integrations.active.value.map(plugin => plugin.id), customPlugins.plugins.value, customPlugins.navigation.value));
 const coreSectionIds = new Set(['today', 'tasks', 'projects']);
 const primaryHeaderIds = new Set(['today', 'tasks', 'projects', 'execution', 'automation']);
 const coreSections = computed(() => workspaceSections.value.filter(group => coreSectionIds.has(group.id)));
@@ -123,7 +123,7 @@ function currentChatQuery() {
 }
 function open(id?: string) {
   const custom = workspaceSections.value.flatMap(section => section.items).find(item => item.id === id)?.customPluginId;
-  const query = custom ? { view: 'plugins', plugin: custom } : id === 'plugins' ? { view: id } : id ? panelLocations.get(id) || { view: id } : currentChatQuery();
+  const query = custom ? { view: 'plugins', plugin: custom } : id === 'plugins' ? { view: 'settings', settingsTab: 'plugins' } : id ? panelLocations.get(id) || { view: id } : currentChatQuery();
   void router.push({ path: '/agent', query });
 }
 function openSingleChat() {
