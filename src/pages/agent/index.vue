@@ -12,7 +12,7 @@ const RequirementDevelopment = defineAsyncComponent(() => import('../../features
 import { useCustomPlugins } from '../../features/custom-plugins/api';
 import WorkspacePanelViewport from '../../shared/ui/WorkspacePanelViewport.vue';
 import { ArrowUpRight, Camera, ChevronDown, Clock3, Film, LayoutGrid, Maximize2, MessagesSquare, Minimize2, PanelLeftClose, PanelLeftOpen, Pause, Play, Plus, Search, Users } from '@lucide/vue';
-import { workspaceMenuIcons } from '../../shared/menu-icons';
+import WorkspaceMenuIcon from '../../shared/WorkspaceMenuIcon.vue';
 import { ElMessage } from 'element-plus';
 import ThemePicker from '../../shared/theme/ThemePicker.vue';
 import { isSupportedWallpaperFile } from '../../shared/theme/customTheme';
@@ -66,7 +66,6 @@ function toggleRail() {
 }
 const pluginReady = computed(() => !view.value?.pluginId || integrations.available(view.value.pluginId));
 const localPort = window.location.port || '5288';
-const navigationIcons = workspaceMenuIcons;
 const navigationLabels: Record<string, string> = { today: '今日', projects: '项目', execution: 'AI 交付', integration: '联调', automation: '设置' };
 const workspace = ref<InstanceType<typeof AgentWorkspace>>();
 const panelStates = new Map<string, unknown>();
@@ -356,7 +355,7 @@ function toggleDaylightFromPalette() {
           :title="group.label"
           @click="openSection(group)"
         >
-          <component :is="navigationIcons[group.icon || group.id] || LayoutGrid" :size="14" />
+          <WorkspaceMenuIcon :name="group.icon || group.id" :size="14" />
           <span>{{ group.shortLabel || navigationLabels[group.id] || group.label }}</span>
         </button>
         <el-dropdown v-if="overflowHeaderSections.length" trigger="click" popper-class="hg-more-nav-popper">
@@ -367,7 +366,7 @@ function toggleDaylightFromPalette() {
             aria-label="更多工具与插件"
             title="展开更多工具与插件"
           >
-            <component :is="activeOverflowSection ? (navigationIcons[activeOverflowSection.icon || activeOverflowSection.id] || LayoutGrid) : LayoutGrid" :size="14" />
+            <WorkspaceMenuIcon :name="activeOverflowSection?.icon || activeOverflowSection?.id" :size="14" />
             <span>{{ activeOverflowSection ? `更多 · ${activeOverflowSection.shortLabel || navigationLabels[activeOverflowSection.id] || activeOverflowSection.label}` : '更多工具' }}</span>
             <ChevronDown :size="13" />
           </button>
@@ -379,7 +378,7 @@ function toggleDaylightFromPalette() {
                 :class="{ 'is-active': section?.id === group.id }"
                 @click="openSection(group)"
               >
-                <component :is="navigationIcons[group.icon || group.id] || LayoutGrid" :size="14" />
+                <WorkspaceMenuIcon :name="group.icon || group.id" :size="14" />
                 <span>{{ group.label }}</span>
               </el-dropdown-item>
             </el-dropdown-menu>
@@ -470,7 +469,7 @@ function toggleDaylightFromPalette() {
       <template #navigation="context">
         <nav v-if="context.placement !== 'footer'" class="workspace-navigation" aria-label="统一工作入口">
           <button type="button" :class="{ active: !view }" :aria-current="!view ? 'page' : undefined" title="会话" @click="open(); context.closeNavigation()"><MessagesSquare :size="17" /><span>会话</span></button>
-          <button v-for="group in workspaceSections" :key="group.id" type="button" :class="{ active: section?.id === group.id }" :aria-label="group.label" :aria-current="section?.id === group.id ? 'page' : undefined" :title="group.label" @click="openSection(group); context.closeNavigation()"><component :is="navigationIcons[group.icon || group.id] || LayoutGrid" :size="17" /><span>{{ group.id === 'today' ? '今日' : group.id === 'automation' ? '设置' : group.label }}</span></button>
+          <button v-for="group in workspaceSections" :key="group.id" type="button" :class="{ active: section?.id === group.id }" :aria-label="group.label" :aria-current="section?.id === group.id ? 'page' : undefined" :title="group.label" @click="openSection(group); context.closeNavigation()"><WorkspaceMenuIcon :name="group.icon || group.id" :size="17" /><span>{{ group.id === 'today' ? '今日' : group.id === 'automation' ? '设置' : group.label }}</span></button>
         </nav>
       </template>
 
@@ -501,7 +500,7 @@ function toggleDaylightFromPalette() {
                   <span class="hg-rail-heading">日常工作</span>
                   <div v-for="group in coreSections" :key="group.id" class="hg-rail-node">
                     <button type="button" class="hg-rail-item" :aria-current="section?.id === group.id ? 'page' : undefined" :title="group.label" @click="openSection(group)">
-                      <component :is="navigationIcons[group.icon || group.id] || LayoutGrid" :size="15" />
+                      <WorkspaceMenuIcon :name="group.icon || group.id" :size="15" />
                       <span>{{ group.label }}</span>
                     </button>
                     <div v-if="!railCollapsed && section?.id === group.id && group.items.length > 1" class="hg-rail-subitems">
@@ -516,7 +515,7 @@ function toggleDaylightFromPalette() {
                   <span class="hg-rail-heading">扩展工具</span>
                   <div v-for="group in deliverySections" :key="group.id" class="hg-rail-node">
                     <button type="button" class="hg-rail-item" :aria-current="section?.id === group.id ? 'page' : undefined" :title="group.label" @click="openSection(group)">
-                      <component :is="navigationIcons[group.icon || group.id] || LayoutGrid" :size="15" />
+                      <WorkspaceMenuIcon :name="group.icon || group.id" :size="15" />
                       <span>{{ group.label }}</span>
                     </button>
                     <div v-if="!railCollapsed && section?.id === group.id && group.items.length > 1" class="hg-rail-subitems">
@@ -531,7 +530,7 @@ function toggleDaylightFromPalette() {
                   <span class="hg-rail-heading">系统与设置</span>
                   <div v-for="group in systemSections" :key="group.id" class="hg-rail-node">
                     <button type="button" class="hg-rail-item" :aria-current="section?.id === group.id ? 'page' : undefined" :title="group.label" @click="openSection(group)">
-                      <component :is="navigationIcons[group.icon || group.id] || LayoutGrid" :size="15" />
+                      <WorkspaceMenuIcon :name="group.icon || group.id" :size="15" />
                       <span>{{ group.label }}</span>
                     </button>
                     <div v-if="!railCollapsed && section?.id === group.id && group.items.length > 1" class="hg-rail-subitems">
@@ -549,7 +548,7 @@ function toggleDaylightFromPalette() {
               <header class="workspace-page-head">
                 <div class="workspace-page-lead">
                   <div class="workspace-page-identity">
-                    <span class="workspace-page-symbol"><component :is="navigationIcons[section.icon || section.id] || LayoutGrid" v-if="section" :size="16" /></span>
+                    <span class="workspace-page-symbol"><WorkspaceMenuIcon :name="section.icon || section.id" v-if="section" :size="16" /></span>
                     <div><p>{{ view.customPluginId ? '扩展插件' : section?.label }}</p><h1>{{ view.label }}</h1></div>
                   </div>
                   <nav v-if="!fullHeightPanel && (!view.customPluginId || (section?.items.length || 0) > 1)" class="workspace-view-tabs" aria-label="工作面板视图">

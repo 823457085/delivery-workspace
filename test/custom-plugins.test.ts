@@ -233,7 +233,7 @@ test('menu order and built-in icons persist atomically without changing plugin d
   const restarted = await createCustomPluginRuntime(path.join(f.root, 'plugins'), f.todos);
   assert.deepEqual(restarted.list().navigation, navigation);
   assert.deepEqual(restarted.list().plugins[0].grants, before[0].grants);
-  for (const invalid of [{ order: ['today', 'today'], icons: {} }, { order: [], icons: { today: 'https://example.com/icon.svg' } }, { order: ['../escape'], icons: {} }]) {
+  for (const invalid of [{ order: ['today', 'today'], icons: {} }, { order: [], icons: { today: 'javascript:alert(1)' } }, { order: ['../escape'], icons: {} }]) {
     await assert.rejects(restarted.saveNavigation(invalid));
     assert.deepEqual(restarted.list().navigation, navigation);
   }
@@ -434,4 +434,14 @@ test('Jira unknown ticket reconciles by marker search, verified issue link, or e
   assert.equal(autoLinked.result?.key, 'DEMO-88');
   assert.equal((await jira.status('personal-todos', record.id)).links[0].key, 'DEMO-88');
   assert.equal(posts, 2);
+});
+
+test('新增内置图标和外链图标保存重载后保留，不改变菜单顺序与分组', async t => {
+  const f = await fixture(t);
+  const navigation = { order: ['today', 'projects'], icons: { today: 'https://example.com/logo.svg?v=2', projects: 'database' }, groups: { today: '个人' } };
+  await f.runtime.saveNavigation(navigation);
+  const restarted = await createCustomPluginRuntime(path.join(f.root, 'plugins'), f.todos);
+  assert.deepEqual(restarted.list().navigation, navigation);
+  await assert.rejects(restarted.saveNavigation({ ...navigation, icons: { today: 'file:///tmp/private.svg' } }));
+  assert.deepEqual(restarted.list().navigation, navigation);
 });

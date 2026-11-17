@@ -401,3 +401,30 @@ test('并发首次读取共用历史加载，执行记录不会被迟到空快�
     assert.equal(reads, 1); assert.ok(snapshots.every(item => item.executions.length === 1 && item.executions[0].state === 'succeeded'));
   } finally { fs.readFile = originalRead; await f.cleanup(); }
 });
+
+test('非 Node 项目首次读取和重复读取返回空命令，不因缺少 package.json 报错', async () => {
+ const f=await fixture();
+ try {
+  await fs.rm(path.join(f.workspacePath,'package.json'));
+  await fs.writeFile(path.join(f.workspacePath,'go.mod'),'module example.com/service\n');
+  for(let i=0;i<2;i++){
+   const report=await f.service.snapshot(f.workspacePath);assert.deepEqual(report.commands,[]);assert.deepEqual(report.configs,[]);assert.match(report.discoveryMessage!,/暂无 Node/);
+  }
+  assert.equal(f.calls.length,0);
+  await fs.writeFile(path.join(f.workspacePath,'package.json'),'{broken');
+  await assert.rejects(f.service.snapshot(f.workspacePath),/无法读取/);
+ }finally{await f.cleanup();}
+});
+
+test('已发现过的 Node 项目删除清单后保留配置和历史，但不提供旧指令', async () => {
+  const f = await fixture();
+  try {
+    const before = await f.service.snapshot(f.workspacePath);
+    await fs.rm(path.join(f.workspacePath, 'package.json'));
+    const after = await f.service.snapshot(f.workspacePath);
+    assert.deepEqual(after.configs, before.configs);
+    assert.deepEqual(after.commands, []);
+    assert.match(after.discoveryMessage || '', /没有 package.json/);
+    assert.equal(f.calls.length, 0);
+  } finally { await f.service.close(); await f.cleanup(); }
+});

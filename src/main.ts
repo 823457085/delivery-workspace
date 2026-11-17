@@ -14,6 +14,7 @@ import './app/themes.css';
 import './app/delivery-confirm.css';
 import './app/bento-controls.css';
 import './app/overlay-refinement.css';
+import './app/scrollbars.css';
 installSharedEventSourceHub();
 const disposeTheme = initializeTheme();
 if (import.meta.hot) import.meta.hot.dispose(disposeTheme);

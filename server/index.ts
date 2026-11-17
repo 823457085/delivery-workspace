@@ -1,3 +1,5 @@
+import { prepareConversationWorkspaceBranches, conversationWorkspaceContext } from './conversation-workspace-branches.js';
+import { createConversationWorkspaces, createConversationWorkspaceRoutes } from './conversation-workspaces.js';
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
@@ -271,6 +273,8 @@ const agentRuntimes = await createAgentRuntimeService(path.join(dataDirectory, '
 });
 currentRuntimeStatusVersion = () => agentRuntimes.runtimeStatusVersion();
 const pluginApplications = createPluginApplications(customPlugins, (app, directory) => app === 'terminal' ? openWorkspaceTerminal(directory) : openWorkspaceCursor(directory, path.join(dataDirectory, 'cursor-workspaces')), () => projectWorkspaces);
+const conversationWorkspaces = await createConversationWorkspaces(path.join(dataDirectory, 'conversation-workspaces.json'));
+const conversationWorkspaceRoutes = createConversationWorkspaceRoutes(conversationWorkspaces, { port, json, body });
 const pluginCenterDirectory = path.resolve(process.env.DELIVERY_PLUGIN_CENTER_DIR || path.join(root, 'vendor/plugin-center'));
 const pluginDistribution = createPluginDistribution(customPlugins, path.join(customPluginsDirectory, 'install-tasks'),
   () => integrationPlugins.catalogSources(), id => pluginApplications.stop(id));
@@ -705,6 +709,7 @@ const server = http.createServer(async (request, response) => {
       if (url.pathname === '/api/workspace/select') { await workspacePicker(request, response, port); return; }
       if (url.pathname === '/api/workspace/terminal') { await workspaceTerminal(request, response, port); return; }
       if (url.pathname === '/api/workspace/cursor') { await workspaceCursor(request, response, port); return; }
+      if (await conversationWorkspaceRoutes(request, response, url)) return;
       if (await projectWorkspaceRoutes(request, response, url)) return;
       if (await projectLaunchRoutes(request, response, url)) return;
       if (url.pathname === '/api/plugins' || /^\/api\/plugins\/[^/]+\/(?:configure|test|state)$/.test(url.pathname)) {
@@ -1236,6 +1241,13 @@ const server = http.createServer(async (request, response) => {
           const input = z.object({ workspacePath: z.string().trim().min(1).max(1000) }).parse(Object.fromEntries(url.searchParams));
           json(response, 200, await agentRuntimes.workspaceBranches(input.workspacePath)); return;
         }
+        if (request.method === 'POST' && url.pathname === '/api/agent-runtimes/branches/switch') {
+          if (request.headers['x-delivery-confirmed'] !== 'yes' || request.headers['content-type']?.split(';')[0] !== 'application/json') {
+            json(response, 403, { message: '请确认项目分支切换' }); return;
+          }
+          const input = z.object({ workspacePath: z.string().trim().min(1).max(1000), branch: z.string().trim().min(1).max(300), expectedBranch: z.string().max(300) }).strict().parse(await body(request));
+          json(response, 200, await agentRuntimes.switchProjectBranch(input.workspacePath, input.branch, input.expectedBranch)); return;
+        }
         if (request.method === 'POST' && url.pathname === '/api/agent-runtimes/models') {
           json(response, 201, await agentRuntimes.addCustomModel(agentCustomModelSchema.parse(await body(request)))); return;
         }
@@ -1245,7 +1257,17 @@ const server = http.createServer(async (request, response) => {
           json(response, 200, await agentRuntimes.removeCustomModel(agentModel[1])); return;
         }
         if (request.method === 'POST' && url.pathname === '/api/agent-runtimes/runs') {
-          sendAcceptedRun(response, await agentRuntimes.start(agentStartSchema.parse(await body(request)))); return;
+          const input = agentStartSchema.parse(await body(request));
+          if (input.workspaceId) {
+            const group = conversationWorkspaces.get(input.workspaceId);
+            if ((group.projectPaths[0] || '') !== input.workspacePath) throw new Error('工作区项目已变化，请重新选择工作区');
+            const bindings = await prepareConversationWorkspaceBranches(group, path.join(dataDirectory, 'conversation-branch-workspaces'));
+            input.workspacePath = bindings[0]?.workspacePath || '';
+            input.branch = undefined;
+            if (bindings.some(binding=>binding.branch)) input.isolateWorkspace = false;
+            input.objective += conversationWorkspaceContext(bindings);
+          }
+          sendAcceptedRun(response, await agentRuntimes.start(input)); return;
         }
         if (request.method === 'POST' && url.pathname === '/api/agent-runtimes/conversation-ids/migrate') {
           const input = z.object({ assignments: z.array(z.object({ runId: z.string().uuid(), conversationId: z.string().uuid(),

@@ -13,7 +13,7 @@ export const agentStartSchema = z.preprocess((value) => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
   const input = value as Record<string, unknown>;
   return input.mode === 'agent' && input.accessMode === undefined ? { ...input, accessMode: 'full' } : value;
-}, z.object({ provider: z.enum(['codex', 'cursor', 'claude', 'kiro', 'antigravity', 'api', 'deepseek', 'workbuddy', 'grok']), mode: z.enum(['agent', 'plan', 'ask']),
+}, z.object({ workspaceId: z.string().min(1).max(5000).optional(), provider: z.enum(['codex', 'cursor', 'claude', 'kiro', 'antigravity', 'api', 'deepseek', 'workbuddy', 'grok']), mode: z.enum(['agent', 'plan', 'ask']),
   continueConversationId: z.string().uuid().optional(),
   accessMode: agentAccessSchema.default('workspace'), model: z.string().trim().max(100), reasoningEffort: agentReasoningSchema.default(''),
   serviceTier: agentServiceTierSchema.optional(), objective: z.string().max(200_000),

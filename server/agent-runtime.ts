@@ -2089,7 +2089,7 @@ export async function createAgentRuntimeService(directory: string, options: Serv
     const imported = originSessionId && !parent ? runs.find((run) => run.originSessionId === originSessionId) : undefined;
     const conversationId = runOptions.conversationId || (parent ? conversationIdFor(parent)
       : imported ? conversationIdFor(imported) : runId);
-    const run: AgentRun = { id: runId, ...(parentRunId ? { parentRunId } : {}), conversationId,
+    const run: AgentRun = { ...(input.workspaceId || parent?.workspaceId ? { workspaceId: input.workspaceId || parent?.workspaceId } : {}), id: runId, ...(parentRunId ? { parentRunId } : {}), conversationId,
       ...(runOptions.recoveryOfRunId ? { recoveryOfRunId: runOptions.recoveryOfRunId } : {}),
       ...(revisionSource ? { revisesRunId: revisionSource.id } : {}),
       queueRootId: runOptions.resetQueueRoot ? runId : parent?.queueRootId || runId,
@@ -3905,6 +3905,23 @@ export async function createAgentRuntimeService(directory: string, options: Serv
     revealChangedFile,
     openChangedFileInBrowser,
     workspaceBranches: listGitBranches,
+    switchProjectBranch: (workspacePath: string, branch: string, expectedBranch: string) => exclusive(async () => {
+      const identity = await workspaceIdentity(workspacePath);
+      const current = identity.branch === 'detached HEAD' ? '' : identity.branch;
+      if (current !== expectedBranch) throw new Error('项目分支已变化，请刷新后重新选择');
+      if (current === branch) return listGitBranches(identity.workspacePath);
+      for (const interrupted of runs.filter(run => run.workspacePath === identity.workspacePath && run.status === 'interrupted' && run.recovery)) {
+        await reconcileRun(interrupted);
+        if (interrupted.recovery?.state === 'active' || interrupted.recovery?.nativeObservation) throw new Error(interrupted.recovery.message);
+      }
+      const usesWorkspace = (run: {workspacePath: string; team?: AgentRun['team']}) =>
+        run.workspacePath === identity.workspacePath || !!run.team?.workspacePaths?.includes(identity.workspacePath);
+      if ([...active.values()].some(usesWorkspace) || runs.some(run => usesWorkspace(run) && (run.status === 'running' || run.status === 'queued'))) {
+        throw new Error('当前项目已有 Agent 运行或排队，暂时不能切换分支');
+      }
+      await workspaceBranchSwitcher(identity.workspacePath, branch);
+      return listGitBranches(identity.workspacePath);
+    }),
     updateConversationTitle: (id: string, title: string) => exclusive(() => updateConversationTitle(id, title)),
     removeConversation: (runId: string) => exclusive(() => removeConversation(runId)),
     removeConversations: (targets: AgentConversationDeleteTarget[]) => exclusive(() => removeConversations(targets)),

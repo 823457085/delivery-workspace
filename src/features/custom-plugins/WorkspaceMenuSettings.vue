@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { useQueryClient } from '@tanstack/vue-query';
 import { ElMessage } from 'element-plus';
 import { ArrowUp, ArrowDown, GripVertical } from '@lucide/vue';
 import { integrationCatalog } from '../../../shared/integration-plugins';
-import { menuIconNames, type NavigationPreferences } from '../../../shared/workspace-navigation';
+import { menuIconNames, menuIconUrlSchema, isMenuIconUrl, type NavigationPreferences } from '../../../shared/workspace-navigation';
 import { navigationPreferencesForSave, registeredWorkspaceSections, type WorkspaceSection } from '../../pages/agent/workspace-navigation';
-import { menuIcons, menuIconLabels, workspaceMenuIcons } from '../../shared/menu-icons';
+import { menuIcons, menuIconLabels } from '../../shared/menu-icons';
+import WorkspaceMenuIcon from '../../shared/WorkspaceMenuIcon.vue';
 import { useIntegrationPlugins } from '../../plugins/runtime';
 import { customPluginsQueryKey, pluginRequest, useCustomPlugins } from './api';
 withDefaults(defineProps<{ hideTrigger?: boolean }>(), { hideTrigger: false });
@@ -15,10 +16,20 @@ const client = useQueryClient(), custom = useCustomPlugins(), integrations = use
 const opened = ref(false), saving = ref(false), rows = ref<WorkspaceSection[]>([]), selected = ref(''), dragged = ref(''), dropTarget = ref('');
 const draft = ref<NavigationPreferences>({ order: [], icons: {} });
 const visibleIds = computed(() => new Set(registeredWorkspaceSections(integrations.active.value.map(p => p.id), custom.plugins.value).map(s => s.id)));
-const reordered = ref(false);
-function iconComponent(id: string) {
+const reordered = ref(false), iconSearch = ref(''), externalUrl = ref(''), externalError = ref('');
+const iconMode = ref<'builtin' | 'external'>('builtin');
+const filteredIcons = computed(() => menuIconNames.filter(name => `${name} ${menuIconLabels[name]}`.toLowerCase().includes(iconSearch.value.trim().toLowerCase())));
+watch(() => [selected.value, draft.value.icons[selected.value]], () => {
+  const value = draft.value.icons[selected.value]; externalUrl.value = isMenuIconUrl(value) ? value : ''; externalError.value = ''; iconMode.value = isMenuIconUrl(value) ? 'external' : 'builtin';
+});
+function applyExternalIcon() {
+  const result = menuIconUrlSchema.safeParse(externalUrl.value.trim());
+  if (!result.success) { externalError.value = '请输入有效的 HTTP 或 HTTPS 图片链接，不能包含账号密码'; return false; }
+  draft.value.icons[selected.value] = result.data; externalError.value = ''; return true;
+}
+function iconName(id: string) {
   const row = rows.value.find(row => row.id === id);
-  return workspaceMenuIcons[draft.value.icons[id] || row?.icon || id] || menuIcons.grid;
+  return draft.value.icons[id] || row?.icon || id;
 }
 function open() {
   reordered.value = false;
@@ -52,6 +63,7 @@ function reset() {
   rows.value = registeredWorkspaceSections(integrationCatalog.map(p => p.id), custom.plugins.value.map(p => ({ ...p, enabled: true, showInMenu: true, error: undefined })));
 }
 async function save() {
+  if (iconMode.value === 'external' && !applyExternalIcon()) return;
   saving.value = true;
   try {
     const ids = rows.value.map(row => row.id);
@@ -70,7 +82,7 @@ defineExpose({ open });
       <ol class="menu-order" aria-label="菜单顺序">
         <li v-for="(row, index) in rows" :key="row.id" :data-menu-id="row.id" :draggable="!saving" :class="{ selected: selected === row.id, dragging: dragged === row.id, 'drop-target': dropTarget === row.id }" @dragstart="dragged = row.id; $event.dataTransfer?.setData('text/plain', row.id)" @dragend="dragged = ''" @dragover.prevent @drop.prevent="drop(row.id)">
           <button class="drag-handle" :disabled="saving" :aria-label="`拖动${row.label}`" @pointerdown.prevent="beginDrag($event, row.id)" @pointermove="trackDrag" @pointerup="finishDrag" @pointercancel="dragged = ''; dropTarget = ''"><GripVertical :size="16" aria-hidden="true" /></button>
-          <button class="menu-select" :disabled="saving" :aria-pressed="selected === row.id" :aria-label="`设置${row.label}图标`" @click="selected = row.id"><component :is="iconComponent(row.id)" :size="18" /><span>{{ row.label }}</span><small v-if="!visibleIds.has(row.id)">未显示</small></button>
+          <button class="menu-select" :disabled="saving" :aria-pressed="selected === row.id" :aria-label="`设置${row.label}图标`" @click="selected = row.id"><WorkspaceMenuIcon :name="iconName(row.id)" :size="18" /><span>{{ row.label }}</span><small v-if="!visibleIds.has(row.id)">未显示</small></button>
           <el-button text :disabled="saving || index === 0" :aria-label="`上移${row.label}`" @click="move(index, index - 1)"><ArrowUp :size="16" /></el-button>
           <el-button text :disabled="saving || index === rows.length - 1" :aria-label="`下移${row.label}`" @click="move(index, index + 1)"><ArrowDown :size="16" /></el-button>
         </li>
@@ -78,8 +90,21 @@ defineExpose({ open });
       <section class="icon-picker" aria-label="选择菜单图标">
         <h3>{{ rows.find(row => row.id === selected)?.label }}的图标</h3>
         <el-button class="default-icon" :disabled="saving || !selected" :aria-pressed="!draft.icons[selected]" @click="delete draft.icons[selected]">使用默认图标</el-button>
+        <div class="icon-mode" aria-label="图标来源"><button :aria-pressed="iconMode==='builtin'" @click="iconMode='builtin'">内置图标 {{menuIconNames.length}}</button><button :aria-pressed="iconMode==='external'" @click="iconMode='external'">外链图标</button></div>
+        <template v-if="iconMode==='builtin'">
+        <el-input v-model="iconSearch" class="icon-search" placeholder="搜索图标：名称或英文关键词" aria-label="搜索菜单图标" clearable />
         <div class="icon-options">
-          <button v-for="name in menuIconNames" :key="name" :disabled="saving || !selected" :aria-label="`${menuIconLabels[name]}图标`" :aria-pressed="draft.icons[selected] === name" @click="draft.icons[selected] = name"><component :is="menuIcons[name]" :size="18" /><span>{{ menuIconLabels[name] }}</span></button>
+          <button v-for="name in filteredIcons" :key="name" :disabled="saving || !selected" :aria-label="`${menuIconLabels[name]}图标`" :aria-pressed="draft.icons[selected] === name" @click="draft.icons[selected] = name"><component :is="menuIcons[name]" :size="18" /><span>{{ menuIconLabels[name] }}</span></button>
+        </div>
+        <p v-if="!filteredIcons.length" class="menu-help">没有匹配的图标</p>
+        </template>
+        <div v-else class="external-icon">
+          <div class="external-icon-preview"><WorkspaceMenuIcon :name="iconName(selected)" :size="36" /><span>当前图标预览</span></div>
+          <label for="menu-external-icon">图片链接</label>
+          <el-input id="menu-external-icon" v-model="externalUrl" :disabled="saving || !selected" placeholder="https://example.com/icon.png" @keydown.enter.prevent="applyExternalIcon" />
+          <p>填写图片直链，可预览后保存菜单。加载失败时显示默认应用图标。</p>
+          <p v-if="externalError" role="alert" class="external-error">{{ externalError }}</p>
+          <el-button :disabled="saving || !selected || !externalUrl.trim()" @click="applyExternalIcon">预览外链图标</el-button>
         </div>
       </section>
     </div>
@@ -87,5 +112,5 @@ defineExpose({ open });
   </el-dialog>
 </template>
 <style scoped>
-.menu-help{margin:0 0 12px;color:var(--ui-muted);line-height:1.55;font-size:12.5px}.menu-editor{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:16px;align-items:start}.menu-order{list-style:none;margin:0;padding:0;max-height:56vh;overflow:auto}.menu-order li{display:flex;gap:4px;align-items:center;padding:4px 7px;border:1px solid var(--ui-border);border-radius:7px;margin-bottom:5px;background:var(--ui-surface)}.menu-order li.selected{border-color:var(--ui-accent);background:var(--ui-accent-soft)}.menu-order li.dragging{opacity:.5}.menu-order li.drop-target{border-top:3px solid var(--ui-accent)}.drag-handle{display:grid;place-items:center;padding:0;border:0;background:transparent;flex-shrink:0;cursor:grab;color:var(--ui-muted);touch-action:none}.menu-select{display:flex;align-items:center;gap:8px;min-width:0;flex:1;background:transparent;border:0;text-align:left;color:var(--ui-text);cursor:pointer;font:inherit;font-size:12.5px;padding:3px 4px}.menu-select svg{flex-shrink:0;color:var(--ui-secondary)}.menu-order li.selected .menu-select svg{color:var(--ui-accent)}.menu-select span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.menu-select small{white-space:nowrap;color:var(--ui-muted);font-size:11px}.menu-order :deep(.el-button){margin:0;padding:4px;min-height:24px}.icon-picker h3{font-size:13px;margin:0 0 8px}.default-icon{margin-bottom:10px}.icon-options{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}.icon-options button{display:flex;align-items:center;flex-direction:column;gap:5px;padding:8px 4px;border:1px solid var(--ui-border);border-radius:7px;background:var(--ui-surface);color:var(--ui-secondary);cursor:pointer;font:inherit;font-size:11.5px;transition:border-color .15s,background-color .15s,color .15s}.icon-options button:hover:not(:disabled){border-color:var(--ui-accent);color:var(--ui-text)}.icon-options button[aria-pressed=true]{color:var(--ui-accent);background:var(--ui-accent-soft);border-color:var(--ui-accent)}button:focus-visible{outline:2px solid var(--ui-accent);outline-offset:2px}.menu-footer{display:flex;gap:8px}.menu-footer span{flex:1}.menu-footer :deep(.el-button){margin:0}@media(max-width:650px){.menu-editor{grid-template-columns:1fr;max-height:65vh;overflow:auto}.menu-order{max-height:30vh}.icon-options{grid-template-columns:repeat(4,minmax(0,1fr))}}
+.menu-help{margin:0 0 12px;color:var(--ui-muted);line-height:1.55;font-size:12.5px}.menu-editor{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:16px;align-items:start}.menu-order{list-style:none;margin:0;padding:0;max-height:56vh;overflow:auto}.menu-order li{display:flex;gap:4px;align-items:center;padding:4px 7px;border:1px solid var(--ui-border);border-radius:7px;margin-bottom:5px;background:var(--ui-surface)}.menu-order li.selected{border-color:var(--ui-accent);background:var(--ui-accent-soft)}.menu-order li.dragging{opacity:.5}.menu-order li.drop-target{border-top:3px solid var(--ui-accent)}.drag-handle{display:grid;place-items:center;padding:0;border:0;background:transparent;flex-shrink:0;cursor:grab;color:var(--ui-muted);touch-action:none}.menu-select{display:flex;align-items:center;gap:8px;min-width:0;flex:1;background:transparent;border:0;text-align:left;color:var(--ui-text);cursor:pointer;font:inherit;font-size:12.5px;padding:3px 4px}.menu-select svg{flex-shrink:0;color:var(--ui-secondary)}.menu-order li.selected .menu-select svg{color:var(--ui-accent)}.menu-select span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.menu-select small{white-space:nowrap;color:var(--ui-muted);font-size:11px}.menu-order :deep(.el-button){margin:0;padding:4px;min-height:24px}.icon-picker{max-height:56vh;overflow:auto;padding:2px}.icon-mode{display:flex;gap:6px;margin-bottom:10px}.icon-mode button{border:1px solid var(--ui-border);border-radius:6px;padding:6px 10px;background:var(--ui-surface);color:var(--ui-secondary);cursor:pointer}.icon-mode button[aria-pressed=true]{color:var(--ui-accent);background:var(--ui-accent-soft);border-color:var(--ui-accent)}.external-icon-preview{display:flex;align-items:center;gap:12px;padding:12px;border:1px solid var(--ui-border);border-radius:8px;color:var(--ui-muted);font-size:12px}.icon-search{margin-bottom:10px}.external-icon{display:grid;gap:8px;margin-top:8px;padding-top:4px}.external-icon label{font-size:12px;font-weight:600}.external-icon p{margin:0;font-size:11.5px;line-height:1.5;color:var(--ui-muted)}.external-icon .external-error{color:var(--el-color-danger)}.icon-options{max-height:270px;overflow:auto;padding:2px}.icon-picker h3{font-size:13px;margin:0 0 8px}.default-icon{margin-bottom:10px}.icon-options{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}.icon-options button{display:flex;align-items:center;flex-direction:column;gap:5px;padding:8px 4px;border:1px solid var(--ui-border);border-radius:7px;background:var(--ui-surface);color:var(--ui-secondary);cursor:pointer;font:inherit;font-size:11.5px;transition:border-color .15s,background-color .15s,color .15s}.icon-options button:hover:not(:disabled){border-color:var(--ui-accent);color:var(--ui-text)}.icon-options button[aria-pressed=true]{color:var(--ui-accent);background:var(--ui-accent-soft);border-color:var(--ui-accent)}button:focus-visible{outline:2px solid var(--ui-accent);outline-offset:2px}.menu-footer{display:flex;gap:8px}.menu-footer span{flex:1}.menu-footer :deep(.el-button){margin:0}@media(max-width:650px){.menu-editor{grid-template-columns:1fr;max-height:65vh;overflow:auto}.menu-order{max-height:30vh}.icon-options{grid-template-columns:repeat(4,minmax(0,1fr))}}
 </style>

@@ -6,7 +6,7 @@ import { z } from 'zod';
 import type { LaunchConfig, LaunchSnapshot, LaunchStatus, ProjectCommand, ProjectExecution } from '../shared/project-launch.js';
 import type { PortListener, PortSnapshot, PortStoppedService } from '../shared/port-monitor.js';
 import { executePortAction, scanListeningPorts } from './port-monitor.js';
-import { discoverProject, projectCommands } from './project-command-discovery.js';
+import { discoverProject, projectCommands, MissingProjectManifest } from './project-command-discovery.js';
 import { runProjectCommand, redactProjectOutput, readManagedLaunchLog, createProjectLogBuffer } from './project-command-runner.js';
 
 const scriptName = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9:._-]{0,79}$/);
@@ -265,6 +265,7 @@ export function createProjectLaunch(directory: string, options: Options) {
     try { project = await inspect(inputPath); }
     catch (error) {
       const workspacePath = knownPaths.get(inputPath) || inputPath, previous = snapshotCache.get(workspacePath);
+      if (error instanceof MissingProjectManifest && !previous) return { workspacePath, revision: 0, packageManager: 'npm', scripts: [], configs: [], commands: [], statuses: [], executions: (await history(workspacePath)).map(record => ({ ...record })), discoveryMessage: error.message };
       if (!previous) throw error;
       return { ...previous, commands: [], statuses: [], executions: (await history(workspacePath)).map(record => ({ ...record })),
         discoveryMessage: redactProjectOutput(error instanceof Error ? error.message : '项目配置无法读取') };

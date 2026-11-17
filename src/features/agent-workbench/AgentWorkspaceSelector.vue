@@ -160,7 +160,7 @@ function chooseOtherFolder() {
       <div class="workspace-menu">
         <header class="workspace-menu-head">
           <div>
-            <strong>选择项目工作区</strong>
+            <strong>选择项目</strong>
             <small>支持多选项目，首项作为主执行目录</small>
           </div>
           <button v-if="selectedOptions.length" type="button" class="clear-btn" @click="clearWorkspaces">
