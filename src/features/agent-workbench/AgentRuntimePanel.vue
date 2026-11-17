@@ -114,6 +114,7 @@ watch(mobile, () => { mobilePanel.value = ''; });
 // 布局和栏宽独立于配色，切换主题时保留用户当前的面板状态。
 const leftWidth = shallowRef(240);
 const rightWidth = shallowRef(280);
+const sideChatShare = shallowRef(50);
 const executionColumnWidth = computed(() => `min(${rightWidth.value}px, 28vw)`);
 function toggleSessions() {
   if (mobile.value) mobilePanel.value = mobilePanel.value === 'sessions' ? '' : 'sessions';
@@ -142,10 +143,11 @@ try { savedNewServiceTier = window.localStorage.getItem('agent-service-tier:v2:n
 catch { /* 存储不可用时使用工作台普通速度 */ }
 const workspacePaths = shallowRef<string[]>([]);
 let lastHandoffDraft = '';
-const form = reactive<StartAgentRunInput & { accessMode: AgentAccessMode; reasoningEffort: AgentReasoningEffort | ''; branch: string }>({
-  provider: agentModelDefaults.value.provider || 'codex', mode: 'agent', accessMode: 'full', model: '', reasoningEffort: '', objective: '', workspacePath: '', branch: '',
+const form = reactive<StartAgentRunInput & { accessMode: AgentAccessMode; reasoningEffort: AgentReasoningEffort | ''; branch: string; isolateWorkspace: boolean }>({
+  provider: agentModelDefaults.value.provider || 'codex', mode: 'agent', accessMode: 'full', model: '', reasoningEffort: '', objective: '', workspacePath: '', branch: '', isolateWorkspace: false,
   serviceTier: savedNewServiceTier === 'default' || savedNewServiceTier === 'priority' ? savedNewServiceTier : codexWorkbenchDefaults.serviceTier,
 });
+watch(() => form.workspacePath, () => { form.isolateWorkspace = false; });
 watch(() => form.serviceTier, (value) => {
   if (value) {
     try { window.localStorage.setItem('agent-service-tier:v2:new', value); }
@@ -402,7 +404,7 @@ function resetForm() {
   form.model = runtime?.defaultModel || '';
   form.reasoningEffort = runtime?.models.find(model => model.id === form.model)?.defaultEffort || '';
   lastHandoffDraft = '';
-  form.objective = ''; form.workspacePath = ''; workspacePaths.value = []; form.branch = '';
+  form.objective = ''; form.workspacePath = ''; workspacePaths.value = []; form.branch = ''; form.isolateWorkspace = false;
 }
 function openCreate() { groupMode.value = false; selectionRevision++; selectedConversationId.value = ''; creating.value = true; }
 function selectConversation(id: string) { groupMode.value = false; selectionRevision++; creating.value = false; selectedConversationId.value = id; }
@@ -479,7 +481,7 @@ async function submit() {
     const finalObjective = multiWorkspaceNote ? `${form.objective.trim()}${multiWorkspaceNote}`.trim() : form.objective;
     const snapshotAttachments = [...newAttachments.value];
     const startPayload = { ...form, ...(multiWorkspaceNote ? { objective: finalObjective } : {}), serviceTier: form.provider === 'codex' ? codexServiceTier(selectedRuntime.value, form.model, form.serviceTier) : undefined,
-      isolateWorkspace: true, attachmentIds: snapshotAttachments.map((item) => item.id) };
+      isolateWorkspace: !!form.branch && form.isolateWorkspace, attachmentIds: snapshotAttachments.map((item) => item.id) };
     if (typeof trackOptimisticRun === 'function') {
       const now = new Date().toISOString();
       openedOptimistically = true;
@@ -901,7 +903,7 @@ onBeforeUnmount(() => {
         'has-left-rail': desktopSideControls && leftCollapsed,
         'has-right-rail': desktopSideControls && desktopDetailsAvailable && rightCollapsed,
         'has-side-chat': sideChatVisible,
-      }">
+      }" :style="sideChatVisible ? { '--main-chat-width': `${100 - sideChatShare}fr`, '--side-chat-width': `${sideChatShare}fr` } : undefined">
         <button v-if="desktopSideControls" type="button" class="studio-side-toggle left"
           aria-controls="studio-session-sidebar" :aria-expanded="!leftCollapsed"
           :aria-label="leftCollapsed ? '展开会话列表' : '收起会话列表'"
@@ -920,7 +922,7 @@ onBeforeUnmount(() => {
         <AgentPanelResize v-show="!mobile && !sessionsCollapsed" v-model="leftWidth" side="left" variant="project-studio" />
         <AgentPanelResize v-show="!mobile && desktopDetailsOpen" v-model="rightWidth" side="right" variant="project-studio" />
         <AgentNewConversation v-if="creating" v-show="!workbenchOpen" ref="newConversationPane" v-model:provider="form.provider" v-model:mode="form.mode" v-model:access-mode="form.accessMode" v-model:model="form.model" v-model:service-tier="form.serviceTier" v-model:reasoning-effort="form.reasoningEffort"
-          v-model:objective="form.objective" v-model:attachments="newAttachments" v-model:workspace-path="form.workspacePath" v-model:workspace-paths="workspacePaths" v-model:branch="form.branch" class="conversation-column"
+          v-model:objective="form.objective" v-model:attachments="newAttachments" v-model:workspace-path="form.workspacePath" v-model:workspace-paths="workspacePaths" v-model:branch="form.branch" v-model:isolate-workspace="form.isolateWorkspace" class="conversation-column"
           :runtimes="runtimes" :workspaces="workspaceOptions" :business-options="businessMentions" :changing="submittingNew ? 'start' : changing || teamChat.changing.value" :can-start="canStart" :attachment-draft="newAttachmentDraft"
           @send="submit" @choose-workspace="chooseWorkspace" @configure-models="openModelSettings()">
           <template #header-actions><span id="new-connection-status"></span></template>
@@ -940,6 +942,7 @@ onBeforeUnmount(() => {
             </button>
           </template>
         </AgentConversation>
+        <AgentPanelResize v-if="sideChatVisible" v-model="sideChatShare" side="right" variant="side-chat" aria-controls="agent-side-chat" />
         <section v-if="sideChatVisible" id="agent-side-chat" class="side-chat-column" aria-label="侧边聊天">
           <header class="side-chat-bar">
             <nav class="side-chat-tabs" aria-label="侧边会话标签">
@@ -1017,7 +1020,10 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .session-shell.has-side-chat {
-  grid-template-columns: var(--visible-session-width, var(--session-column-width)) minmax(0, 1fr) minmax(0, 1fr);
+  --chat-pane-min-width: 320px;
+  grid-template-columns: var(--visible-session-width, var(--session-column-width))
+    minmax(var(--chat-pane-min-width), var(--main-chat-width))
+    minmax(var(--chat-pane-min-width), var(--side-chat-width));
 }
 .side-chat-column {
   display: flex;

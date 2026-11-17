@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { AgentRun, CodexSessionDetail, CodexSessionSummary } from '../shared/agent-runtime.js';
+import { emptyAgentUsage } from '../shared/agent-usage.js';
+import { estimateConversationContextMeter } from '../shared/agent-composer-preflight.js';
 import { agentConversationStatus, agentRunErrorText, agentRunStatus, buildAgentConversationList, buildAgentConversations, findAgentConversation,
-  isRestartableAgentRun, isRetryableSessionBusyRun, reconcileAgentConversation, resumedConversationId } from '../src/features/agent-workbench/conversation.js';
+  codexConversationContext, isRestartableAgentRun, isRetryableSessionBusyRun, reconcileAgentConversation, resumedConversationId } from '../src/features/agent-workbench/conversation.js';
 
 function run(id: string, parentRunId = '', createdAt = '2026-09-16T00:00:00.000Z'): AgentRun {
   return { id, ...(parentRunId ? { parentRunId } : {}), provider: 'codex', mode: 'ask', accessMode: 'workspace', model: '', reasoningEffort: '', objective: `message-${id}`,
@@ -21,6 +23,45 @@ test('运行记录按 parentRunId 聚合为连续会话并按最新更新时间�
   assert.deepEqual(conversations[0].runs.map((item) => item.id), ['root-1', 'child-1', 'child-2']);
   assert.equal(conversations[0].latest.id, 'child-2');
   assert.equal(conversations[0].title, 'message-child-2');
+});
+
+test('Codex 新一轮上报前沿用同线程的实报，避免 475k 被回退为 120k', () => {
+  const previous = { ...run('previous'), model: 'gpt-6.1-sol',
+    usage: { ...emptyAgentUsage('codex'), context: { usedTokens: 130_974, windowTokens: 475_000 } } };
+  const next = { ...run('next', previous.id, '2026-09-16T00:01:00.000Z'), model: previous.model };
+  const meter = (current: AgentRun) => {
+    const [conversation] = buildAgentConversations([current, previous]);
+    const { context } = codexConversationContext(conversation);
+    return estimateConversationContextMeter(conversation.runs, '', undefined, context);
+  };
+  for (const status of ['queued', 'running'] as const) {
+    const waiting = meter({ ...next, status });
+    assert.equal(waiting.estimatedTokens, 130_974);
+    assert.equal(waiting.budgetTokens, 475_000);
+    assert.equal(waiting.usagePercent, 28);
+    assert.equal(waiting.level, 'fresh');
+  }
+  const reordered = meter({ ...next, status: 'running', createdAt: '2026-09-15T23:59:00.000Z' });
+  assert.equal(reordered.estimatedTokens, 130_974, '提交更早但后执行的任务也沿用最近实报');
+  const updated = meter({ ...next, usage: { ...emptyAgentUsage('codex'), context: { usedTokens: 132_301, windowTokens: 475_000 } } });
+  assert.equal(updated.estimatedTokens, 132_301);
+  assert.equal(updated.budgetTokens, 475_000);
+  assert.equal(updated.usagePercent, 28);
+});
+
+test('历史实报回读期间保留上一轮数据，切换线程或模型时重新取值', () => {
+  const previous = { ...run('previous'), model: 'model-a', codexTurnId: 'previous-native-turn' };
+  const current = { ...run('current', previous.id, '2026-09-16T00:01:00.000Z'), model: previous.model,
+    codexTurnId: 'current-native-turn' };
+  const historical = { runId: previous.id, context: { usedTokens: 90_000, windowTokens: 475_000 } };
+  const running = { ...current, status: 'running' as const };
+  assert.equal(codexConversationContext(buildAgentConversations([running, previous])[0]).lookupRunId, previous.id);
+  assert.deepEqual(codexConversationContext(buildAgentConversations([current, previous])[0], historical), {
+    lookupRunId: current.id, context: historical.context,
+  });
+  for (const next of [{ ...running, sessionId: 'another-native-thread' }, { ...running, model: 'model-b' }, { ...running, sessionId: '' }]) {
+    assert.equal(codexConversationContext(buildAgentConversations([next, previous])[0], historical).context, undefined);
+  }
 });
 
 test('需求开发和 Jira 修复会话只用任务摘要作默认标题，保留原始提示词和手动标题', () => {

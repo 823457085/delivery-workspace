@@ -114,7 +114,9 @@ test('本机插件可启停与移除，接口遵守插件状态及同源门禁',
   const name = key + suffix;
   if (env[name] === undefined) delete process.env[name]; else process.env[name] = env[name];
  } });
- assert.equal(await get('go-learning'), undefined, 'Go 实训通过自定义应用插件接入');
+ for (const id of ['go-learning', 'sign-hub', 'shanlian']) {
+  assert.equal(await get(id), undefined, `${id} 通过独立自定义插件接入，不恢复固定注册`);
+ }
  assert.equal((await get('interface-center')).runningConfigured, true);
  assert.equal((await (await createPluginStore({file, port:5199})).list()).find(item => item.id === 'interface-center')?.runningConfigured, true);
  await assert.rejects(store.save('interface-center', {enabled:true, baseUrl:'https://wrong.test'}), /本机插件/);

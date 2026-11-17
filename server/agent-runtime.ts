@@ -942,6 +942,28 @@ export async function listGitBranches(workspacePath: string): Promise<AgentWorks
   return { workspacePath: identity.workspacePath, current: identity.branch === 'detached HEAD' ? '' : identity.branch, branches };
 }
 
+async function gitCommonDirectory(workspacePath: string) {
+  const result = await exec('git', ['-C', workspacePath, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+    { timeout: 10_000 });
+  return fs.realpath(result.stdout.replace(/\r?\n$/, ''));
+}
+
+async function findGitBranchWorkspace(workspacePath: string, branch: string): Promise<WorkspaceIdentity | undefined> {
+  const result = await exec('git', ['-C', workspacePath, 'worktree', 'list', '--porcelain', '-z'],
+    { timeout: 5000, maxBuffer: 1_000_000 }).catch(() => undefined);
+  if (!result) return undefined;
+  const matches = result.stdout.split('\0\0').map(record => record.split('\0'))
+    .filter(fields => fields[0].startsWith('worktree ') && fields.includes(`branch refs/heads/${branch}`));
+  if (!matches.length) return undefined;
+  if (matches.length > 1) throw new Error('所选分支已在多个工作区检出，请直接选择要使用的工作区');
+  const target = await resolveWorkspace(matches[0][0].slice('worktree '.length)).catch(() => undefined);
+  if (!target || target.branch !== branch
+    || await gitCommonDirectory(workspacePath) !== await gitCommonDirectory(target.workspacePath)) {
+    throw new Error('所选分支的工作区已不可用，请刷新后重新选择');
+  }
+  return target;
+}
+
 export async function switchGitWorkspaceBranch(workspacePath: string, branch: string): Promise<WorkspaceIdentity> {
   const target = cleanText(branch, 300);
   const state = await listGitBranches(workspacePath);
@@ -950,7 +972,7 @@ export async function switchGitWorkspaceBranch(workspacePath: string, branch: st
   if (target === state.current) return resolveWorkspace(state.workspacePath);
   const status = await exec('git', ['-C', state.workspacePath, 'status', '--porcelain'], { timeout: 5000, maxBuffer: 1_000_000 });
   if (status.stdout.trim()) throw new Error('工作区存在未提交改动，请处理后再切换分支');
-  try { await exec('git', ['-C', state.workspacePath, 'switch', target], { timeout: 15_000, maxBuffer: 1_000_000 }); }
+  try { await exec('git', ['-C', state.workspacePath, 'switch', '--no-guess', '--', target], { timeout: 15_000, maxBuffer: 1_000_000 }); }
   catch { throw new Error('分支切换失败，请确认该分支未被其他工作区占用'); }
   return resolveWorkspace(state.workspacePath);
 }
@@ -2014,6 +2036,9 @@ export async function createAgentRuntimeService(directory: string, options: Serv
       await fs.mkdir(sessionDirectory, { recursive: true, mode: 0o700 });
       identity = { workspacePath: await fs.realpath(sessionDirectory), branch: '', headSha: '' };
     }
+    if (!parentRunId && !taskLink && !input.isolateWorkspace && identity.headSha && requestedBranch && requestedBranch !== identity.branch) {
+      identity = await findGitBranchWorkspace(identity.workspacePath, requestedBranch) || identity;
+    }
     if (selectedWorkspace && input.cursorTrustPath !== undefined && (input.provider !== 'cursor' || input.cursorTrustPath !== identity.workspacePath)) {
       throw new Error('Cursor 信任确认与实际工作区不一致，请重新选择并确认目录');
     }
@@ -2616,7 +2641,7 @@ export async function createAgentRuntimeService(directory: string, options: Serv
     return explicit.size ? explicit : new Set([sessionId]);
   }
 
-  async function assertPreciseForkReady(source: AgentRun, preparedWorkspace = false, requireGit = true) {
+  function assertPreciseForkReady(source: AgentRun) {
     if (source.provider !== 'codex' || !source.sessionId) throw new Error('该运行没有可分叉的 Codex 会话 ID');
     if (source.status !== 'completed' || !source.codexTurnId || !codexTurnPattern.test(source.codexTurnId)) {
       throw new Error('该消息没有可验证的已完成 Codex 轮次，不能从指定位置安全分叉');
@@ -2625,9 +2650,12 @@ export async function createAgentRuntimeService(directory: string, options: Serv
       && (active.has(run.id) || waiting.has(run.id)))
       || [...active.values()].some((item) => item.forkSessionId === source.sessionId)
       || [...waiting.values()].some((item) => item.forkSessionId === source.sessionId)) {
-      throw new Error('原 Codex 会话仍有运行或排队消息，请等待完成后再隔离');
+      throw new Error('原 Codex 会话仍有运行或排队消息，请等待完成后再分叉');
     }
-    if (!requireGit) return;
+  }
+
+  async function assertIsolatedForkReady(source: AgentRun, preparedWorkspace = false) {
+    assertPreciseForkReady(source);
     const identity = await workspaceIdentity(source.workspacePath);
     if (!identity.headSha || !identity.branch || identity.branch === 'detached HEAD') {
       throw new Error('当前工作区不是可创建独立分支的 Git 工作区');
@@ -2655,12 +2683,7 @@ export async function createAgentRuntimeService(directory: string, options: Serv
       || [...active.values()].some((item) => item.workspacePath === target.workspacePath)) {
       throw new Error('预备工作区已被其他 Agent 会话使用');
     }
-    const gitCommonDir = async (workspacePath: string) => {
-      const result = await exec('git', ['-C', workspacePath, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
-        { timeout: 10_000 });
-      return await fs.realpath(result.stdout.trim());
-    };
-    if (await gitCommonDir(sourceIdentity.workspacePath) !== await gitCommonDir(target.workspacePath)) {
+    if (await gitCommonDirectory(sourceIdentity.workspacePath) !== await gitCommonDirectory(target.workspacePath)) {
       throw new Error('预备工作区不属于原 Git 仓库');
     }
     const changedPaths = async (workspacePath: string) => {
@@ -2780,7 +2803,7 @@ export async function createAgentRuntimeService(directory: string, options: Serv
       || !byTurn.get(turn.id)?.conversationId || byTurn.get(turn.id)?.conversationId === conversationId)) {
       throw new Error('分叉位置之后存在未归属或未完成的 Codex 轮次，不能安全分叉');
     }
-    await assertPreciseForkReady(source, !!preparedWorkspacePath);
+    await assertIsolatedForkReady(source, !!preparedWorkspacePath);
     const health = await runtimeHealth('codex', true);
     if (!health.ready || !health.binary) throw new Error(health.message || 'Codex 执行器不可用');
     const workspace = preparedWorkspacePath
@@ -2864,7 +2887,7 @@ export async function createAgentRuntimeService(directory: string, options: Serv
     }
     if (source.provider === 'codex' && source.sessionId
       && (source.requiresIsolation || codexSessionConversations(source.sessionId).size > 1)) {
-      await assertPreciseForkReady(source);
+      await assertIsolatedForkReady(source);
       if (runs.some((run) => conversationIdFor(run) === conversationIdFor(source)
         && (active.has(run.id) || waiting.has(run.id)))) {
         throw new Error('当前会话已有运行或排队消息，请等待完成后再隔离');
@@ -2974,16 +2997,14 @@ export async function createAgentRuntimeService(directory: string, options: Serv
   async function fork(runId: string, objective: string, model?: string, reasoningEffort?: AgentReasoningEffort | '', attachmentIds: string[] = [], serviceTier?: AgentServiceTier) {
     const source = runs.find((run) => run.id === runId);
     if (!source) throw new Error('找不到该 Agent 运行');
-    // 未绑定项目的会话继承 Codex 轮次，start 会给新会话分配新的空目录。
-    const sessionOnly = source.sourceWorkspacePath === '' && !source.branch && !source.headSha;
-    await assertPreciseForkReady(source, false, !sessionOnly);
+    assertPreciseForkReady(source);
+    const { workspacePath, sourceWorkspacePath, baseBranch, isolatedWorkspace } = source;
+    if (!workspacePath.trim()) throw new Error('原会话没有可共享的工作区');
     return start({ provider: 'codex', mode: source.mode, model: model === undefined ? source.model : model,
       reasoningEffort: reasoningEffort === undefined ? source.reasoningEffort : reasoningEffort,
       serviceTier: serviceTier === undefined ? source.serviceTier : serviceTier,
-      objective, attachmentIds, accessMode: source.accessMode, workspacePath: sessionOnly ? '' : source.workspacePath,
-      branch: sessionOnly ? undefined : source.branch, isolateWorkspace: !sessionOnly }, '', '', '', source.sessionId, 'append', undefined,
-    sessionOnly ? undefined : forkWorkspaceMetadata(source),
-    { forkLastTurnId: source.codexTurnId, branchPrefix: 'feature/' });
+      objective, attachmentIds, accessMode: source.accessMode, workspacePath }, '', '', '', source.sessionId, 'append', undefined,
+    { sourceWorkspacePath, baseBranch, isolatedWorkspace }, { forkLastTurnId: source.codexTurnId });
   }
 
   async function addCustomModel(input: AgentCustomModelInput) {
@@ -3825,7 +3846,8 @@ export async function createAgentRuntimeService(directory: string, options: Serv
     startTeamNode: (input: StartAgentRunInput, metadata: Parameters<typeof startTeamNode>[1]) => exclusive(() => startTeamNode(input, metadata)),
     isIdle: () => !hostWorkspaceLocks.size && !active.size && !waiting.size && !providerMaintenance.size && !runs.some(run => activeStatuses.has(run.status) || observingDesktop(run)),
     reconcileRecovery: () => exclusive(reconcileRecovery),
-    start: (input: StartAgentRunInput) => exclusive(() => input.continueConversationId ? switchProvider(input) : start(input)),
+    start: (input: StartAgentRunInput) => exclusive(() => input.continueConversationId ? switchProvider(input)
+      : start(input, '', '', '', '', 'append', undefined, undefined, { branchPrefix: 'feature/' })),
     startManagedRefactor: (input: StartAgentRunInput, jobId: string, title: string) => exclusive(() => start(input, '', '', '', '', 'append',
       { parentConversationId: '', dependsOnConversationIds: [], role: 'main', title, source: 'workflow', sourceId: `refactor-control:${jobId}` })),
     findManagedRefactor: (jobId: string) => runs.find(run => run.task?.sourceId === `refactor-control:${jobId}`),

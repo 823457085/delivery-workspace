@@ -1052,7 +1052,7 @@ test('新建普通会话固定使用单 Agent，忽略旧自动偏好，重复�
     await state.actions.submit();
     assert.equal(state.teamInputs.length, 0);
     assert.equal(state.reportInputs.length, 1, '新建只调用单 Agent start');
-    assert.deepEqual(state.reportInputs[0], { objective: '你好', workspacePath: '', accessMode: 'full', serviceTier: undefined, isolateWorkspace: true, attachmentIds: [image.id] });
+    assert.deepEqual(state.reportInputs[0], { objective: '你好', workspacePath: '', accessMode: 'full', serviceTier: undefined, isolateWorkspace: false, attachmentIds: [image.id] });
     state.actions.selectConversation('b');
     state.drafts.draft.value = 'B的新草稿';
     state.response.resolve({ id: 'new-agent' });

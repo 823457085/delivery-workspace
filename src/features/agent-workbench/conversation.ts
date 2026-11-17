@@ -3,6 +3,7 @@
  * 聚合；旧记录才沿可见 parentRunId 链分组。它不修改运行状态，也不按 CLI session 合并独立会话。
  */
 import type { AgentRun, CodexSessionDetail, CodexSessionSummary } from '../../../shared/agent-runtime';
+import type { AgentContextUsage } from '../../../shared/agent-usage';
 import type { TeamTaskState } from '../../../shared/agent-team';
 import { codexRunningMessage, codexWriterHeldMessage } from '../../../shared/codex-session-error';
 import { jiraTaskPromptTitle } from './message-text';
@@ -99,6 +100,27 @@ export function agentConversationStatus(conversation: AgentConversation) {
 export function resumedConversationId(_conversation: AgentConversation, run: AgentRun) {
   // 已分配的会话 ID 在新运行和 Codex 分叉后仍属于原侧栏行。
   return run.conversationId || run.id;
+}
+
+/** 新一轮等待上报时，只沿用同一 Codex 线程和模型的实报。 */
+export function codexConversationContext(
+  { latest, runs }: Pick<AgentConversation, 'latest' | 'runs'>,
+  historical?: { runId: string; context: AgentContextUsage },
+): { context?: AgentContextUsage; lookupRunId?: string } {
+  if (latest.provider !== 'codex') return {};
+  const earlier = latest.sessionId ? runs
+    .filter(run => run.id !== latest.id && !run.syncedHistory && run.provider === 'codex'
+      && run.sessionId === latest.sessionId && run.model === latest.model)
+    .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt)) : [];
+  let lookupRunId: string | undefined;
+  for (const run of [latest, ...earlier]) {
+    const context = run.usage?.context ?? (historical?.runId === run.id ? historical.context : undefined);
+    if (context) return { context, lookupRunId };
+    if (!lookupRunId && !run.syncedHistory && run.sessionId && run.codexTurnId && !['queued', 'running'].includes(run.status)) {
+      lookupRunId = run.id;
+    }
+  }
+  return { lookupRunId };
 }
 
 /** 输入框跟随最后发送的消息；运行中的旧执行器仍由 latest 展示进度。 */

@@ -26,8 +26,10 @@ type ProjectGroup = {
 
 const route = useRoute();
 const router = useRouter();
-const query = useSource<ProjectsData>('projects', computed((): Record<string, string> => typeof route.query.workspace === 'string' && route.query.workspace
-  ? { refresh: 'true' } : {}));
+const query = useSource<ProjectsData>('projects', computed((): Record<string, string> => {
+  const workspace = route.query.workspace;
+  return typeof workspace === 'string' && workspace ? { refresh: 'true', workspace } : {};
+}));
 const agentWorkspace = inject(agentWorkspaceContext, undefined);
 const hgAsideActive = useHolyGrailAside(Boolean(agentWorkspace));
 const { data, isPending, isFetching, error } = query;
