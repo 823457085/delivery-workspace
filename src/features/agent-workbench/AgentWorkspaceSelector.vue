@@ -218,7 +218,7 @@ async function applyWorkspaces() {
       <div class="workspace-menu">
         <header class="workspace-menu-head">
           <div>
-            <strong>{{ applySelection ? '绑定项目工作区' : '选择项目工作区' }}</strong>
+            <strong>{{ applySelection ? '绑定项目工作区' : '选择项目' }}</strong>
             <small v-if="applySelection">可绑定多个目录，主目录用于执行。{{ hasActiveRuns ? '已提交的消息沿用原配置。' : '' }}</small>
             <small v-else>支持多选项目，首项作为主执行目录</small>
           </div>

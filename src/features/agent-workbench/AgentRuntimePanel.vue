@@ -26,6 +26,9 @@ const AgentModelSettings = defineAsyncComponent(() => import('./AgentModelSettin
 const AgentRecoveryDialog = defineAsyncComponent(() => import('./AgentRecoveryDialog.vue'));
 import { buildWorkspaceCatalog } from './workspace-catalog';
 import AgentSessionList from './AgentSessionList.vue';
+import AgentConversationWorkspacePicker from './AgentConversationWorkspacePicker.vue';
+import { useConversationWorkspaces } from './useConversationWorkspaces';
+import { conversationWorkspaceId } from './conversation-workspaces';
 const AgentSidePanel = defineAsyncComponent(() => import('./AgentSidePanel.vue'));
 const AgentProjectLaunch = defineAsyncComponent(() => import('./AgentProjectLaunch.vue'));
 import AgentPanelResize from './AgentPanelResize.vue';
@@ -189,6 +192,42 @@ const conversations = computed(() => {
     (data.value?.codexSessions || []).filter(session => !groupSessionIds.has(session.id)), codexDetails.value,
     data.value?.conversationTitles || {}, data.value?.conversationWorkspaces), teamChat.allTasks.value.filter(task => !task.groupRoomId), data.value?.conversationTitles || {}).sort(compareAgentConversations);
 });
+const workspaceStore = useConversationWorkspaces(() => conversations.value);
+const selectedWorkspaceId = shallowRef('');
+const workspaceManager = useTemplateRef<InstanceType<typeof AgentConversationWorkspacePicker>>('workspaceManager');
+function manageWorkspace(id: string) {
+  const workspace = workspaceStore.groups.value.find(group => group.id === id);
+  if (workspace && !workspaceStore.busy.value) workspaceManager.value?.edit(workspace);
+}
+async function createWorkspaceConversation(id: string) {
+  if (workspaceStore.busy.value || !workspaceStore.groups.value.some(group=>group.id===id)) return;
+  openCreate(); selectedWorkspaceId.value=id;
+  await nextTick(); newConversationPane.value?.focusPrompt();
+}
+function renameWorkspace(id: string) {
+  const workspace=workspaceStore.groups.value.find(group=>group.id===id);
+  if(workspace&&!workspaceStore.busy.value)void workspaceManager.value?.rename(workspace);
+}
+function duplicateWorkspace(id: string) {
+  const workspace=workspaceStore.groups.value.find(group=>group.id===id);
+  if(workspace&&!workspaceStore.busy.value)workspaceManager.value?.duplicate(workspace);
+}
+const namedWorkspaces = computed(() => workspaceStore.groups.value.filter(g=>g.id));
+watch(() => JSON.stringify([selectedWorkspaceId.value, namedWorkspaces.value.find(w=>w.id===selectedWorkspaceId.value)?.projectPaths]), () => {
+  const group = namedWorkspaces.value.find(w=>w.id===selectedWorkspaceId.value);
+  workspacePaths.value = [...(group?.projectPaths || [])];
+  form.workspacePath = workspacePaths.value[0] || '';
+  form.branch = '';
+});
+function conversationWorkspace(conversation?: AgentConversationModel) {
+  if (!conversation) return;
+  const id=conversationWorkspaceId(workspaceStore.state.value,conversation);
+  return namedWorkspaces.value.find(workspace=>workspace.id===id);
+}
+function workspaceName(conversation?: AgentConversationModel) {
+  return conversationWorkspace(conversation)?.name || '未分组';
+}
+async function createNamedWorkspace() { openCreate(); await nextTick(); newConversationPane.value?.createWorkspace(); }
 const selectedConversation = computed(() => findAgentConversation(conversations.value, selectedConversationId.value));
 const sideChatOpen = shallowRef(false);
 const sideChatVisible = computed(() => sideChatOpen.value && !mobile.value && !props.workbenchOpen);
@@ -404,7 +443,7 @@ function resetForm() {
   form.model = runtime?.defaultModel || '';
   form.reasoningEffort = runtime?.models.find(model => model.id === form.model)?.defaultEffort || '';
   lastHandoffDraft = '';
-  form.objective = ''; form.workspacePath = ''; workspacePaths.value = []; form.branch = ''; form.isolateWorkspace = false;
+  form.objective = ''; selectedWorkspaceId.value = ''; form.workspacePath = ''; workspacePaths.value = []; form.branch = ''; form.isolateWorkspace = false;
 }
 function openCreate() { groupMode.value = false; selectionRevision++; selectedConversationId.value = ''; creating.value = true; }
 function selectConversation(id: string) { groupMode.value = false; selectionRevision++; creating.value = false; selectedConversationId.value = id; }
@@ -468,6 +507,7 @@ async function chooseWorkspace() {
   if (nextPaths.length === 1) form.branch = selection.branch;
 }
 async function submit() {
+  if (!workspaceStore.ready.value || workspaceStore.busy.value) return;
   if (!canStart.value || submittingNew.value || newAttachmentDraft.value.pending) return;
   const requestSelectionRevision = selectionRevision;
   submittingNew.value = true;
@@ -475,19 +515,20 @@ async function submit() {
   let openedOptimistically = false;
   try {
     const extraPaths = workspacePaths.value;
-    const multiWorkspaceNote = extraPaths.length > 1
+    const multiWorkspaceNote = !selectedWorkspaceId.value && extraPaths.length > 1
       ? `\n\n[关联项目工作区]\n${extraPaths.map((p, i) => `- ${i === 0 ? '主工作区' : '关联工作区'}：${p}`).join('\n')}`
       : '';
     const finalObjective = multiWorkspaceNote ? `${form.objective.trim()}${multiWorkspaceNote}`.trim() : form.objective;
     const snapshotAttachments = [...newAttachments.value];
-    const startPayload = { ...form, ...(multiWorkspaceNote ? { objective: finalObjective } : {}), serviceTier: form.provider === 'codex' ? codexServiceTier(selectedRuntime.value, form.model, form.serviceTier) : undefined,
-      isolateWorkspace: !!form.branch && form.isolateWorkspace, attachmentIds: snapshotAttachments.map((item) => item.id) };
+    const startPayload = { ...form, branch: undefined, ...(selectedWorkspaceId.value ? {workspaceId:selectedWorkspaceId.value}:{}), ...(multiWorkspaceNote ? { objective: finalObjective } : {}), serviceTier: form.provider === 'codex' ? codexServiceTier(selectedRuntime.value, form.model, form.serviceTier) : undefined,
+      isolateWorkspace: false, attachmentIds: snapshotAttachments.map((item) => item.id) };
     if (typeof trackOptimisticRun === 'function') {
       const now = new Date().toISOString();
       openedOptimistically = true;
       trackOptimisticRun('add', {
         id: optimisticId,
         conversationId: optimisticId,
+        workspaceId: selectedWorkspaceId.value || undefined,
         parentRunId: '',
         provider: form.provider,
         mode: form.mode || 'agent',
@@ -904,6 +945,7 @@ onBeforeUnmount(() => {
       <button v-if="!workbenchOpen" type="button" :aria-expanded="mobilePanel === 'details'" @click="mobilePanel = 'details'">详情</button>
       <span id="mobile-connection-status"></span>
     </header>
+    <AgentConversationWorkspacePicker ref="workspaceManager" editor-only :groups="namedWorkspaces" :projects="workspaceOptions" :save-workspace="workspaceStore.save" />
     <el-alert v-if="streamStatus === 'reconnecting'" class="workspace-reconnect-banner" title="实时连接已断开，正在重新连接…" type="warning" :closable="false" show-icon role="status" />
     <AgentInitialLoading v-if="isPending && (!groupMode || workbenchOpen)" />
     <div v-else class="agent-body">
@@ -924,7 +966,7 @@ onBeforeUnmount(() => {
           <component :is="leftCollapsed ? PanelLeftOpen : PanelLeftClose" :size="16" />
         </button>
         <AgentResponsivePanel id="studio-session-sidebar" class="session-column" :mobile="mobile" :open="mobile ? mobilePanel === 'sessions' : !sessionsCollapsed" side="left" title="会话列表" @close="mobilePanel = ''">
-        <AgentSessionList :conversations="conversations" :selected-id="selectedConversationId"
+        <AgentSessionList :workspace-state="workspaceStore.state.value" :workspace-busy="workspaceStore.busy.value" @create-workspace="createNamedWorkspace" @manage-workspace="manageWorkspace" @create-workspace-conversation="createWorkspaceConversation" @rename-workspace="renameWorkspace" @duplicate-workspace="duplicateWorkspace" @move-workspace="workspaceStore.reorder" @move-conversation="workspaceStore.assign" :conversations="conversations" :selected-id="selectedConversationId"
           :changing="changing" :pinned-ids="pinnedConversationIds" @select="mobilePanel = ''; selectConversation($event); emit('chat')" @create="mobilePanel = ''; openCreate(); emit('chat')"
           @groups="openGroups" @sync="syncCodexSessions" @remove="removeAgentConversations" @rename="(id, title) => updateConversationTitle(id, title)">
           <template #navigation><slot name="navigation" placement="sidebar" :close-navigation="() => { mobilePanel = ''; }" :toggle-sessions="toggleSessions" :sessions-collapsed="false" /></template>
@@ -935,12 +977,12 @@ onBeforeUnmount(() => {
         <AgentPanelResize v-show="!mobile && !sessionsCollapsed" v-model="leftWidth" side="left" variant="project-studio" />
         <AgentPanelResize v-show="!mobile && desktopDetailsOpen" v-model="rightWidth" side="right" variant="project-studio" />
         <AgentNewConversation v-if="creating" v-show="!workbenchOpen" ref="newConversationPane" v-model:provider="form.provider" v-model:mode="form.mode" v-model:access-mode="form.accessMode" v-model:model="form.model" v-model:service-tier="form.serviceTier" v-model:reasoning-effort="form.reasoningEffort"
-          v-model:objective="form.objective" v-model:attachments="newAttachments" v-model:workspace-path="form.workspacePath" v-model:workspace-paths="workspacePaths" v-model:branch="form.branch" v-model:isolate-workspace="form.isolateWorkspace" class="conversation-column"
-          :runtimes="runtimes" :workspaces="workspaceOptions" :business-options="businessMentions" :changing="submittingNew ? 'start' : changing || teamChat.changing.value" :can-start="canStart" :attachment-draft="newAttachmentDraft"
+          v-model:workspace-id="selectedWorkspaceId" :workspace-groups="namedWorkspaces" :save-workspace="workspaceStore.save" v-model:objective="form.objective" v-model:attachments="newAttachments" v-model:workspace-path="form.workspacePath" v-model:workspace-paths="workspacePaths" class="conversation-column"
+          :runtimes="runtimes" :workspaces="workspaceOptions" :business-options="businessMentions" :changing="submittingNew ? 'start' : changing || teamChat.changing.value" :can-start="canStart && workspaceStore.ready.value && !workspaceStore.busy.value" :attachment-draft="newAttachmentDraft"
           @send="submit" @choose-workspace="chooseWorkspace" @configure-models="openModelSettings()">
           <template #header-actions><span id="new-connection-status"></span></template>
         </AgentNewConversation>
-        <AgentConversation :automatic="automaticTeam" v-else v-show="!workbenchOpen" :visible="!workbenchOpen" ref="conversationPane" v-model="draft" v-model:attachments="draftAttachments" class="conversation-column" :conversation="selectedConversation" :pinned="!!selectedConversation && isPinnedAgentSession(pinnedConversationIds, selectedConversation)" :changing="conversationChanging" :runtimes="runtimes"
+        <AgentConversation :automatic="automaticTeam" v-else v-show="!workbenchOpen" :visible="!workbenchOpen" ref="conversationPane" v-model="draft" v-model:attachments="draftAttachments" class="conversation-column" :conversation="selectedConversation" :workspace-name="workspaceName(selectedConversation)" :workspace="conversationWorkspace(selectedConversation)" @manage-workspace="manageWorkspace" :pinned="!!selectedConversation && isPinnedAgentSession(pinnedConversationIds, selectedConversation)" :changing="conversationChanging" :runtimes="runtimes"
           :attachment-draft="conversationAttachmentDraft" :team-tasks="teamChat.tasks.value" :team-room="teamChat.room.value" :team-attachments="teamChat.attachments.value" :jira-task="matchedJiraTask"
           :workspace-options="workspaceOptions" :choosing-workspace="picker.selecting.value" :save-workspace="saveConversationWorkspace" :browse-workspace="browseConversationWorkspace"
           :side-fork-available="!mobile && !!sideForkSource" :projectless-fork="projectlessFork" @fork-side="openForkConversation($event, true)"
@@ -984,7 +1026,7 @@ onBeforeUnmount(() => {
               <GitFork :size="14" /> 基于主会话新建
             </el-button>
           </div>
-          <AgentConversation v-if="sideConversation" v-model="sideDraft" v-model:attachments="sideAttachments" :conversation="sideConversation"
+          <AgentConversation v-if="sideConversation" v-model="sideDraft" v-model:attachments="sideAttachments" :conversation="sideConversation" :workspace-name="workspaceName(sideConversation)" :workspace="conversationWorkspace(sideConversation)" @manage-workspace="manageWorkspace"
             :attachment-draft="sideAttachmentDraft" :business-options="[]" :runtimes="runtimes" :changing="conversationChanging || (sideSending ? 'side:send' : '')"
             :workspace-options="workspaceOptions" :choosing-workspace="picker.selecting.value" :save-workspace="saveConversationWorkspace" :browse-workspace="browseConversationWorkspace"
             :pinned="isPinnedAgentSession(pinnedConversationIds, sideConversation)" :jira-task="matchConversationJiraDevTask(sideConversation, jiraTasks)" :projectless-fork="projectlessFork"
@@ -1120,7 +1162,6 @@ onBeforeUnmount(() => {
 .agent-panel{--agent-bg:var(--ui-bg);--agent-panel:var(--ui-surface);--agent-panel-strong:var(--ui-surface);--agent-raised:var(--ui-raised);--agent-border:var(--ui-border);--agent-text:var(--ui-text);--agent-secondary:var(--ui-secondary);--agent-muted:var(--ui-muted);--agent-accent:var(--ui-accent);--agent-cyan:var(--ui-accent);--session-column-width:340px;--execution-column-width:400px;position:fixed;inset:0;z-index:60;min-width:1080px;overflow:hidden;background:var(--agent-bg);color:var(--agent-text);font-family:var(--sans)}
 .agent-body,.session-shell{height:100%;min-width:0;min-height:0;overflow:hidden}.agent-body>.el-alert{position:absolute;z-index:4;left:calc(var(--session-column-width) + 12px);right:calc(var(--execution-column-width) + 6px);top:12px}.session-shell{display:grid;grid-template-columns:var(--visible-session-width,var(--session-column-width)) minmax(0,1fr) var(--visible-execution-width,var(--execution-column-width));grid-template-rows:minmax(0,1fr)}.session-column{grid-column:1}.conversation-column{grid-column:2}.execution-column{grid-column:3}.session-shell.left-collapsed{--visible-session-width:0px}.session-shell.right-collapsed{--visible-execution-width:0px}.detail-facts dd{word-break:break-all}.drawer-summary{display:grid;gap:8px}.drawer-summary article{padding:12px 14px;border:1px solid var(--el-border-color-lighter);border-radius:8px;background:var(--el-fill-color-light)}.drawer-summary strong{font-size:14px;line-height:20px;color:var(--el-text-color-primary)}.drawer-summary p{margin:4px 0 0;color:var(--el-text-color-secondary);font-size:12px;line-height:18px}.drawer-summary article.warning{border-color:var(--el-color-warning-light-7)}.drawer-summary article.danger{border-color:var(--el-color-danger-light-7)}.raw-events{margin-top:16px}.raw-events summary{padding:8px 0;color:var(--el-text-color-secondary);font-size:12px;line-height:16px;cursor:pointer}.raw-events:deep(.el-timeline){margin-top:10px;padding-left:4px}.routine-events{margin:2px 0 12px;padding:0 12px;border:1px solid var(--el-border-color-lighter);border-radius:8px;background:var(--el-fill-color-light)}.routine-events>summary{color:var(--el-text-color-regular)}
 :global(.agent-model-popper.el-popper),:global(.agent-workspace-popper.el-popper){--el-bg-color-overlay:var(--ui-surface);--el-text-color-regular:var(--ui-text);--el-fill-color-light:var(--ui-raised);border-color:var(--ui-border);border-radius:12px;background:var(--ui-surface);box-shadow:var(--ui-shadow)}:global(.agent-model-popper .el-select-dropdown__item){color:var(--ui-secondary);border-radius:8px}:global(.agent-model-popper .el-select-dropdown__item.is-hovering),:global(.agent-model-popper .el-select-dropdown__item:hover){background:var(--ui-raised);color:var(--ui-text)}:global(.agent-model-popper .el-select-dropdown__item.is-selected){color:var(--ui-accent);font-weight:600}
-:global(.agent-panel *::-webkit-scrollbar){width:7px;height:7px}:global(.agent-panel *::-webkit-scrollbar-track){background:transparent}:global(.agent-panel *::-webkit-scrollbar-thumb){border:2px solid transparent;border-radius:8px;background:color-mix(in srgb,var(--ui-muted) 42%,transparent);background-clip:padding-box}:global(.agent-panel *::-webkit-scrollbar-thumb:hover){background:color-mix(in srgb,var(--ui-muted) 68%,transparent);background-clip:padding-box}
 @media(max-width:1440px){.agent-panel{--session-column-width:320px;--execution-column-width:380px}}
 </style>
 

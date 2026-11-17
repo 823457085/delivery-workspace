@@ -117,12 +117,16 @@ function scriptSettings(command: string) {
   return { port: number && number >= 1 && number <= 65535 ? number : undefined, hasPortFlag, protocol: protocol as LaunchConfig['protocol'] | undefined };
 }
 
+export class MissingProjectManifest extends Error {
+  constructor() { super('此项目没有 package.json，暂无 Node 启动脚本'); }
+}
+
 export async function discoverProject(inputPath: string): Promise<DiscoveredProject> {
   if (!path.isAbsolute(inputPath)) throw new Error('请选择本机项目的绝对路径');
   const workspacePath = await fs.realpath(inputPath).catch(() => { throw new Error('项目目录不存在'); });
   if (!(await fs.stat(workspacePath)).isDirectory()) throw new Error('请选择有效的项目目录');
   const own = await metadata(workspacePath).catch(() => { throw new Error('项目 package.json 无法读取'); });
-  if (own.manifestText === undefined) throw new Error('项目 package.json 无法读取');
+  if (own.manifestText === undefined) throw new MissingProjectManifest();
   const declaration = declaredManager(own.manifest);
   const ancestor = !declaration && !own.locks.size ? await workspaceAncestor(workspacePath) : undefined;
   const inherited = ancestor ? declaredManager(ancestor.manifest) : undefined;

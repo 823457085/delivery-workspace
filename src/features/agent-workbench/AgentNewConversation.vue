@@ -3,10 +3,9 @@
  * 设计说明：新会话采用与 Codex 一致的“先进入空白会话，再在输入区切换上下文”模式。
  * 项目与分支为可选上下文；未选项目时由服务端创建独立会话目录，不默认绑定最近项目。
  */
-import { computed, defineAsyncComponent, shallowRef, useTemplateRef, watch } from 'vue';
-import { ArrowUpRight, AtSign, Check, ChevronDown, Code2, Compass, FolderGit2, GitBranch, Send, Settings2, Sparkles, Terminal, Wrench } from '@lucide/vue';
-import { ElMessage } from 'element-plus';
-import type { AgentAccessMode, AgentAttachment, AgentProvider, AgentReasoningEffort, AgentRunMode, AgentRuntimeHealth, AgentServiceTier, AgentWorkspaceBranches } from '../../../shared/agent-runtime';
+import { computed, defineAsyncComponent, useTemplateRef, watch } from 'vue';
+import { ArrowUpRight, AtSign, Check, Code2, Compass, FolderGit2, Send, Settings2, Sparkles, Terminal, Wrench } from '@lucide/vue';
+import type { AgentAccessMode, AgentAttachment, AgentProvider, AgentReasoningEffort, AgentRunMode, AgentRuntimeHealth, AgentServiceTier } from '../../../shared/agent-runtime';
 import { useTheme } from '../../shared/theme/useTheme';
 
 const ImmersivePhotoStage = defineAsyncComponent(() => import('../../shared/ui/ImmersivePhotoStage.vue'));
@@ -14,18 +13,19 @@ const CinematicVideoStage = defineAsyncComponent(() => import('../../shared/ui/C
 import AgentAccessSelector from './AgentAccessSelector.vue';
 import AgentModelSpeed from './AgentModelSpeed.vue';
 import AgentPromptEditor from './AgentPromptEditor.vue';
-import AgentWorkspaceSelector from './AgentWorkspaceSelector.vue';
+import AgentConversationWorkspacePicker from './AgentConversationWorkspacePicker.vue';
+import type { ConversationWorkspace } from '../../../shared/conversation-workspaces';
 import { useAgentModelSelection } from './model-selection';
 import { recordSubmittedPrompt } from './useAgentInputHistory';
-import { appendContextMention, pickLaunchpadWorkspaces } from './prompt-studio-metrics';
-import { workspacePathLabel, type AgentWorkspaceOption } from './workspace-catalog';
+import { appendContextMention } from './prompt-studio-metrics';
+import { type AgentWorkspaceOption } from './workspace-catalog';
 import type { AgentBusinessMention } from './agent-business-context';
 import type { AgentAttachmentDraft } from './useAgentAttachments';
 
 export type { AgentWorkspaceOption };
 
 const { current: currentTheme } = useTheme();
-const props = defineProps<{ runtimes: AgentRuntimeHealth[]; workspaces: AgentWorkspaceOption[]; changing: string; canStart: boolean;
+const props = defineProps<{ workspaceGroups: ConversationWorkspace[]; saveWorkspace: (workspace: Omit<ConversationWorkspace,'id'> & {id?:string}) => Promise<ConversationWorkspace>; runtimes: AgentRuntimeHealth[]; workspaces: AgentWorkspaceOption[]; changing: string; canStart: boolean;
   businessOptions: AgentBusinessMention[]; attachmentDraft?: AgentAttachmentDraft }>();
 const provider = defineModel<AgentProvider>('provider', { required: true });
 const mode = defineModel<AgentRunMode>('mode', { required: true });
@@ -35,18 +35,15 @@ const serviceTier = defineModel<AgentServiceTier | undefined>('serviceTier', { r
 const reasoningEffort = defineModel<AgentReasoningEffort | ''>('reasoningEffort', { required: true });
 const objective = defineModel<string>('objective', { required: true });
 const attachments = defineModel<AgentAttachment[]>('attachments', { required: true });
+const workspaceId = defineModel<string>('workspaceId', { default: '' });
+const workspacePicker = useTemplateRef<InstanceType<typeof AgentConversationWorkspacePicker>>('workspacePicker');
 const workspacePath = defineModel<string>('workspacePath', { required: true });
 const workspacePaths = defineModel<string[]>('workspacePaths', { default: () => [] });
-const branch = defineModel<string>('branch', { required: true });
-const isolateWorkspace = defineModel<boolean>('isolateWorkspace', { required: true });
 const emit = defineEmits<{ send: []; chooseWorkspace: []; configureModels: [] }>();
 const promptEditor = useTemplateRef<InstanceType<typeof AgentPromptEditor>>('promptEditor');
-const branchOptions = shallowRef<string[]>([]);
-const branchesLoading = shallowRef(false);
 const runtime = computed(() => props.runtimes.find((item) => item.provider === provider.value));
 const modelPicker = useAgentModelSelection(() => runtime.value, model, reasoningEffort);
-const currentWorkspace = computed(() => props.workspaces.find((item) => item.path === workspacePath.value));
-const workspaceLabel = computed(() => currentWorkspace.value?.label || (workspacePath.value ? workspacePathLabel(workspacePath.value) : '不选择项目'));
+const workspaceLabel = computed(() => props.workspaceGroups.find(group=>group.id===workspaceId.value)?.name || '未分组');
 const effortLabels: Record<AgentReasoningEffort, string> = { low: '低', medium: '中', high: '高', xhigh: '超高', max: '极高', ultra: '最高' };
 const modeLabel = computed(() => mode.value === 'agent' ? 'Agent 模式' : mode.value === 'plan' ? '方案分析' : '只读问答');
 
@@ -55,31 +52,9 @@ watch(mode, (value) => { if (value !== 'agent') accessMode.value = 'workspace'; 
 watch(() => runtime.value?.accessModes, modes => {
   if (modes && !modes.includes(accessMode.value)) accessMode.value = 'workspace';
 });
-watch(() => workspacePath.value, async (nextPath, previousPath, onCleanup) => {
-  const draftBranch = previousPath === undefined ? branch.value : '';
-  branchOptions.value = [];
-  branch.value = '';
-  if (!nextPath) { branchesLoading.value = false; return; }
-  const controller = new AbortController();
-  onCleanup(() => controller.abort());
-  branchesLoading.value = true;
-  try {
-    const params = new URLSearchParams({ workspacePath: nextPath });
-    const response = await fetch(`/api/agent-runtimes/branches?${params}`, { signal: controller.signal });
-    const result = await response.json() as AgentWorkspaceBranches & { message?: string };
-    if (controller.signal.aborted || workspacePath.value !== nextPath) return;
-    if (!response.ok) throw new Error(result.message || '分支列表读取失败');
-    branchOptions.value = result.branches;
-    branch.value = (result.branches.includes(draftBranch) ? draftBranch : result.current) || result.branches[0] || '';
-  } catch (error) {
-    if (!controller.signal.aborted) ElMessage.error(error instanceof Error ? error.message : '分支列表读取失败');
-  } finally {
-    if (!controller.signal.aborted) branchesLoading.value = false;
-  }
-}, { immediate: true });
 
 function submit() {
-  if (props.canStart && !props.attachmentDraft?.pending && !branchesLoading.value) {
+  if (props.canStart && !props.attachmentDraft?.pending) {
     if (typeof recordSubmittedPrompt === 'function' && typeof objective !== 'undefined') recordSubmittedPrompt(objective.value);
     emit('send');
   }
@@ -100,16 +75,7 @@ function applyStarter(card: typeof starterCards[number]) {
   focusPrompt();
 }
 
-const quickWorkspaces = computed(() => pickLaunchpadWorkspaces(props.workspaces, workspacePath.value, 5));
 const quickJiraMentions = computed(() => props.businessOptions.filter(item => item.type === 'jira').slice(0, 4));
-
-function toggleQuickWorkspace(path: string) {
-  if (props.changing) return;
-  const next = workspacePath.value === path ? '' : path;
-  workspacePath.value = next;
-  workspacePaths.value = next ? [next] : [];
-  focusPrompt();
-}
 
 function injectQuickMention(mention: AgentBusinessMention) {
   if (props.changing) return;
@@ -117,7 +83,7 @@ function injectQuickMention(mention: AgentBusinessMention) {
   focusPrompt();
 }
 
-defineExpose({ focusPrompt });
+defineExpose({ createWorkspace: () => workspacePicker.value?.create(),  focusPrompt });
 </script>
 
 <template>
@@ -133,7 +99,7 @@ defineExpose({ focusPrompt });
       <div class="new-compose-stage">
         <!-- Cinematic Video Hero 专属电影感视频首屏 -->
         <CinematicVideoStage v-if="currentTheme.id === 'cinematic-video-hero'" mode="hero">
-          <h1 v-if="workspacePaths.length > 1">想让我在 <em>{{ workspaceLabel }}</em> 等 {{ workspacePaths.length }} 个项目中完成什么？</h1>
+          <h1 v-if="workspacePaths.length > 1">想让我在 <em>{{ workspaceLabel }}</em> 工作区的 {{ workspacePaths.length }} 个项目中完成什么？</h1>
           <h1 v-else-if="workspacePath">想让我在 <em>{{ workspaceLabel }}</em> 中完成什么？</h1>
           <h1 v-else>想让我帮你完成什么？</h1>
           <p>输入 @ 可快速关联 Jira 任务、项目或文件，按 Enter 发送。</p>
@@ -141,7 +107,7 @@ defineExpose({ focusPrompt });
 
         <!-- Immersive Photo 专属全画幅摄影主舞台 -->
         <ImmersivePhotoStage v-else-if="currentTheme.id === 'immersive-photo'" mode="hero">
-          <h1 v-if="workspacePaths.length > 1">想让我在 <em>{{ workspaceLabel }}</em> 等 {{ workspacePaths.length }} 个项目中完成什么？</h1>
+          <h1 v-if="workspacePaths.length > 1">想让我在 <em>{{ workspaceLabel }}</em> 工作区的 {{ workspacePaths.length }} 个项目中完成什么？</h1>
           <h1 v-else-if="workspacePath">想让我在 <em>{{ workspaceLabel }}</em> 中完成什么？</h1>
           <h1 v-else>想让我帮你完成什么？</h1>
           <p>输入 @ 可快速关联 Jira 任务、项目或文件，按 Enter 发送。</p>
@@ -153,33 +119,17 @@ defineExpose({ focusPrompt });
             <span class="new-mark" aria-hidden="true"><Terminal :size="14" /></span>
             <span class="new-runtime-pill">{{ runtime?.label || 'CLI' }} · {{ modeLabel }}</span>
           </div>
-          <h1 v-if="workspacePaths.length > 1" class="acid-chrome">想让我在 <em>{{ workspaceLabel }}</em> 等 {{ workspacePaths.length }} 个项目中完成什么？</h1>
+          <h1 v-if="workspacePaths.length > 1" class="acid-chrome">想让我在 <em>{{ workspaceLabel }}</em> 工作区的 {{ workspacePaths.length }} 个项目中完成什么？</h1>
           <h1 v-else-if="workspacePath" class="acid-chrome">想让我在 <em>{{ workspaceLabel }}</em> 中完成什么？</h1>
           <h1 v-else class="acid-chrome">想让我帮你完成什么？</h1>
-          <p class="new-hero-sub">可选绑定本地项目与分支，输入 <code>@</code> 可关联 Jira 任务、接口文档或代码文件。</p>
+          <p class="new-hero-sub">可选工作区及其中的项目，输入 <code>@</code> 可关联 Jira 任务、接口文档或代码文件。</p>
         </div>
 
         <!-- 一体化指令发射舱 -->
         <section class="new-composer" aria-label="会话编辑区">
-          <div class="new-context-panel" role="group" aria-label="项目、分支和访问权限">
+          <div class="new-context-panel" role="group" aria-label="工作区和访问权限">
             <div class="new-project">
-              <AgentWorkspaceSelector
-                v-model:workspace-path="workspacePath"
-                v-model:workspace-paths="workspacePaths"
-                :workspaces="workspaces"
-                :disabled="!!changing"
-                @choose-workspace="emit('chooseWorkspace')"
-              />
-              <label v-if="workspacePath && (branchesLoading || branchOptions.length)" class="new-branch">
-                <GitBranch :size="13" />
-                <select v-model="branch" :aria-label="isolateWorkspace ? '选择基准分支' : '选择分支'" :disabled="branchesLoading || !!changing">
-                  <option v-if="branchesLoading" value="">读取分支…</option>
-                  <option v-for="item in branchOptions" :key="item" :value="item">{{ item }}</option>
-                </select>
-                <ChevronDown :size="12" />
-              </label>
-              <el-checkbox v-if="workspacePath && branchOptions.length" v-model="isolateWorkspace" size="small"
-                :disabled="!branch || !!changing" title="勾选后从所选分支新建分支和独立工作区">新建分支</el-checkbox>
+              <AgentConversationWorkspacePicker ref="workspacePicker" v-model="workspaceId" :groups="workspaceGroups" :projects="workspaces" :save-workspace="saveWorkspace" :disabled="!!changing" />
             </div>
             <div class="new-access"><AgentAccessSelector v-model="accessMode" :mode="mode" :provider="provider" :access-modes="runtime?.accessModes" :disabled="!!changing" /></div>
           </div>
@@ -222,30 +172,30 @@ defineExpose({ focusPrompt });
               <AgentModelSpeed v-model:service-tier="serviceTier" :runtime="runtime" :model="model" />
               <el-button text size="small" aria-label="管理自定义模型" @click="emit('configureModels')"><Settings2 :size="13" /></el-button>
             </div>
-            <el-button class="send-button" type="primary" :disabled="!canStart || attachmentDraft?.pending || branchesLoading" :loading="changing === 'start'" aria-label="创建并发送" @click="submit">
+            <el-button class="send-button" type="primary" :disabled="!canStart || attachmentDraft?.pending" :loading="changing === 'start'" aria-label="创建并发送" @click="submit">
               <template #icon><Send :size="15" /></template>发送
             </el-button>
           </div>
         </section>
 
         <!-- Open WebUI / Continue 实时工作区与待办事项秒绑启动栏 -->
-        <section v-if="quickWorkspaces.length || quickJiraMentions.length" class="new-launchpad-strip" aria-label="快捷上下文绑定">
-          <div v-if="quickWorkspaces.length" class="new-launchpad-row">
+        <section v-if="workspaceGroups.length || quickJiraMentions.length" class="new-launchpad-strip" aria-label="快捷上下文绑定">
+          <div v-if="workspaceGroups.length" class="new-launchpad-row">
             <span class="new-launchpad-label"><FolderGit2 :size="12" /> 工作区秒绑</span>
             <div class="new-launchpad-chips">
               <button
-                v-for="ws in quickWorkspaces"
-                :key="ws.path"
+                v-for="ws in workspaceGroups.slice(0,5)"
+                :key="ws.id"
                 type="button"
                 class="new-launchpad-chip"
-                :class="{ 'is-active': workspacePath === ws.path }"
+                :class="{ 'is-active': workspaceId === ws.id }"
                 :disabled="!!changing"
-                :title="`${ws.label} (${ws.branch || '默认分支'}) · ${ws.path}`"
-                @click="toggleQuickWorkspace(ws.path)"
+                :title="ws.projectPaths.join('\n')"
+                @click="workspaceId = workspaceId === ws.id ? '' : ws.id"
               >
-                <Check v-if="workspacePath === ws.path" :size="11" />
-                <strong>{{ ws.label }}</strong>
-                <code v-if="ws.branch">{{ ws.branch }}</code>
+                <Check v-if="workspaceId === ws.id" :size="11" />
+                <strong>{{ ws.name }}</strong>
+                <code>{{ ws.projectPaths.length }} 个项目</code>
               </button>
             </div>
           </div>
@@ -611,22 +561,5 @@ defineExpose({ focusPrompt });
 @media (max-width: 640px) {
   .new-starter-section { display: none; }
 }
-.new-branch {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  max-width: min(100%, 340px);
-  height: 32px;
-  padding-inline: 9px;
-  border: 1px solid var(--chat-rule, var(--ui-border));
-  border-radius: var(--ds-radius-sm, 6px);
-  background: var(--chat-panel, var(--ui-surface));
-  color: var(--ui-secondary);
-  font-size: 12px;
-}
-.new-branch:hover, .new-branch:focus-within { border-color: var(--ui-accent); }
-.new-branch svg { flex-shrink: 0; }
-.new-branch select { min-width: 0; max-width: 100%; appearance: none; border: 0; outline: 0; background: transparent; color: inherit; font: inherit; text-overflow: ellipsis; }
-.new-branch select:not(:disabled) { cursor: pointer; }
+
 </style>

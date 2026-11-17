@@ -489,8 +489,6 @@
 :root[data-theme] .access-option.danger { color: var(--ui-warning); }
 :root[data-theme] .studio-conversation-menu .el-dropdown-menu__item { gap: 8px; min-height: 36px; border-radius: 8px; font-size: 12px; line-height: 16px; }
 :root[data-theme] .studio-conversation-menu .studio-delete-conversation { color: var(--ui-danger); }
-.studio-layout *::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--agent-muted) 40%, var(--agent-panel)); background-clip: padding-box; }
-.studio-layout *::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--agent-muted) 65%, var(--agent-panel)); background-clip: padding-box; }
 
 @container studio-conversation (min-width: 880px) {
   .studio-layout .conversation-toolbar { flex-direction: row; align-items: center; }

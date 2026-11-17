@@ -117,5 +117,3 @@ a { color: inherit; text-decoration: none; }
 .empty.small { font-size: 12px; line-height: 16px; padding: 32px 12px; }
 @keyframes rotate { to { transform: rotate(360deg); } }
 ::selection { background: var(--ui-accent-soft); color: var(--ui-text); }
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-thumb { background: var(--ui-divider); border-radius: 9999px; }

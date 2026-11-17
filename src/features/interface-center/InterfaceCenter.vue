@@ -235,7 +235,7 @@ function onAskAi(prompt: string) {
 .module-sidebar>header{display:flex;align-items:center;gap:8px;margin:0 6px 12px;font-size:12px;flex-shrink:0}
 .module-sidebar>header>svg{color:var(--ui-muted)}
 .module-sidebar>.el-input{margin-bottom:8px;flex-shrink:0}
-.module-sidebar nav{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin}
+.module-sidebar nav{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;}
 .module-sidebar nav>button{display:flex;align-items:center;gap:8px;width:100%;padding:8px 8px;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--ui-secondary);font:inherit;font-size:11.5px;text-align:left;cursor:pointer;transition:background-color 140ms ease,border-color 140ms ease,color 140ms ease}
 .module-sidebar nav>button:hover{background:var(--ui-hover);color:var(--ui-text)}
 .module-sidebar nav>button.selected{color:var(--ui-text);background:var(--ui-raised);border-color:var(--ui-border);font-weight:600}

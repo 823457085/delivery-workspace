@@ -1,18 +1,21 @@
 <script setup lang="ts">
+import type { ConversationWorkspaceState } from '../../../shared/conversation-workspaces';
+import { conversationWorkspaceGroups, conversationWorkspaceId, reorderConversationWorkspaces } from './conversation-workspaces';
 import AgentSidebarHeader from './AgentSidebarHeader.vue';
 /**
  * 设计说明：会话列表只呈现会话摘要并上报选择，不持有远端状态，也不发起 CLI 操作。
  * 将它从容器拆出可保持主面板只负责编排；工具使用原生折叠保留组件挂载，把固定高度让给会话列表。
  */
-import { computed, shallowRef, watch } from 'vue';
-import { ChevronDown, Folder, Pin, RotateCw, Search, Settings2, Trash2, X } from '@lucide/vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, shallowRef, watch } from 'vue';
+import { ElMessage, type DropdownInstance } from 'element-plus';
+import { ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, ChevronsDownUp, ChevronsUpDown, Copy, Files, ListFilter, MessageSquarePlus, Pencil, ChevronDown, Folder, GripVertical, Plus, Pin, RotateCw, Search, Settings2, Trash2, X } from '@lucide/vue';
 import { agentConversationProjectPath, compareAgentConversations, type AgentConversation } from './conversation';
 import AgentSessionItem from './AgentSessionItem.vue';
 import { isPinnedAgentSession } from './session-pins';
 import { matchesSessionQuickFilter, summarizeSessionQuickFilters, type SessionQuickFilter } from './session-quick-filter';
 
-const props = defineProps<{ conversations: AgentConversation[]; selectedId: string; changing: string; pinnedIds: ReadonlySet<string> }>();
-const emit = defineEmits<{ select: [id: string]; create: []; groups: []; sync: []; remove: [conversations: AgentConversation[]]; rename: [id: string, title: string] }>();
+const props = defineProps<{ workspaceState: ConversationWorkspaceState; workspaceBusy: boolean; conversations: AgentConversation[]; selectedId: string; changing: string; pinnedIds: ReadonlySet<string> }>();
+const emit = defineEmits<{ createWorkspace: []; createWorkspaceConversation: [id:string]; renameWorkspace: [id:string]; duplicateWorkspace: [id:string]; manageWorkspace: [id:string]; moveWorkspace: [ids:string[]]; moveConversation: [conversationId:string,workspaceId:string]; select: [id: string]; create: []; groups: []; sync: []; remove: [conversations: AgentConversation[]]; rename: [id: string, title: string] }>();
 const collapsedGroupsStorageKey = 'agent-session-collapsed-groups:v1';
 function readCollapsedGroups() {
   try {
@@ -83,29 +86,88 @@ function getWorkspaceLabel(workspacePath: string) {
   return leaf;
 }
 
-const projectGroups = computed<ConversationGroup[]>(() => {
-  const grouped = new Map<string, AgentConversation[]>();
-  scopedConversations.value.forEach((conversation) => {
-    const path = agentConversationProjectPath(conversation) || '未指定工作区';
-    grouped.set(path, [...(grouped.get(path) || []), conversation]);
-  });
-
-  const duplicateLabels = new Map<string, number>();
-  grouped.forEach((_, path) => {
-    const label = getWorkspaceLabel(path);
-    duplicateLabels.set(label, (duplicateLabels.get(label) || 0) + 1);
-  });
-
-  return [...grouped.entries()]
-    .map(([path, conversations]) => {
-      const baseLabel = getWorkspaceLabel(path);
-      const parts = path.replaceAll('\\', '/').split('/').filter(Boolean);
-      const label = duplicateLabels.get(baseLabel)! > 1 ? `${parts.at(-2) || '工作区'} / ${baseLabel}` : baseLabel;
-      return { path, label, conversations };
-    })
-    .sort((left, right) => compareAgentConversations(left.conversations[0]!, right.conversations[0]!));
-});
-
+const projectGroups = computed<ConversationGroup[]>(() => conversationWorkspaceGroups(props.workspaceState, props.conversations)
+  .map(group=>({path:group.id,label:group.name,conversations:group.conversations.filter(c=>scopedConversations.value.some(item=>item.id===c.id))})));
+const dragSource = shallowRef<{type:'workspace'|'conversation';id:string}>();
+const dropTarget = shallowRef<string|null>(null);
+function beginDrag(event:DragEvent,type:'workspace'|'conversation',id:string) {
+  if (props.workspaceBusy || props.changing) {event.preventDefault();return;}
+  dragSource.value={type,id};if(event.dataTransfer){event.dataTransfer.effectAllowed='move';event.dataTransfer.setData('text/plain',id);}
+}
+function overGroup(event:DragEvent,id:string) {
+  if(!dragSource.value || (dragSource.value.type==='workspace'&&!id))return;
+  event.preventDefault();dropTarget.value=id;
+}
+function endDrag(){dragSource.value=undefined;dropTarget.value=null;}
+function dropGroup(event:DragEvent,id:string) {
+  event.preventDefault();const source=dragSource.value;endDrag();if(!source)return;
+  if(source.type==='conversation')emit('moveConversation',source.id,id);
+  else if(id)emit('moveWorkspace',reorderConversationWorkspaces(props.workspaceState.workspaces.map(w=>w.id),source.id,id));
+}
+function workspaceNeighbor(id: string, offset: number) {
+  const ids = props.workspaceState.workspaces.map(workspace => workspace.id);
+  const index = ids.indexOf(id);
+  return index < 0 ? undefined : ids[index + offset];
+}
+async function workspaceCommand(command: string, id: string) {
+  if (!id || props.workspaceBusy || props.changing) return;
+  const workspace = projectGroups.value.find(group => group.path === id);
+  if (!workspace) return;
+  const ids = props.workspaceState.workspaces.map(item => item.id);
+  switch (command) {
+    case 'create': emit('createWorkspaceConversation',id); break;
+    case 'manage': emit('manageWorkspace',id); break;
+    case 'rename': emit('renameWorkspace',id); break;
+    case 'duplicate': emit('duplicateWorkspace',id); break;
+    case 'paths': {
+      const paths = props.workspaceState.workspaces.find(item=>item.id===id)?.projectPaths || [];
+      if (!paths.length) return;
+      try { await navigator.clipboard.writeText(paths.join('\n')); ElMessage.success('已复制项目路径'); }
+      catch { ElMessage.error('复制失败，请检查浏览器剪贴板权限'); }
+      break;
+    }
+    case 'filter': projectFilter.value = projectFilter.value === id ? 'all' : id; break;
+    case 'fold': {
+      const next = new Set(collapsedGroups.value);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      collapsedGroups.value = next; saveCollapsedGroups(next); break;
+    }
+    case 'foldOthers': {
+      const next = new Set(projectGroups.value.filter(group=>group.path!==id).map(group=>group.path));
+      collapsedGroups.value = next; saveCollapsedGroups(next); break;
+    }
+    case 'up': case 'down': case 'first': case 'last': {
+      const target = command==='first' ? ids[0] : command==='last' ? ids.at(-1) : workspaceNeighbor(id,command==='up'?-1:1);
+      if (target && target!==id) emit('moveWorkspace',reorderConversationWorkspaces(ids,id,target));
+      break;
+    }
+  }
+}
+const workspaceMenu = shallowRef<DropdownInstance>();
+const contextWorkspace = shallowRef('');
+const contextGroup = computed(() => projectGroups.value.find(group=>group.path===contextWorkspace.value));
+const contextProjects = computed(() => props.workspaceState.workspaces.find(group=>group.id===contextWorkspace.value)?.projectPaths || []);
+const canFoldGroups = computed(() => !batchMode.value && !query.value.trim() && projectFilter.value==='all' && quickFilter.value==='all');
+const contextPoint = shallowRef({getBoundingClientRect: () => new DOMRect()});
+const workspaceMenuOptions = {modifiers:[{name:'preventOverflow',options:{padding:16,tether:false}},{name:'offset',options:{offset:[0,8]}},{name:'flip',options:{fallbackPlacements:['left-start','right-end','left-end']}}]};
+async function showWorkspaceMenu(event: MouseEvent | KeyboardEvent, id: string) {
+  if (!id || props.workspaceBusy || props.changing) return;
+  event.preventDefault();
+  contextWorkspace.value = id;
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+  const x = event instanceof MouseEvent ? event.clientX : rect.right;
+  const y = event instanceof MouseEvent ? event.clientY : rect.top;
+  contextPoint.value = {getBoundingClientRect: () => new DOMRect(x,y,0,0)};
+  await nextTick();
+  workspaceMenu.value?.handleOpen();
+}
+function workspaceMenuKey(event: KeyboardEvent, id: string) {
+  if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) void showWorkspaceMenu(event,id);
+}
+function closeWorkspaceMenu() { workspaceMenu.value?.handleClose(); }
+onMounted(() => { window.addEventListener('resize',closeWorkspaceMenu); });
+onBeforeUnmount(() => { window.removeEventListener('resize',closeWorkspaceMenu); });
+watch(() => props.workspaceBusy || props.changing, value => { if (value) closeWorkspaceMenu(); });
 const visibleGroups = computed<ConversationGroup[]>(() => {
   const term = query.value.trim().toLowerCase();
   return projectGroups.value
@@ -118,14 +180,14 @@ const visibleGroups = computed<ConversationGroup[]>(() => {
         conversations: conversations.filter((conversation) => matchesConversation(conversation, term)),
       };
     })
-    .filter((group) => group.conversations.length > 0);
+    .filter((group) => group.conversations.length > 0 || (!term && quickFilter.value === 'all'));
 });
 
 const pinnedConversations = computed(() => {
   const term = query.value.trim().toLowerCase();
   return props.conversations
     .filter((conversation) => isPinnedAgentSession(props.pinnedIds, conversation) && passQuickFilter(conversation))
-    .filter((conversation) => projectFilter.value === 'all' || agentConversationProjectPath(conversation) === projectFilter.value)
+    .filter((conversation) => projectFilter.value === 'all' || conversationWorkspaceId(props.workspaceState, conversation) === projectFilter.value)
     .filter((conversation) => matchesConversation(conversation, term)
       || [getWorkspaceLabel(agentConversationProjectPath(conversation)), agentConversationProjectPath(conversation)]
         .some((value) => value.toLowerCase().includes(term)))
@@ -201,7 +263,7 @@ function toggleGroup(path: string) {
     <slot name="navigation" />
     <div class="session-filter-deck" role="search" aria-label="会话检索与目录过滤">
       <label class="session-search"><Search :size="13" /><input v-model="query" type="search" placeholder="搜索会话、正文或分支…" @keydown.esc="query = ''" /><button v-if="query" type="button" class="session-search-clear" aria-label="清空搜索" title="清空搜索 (Esc)" @click.prevent="query = ''"><X :size="12" /></button></label>
-      <label class="project-filter"><Folder :size="13" /><select v-model="projectFilter" aria-label="按项目目录筛选"><option value="all">全部项目目录（{{ projectGroups.length }}）</option><option v-for="group in projectGroups" :key="group.path" :value="group.path">{{ group.label }}（{{ group.conversations.length }}）</option></select><ChevronDown :size="13" /></label>
+      <label class="project-filter"><Folder :size="13" /><select v-model="projectFilter" aria-label="按工作区筛选"><option value="all">全部工作区（{{ projectGroups.filter(group => group.path).length }}）</option><option v-for="group in projectGroups" :key="group.path" :value="group.path">{{ group.label }}（{{ group.conversations.length }}）</option></select><ChevronDown :size="13" /></label>
       <div class="session-quick-pills" role="tablist" aria-label="按会话状态快速筛选">
         <button type="button" role="tab" :aria-selected="quickFilter === 'all'" :class="{ active: quickFilter === 'all' }" @click="quickFilter = 'all'">全部</button>
         <button type="button" role="tab" :aria-selected="quickFilter === 'active'" :class="{ active: quickFilter === 'active' }" @click="quickFilter = quickFilter === 'active' ? 'all' : 'active'">进行中<em v-if="quickFilterCounts.active">{{ quickFilterCounts.active }}</em></button>
@@ -209,6 +271,7 @@ function toggleGroup(path: string) {
         <button type="button" role="tab" :aria-selected="quickFilter === 'attention'" :class="{ active: quickFilter === 'attention', 'is-alert': quickFilterCounts.attention > 0 }" @click="quickFilter = quickFilter === 'attention' ? 'all' : 'attention'">异常<em v-if="quickFilterCounts.attention">{{ quickFilterCounts.attention }}</em></button>
       </div>
     </div>
+    <div class="workspace-create"><button type="button" :disabled="workspaceBusy" @click="emit('createWorkspace')"><Plus :size="13"/>新建工作区</button><small>可拖动排序或移动任务</small></div>
     <div class="session-sidebar-heading">
       <strong>{{ query.trim() ? '全量检索结果' : showOlder ? '全部历史会话' : '置顶与最近 7 天' }}</strong>
       <span>{{ visibleConversationCount }} / {{ availableConversationCount }}</span>
@@ -222,20 +285,20 @@ function toggleGroup(path: string) {
       <button type="button" class="session-batch-delete" :disabled="!!changing || !checkedConversations.length" @click="emit('remove', checkedConversations)">{{ changing === 'conversations:delete' ? '删除中…' : '删除' }}</button>
       <button type="button" :disabled="!!changing" @click="cancelBatch">取消</button>
     </div>
-    <div v-if="hasVisibleConversations" class="session-list">
+    <div v-if="hasVisibleConversations" class="session-list" @scroll="closeWorkspaceMenu">
       <section v-if="pinnedConversations.length" class="pinned-group">
         <div class="pinned-heading"><Pin :size="12" /><strong>置顶</strong><span>{{ pinnedConversations.length }}</span></div>
         <AgentSessionItem v-for="conversation in pinnedConversations" :key="conversation.id" :conversation="conversation"
           :selected="conversation.id === selectedId" :selecting="batchMode" :checked="checkedIds.has(conversation.id)" :disabled="!!changing"
-          :search-query="query.trim()"
+          :draggable="!workspaceBusy && !changing" @dragstart.stop="beginDrag($event,'conversation',conversation.id)" @dragend="endDrag" :search-query="query.trim()"
           @select="emit('select', $event)" @toggle="toggleChecked" @rename="(id, title) => emit('rename', id, title)" />
       </section>
-      <section v-for="group in visibleGroups" :key="group.path" class="project-group">
-        <button type="button" class="project-heading" :title="group.path" :aria-expanded="!isGroupCollapsed(group.path)" @click="toggleGroup(group.path)"><ChevronDown :size="12" :class="{ collapsed: isGroupCollapsed(group.path) }" /><Folder :size="13" /><strong>{{ group.label }}</strong><span>{{ group.conversations.length }}</span></button>
+      <section v-for="group in visibleGroups" :key="group.path" class="project-group" :class="{'drop-target':dropTarget===group.path}" @dragover="overGroup($event,group.path)" @drop="dropGroup($event,group.path)">
+        <button type="button" :draggable="!!group.path && !workspaceBusy && !changing" @dragstart="beginDrag($event,'workspace',group.path)" @dragend="endDrag" class="project-heading" :title="group.path" :aria-expanded="!isGroupCollapsed(group.path)" @click="toggleGroup(group.path)" @contextmenu="showWorkspaceMenu($event,group.path)" @keydown="workspaceMenuKey($event,group.path)"><GripVertical v-if="group.path" :size="12" class="workspace-grip"/><ChevronDown :size="12" :class="{ collapsed: isGroupCollapsed(group.path) }" /><Folder :size="13" /><strong>{{ group.label }}</strong><span>{{ group.conversations.length }}</span></button>
         <div v-show="!isGroupCollapsed(group.path)" class="project-conversations">
           <AgentSessionItem v-for="conversation in displayedConversations(group)" :key="conversation.id" :conversation="conversation"
             :selected="conversation.id === selectedId" :selecting="batchMode" :checked="checkedIds.has(conversation.id)" :disabled="!!changing"
-            :search-query="query.trim()"
+            :draggable="!workspaceBusy && !changing" @dragstart.stop="beginDrag($event,'conversation',conversation.id)" @dragend="endDrag" :search-query="query.trim()"
             @select="emit('select', $event)" @toggle="toggleChecked" @rename="(id, title) => emit('rename', id, title)" />
           <button v-if="!batchMode && !query.trim() && projectFilter === 'all' && group.conversations.length > previewLimit" type="button" class="project-more" @click="toggleGroupExpansion(group.path)">{{ expandedGroups.has(group.path) ? '收起更多' : `展开显示 ${group.conversations.length - previewLimit} 个` }}</button>
         </div>
@@ -250,11 +313,33 @@ function toggleGroup(path: string) {
       <slot name="tools" />
       </div>
     </details>
+    <el-dropdown ref="workspaceMenu" virtual-triggering :virtual-ref="contextPoint" trigger="contextmenu" placement="right-start" :popper-options="workspaceMenuOptions" :show-arrow="false" max-height="min(540px, calc(100dvh - 32px))" @command="workspaceCommand($event,contextWorkspace)">
+      <template #dropdown>
+        <el-dropdown-menu class="workspace-context-menu">
+          <li class="workspace-context-heading" role="presentation"><strong>{{contextGroup?.label}}</strong><small>{{contextProjects.length}} 个项目 · {{contextGroup?.conversations.length||0}} 个会话</small></li>
+          <el-dropdown-item command="create"><MessageSquarePlus :size="14" class="workspace-menu-icon"/>在此工作区新建会话</el-dropdown-item>
+          <el-dropdown-item command="manage"><Settings2 :size="14" class="workspace-menu-icon"/>管理项目与分支</el-dropdown-item>
+          <el-dropdown-item command="rename"><Pencil :size="14" class="workspace-menu-icon"/>重命名工作区</el-dropdown-item>
+          <el-dropdown-item command="duplicate"><Files :size="14" class="workspace-menu-icon"/>复制工作区配置…</el-dropdown-item>
+          <el-dropdown-item command="paths" :disabled="!contextProjects.length"><Copy :size="14" class="workspace-menu-icon"/>复制项目路径</el-dropdown-item>
+          <el-dropdown-item command="filter" divided><ListFilter :size="14" class="workspace-menu-icon"/>{{projectFilter===contextWorkspace?'显示全部工作区':'仅显示此工作区'}}</el-dropdown-item>
+          <el-dropdown-item command="fold" :disabled="!canFoldGroups"><ChevronsUpDown v-if="collapsedGroups.has(contextWorkspace)" :size="14" class="workspace-menu-icon"/><ChevronsDownUp v-else :size="14" class="workspace-menu-icon"/>{{collapsedGroups.has(contextWorkspace)?'展开此工作区':'收起此工作区'}}</el-dropdown-item>
+          <el-dropdown-item command="foldOthers" :disabled="!canFoldGroups"><ChevronsDownUp :size="14" class="workspace-menu-icon"/>收起其他工作区</el-dropdown-item>
+          <el-dropdown-item command="first" divided :disabled="!workspaceNeighbor(contextWorkspace,-1)"><ArrowUpToLine :size="14" class="workspace-menu-icon"/>移到顶部</el-dropdown-item>
+          <el-dropdown-item command="up" :disabled="!workspaceNeighbor(contextWorkspace,-1)"><ArrowUp :size="14" class="workspace-menu-icon"/>上移工作区</el-dropdown-item>
+          <el-dropdown-item command="down" :disabled="!workspaceNeighbor(contextWorkspace,1)"><ArrowDown :size="14" class="workspace-menu-icon"/>下移工作区</el-dropdown-item>
+          <el-dropdown-item command="last" :disabled="!workspaceNeighbor(contextWorkspace,1)"><ArrowDownToLine :size="14" class="workspace-menu-icon"/>移到底部</el-dropdown-item>
+        </el-dropdown-menu>
+      </template>
+    </el-dropdown>
     <slot name="navigation-footer" />
   </aside>
 </template>
 
 <style scoped>
+.workspace-menu-icon{margin-right:8px;flex:none}.workspace-context-menu{min-width:200px}.workspace-context-heading{display:grid;gap:4px;padding:7px 14px 10px;margin-bottom:4px;border-bottom:1px solid var(--ui-border);max-width:280px}.workspace-context-heading strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:var(--ui-text)}.workspace-context-heading small{font-size:11px;color:var(--ui-muted)}
+.workspace-create{display:flex;align-items:center;justify-content:space-between;padding:5px 12px;gap:6px}.workspace-create button{display:flex;align-items:center;gap:4px;padding:4px 6px;background:transparent;border:0;color:var(--agent-accent);font-size:11px;cursor:pointer}.workspace-create small{font-size:10px;color:var(--agent-muted)}.drop-target{outline:2px solid var(--agent-accent);outline-offset:-2px;border-radius:6px;background:var(--ui-accent-soft)}.workspace-grip{opacity:.55;cursor:grab}
+
 
 .older-toggle-btn{margin-left:auto;padding:2px 7px;border:1px solid var(--ui-border);border-radius:999px;background:var(--ui-raised);color:var(--ui-accent);font:500 11px/16px var(--mono);cursor:pointer;transition:border-color 160ms ease,background 160ms ease}.older-toggle-btn:hover{border-color:var(--ui-accent);background:var(--ui-accent-soft)}
 .session-quick-pills{display:flex;align-items:center;gap:4px;margin:0 10px 4px;overflow-x:auto;scrollbar-width:none}.session-quick-pills::-webkit-scrollbar{display:none}.session-quick-pills button{display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 7px;border:1px solid var(--ui-border);border-radius:999px;background:var(--ui-raised);color:var(--ui-muted);font:500 11px/1 var(--sans);white-space:nowrap;cursor:pointer;transition:background 160ms ease,color 160ms ease,border-color 160ms ease}.session-quick-pills button:hover{color:var(--ui-text);border-color:color-mix(in srgb,var(--ui-accent) 40%,var(--ui-border))}.session-quick-pills button.active{border-color:color-mix(in srgb,var(--ui-accent) 45%,var(--ui-border));background:var(--ui-accent-soft);color:var(--ui-accent);font-weight:600}.session-quick-pills button em{padding:0 4px;border-radius:999px;background:color-mix(in srgb,var(--ui-surface) 75%,transparent);font:600 10px/14px var(--mono);font-style:normal;font-variant-numeric:tabular-nums}.session-quick-pills button.is-alert:not(.active) em{color:var(--ui-danger,#dc2626)}

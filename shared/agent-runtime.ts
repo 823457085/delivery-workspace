@@ -207,6 +207,8 @@ export interface AgentConversationWorkspace extends AgentConversationWorkspaceLo
 }
 
 export interface AgentRun {
+  /** Named multi-project workspace; independent of execution directory. */
+  workspaceId?: string;
   recoveryOfRunId?: string;
   /** 重启只核对原轮次；恢复记录不代表业务验收，也不自动重派任务。 */
   recovery?: {
@@ -469,6 +471,7 @@ export interface AgentKnowledgeScope {
 }
 
 export interface StartAgentRunInput {
+  workspaceId?: string;
   /** 在已有工作台对话中切换执行器，CLI 创建自己的原生会话。 */
   continueConversationId?: string;
   provider: AgentProvider;

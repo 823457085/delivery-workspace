@@ -1,0 +1,49 @@
+/* Native scroll areas and Element Plus overlays share the same theme tokens.
+   Keep overflow, scrollbar-gutter and deliberately hidden navigation rails local. */
+:root {
+  --ui-scrollbar-size: 8px;
+  --ui-scrollbar-radius: 999px;
+  --ui-scrollbar-thumb: color-mix(in srgb, var(--ui-muted) 48%, transparent);
+  --ui-scrollbar-thumb-hover: color-mix(in srgb, var(--ui-muted) 76%, transparent);
+}
+
+::-webkit-scrollbar { width: var(--ui-scrollbar-size); height: var(--ui-scrollbar-size); }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: var(--ui-scrollbar-radius);
+  background: var(--ui-scrollbar-thumb);
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover, ::-webkit-scrollbar-thumb:active {
+  background-color: var(--ui-scrollbar-thumb-hover);
+}
+
+/* Standard properties override WebKit styling in Chromium; use them only as fallback. */
+@supports not selector(::-webkit-scrollbar) {
+  :where(*) { scrollbar-width: thin; scrollbar-color: var(--ui-scrollbar-thumb) transparent; }
+  :where(*:hover, *:focus-within) { scrollbar-color: var(--ui-scrollbar-thumb-hover) transparent; }
+}
+
+.el-scrollbar {
+  --el-scrollbar-bg-color: var(--ui-scrollbar-thumb);
+  --el-scrollbar-hover-bg-color: var(--ui-scrollbar-thumb-hover);
+  --el-scrollbar-opacity: 1;
+  --el-scrollbar-hover-opacity: 1;
+}
+.el-scrollbar__bar.is-vertical { width: var(--ui-scrollbar-size); }
+.el-scrollbar__bar.is-horizontal { height: var(--ui-scrollbar-size); }
+.el-scrollbar__thumb {
+  border: 2px solid transparent;
+  border-radius: var(--ui-scrollbar-radius);
+  background-clip: padding-box;
+}
+
+/* Monaco positions its own sliders; retain its geometry and use the shared colors. */
+.monaco-scrollable-element > .scrollbar > .slider { background: var(--ui-scrollbar-thumb); border-radius: var(--ui-scrollbar-radius); }
+.monaco-scrollable-element > .scrollbar > .slider:hover,
+.monaco-scrollable-element > .scrollbar > .slider.active { background: var(--ui-scrollbar-thumb-hover); }
+
+@media (forced-colors: active) {
+  :root { --ui-scrollbar-thumb: CanvasText; --ui-scrollbar-thumb-hover: Highlight; }
+}

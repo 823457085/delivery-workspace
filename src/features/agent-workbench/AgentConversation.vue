@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import AgentAvatar from './AgentAvatar.vue';
+import AgentConversationWorkspaceContext from './AgentConversationWorkspaceContext.vue';
+import type { ConversationWorkspace } from '../../../shared/conversation-workspaces';
 /**
  * 设计说明：该组件把一次会话的运行链呈现为用户/Agent 消息，并提供唯一的会话输入口。
  * 它不直接请求后端，发送、停止和详情操作全部通过显式事件交给容器，避免隐藏副作用。
@@ -50,7 +52,7 @@ import { buildConversationClipboardDigest, countKeywordOccurrences, stepSearchMa
 import { useAgentBookmarks, type AgentMessageBookmark } from './useAgentBookmarks';
 import { teamRoomAcceptanceRecord, type AdvancedTeamTask, type TeamRoom, type TeamDecision } from './team-api';
 
-const props = defineProps<{ conversation?: AgentConversation; visible?: boolean; changing: string; runtimes: AgentRuntimeHealth[]; sideForkAvailable?: boolean; projectlessFork?: boolean;
+const props = defineProps<{ workspace?: ConversationWorkspace; workspaceName?: string; conversation?: AgentConversation; visible?: boolean; changing: string; runtimes: AgentRuntimeHealth[]; sideForkAvailable?: boolean; projectlessFork?: boolean;
   workspaceOptions?: AgentWorkspaceOption[]; choosingWorkspace?: boolean;
   saveWorkspace?: (conversation: AgentConversation, paths: string[]) => Promise<boolean>;
   browseWorkspace?: (initialPath: string) => Promise<string | undefined>;
@@ -58,7 +60,7 @@ const props = defineProps<{ conversation?: AgentConversation; visible?: boolean;
 const automatic = defineModel<boolean>('automatic', { default: false });
 const draft = defineModel<string>({ default: '' });
 const attachments = defineModel<AgentAttachment[]>('attachments', { default: () => [] });
-const emit = defineEmits<{ send: [selection: { provider: AgentProvider; mode?: AgentRunMode; model: string; reasoningEffort: AgentReasoningEffort | ''; accessMode: AgentAccessMode;
+const emit = defineEmits<{ manageWorkspace: [id:string]; send: [selection: { provider: AgentProvider; mode?: AgentRunMode; model: string; reasoningEffort: AgentReasoningEffort | ''; accessMode: AgentAccessMode;
   queuePlacement: AgentQueuePlacement; serviceTier?: AgentServiceTier; workflow?: boolean; team?: AgentTeamRequest; question?: TeamQuestionTarget }]; accessChange: [accessMode: AgentAccessMode]; stop: [run: AgentRun]; edit: [run: AgentRun]; steer: [run: AgentRun]; removeQueued: [run: AgentRun]; retry: [run: AgentRun, selection?: Pick<AgentRun, 'mode' | 'accessMode'>]; fork: [run: AgentRun]; forkSide: [run: AgentRun]; pin: [conversation: AgentConversation]; rename: [conversation: AgentConversation]; renameTitle: [conversation: AgentConversation, title: string]; remove: [conversation: AgentConversation]; inspect: [run: AgentRun]; configureModels: []; teamDecision: [action: TeamDecision]; teamCommand: [command: '暂停任务' | '继续执行']; chooseTeamWorkspace: []; providerChange: [provider: AgentProvider]; openGroup: [roomId: string] }>();
 const editingTitle = shallowRef(false);
 const titleDraft = shallowRef('');
@@ -559,7 +561,7 @@ defineExpose({ focusComposer });
           </el-dropdown>
         </div>
       </header>
-      <div class="conversation-toolbar">
+      <div class="conversation-toolbar" :style="workspace ? {flexWrap:'wrap'} : undefined">
         <a v-if="conversation.latest.task?.taskFlowUrl" class="context-block" :href="conversation.latest.task.taskFlowUrl"
           target="_blank" rel="noopener noreferrer">查看 TaskFlow 任务</a>
       <nav class="studio-conversation-tools" aria-label="会话视图">
@@ -567,7 +569,21 @@ defineExpose({ focusComposer });
         <button type="button" :class="{ active: conversationView === 'execution' }" :aria-pressed="conversationView === 'execution'" @click="conversationView = 'execution'"><Activity :size="13" />执行记录</button>
         <button type="button" :class="{ active: conversationView === 'delivery' }" :aria-pressed="conversationView === 'delivery'" @click="conversationView = 'delivery'"><PackageCheck :size="13" />本轮交付<span class="tool-count">{{ currentFileCount }}</span></button>
       </nav>
-      <div class="conversation-context">
+      <div class="conversation-context" :style="workspace ? {flex:'1 1 600px',flexWrap:'wrap',height:'auto',overflow:'visible'} : undefined">
+        <AgentConversationWorkspaceContext v-if="workspace" :workspace="workspace" :disabled="!!changing" @manage="emit('manageWorkspace',$event)">
+          <template #execution>
+            <div class="workspace-execution-context">
+              <strong>当前会话执行目录</strong><small>{{workspacePath || '未绑定目录'}}<template v-if="workspaceBranch"> · {{workspaceBranch}}</template></small>
+              <AgentWorkspaceSelector v-if="canChangeWorkspace" :key="conversation.id" :workspace-path="workspacePaths[0] || ''"
+                :workspace-paths="workspacePaths" :workspaces="workspaceOptions || []" :disabled="workspacePickerDisabled"
+                :has-active-runs="!!stoppableRun" :show-inline-tags="false" placement="bottom-start"
+                :apply-selection="applyWorkspaceSelection" :browse-workspace="browseWorkspace" :binding-saved="!!conversation.workspace">
+                <template #trigger><button type="button" class="context-block project-context-trigger" :disabled="workspacePickerDisabled" aria-label="调整此会话执行目录"><Folder :size="13"/><span>调整此会话执行目录</span><ChevronDown :size="12"/></button></template>
+              </AgentWorkspaceSelector>
+            </div>
+          </template>
+        </AgentConversationWorkspaceContext>
+        <template v-else>
         <AgentWorkspaceSelector v-if="canChangeWorkspace" :key="conversation.id" :workspace-path="workspacePaths[0] || ''"
           :workspace-paths="workspacePaths" :workspaces="workspaceOptions || []" :disabled="workspacePickerDisabled"
           :has-active-runs="!!stoppableRun" :show-inline-tags="false" placement="bottom-start"
@@ -582,6 +598,7 @@ defineExpose({ focusComposer });
         </AgentWorkspaceSelector>
         <div v-else class="context-block project-context" :title="projectPath || '当前会话未绑定本地项目'"><Folder :size="13" /><span><strong>{{ workspaceLabel }}</strong></span></div>
         <div v-if="(!conversation.teamChat || conversation.teamChat.workspaceBound) && workspaceBranch" class="context-block branch-context" :title="workspaceBranch"><GitBranch :size="13" /><span><small>分支</small><strong>{{ workspaceBranch }}</strong></span></div>
+        </template>
         <AgentTerminalButton v-if="!conversation.teamChat || conversation.teamChat.workspaceBound" :workspace-path="workspacePath" />
         <AgentCursorButton v-if="!conversation.teamChat || conversation.teamChat.workspaceBound" :workspace-path="workspacePath" />
         <el-dropdown v-if="conversationView === 'chat' && turnOutlineItems.length >= 2" trigger="click" popper-class="studio-turn-outline-popper">
@@ -777,7 +794,9 @@ defineExpose({ focusComposer });
           <el-empty v-if="searchQuery && !visibleEntries.length" description="当前会话没有匹配内容" :image-size="56" />
         </div>
       </div>
-      <button v-if="awayFromLatest && conversationView === 'chat' && !searchQuery" type="button" class="jump-to-latest" @click="jumpToLatest"><ArrowDown :size="14" /> 最新消息</button>
+      <button v-if="awayFromLatest && conversationView === 'chat' && !searchQuery" type="button" class="jump-to-latest" :class="{ 'is-behind-selection': !pausedRun && !!selectedQuoteText }" @click="jumpToLatest"><ArrowDown :size="14" /> 最新消息</button>
+      <div class="selection-quote-anchor">
+      <Transition name="selection-quote">
       <div v-if="!pausedRun && selectedQuoteText && conversationView === 'chat'" class="selection-quote-bar" role="region" aria-label="划词快捷操作">
         <Quote :size="13" class="selection-quote-icon" />
         <span class="selection-quote-preview">已选中 {{ selectedQuoteText.length }} 字：“{{ selectedQuoteText.slice(0, 48) }}{{ selectedQuoteText.length > 48 ? '…' : '' }}”</span>
@@ -790,6 +809,8 @@ defineExpose({ focusComposer });
           <button type="button" class="selection-quote-chip" title="复制选中文字" @click="copySelectedQuote">复制</button>
         </div>
         <button type="button" class="selection-quote-close" aria-label="关闭划词快捷提示" @click="selectedQuoteText = ''"><X :size="12" /></button>
+      </div>
+      </Transition>
       </div>
       <AgentComposer v-model:automatic="effectiveAutomatic" v-if="!pausedRun" ref="composer" v-model="draft" v-model:attachments="attachments" :conversation="conversation" :runtimes="runtimes" :automatic-access-mode="nextAccessMode" :changing="changing" :running="running" :can-insert="!!activeRun?.liveInputReady"
         :business-options="businessOptions" :attachment-draft="attachmentDraft" :question-reply="questionReply" :stopping="(effectiveAutomatic || !stoppableRun) && currentTeamTask?.chat?.coordination?.phase === 'stopping'"
@@ -807,6 +828,8 @@ defineExpose({ focusComposer });
 </template>
 
 <style scoped>
+.workspace-execution-context{display:grid;gap:6px;padding-top:10px;font-size:12px}.workspace-execution-context small{color:var(--ui-muted);font-size:11px;overflow-wrap:anywhere}.workspace-execution-context .project-context-trigger{justify-self:start;width:max-content;max-width:100%;cursor:pointer}
+
 .jump-to-latest{align-self:center;position:relative;margin:-36px 0 8px;z-index:2;display:inline-flex;align-items:center;gap:6px;padding:5px 12px;border:1px solid var(--ui-border);border-radius:var(--ds-radius-sm,999px);background:var(--ui-surface);color:var(--ui-text);box-shadow:var(--ui-shadow);font:600 12px/18px var(--sans);cursor:pointer}
 .jump-to-latest:hover{color:var(--ui-accent);border-color:var(--ui-accent)}
 .team-more-actions{font-size:12px;color:var(--ui-muted)}.team-more-actions summary{cursor:pointer;line-height:32px}.team-more-actions .team-chat-decisions{margin-top:4px}
@@ -905,7 +928,15 @@ defineExpose({ focusComposer });
 :global(.studio-turn-outline-popper .turn-outline-num){flex-shrink:0;padding:1px 5px;border:1px solid var(--ui-border);border-radius:4px;background:var(--ui-raised);color:var(--ui-accent);font:600 10.5px/14px var(--mono);font-variant-numeric:tabular-nums}
 :global(.studio-turn-outline-popper .turn-outline-text){flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ui-text)}
 :global(.studio-turn-outline-popper .turn-outline-files){flex-shrink:0;padding:1px 5px;border-radius:999px;border:1px solid var(--ui-border);background:var(--ui-raised);color:var(--ui-muted);font:600 10px/1.3 var(--mono)}
-.selection-quote-bar{align-self:center;display:flex;align-items:center;flex-wrap:wrap;gap:6px 8px;width:min(calc(100% - 36px),840px);margin:4px auto 6px;padding:6px 10px;border:1px solid color-mix(in srgb,var(--ui-accent) 34%,var(--ui-border));border-radius:10px;background:color-mix(in srgb,var(--ui-accent-soft) 55%,var(--ui-surface));color:var(--ui-secondary);font-size:12px}
+/* Zero-height anchor keeps selection actions outside the transcript/composer layout. */
+.selection-quote-anchor{position:relative;flex:0 0 0;height:0;min-height:0;z-index:4}
+.selection-quote-bar{position:absolute;bottom:8px;left:50%;transform:translateX(-50%);display:flex;align-items:center;flex-wrap:wrap;gap:6px 8px;box-sizing:border-box;width:min(calc(100% - 24px),840px);padding:7px 10px;border:1px solid color-mix(in srgb,var(--ui-accent) 25%,var(--ui-border));border-radius:10px;background:color-mix(in srgb,var(--ui-surface) 78%,transparent);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);box-shadow:0 4px 18px color-mix(in srgb,var(--ui-text) 10%,transparent);color:var(--ui-secondary);font-size:12px;transition:background-color 200ms ease}
+.selection-quote-bar:hover,.selection-quote-bar:focus-within{background:var(--ui-surface)}
+.selection-quote-enter-active,.selection-quote-leave-active{transition:opacity 160ms ease,transform 160ms ease}
+.selection-quote-enter-from,.selection-quote-leave-to{opacity:0;transform:translate(-50%,4px)}
+.selection-quote-leave-active{pointer-events:none}
+.jump-to-latest.is-behind-selection{visibility:hidden;pointer-events:none}
+@media(prefers-reduced-motion:reduce){.selection-quote-bar,.selection-quote-enter-active,.selection-quote-leave-active{transition:none}}
 .selection-quote-icon{flex-shrink:0;color:var(--ui-accent)}
 .selection-quote-preview{flex:1;min-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ui-text)}
 .selection-quote-actions{display:inline-flex;align-items:center;flex-wrap:wrap;gap:5px}
