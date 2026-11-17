@@ -60,6 +60,12 @@ createInterface({ input: process.stdin }).on('line', line => {
     started = true;
     output({ id, result: { turn: { id: 'turn-live-test' } } });
     output({ method: 'turn/started', params: { threadId, turn: { id: 'turn-live-test' } } });
+    if (params.input[0].text === 'bad-request-diagnostics-test') {
+      process.stderr.write('unexpected status 400 Bad Request; Authorization: Bearer fixture-secret\n');
+      output({ method: 'error', params: { threadId, turnId: 'turn-live-test', error: { message: '{"detail":"Bad Request"}', codexErrorInfo: 'other' } } });
+      setTimeout(() => output({ method: 'turn/completed', params: { threadId, turn: { id: 'turn-live-test', status: 'failed', error: { message: '{"detail":"Bad Request"}', codexErrorInfo: 'other' } } } }), 30);
+      return;
+    }
     if (['speed-tier-test', 'browser-config-test'].includes(params.input[0].text)) {
       output({ method: 'item/completed', params: { threadId, turnId: 'turn-live-test', item: {
         type: 'agentMessage', text: JSON.stringify({ args: process.argv.slice(2), config: threadConfig }),

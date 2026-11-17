@@ -291,8 +291,25 @@ test('启动回执超时或缺失轮次 ID 时不重发、不复制会话、不�
 });
 
 test('桌面无法连接时准确提示写入权占用，不把空闲占用称为正在执行', async () => {
-  const f = fixture(); f.options.connect = async () => { throw new Error('ENOENT'); };
-  await assert.rejects(runCodexDesktopTurn(f.context, 'prompt', f.options), /写入权.*未必有任务运行/);
+  for (const [detail, expected] of [
+    ['ENOENT', /无法连接 Codex 桌面/],
+    ['no-client-found', /未找到可接续此会话的桌面客户端/],
+    ['thread-owner-discovery 回执超时', /查询原会话持有者超时/],
+    ['Codex 桌面连接目录不属于当前用户或权限不安全', /未通过安全或协议兼容检查/],
+    ['unknown response with secret-token', /无法确认持有者状态/],
+  ] as const) {
+    const f = fixture(); f.options.connect = async () => { throw new Error(detail); };
+    await assert.rejects(runCodexDesktopTurn(f.context, 'prompt', f.options), error => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /写入权.*未必有任务运行/);
+      assert.match(error.message, expected);
+      assert.match(error.message, /本次未发送任务/);
+      assert.doesNotMatch(error.message, /secret-token/);
+      return true;
+    });
+    assert.deepEqual(f.calls, []);
+    assert.deepEqual(f.sessions, []);
+  }
 });
 
 test('已知轮次失败、被中断及桌面断连均不声明成功', async () => {

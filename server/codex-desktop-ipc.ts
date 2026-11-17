@@ -88,7 +88,8 @@ export async function connectCodexDesktopThread(threadId: string, options: { soc
     const initialized = await request('initialize', { clientType: 'delivery' }, 0);
     clientId = String(desktopObject(initialized.result).clientId || '');
     if (!clientId) throw new Error('Codex 桌面未确认连接身份');
-    const owner = await request('thread-owner-discovery', { hostId: 'local', conversationId: threadId }, 1);
+    // 桌面端发现 owner 的等待窗口约为 10 秒，不能沿用握手的 5 秒超时提前截断结果。
+    const owner = await request('thread-owner-discovery', { hostId: 'local', conversationId: threadId }, 1, options.timeoutMs ?? 15_000);
     ownerId = String(owner.handledByClientId || '');
     if (!ownerId) throw new Error('未找到 Codex 原会话的持有者');
     return {

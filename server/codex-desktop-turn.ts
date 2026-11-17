@@ -60,7 +60,20 @@ export async function runCodexDesktopTurn(context: LiveContext, prompt: string, 
   const { run, signal } = context;
   let desktop: DesktopConnection;
   try { desktop = await (options.connect || connectCodexDesktopThread)(threadId); }
-  catch { throw new Error(codexWriterHeldMessage); }
+  catch (error) {
+    const detail = error instanceof Error ? error.message : '';
+    // 只展示已知连接原因，不将未审查的桌面响应或请求正文写入运行记录。
+    const reason = /no-client-found|未找到 Codex 原会话的持有者/.test(detail)
+      ? '未找到可接续此会话的桌面客户端。请在原客户端打开此会话后再续接；若由其他 CLI 持有，请先正常退出该客户端。'
+      : /thread-owner-discovery.*超时/.test(detail)
+        ? '查询原会话持有者超时。请确认原客户端能够响应后再续接。'
+        : /ENOENT|ECONNREFUSED/.test(detail)
+          ? '无法连接 Codex 桌面。请启动原客户端并打开此会话后再续接。'
+          : /权限不安全|协议版本不兼容/.test(detail)
+            ? '桌面连接未通过安全或协议兼容检查。'
+            : '桌面接续连接失败，无法确认持有者状态。';
+    throw new Error(`${codexWriterHeldMessage}。${reason}本次未发送任务，也未修改会话锁。`);
+  }
   let turnId = '';
   let submitted = false;
   let completed = false;
