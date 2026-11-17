@@ -75,3 +75,29 @@ test('事项请求使用固定来源、保留 Jira 错误文案且写入不重�
   await assert.rejects(backend.jiraIssueRequest('issue/TEST-1/comment','POST',{body:'test'}),(error:Error&{definite?:boolean})=>error.message==='L1001 原始校验文案'&&error.definite===true);
   assert.equal(seen.length,1);assert.equal(seen[0].options.redirect,'manual');assert.equal(seen[0].options.headers && (seen[0].options.headers as Record<string,string>).Authorization,'Bearer local-test-only');
 });
+
+test('附件分段请求仅向已验证 Jira 来源携带认证，保留 206/416 状态', async t => {
+  auth(t);
+  const seen: {url:string; options:RequestInit}[] = [];
+  let downloadUrl = '';
+  let status = 206;
+  t.mock.method(globalThis, 'fetch', async (url:unknown, options:RequestInit) => {
+    seen.push({url:String(url), options});
+    if (String(url).includes('/rest/api/2/attachment/')) {
+      const base = new URL(String(url));
+      downloadUrl ||= new URL('/secure/attachment/11/video.mp4', base).href;
+      return Response.json({content:downloadUrl});
+    }
+    return new Response(status === 206 ? '2345' : null, {status, headers:{'Content-Range':status === 206 ? 'bytes 2-5/10' : 'bytes */10'}});
+  });
+  const backend = await import(new URL('../server/jira-backend/server.mjs', import.meta.url).href);
+  const result = await backend.jiraIssueRequest('attachment/content/11', 'GET', undefined, {range:'bytes=2-5'});
+  assert.equal(result.status,206);assert.equal(await result.text(),'2345');
+  assert.equal((seen[0].options.headers as Record<string,string>).Range,undefined);
+  assert.equal((seen[1].options.headers as Record<string,string>).Range,'bytes=2-5');
+  assert.equal((seen[1].options.headers as Record<string,string>).Authorization,'Bearer local-test-only');
+  assert.equal(seen[1].options.redirect,'manual');
+  status=416;assert.equal((await backend.jiraIssueRequest('attachment/content/11','GET',undefined,{range:'bytes=99-'})).status,416);
+  downloadUrl='https://evil.example/secure/attachment/11/video.mp4';const before=seen.length;
+  await assert.rejects(backend.jiraIssueRequest('attachment/content/11'),/来源不正确/);assert.equal(seen.length,before+1);
+});

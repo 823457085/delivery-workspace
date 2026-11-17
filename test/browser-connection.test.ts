@@ -65,9 +65,9 @@ test('打开设置只调用日常Chrome并持久化私有偏好，断开不清�
   assert.equal((await service.disconnect()).reuseEnabled, true);
 });
 
-test('缺工具、非支持平台与非法端点均不能假报connected', async t => {
+test('缺少自动化工具不阻断连接准备；不支持平台与非法端点不能假报connected', async t => {
   const options = await fixture(t);
-  assert.equal((await createBrowserConnection({ ...options, toolAvailable: async () => false }).status()).phase, 'unavailable');
+  assert.equal((await createBrowserConnection({ ...options, toolAvailable: async () => false }).status()).phase, 'setup_required');
   assert.equal((await createBrowserConnection({ ...options, platform: 'linux' }).status()).phase, 'unavailable');
   for (const invalid of [`65536\n${debugPath}`, `0\n${debugPath}`, `9222\nws://elsewhere/devtools/browser/test`, `9222\n${debugPath}/extra`]) {
     await fs.writeFile(options.debugPortFile, invalid);
@@ -252,4 +252,18 @@ test('已授权的 Chrome 在后台自动恢复，同一入口拒绝后不反复
   await delay(60);
   assert.equal(sockets.length, 3, '取消自动恢复后不发起新连接');
   assert.equal((await service.status()).phase, 'ready');
+});
+
+
+test('没有 agent-browser 仍可完成 Chrome 握手，工具缺失不伪造已验证状态', async t => {
+  const options = await fixture(t);
+  await fs.writeFile(options.debugPortFile, `9222\n${debugPath}\n`);
+  const socket = new FakeSocket();
+  const service = createBrowserConnection({ ...options, toolAvailable: async () => false, createSocket: () => socket });
+  t.after(async () => { await service.disconnect(); });
+  const ready = await service.status();
+  assert.equal(ready.toolAvailable, false);assert.equal(ready.phase, 'ready');assert.equal(ready.connectionVerified, false);
+  const connecting = await service.connect();assert.equal(connecting.phase, 'connecting');
+  socket.open();socket.reply({ product: 'Chrome/fixture' });
+  const connected = await service.status();assert.equal(connected.phase, 'connected');assert.equal(connected.connectionVerified, true);assert.equal(connected.toolAvailable, false);
 });

@@ -1,8 +1,9 @@
 import type http from 'node:http';
+import { jiraAttachmentRange, streamJiraAttachment, maxJiraAttachmentBytes, type JiraAttachmentReadOptions } from './jira-attachment-media.js';
 import { z } from 'zod';
 import type { JiraField, JiraIssueDetail, JiraPerson } from '../shared/jira-issue.js';
 
-export type JiraIssueRequest = (resource: string, method?: string, body?: unknown) => Promise<Response>;
+export type JiraIssueRequest = (resource: string, method?: string, body?: unknown, options?: JiraAttachmentReadOptions) => Promise<Response>;
 // Jira JSON is validated at the operation boundary; raw metadata stays on the server.
 type Raw = Record<string, any>;
 const keySchema = z.string().regex(/^[A-Z][A-Z0-9_]*-\d+$/);
@@ -187,10 +188,11 @@ export function createJiraIssueService(request: JiraIssueRequest) {
       return {ok:true};
     } finally { locks.delete(key); }
   }
-  async function attachment(key: string, id: string) {
+  async function attachment(key: string, id: string, options?: JiraAttachmentReadOptions) {
     const raw=await read(key), item=(raw.fields?.attachment || []).find((file:Raw)=>String(file.id)===id);
     if(!item)throw failure('附件不属于此事项',404);
-    return {response:await request(`attachment/content/${id}`),filename:item.filename,mimeType:item.mimeType};
+    if (Number(item.size) > maxJiraAttachmentBytes) throw failure('附件超过 256 MB 本地读取限制', 413);
+    return {response:await request(`attachment/content/${id}`, 'GET', undefined, options),filename:item.filename,mimeType:item.mimeType};
   }
   return {detail,comments,users,options,mutate,attachment};
 }
@@ -205,12 +207,15 @@ export function createJiraIssueRoute(service: ReturnType<typeof createJiraIssueS
       if(!match){send(404,{message:'事项接口不存在'});return;}const key=match[1],suffix=match[2]||'';
       if(request.method==='GET') {
         if(suffix.startsWith('attachments/')) {
-          const file=await service.attachment(key,suffix.split('/')[1]);
-          const reader=file.response.body?.getReader(),chunks:Uint8Array[]=[];let size=0;
-          if(!reader)throw failure('附件内容为空');
-          while(true){const part=await reader.read();if(part.done)break;size+=part.value.byteLength;if(size>20*1024*1024){await reader.cancel();throw failure('附件超过本地预览限制');}chunks.push(part.value);}
-          const buffer=Buffer.concat(chunks);
-          response.writeHead(200,{'Content-Type':'application/octet-stream','Content-Disposition':`attachment; filename*=UTF-8''${encodeURIComponent(file.filename)}`,'X-Content-Type-Options':'nosniff','Cache-Control':'no-store'});response.end(buffer);return;
+          const range = jiraAttachmentRange(request.headers.range);
+          const controller = new AbortController();
+          const abort = () => { if (!response.writableFinished) controller.abort(); };
+          response.once('close', abort);
+          try {
+            const file = await service.attachment(key, suffix.split('/')[1], { range, signal: controller.signal });
+            await streamJiraAttachment(response, file, url.searchParams.get('inline') === '1');
+          } finally { response.off('close', abort); }
+          return;
         }
         const start=Number(url.searchParams.get('start')||'0');if(!Number.isSafeInteger(start)||start<0)throw failure('分页位置不正确');
         const value=suffix==='users'?await service.users(key,url.searchParams.get('q')||''):suffix==='options'?await service.options(key,url.searchParams.get('action')||''):suffix==='comments'?await service.comments(key,start):await service.detail(key);
@@ -230,6 +235,7 @@ export function createJiraIssueRoute(service: ReturnType<typeof createJiraIssueS
       if(body.length>200000){send(413,{message:'请求内容过大'});return;}
       send(200,await service.mutate(key,JSON.parse(body.toString()||'{}')));
     } catch(error) {
+      if (response.headersSent || response.destroyed) { if (!response.destroyed) response.destroy(); return; }
       const cause=error as Error & {statusCode?:number;uncertain?:boolean};
       send(cause.statusCode||400,{message:error instanceof z.ZodError || error instanceof SyntaxError?'输入格式不正确':cause.message,uncertain:!!cause.uncertain});
     }

@@ -8,11 +8,12 @@ const id = z.string().min(1).max(5000).refine(v => !['__proto__', 'constructor',
 const projectPath = z.string().min(1).max(4000).refine(v => path.isAbsolute(v) && !/[\x00-\x1f\x7f]/.test(v), '项目必须是绝对目录');
 const branches = z.record(projectPath, z.array(z.string().min(1).max(300).refine(value=>!/[\x00-\x1f\x7f]/.test(value))).max(8).transform(values=>[...new Set(values)]));
 const workspace = z.object({ id, name: z.string().trim().min(1).max(100), projectBranches: branches.optional(), projectPaths: z.array(projectPath).max(10).transform(v => [...new Set(v.map(p => path.resolve(p)))]) }).strict();
-const stateSchema = z.object({ revision: z.number().int().nonnegative(), workspaces: z.array(workspace).max(1000), assignments: z.record(id, z.string().max(5000)) }).strict();
+const stateSchema = z.object({ revision: z.number().int().nonnegative(), workspaces: z.array(workspace).max(1000), assignments: z.record(id, z.string().max(5000)), deletedWorkspaceIds: z.array(id).optional() }).strict();
 const revision = z.number().int().nonnegative();
 const actionSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('seed'), workspaces: z.array(workspace).max(1000) }).strict(),
   z.object({ action: z.literal('save'), revision, workspace: workspace.omit({id:true}).extend({id:id.optional()}) }).strict(),
+  z.object({ action: z.literal('remove'), revision, workspaceId: id, confirmed: z.literal(true) }).strict(),
   z.object({ action: z.literal('reorder'), revision, ids: z.array(id).max(1000) }).strict(),
   z.object({ action: z.literal('assign'), revision, conversationId: id, workspaceId: z.string().max(5000) }).strict(),
 ]);
@@ -31,6 +32,7 @@ export async function createConversationWorkspaces(file: string) {
       if (input.action === 'seed') {
         for (const item of input.workspaces) {
           if (item.id !== `project:${item.projectPaths[0]}` || item.projectPaths.length !== 1) throw new Error('默认工作区标识无效');
+          if (next.deletedWorkspaceIds?.includes(item.id)) continue;
           if (!next.workspaces.some(w => w.id === item.id)) next.workspaces.push(item);
         }
         if (next.workspaces.length === state.workspaces.length) return read();
@@ -39,6 +41,14 @@ export async function createConversationWorkspaces(file: string) {
         const index = next.workspaces.findIndex(w => w.id === item.id);
         if (input.workspace.id && index < 0) throw new Error('工作区不存在');
         if (index < 0) next.workspaces.push(item); else next.workspaces[index] = item;
+      } else if (input.action === 'remove') {
+        if (!next.workspaces.some(w => w.id === input.workspaceId)) throw new Error('工作区不存在，请刷新后重试');
+        next.workspaces = next.workspaces.filter(w => w.id !== input.workspaceId);
+        // Keep a tombstone for historical run/project-derived membership and late seed requests.
+        next.deletedWorkspaceIds = [...new Set([...(next.deletedWorkspaceIds || []), input.workspaceId])];
+        for (const [conversationId, workspaceId] of Object.entries(next.assignments)) {
+          if (workspaceId === input.workspaceId) next.assignments[conversationId] = '';
+        }
       } else if (input.action === 'reorder') {
         if (input.ids.length !== next.workspaces.length || new Set(input.ids).size !== input.ids.length
           || input.ids.some(id => !next.workspaces.some(w => w.id === id))) throw new Error('工作区排序已变化，请刷新后重试');

@@ -42,9 +42,10 @@ export async function prepareAgentBrowserRuntime(input: { rootDirectory: string;
   ]);
   if (input.reuseChrome && (!cdp || !binary)) {
     return { instructions: [
-      !binary ? '工作台缺少连接日常 Chrome 的浏览器工具。' : '工作台尚未连接日常 Chrome。',
+      !binary ? '可选网页自动操作工具 agent-browser 未安装。' : '工作台尚未连接日常 Chrome。',
+      '仅浏览器自动操作受限；继续完成代码、文件、测试和可用接口任务，不要因此停止整项工作。只有必须通过页面执行的步骤才记录为未验证。',
       '需要打开 Jira 或 Confluence 时，请在用户日常使用的 Chrome 中打开目标链接。不要启动独立 Chrome、临时浏览器配置或要求用户在其中登录。',
-      ...(!cdp ? ['需要自动操作页面时，请先在工作台点击“连接 Chrome”，由用户在 Chrome 中选择允许，再开启新一轮。'] : []),
+      ...(!binary ? ['只有需要通过 agent-browser 自动操作页面时才需要安装该工具，不自动安装或修改全局配置。'] : !cdp ? ['需要自动操作页面时，请先在工作台点击“连接 Chrome”，由用户在 Chrome 中选择允许，再开启新一轮。'] : []),
       '可在工作台“连接与额度”或“设置 → 连接与项目”的“日常 Chrome”卡片打开设置、连接和查看实际状态。未连接时保留浏览器未测，脚本接口失败不能作为浏览器登录失败的结论。',
     ].join('\n') };
   }

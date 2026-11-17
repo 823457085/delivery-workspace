@@ -168,7 +168,7 @@ export function createBrowserConnection(options: BrowserConnectionOptions) {
 
   async function inspect() {
     const [tool, chrome, publishedEndpoint, reuseEnabled] = await Promise.all([
-      toolAvailable(), chromeAvailable(), readEndpoint(file), isChromeReuseEnabled(options.rootDirectory, env),
+      toolAvailable().catch(() => false), chromeAvailable(), readEndpoint(file), isChromeReuseEnabled(options.rootDirectory, env),
     ]);
     return { tool, chrome, publishedEndpoint, reuseEnabled };
   }
@@ -186,10 +186,10 @@ export function createBrowserConnection(options: BrowserConnectionOptions) {
     } else if (keepConnected) {
       phase = 'reconnecting';
       if (!probe.publishedEndpoint || probe.publishedEndpoint !== attemptedEndpoint) message = waitingForChrome;
-    } else if (platform !== 'darwin' || !probe.tool || !probe.chrome) {
+    } else if (platform !== 'darwin' || !probe.chrome) {
       phase = 'unavailable';
       message = platform !== 'darwin' ? '当前日常 Chrome 连接功能仅支持 macOS。'
-        : !probe.tool ? '未找到 agent-browser，请安装浏览器工具后重新检查。' : '未找到日常 Google Chrome，请安装后重新检查。';
+        : '未找到日常 Google Chrome，请安装后重新检查。';
     } else if (phase !== 'error') {
       phase = probe.publishedEndpoint ? 'ready' : 'setup_required';
       message = probe.publishedEndpoint ? '已检测到日常 Chrome 调试入口，点击连接并在浏览器中允许。'
@@ -231,7 +231,7 @@ export function createBrowserConnection(options: BrowserConnectionOptions) {
       }
       const probe = await inspect();
       if (intent !== generation) return status();
-      if (platform !== 'darwin' || !probe.tool || !probe.chrome) return status();
+      if (platform !== 'darwin' || !probe.chrome) return status();
       if (reconnectEndpoint && (probe.publishedEndpoint !== reconnectEndpoint || attemptedEndpoint === reconnectEndpoint)) return status();
       if (!probe.publishedEndpoint) { phase = 'setup_required'; message = ''; return status(); }
       closeProbe(false);

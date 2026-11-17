@@ -15,7 +15,7 @@ import { isPinnedAgentSession } from './session-pins';
 import { matchesSessionQuickFilter, summarizeSessionQuickFilters, type SessionQuickFilter } from './session-quick-filter';
 
 const props = defineProps<{ workspaceState: ConversationWorkspaceState; workspaceBusy: boolean; conversations: AgentConversation[]; selectedId: string; changing: string; pinnedIds: ReadonlySet<string> }>();
-const emit = defineEmits<{ createWorkspace: []; createWorkspaceConversation: [id:string]; renameWorkspace: [id:string]; duplicateWorkspace: [id:string]; manageWorkspace: [id:string]; moveWorkspace: [ids:string[]]; moveConversation: [conversationId:string,workspaceId:string]; select: [id: string]; create: []; groups: []; sync: []; remove: [conversations: AgentConversation[]]; rename: [id: string, title: string] }>();
+const emit = defineEmits<{ createWorkspace: []; createWorkspaceConversation: [id:string]; renameWorkspace: [id:string]; removeWorkspace: [id:string]; duplicateWorkspace: [id:string]; manageWorkspace: [id:string]; moveWorkspace: [ids:string[]]; moveConversation: [conversationId:string,workspaceId:string]; select: [id: string]; create: []; groups: []; sync: []; remove: [conversations: AgentConversation[]]; rename: [id: string, title: string] }>();
 const collapsedGroupsStorageKey = 'agent-session-collapsed-groups:v1';
 function readCollapsedGroups() {
   try {
@@ -88,6 +88,7 @@ function getWorkspaceLabel(workspacePath: string) {
 
 const projectGroups = computed<ConversationGroup[]>(() => conversationWorkspaceGroups(props.workspaceState, props.conversations)
   .map(group=>({path:group.id,label:group.name,conversations:group.conversations.filter(c=>scopedConversations.value.some(item=>item.id===c.id))})));
+watch(projectGroups, groups => { if(projectFilter.value !== 'all' && !groups.some(g=>g.path===projectFilter.value)) projectFilter.value='all'; });
 const dragSource = shallowRef<{type:'workspace'|'conversation';id:string}>();
 const dropTarget = shallowRef<string|null>(null);
 function beginDrag(event:DragEvent,type:'workspace'|'conversation',id:string) {
@@ -116,6 +117,7 @@ async function workspaceCommand(command: string, id: string) {
   const ids = props.workspaceState.workspaces.map(item => item.id);
   switch (command) {
     case 'create': emit('createWorkspaceConversation',id); break;
+    case 'remove': emit('removeWorkspace',id); break;
     case 'manage': emit('manageWorkspace',id); break;
     case 'rename': emit('renameWorkspace',id); break;
     case 'duplicate': emit('duplicateWorkspace',id); break;
@@ -329,6 +331,7 @@ function toggleGroup(path: string) {
           <el-dropdown-item command="up" :disabled="!workspaceNeighbor(contextWorkspace,-1)"><ArrowUp :size="14" class="workspace-menu-icon"/>上移工作区</el-dropdown-item>
           <el-dropdown-item command="down" :disabled="!workspaceNeighbor(contextWorkspace,1)"><ArrowDown :size="14" class="workspace-menu-icon"/>下移工作区</el-dropdown-item>
           <el-dropdown-item command="last" :disabled="!workspaceNeighbor(contextWorkspace,1)"><ArrowDownToLine :size="14" class="workspace-menu-icon"/>移到底部</el-dropdown-item>
+          <el-dropdown-item command="remove" divided><Trash2 :size="14" class="workspace-menu-icon"/>删除工作区</el-dropdown-item>
         </el-dropdown-menu>
       </template>
     </el-dropdown>

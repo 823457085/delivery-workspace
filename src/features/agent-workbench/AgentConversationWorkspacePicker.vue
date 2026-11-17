@@ -8,7 +8,7 @@ import { Folder, ChevronDown, Plus, Settings2 } from '@lucide/vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { ConversationWorkspace } from '../../../shared/conversation-workspaces';
 import type { AgentWorkspaceOption } from './workspace-catalog';
-const props=defineProps<{groups:ConversationWorkspace[];projects:AgentWorkspaceOption[];disabled?:boolean;editorOnly?:boolean;saveWorkspace:(workspace:Omit<ConversationWorkspace,'id'>&{id?:string})=>Promise<ConversationWorkspace>}>();
+const props=defineProps<{groups:ConversationWorkspace[];projects:AgentWorkspaceOption[];disabled?:boolean;editorOnly?:boolean;removeWorkspace?:(id:string)=>Promise<boolean>;saveWorkspace:(workspace:Omit<ConversationWorkspace,'id'>&{id?:string})=>Promise<ConversationWorkspace>}>();
 const selected=defineModel<string>({default:''});
 const open=ref(false),editing=ref(false),editingId=ref<string>(),name=ref(''),paths=ref<string[]>([]),primary=ref(''),saving=ref(false),query=ref(''),manualPath=ref('');
 const projectQuery=ref('');
@@ -27,6 +27,12 @@ function choose(id:string){selected.value=id;open.value=false;}
 function addPath(){const path=manualPath.value.trim();if(!path.startsWith('/')){ElMessage.error('请输入项目的绝对目录');return;}if(!paths.value.includes(path)&&paths.value.length<10)paths.value=[...paths.value,path];primary.value=paths.value[0]||'';manualPath.value='';}
 async function chooseFolder(){const selection=await picker.choose(primary.value);if(selection){manualPath.value=selection.workspacePath;addPath();}else if(picker.error.value)ElMessage.error(picker.error.value);}
 async function save(){saving.value=true;try{const workspace=await props.saveWorkspace({...(editingId.value?{id:editingId.value}:{}),name:name.value,projectPaths:paths.value,projectBranches:Object.fromEntries(paths.value.filter(path=>projectBranches.value[path]?.length).map(path=>[path,projectBranches.value[path]]))});selected.value=workspace.id;editing.value=false;}catch(e){ElMessage.error(e instanceof Error?e.message:'保存工作区失败');}finally{saving.value=false;}}
+async function remove() {
+ if(!editingId.value || !props.removeWorkspace || busy.value)return;
+ saving.value=true;
+ try { if(await props.removeWorkspace(editingId.value)){if(selected.value===editingId.value)selected.value='';editing.value=false;} }
+ finally {saving.value=false;}
+}
 function duplicate(group:ConversationWorkspace){
  edit(group); editingId.value=undefined;
  name.value=`${group.name.slice(0,97)} 副本`;
@@ -90,7 +96,7 @@ defineExpose({create:()=>edit(),edit,duplicate,rename});
     <div class="workspace-manual"><el-input v-model="manualPath" placeholder="其他项目的绝对目录" aria-label="其他项目目录" :disabled="busy" @keydown.enter.prevent="addPath"/><el-button :disabled="busy||!manualPath.trim()||paths.length>=10" @click="addPath">添加项目</el-button></div>
 
    </div>
-   <template #footer><el-button :disabled="busy" @click="editing=false">取消</el-button><el-button type="primary" :loading="busy" :disabled="busy||!name.trim()" @click="save">保存工作区</el-button></template>
+   <template #footer><el-button v-if="editingId && removeWorkspace" type="danger" plain :disabled="busy" style="float:left" @click="remove">删除工作区</el-button><el-button :disabled="busy" @click="editing=false">取消</el-button><el-button type="primary" :loading="busy" :disabled="busy||!name.trim()" @click="save">保存工作区</el-button></template>
   </el-dialog>
   <WorkspaceBrowserDialog v-if="picker.browserOpen.value" :open="picker.browserOpen.value" :initial-path="picker.browserPath.value" @select="picker.completeBrowser" @cancel="picker.completeBrowser(null)" />
  </div>

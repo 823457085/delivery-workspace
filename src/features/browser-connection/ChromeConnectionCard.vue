@@ -11,13 +11,13 @@ const label = computed(() => {
   if (error.value) return '连接状态待确认';
   if (!status.value) return '读取连接状态';
   if (verified.value) return '已连接日常 Chrome';
-  return { unavailable: '连接工具不可用', setup_required: '等待开启远程调试', ready: '可以连接',
+  return { unavailable: 'Chrome 连接不可用', setup_required: '等待开启远程调试', ready: '可以连接',
     connecting: '正在连接，等待 Chrome 授权', connected: '连接尚未验证', reconnecting: '等待连接恢复', error: '连接未成功' }[status.value.phase];
 });
 const labelType = computed(() => verified.value ? 'success' : error.value || status.value?.phase === 'error' ? 'warning' : 'info');
 const canConnect = computed(() => !busy.value && status.value?.phase !== 'connecting'
   && (status.value?.phase !== 'reconnecting' || status.value.debuggingEnabled)
-  && (!status.value || status.value.toolAvailable && status.value.chromeAvailable));
+  && !!status.value && status.value.phase !== 'unavailable' && status.value.chromeAvailable);
 const canDisconnect = computed(() => verified.value || status.value?.phase === 'connecting' || status.value?.phase === 'reconnecting');
 const connectLabel = computed(() => status.value?.phase === 'connecting' ? '等待 Chrome 允许'
   : verified.value ? '重新检测' : status.value?.phase === 'reconnecting' ? '立即重连' : '连接 Chrome');
@@ -35,10 +35,11 @@ async function perform(action: BrowserConnectionAction) {
 <template>
   <section class="chrome-connection" :class="{ surface: !compact, compact }" aria-label="日常 Chrome 连接" :aria-busy="!!busy">
     <header class="chrome-heading">
-      <div class="chrome-title"><component :is="compact ? 'h3' : 'h2'">日常 Chrome</component><el-tag :type="labelType" size="small" role="status">{{ label }}</el-tag></div>
+      <div class="chrome-title"><component :is="compact ? 'h3' : 'h2'">日常 Chrome <small>可选能力</small></component><el-tag :type="labelType" size="small" role="status">{{ label }}</el-tag></div>
       <el-button link size="small" :disabled="!!busy" aria-label="刷新浏览器连接状态" @click="refresh">刷新状态</el-button>
     </header>
     <p class="chrome-message">{{ error || status?.message || '正在读取本机浏览器连接状态。' }}</p>
+    <p v-if="status?.toolAvailable === false" class="chrome-help">未安装 agent-browser，仅影响依赖它的网页自动操作；不影响 AI 会话、代码任务及 Jira 等接口功能，也不影响连接 Chrome。需要网页自动操作时再安装即可。</p>
     <div class="chrome-actions">
       <el-button size="small" :disabled="!!busy || status?.chromeAvailable === false" :loading="busy === 'open-settings'" @click="perform('open-settings')">打开 Chrome 设置</el-button>
       <el-button size="small" type="primary" :disabled="!canConnect" :loading="busy === 'connect'" @click="perform('connect')">{{ connectLabel }}</el-button>
@@ -57,6 +58,7 @@ async function perform(action: BrowserConnectionAction) {
 .chrome-heading { justify-content: space-between; }
 .chrome-title { flex-wrap: wrap; min-width: 0; }
 .chrome-title h2,.chrome-title h3 { margin: 0; font-size: 14px; font-weight: 650; }
+.chrome-title small { margin-left: 6px; font-size: 11px; font-weight: 400; color: var(--ui-muted); }
 .chrome-message { margin: 10px 0; color: var(--ui-secondary); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
 .chrome-actions { flex-wrap: wrap; gap: 8px; }
 .chrome-actions :deep(.el-button + .el-button) { margin-left: 0; }

@@ -6,8 +6,9 @@ export function legacyConversationWorkspace(conversation: AgentConversation): Co
   return {id:`project:${path}`,name:path.replaceAll('\\','/').split('/').filter(Boolean).at(-1)||path,projectPaths:[path]};
 }
 export function conversationWorkspaceId(state: ConversationWorkspaceState, conversation: AgentConversation) {
-  if (Object.hasOwn(state.assignments,conversation.id)) return state.assignments[conversation.id];
-  return conversation.runs.find(run=>run.workspaceId)?.workspaceId || legacyConversationWorkspace(conversation)?.id || '';
+  const id = Object.hasOwn(state.assignments,conversation.id) ? state.assignments[conversation.id]
+    : conversation.runs.find(run=>run.workspaceId)?.workspaceId || legacyConversationWorkspace(conversation)?.id || '';
+  return state.deletedWorkspaceIds?.includes(id) ? '' : id;
 }
 export function conversationWorkspaceGroups(state: ConversationWorkspaceState, conversations: AgentConversation[]) {
   const groups = state.workspaces.map(workspace=>({...workspace,conversations:[] as AgentConversation[]}));
