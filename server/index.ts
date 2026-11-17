@@ -270,7 +270,7 @@ const agentRuntimes = await createAgentRuntimeService(path.join(dataDirectory, '
   removeAttachments: agentAttachments.remove,
 });
 currentRuntimeStatusVersion = () => agentRuntimes.runtimeStatusVersion();
-const pluginApplications = createPluginApplications(customPlugins, (app, directory) => app === 'terminal' ? openWorkspaceTerminal(directory) : openWorkspaceCursor(directory, path.join(dataDirectory, 'cursor-workspaces')));
+const pluginApplications = createPluginApplications(customPlugins, (app, directory) => app === 'terminal' ? openWorkspaceTerminal(directory) : openWorkspaceCursor(directory, path.join(dataDirectory, 'cursor-workspaces')), () => projectWorkspaces);
 const pluginCenterDirectory = path.resolve(process.env.DELIVERY_PLUGIN_CENTER_DIR || path.join(root, 'vendor/plugin-center'));
 const pluginDistribution = createPluginDistribution(customPlugins, path.join(customPluginsDirectory, 'install-tasks'),
   () => integrationPlugins.catalogSources(), id => pluginApplications.stop(id));
@@ -1423,7 +1423,7 @@ server.on('upgrade', (request, socket, head) => {
 server.listen(port, '127.0.0.1', () => {
   if (process.env.DELIVERY_SCHEDULER_DISABLED !== '1') sourceBackend.start();
   workspaceReports.start();
-  if (process.env.DELIVERY_SCHEDULER_DISABLED !== '1') projectWorkspaces.start();
+  if (process.env.DELIVERY_SCHEDULER_DISABLED !== '1') { projectWorkspaces.start(); pluginApplications.startBackground(); }
   setTimeout(scheduleInitialStateBackup, 500).unref();
   console.log(`Delivery Workspace: http://localhost:${port} · unified backend · Mastra lab /lab`);
 });

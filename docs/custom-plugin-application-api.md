@@ -160,3 +160,9 @@ export function createPlugin(host) {
 `POST /install` 可额外传 `replaceDigest`（当前安装摘要）及重新检查的新 `digest`。已安装摘要变化则拒绝。本机包更新必须 `trustedLocalCode:true`；原授权、启停、菜单和数据保持不变。
 
 兼容更新要求 `hostApi`、`records`、`permissions`、`commands`、`page` 完全相同；已有配置字段不得移除或改变类型。可增加配置字段、升级代码/版本/描述。其他更改需单独迁移。成功后停止旧插件进程，新请求启动新包。管理页检查同 ID 包后显示明确更新按钮，不会隐式重置权限。
+
+### SDK 2.2.0：通用会话工作区与后台任务
+
+通过固定版本 SDK 的 `PluginApplicationHost.workspaces` 访问 `access()`、`list()`、`preview(path)`、`remove({path,revision,confirmName,idleBefore?})`。宿主只提供会话关联 worktree 的受控能力，不依赖插件 ID。`workspaces.read`、`workspaces.cleanup` 分别授权；周期回收额外检查 `background.run`、宿主管理目录与至少一天闲置。执行前会重新检查会话、进程、未提交/忽略文件和目录身份，保留分支与会话记录。
+
+插件用可选声明 `background: {method,intervalSeconds}`（至少 60 秒）申请后台唤醒，需 `background.run`。定时策略由插件私有存储维护，默认关闭；安装不能自动开启删除。停用、移除、撤权停止后续任务，隐藏菜单不停止。超时、断线及不确定结果不得自动重放；配置与历史数据默认保留。现有 2.1.0 包无需增加字段。

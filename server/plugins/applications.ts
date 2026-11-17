@@ -5,15 +5,18 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { applicationHashes, readApplicationPackage } from './application-package.js';
+import type { createProjectWorkspaces } from '../project-workspaces.js';
 import { fingerprint, type CustomPluginRuntime } from './custom-runtime.js';
 
 type Worker = { digest: string; child: ChildProcess; pending: Map<string, { resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }> };
-export function createPluginApplications(runtime: CustomPluginRuntime, open: (app: 'terminal' | 'cursor', directory: string) => Promise<void>) {
+export function createPluginApplications(runtime: CustomPluginRuntime, open: (app: 'terminal' | 'cursor', directory: string) => Promise<void>, workspaceService?: () => Pick<Awaited<ReturnType<typeof createProjectWorkspaces>>, 'pluginInventory' | 'preview' | 'removeSessionWorkspace'>) {
   const workers = new Map<string, Worker>();
   const starting = new Map<string, Promise<Worker>>();
   const epochs = new Map<string, number>();
   const queues = new Map<string, Promise<unknown>>();
   let closing = false;
+  let backgroundTimer: ReturnType<typeof setInterval> | undefined;
+  const backgroundNext = new Map<string, number>(), backgroundPending = new Set<string>();
   const capabilityTargets = new Map<string, number>();
   async function capabilityCall(caller: string, raw: unknown): Promise<unknown> {
     const input = z.object({name:z.string(),version:z.literal(1),method:z.string(),input:z.unknown().optional(),provider:z.string().optional()}).strict().parse(raw);
@@ -33,6 +36,40 @@ export function createPluginApplications(runtime: CustomPluginRuntime, open: (ap
     finally { const count = (capabilityTargets.get(target) || 1) - 1; if (count) capabilityTargets.set(target, count); else capabilityTargets.delete(target); }
   }
 
+  async function workspaceCall(id: string, worker: Worker, raw: unknown) {
+    const input = z.object({ method: z.enum(['access', 'list', 'preview', 'remove']), input: z.unknown().optional() }).strict().parse(raw);
+    const epoch = epochs.get(id) || 0;
+    const guard = () => {
+      if (closing || workers.get(id) !== worker || epoch !== (epochs.get(id) || 0)) throw new Error('插件实例或授权已变化');
+      runtime.applicationEntry(id);
+      if (input.method !== 'access') runtime.assertCapability(id, input.method === 'remove' ? 'workspaces.cleanup' : 'workspaces.read');
+      if (input.method === 'remove' && (input.input as any)?.idleBefore !== undefined) runtime.assertCapability(id, 'background.run');
+    };
+    guard();
+    if (input.method === 'access') {
+      const grants = runtime.applicationEntry(id).grants;
+      return { read: grants.includes('workspaces.read'), cleanup: grants.includes('workspaces.cleanup'), background: grants.includes('background.run') };
+    }
+    if (!workspaceService) throw new Error('宿主未提供会话工作区接口');
+    const service = workspaceService();
+    if (input.method === 'remove') return service.removeSessionWorkspace(input.input, guard);
+    const result = input.method === 'list' ? await service.pluginInventory()
+      : await service.preview(z.object({ path: z.string().min(1).max(2000) }).strict().parse(input.input).path, true);
+    guard();
+    return result;
+  }
+  async function runBackground(now = Date.now()) {
+    if (closing) return;
+    await Promise.allSettled(runtime.list().plugins.map(async plugin => {
+      const id = plugin.manifest.id, background = plugin.manifest.background;
+      if (!background || !plugin.enabled || !plugin.grants.includes('background.run') || !plugin.grants.includes('application.local')
+        || backgroundPending.has(id) || (backgroundNext.get(id) || 0) > now) return;
+      backgroundNext.set(id, now + background.intervalSeconds * 1000);
+      backgroundPending.add(id);
+      try { await call(id, { method: background.method }, () => { runtime.assertCapability(id, 'background.run'); }); }
+      finally { backgroundPending.delete(id); }
+    }));
+  }
   function stop(id: string) {
     epochs.set(id, (epochs.get(id) || 0) + 1);
     const worker = workers.get(id);
@@ -73,6 +110,10 @@ export function createPluginApplications(runtime: CustomPluginRuntime, open: (ap
       child.send({ type: 'initialize', configuration });
       const worker: Worker = { digest: entry.digest, child, pending: new Map() }; workers.set(id, worker);
       child.on('message', (message: any) => {
+        if (message?.type === 'host-workspaces') {
+          void workspaceCall(id, worker, message.input).then(result => { if (child.connected) child.send({ type: 'host-capability-result', id: message.id, result }); }, error => { if (child.connected) child.send({ type: 'host-capability-result', id: message.id, error: error.message }); });
+          return;
+        }
         if (message?.type === 'host-capability') {
           void capabilityCall(id, message.input).then(result => { if (child.connected) child.send({ type: 'host-capability-result', id: message.id, result }); }, error => { if (child.connected) child.send({type:'host-capability-result',id:message.id,error:error.message}); });
           return;
@@ -116,7 +157,8 @@ function call(id: string, raw: unknown, guard = () => {}) {
       return task;
     }
   return {
-    stop,
+    stop, runBackground,
+    startBackground() { if (backgroundTimer || closing) return; backgroundTimer = setInterval(() => { void runBackground(); }, 60_000); backgroundTimer.unref(); void runBackground(); },
     async page(id: string) { const { files, entry } = await verified(id); return { themeMode: entry.manifest.theme || 'full', javascript: files['ui.js'].toString('utf8'), css: files['ui.css'].toString('utf8') }; },
     call, capabilityCall,
     async compose(id: string, raw: unknown) {
@@ -133,7 +175,7 @@ function call(id: string, raw: unknown, guard = () => {}) {
       runtime.assertCapability(id, 'workspace.open');
       await open(input.app, directory); return { message: '已打开插件工作目录' };
     },
-    async close() { closing = true; for (const id of new Set([...starting.keys(), ...workers.keys()])) stop(id); await Promise.allSettled([...starting.values(), ...queues.values()]); },
+    async close() { closing = true; if (backgroundTimer) clearInterval(backgroundTimer); for (const id of new Set([...starting.keys(), ...workers.keys()])) stop(id); await Promise.allSettled([...starting.values(), ...queues.values()]); },
   };
 }
 export type PluginApplications = ReturnType<typeof createPluginApplications>;
