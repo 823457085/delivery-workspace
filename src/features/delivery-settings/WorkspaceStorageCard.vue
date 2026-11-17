@@ -147,7 +147,7 @@ onMounted(() => { void loadStorage(false); });
       <template v-else-if="report">
         <div class="storage-summary-bar">
           <div class="storage-metric">
-            <small>工作台已用空间</small>
+            <small>本机数据文件大小</small>
             <strong>{{ formatBytes(report.totalBytes) }}</strong>
           </div>
           <div class="storage-metric is-accent">
@@ -159,6 +159,8 @@ onMounted(() => { void loadStorage(false); });
             <span>{{ dateTime(report.scannedAt) }}</span>
           </div>
         </div>
+
+        <p class="storage-scope-note">统计当前实例管理的工作区、缓存和会话记录，按文件内容大小计算，不含外部工作区；文件大小不等同于磁盘分配空间。</p>
 
         <div class="storage-buckets">
           <article v-for="bucket in report.buckets" :key="bucket.id" class="storage-bucket">
@@ -233,6 +235,7 @@ onMounted(() => { void loadStorage(false); });
 .storage-bucket-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .storage-bucket-badges { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .storage-bucket-total { font: 500 11px/16px var(--mono); color: var(--ui-muted); }
+.storage-scope-note { margin: 0 0 12px; font-size: 12px; line-height: 1.55; color: var(--ui-muted); }
 .storage-bucket-desc { margin: 6px 0 8px; font-size: 12px; line-height: 1.55; color: var(--ui-muted); }
 .storage-ledgers { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--ui-border); }
 .storage-ledgers-label { font-size: 11px; color: var(--ui-muted); }

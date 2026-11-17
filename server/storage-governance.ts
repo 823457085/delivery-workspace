@@ -618,8 +618,8 @@ export function createStorageGovernance(runtimeDirectory: string, context: Stora
       },
       {
         id: 'orphanWorkspaces',
-        label: '已删除会话残留目录',
-        description: '清理早已被删掉的旧会话留下的无用文件夹；正在使用的项目与会话不会受影响。',
+        label: '工作区与会话目录',
+        description: '占用包含当前实例管理的工作区与会话目录；仅清理已删除会话的残留目录，仍有关联或正在使用的目录保留。',
         totalBytes: workspacesTotal,
         reclaimableBytes: sumBytes(orphanTargets),
         itemCount: workspacesItems,

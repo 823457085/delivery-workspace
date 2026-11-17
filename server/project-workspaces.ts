@@ -434,7 +434,27 @@ export async function createProjectWorkspaces(rawDirectory: string, options: Pro
     return items.sort((a, b) => (b.bytes ?? -1) - (a.bytes ?? -1)
       || b.sessions[0].updatedAt.localeCompare(a.sessions[0].updatedAt) || a.path.localeCompare(b.path));
   }
-  async function erase(raw: string, expected: { revision?: string; identity?: Identity; discardChanges?: true; sessionWorktree?: true }) {
+  async function usageTimestamp(folder: string) {
+    const stat = await fs.stat(folder);
+    const reflog = await git(folder, ['reflog', 'show', '-1', '--date=unix', '--format=%gD']);
+    const sessions = (options.sessionWorkspaces?.() || []).filter(s => path.isAbsolute(s.workspacePath) && inside(folder, path.resolve(s.workspacePath)));
+    const timestamps = sessions.map(s => Date.parse(s.updatedAt));
+    if (!sessions.length || timestamps.some(t => !Number.isFinite(t))) throw error('无法确认会话最后使用时间');
+    return Math.max(stat.mtimeMs, stat.birthtimeMs, Number(reflog.match(/@\{(\d+)\}/)?.[1] || 0) * 1000, ...timestamps);
+  }
+  async function assertIdleSession(folder: string, idleBefore: number) {
+    if (path.dirname(folder) !== sessionRoot) throw error('周期清理仅限宿主管理的会话 worktree');
+    if (!Number.isFinite(idleBefore) || idleBefore > now() - 86400_000) throw error('周期清理至少保留一天');
+    if (await usageTimestamp(folder) > idleBefore) throw error('会话工作区尚未达到闲置时间');
+  }
+  async function pluginInventory() {
+    return Promise.all((await sessionInventory()).map(async item => {
+      try { return { ...item, managed: path.dirname(item.path) === sessionRoot, lastUsedAt: new Date(await usageTimestamp(item.path)).toISOString() }; }
+      catch (cause) { return { ...item, managed: false, eligible: false, reason: cause instanceof Error ? cause.message : '无法核验使用时间', lastUsedAt: '' }; }
+    }));
+  }
+  async function erase(raw: string, expected: { revision?: string; identity?: Identity; discardChanges?: true; sessionWorktree?: true; idleBefore?: number }, guard = () => {}) {
+    guard();
     if (!options.canRun()) throw error('工作台正在停止或重启，请稍后重试');
     const folder = await location(raw, true, expected.sessionWorktree);
     return options.withWorkspace(folder, `workspace-delete:${randomUUID()}`, () => withProjectGitLock(folder, async () => {
@@ -450,6 +470,8 @@ export async function createProjectWorkspaces(rawDirectory: string, options: Pro
       await options.checkBusy(folder);
       if (expected.sessionWorktree) assertSessionAssociation(folder);
       if (!sameIdentity(checked.id, await identity(folder)) || await fs.realpath(folder) !== folder) throw error('工作区目录已变化，未执行删除');
+      if (expected.idleBefore !== undefined) await assertIdleSession(folder, expected.idleBefore);
+      guard();
       const quarantine = path.join(path.dirname(folder), `.delivery-delete-${randomUUID()}`);
       const linked = checked.id.gitDir !== checked.id.common;
       let moved = false;
@@ -467,6 +489,7 @@ export async function createProjectWorkspaces(rawDirectory: string, options: Pro
         }
         await assertGitIdle(gitDir, linked);
         if (expected.sessionWorktree) await assertNoIgnoredFiles(quarantine);
+        guard();
         await moveIntoTrash(quarantine, folder, linked, checked);
       } catch (cause) {
         if (moved && await fs.lstat(quarantine).then(() => true, () => false)
@@ -529,7 +552,17 @@ export async function createProjectWorkspaces(rawDirectory: string, options: Pro
       await persist(rules.map(value => value.path === rule.path ? next : value));
   }
   return {
-    preview, sessionInventory,
+    preview, sessionInventory, pluginInventory,
+    async removeSessionWorkspace(raw: unknown, guard: () => void) {
+      const input = z.object({ path: z.string().min(1).max(2000), revision: z.string().min(1).max(200),
+        confirmName: z.string().min(1).max(255), idleBefore: z.number().finite().optional() }).strict().parse(raw);
+      return exclusive(async () => {
+        guard();
+        if (input.confirmName !== path.basename(input.path)) throw error('请输入当前工作区文件夹名称以确认删除', 400);
+        const removed = await erase(input.path, { ...input, sessionWorktree: true }, guard);
+        return { path: removed, deleted: true as const };
+      });
+    },
     list: () => rules.map(publicRule),
     listTrash,
     restoreTrash,

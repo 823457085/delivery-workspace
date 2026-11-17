@@ -370,3 +370,37 @@ test('清理接口拒绝跨站、缺确认、错误类型及越权入口；合�
   assert.equal((await fetch(base + '/schedule', { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json', 'X-Delivery-Confirmed': 'yes' }, body: JSON.stringify({ ...await f.input(), deleteAt: f.future(), discardChanges: true }) })).status, 400);
   assert.equal(await exists(f.repo), true);
 });
+
+test('插件会话清理在锁内复核授权和闲置条件，保留分支与会话', async t => {
+  const f = await fixture(t), folder = await f.linked();
+  f.sessions.push({id:'plugin-session',title:'插件会话',workspacePath:folder,updatedAt:new Date().toISOString()});
+  const items = await f.service.pluginInventory();
+  assert.equal(items.length,1);assert.equal(items[0].managed,true);assert.ok(items[0].lastUsedAt);
+  const input = {path:folder,revision:(await f.service.preview(folder,true)).revision,confirmName:path.basename(folder)};
+  await assert.rejects(f.service.removeSessionWorkspace(input,()=>{throw new Error('撤权');}),/撤权/);
+  assert.equal(await exists(folder),true);
+  await assert.rejects(f.service.removeSessionWorkspace({...input,idleBefore:Date.now()-86400_000},()=>{}),/闲置|保留一天/);
+  assert.equal(await exists(folder),true);
+  let allowed=true;
+  const withWorkspace=f.options.withWorkspace;
+  f.options.withWorkspace=async (directory,owner,action)=>{allowed=false;return withWorkspace(directory,owner,action);};
+  await assert.rejects(f.service.removeSessionWorkspace(input,()=>{if(!allowed)throw new Error('执行前撤权');}),/撤权/);
+  assert.equal(await exists(folder),true);f.options.withWorkspace=withWorkspace;
+  f.advance(20*86400_000);
+  await f.service.removeSessionWorkspace({...input,idleBefore:Date.now()+10*86400_000},()=>{});
+  assert.equal(await exists(folder),false);assert.ok(await git(f.repo,'rev-parse','feature/temporary'));assert.equal(f.sessions.length,1);
+});
+
+test('插件清理拒绝主仓库、忽略文件、过期预览和无会话关联的工作区', async t=>{
+ const f=await fixture(t),folder=await f.linked();
+ f.sessions.push({id:'session',title:'会话',workspacePath:folder,updatedAt:new Date().toISOString()});
+ const input={path:folder,revision:(await f.service.preview(folder,true)).revision,confirmName:path.basename(folder)};
+ await assert.rejects(f.service.removeSessionWorkspace({...input,path:f.repo,confirmName:'repo'},()=>{}));
+ await fs.writeFile(path.join(folder,'extra.txt'),'keep');
+ await assert.rejects(f.service.removeSessionWorkspace(input,()=>{}),/未提交|未跟踪/);await fs.rm(path.join(folder,'extra.txt'));
+ await fs.writeFile(path.join(f.repo,'.git','info','exclude'),'secret.txt\n');await fs.writeFile(path.join(folder,'secret.txt'),'keep');
+ await assert.rejects(f.service.removeSessionWorkspace(input,()=>{}),/忽略/);await fs.rm(path.join(folder,'secret.txt'));
+ await assert.rejects(f.service.removeSessionWorkspace({...input,revision:'expired'},()=>{}),/已变化/);
+ f.sessions.length=0;await assert.rejects(f.service.removeSessionWorkspace(input,()=>{}),/关联会话/);
+ assert.equal(await exists(folder),true);
+});
