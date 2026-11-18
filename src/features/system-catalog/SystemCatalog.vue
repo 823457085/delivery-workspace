@@ -614,7 +614,7 @@ async function saveAccounts() {
   display: flex;
   flex-direction: column;
   border: 1px solid var(--ui-border);
-  border-radius: var(--ds-radius-sm, 10px);
+  border-radius: var(--catalog-radius);
   background: var(--ui-surface);
   overflow: hidden;
   transition: border-color .15s ease;

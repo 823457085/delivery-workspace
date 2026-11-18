@@ -1786,8 +1786,6 @@
   --ds-display: 'Inter', -apple-system, 'Helvetica Neue', system-ui, 'PingFang SC', sans-serif;
   --ds-radius-lg: 16px;
   --ds-radius: 16px;
-  --ds-radius-sm: 999px;
-  --ds-radius-xs: 999px;
   --ds-shadow: 0 18px 44px -18px rgb(0 0 0 / 0.58);
   --ds-shadow-hover: 0 22px 52px -18px rgb(0 0 0 / 0.72);
   --ds-hero-gradient: linear-gradient(90deg, #f4f1ea 0%, #e8b04b 100%);
@@ -1917,8 +1915,6 @@ html:root[data-theme='immersive-photo'],
   --ds-display: 'Inter', -apple-system, 'Helvetica Neue', system-ui, 'PingFang SC', sans-serif;
   --ds-radius-lg: 12px;
   --ds-radius: 12px;
-  --ds-radius-sm: 999px;
-  --ds-radius-xs: 999px;
   --ds-shadow: 0 20px 50px rgb(0 0 0 / 0.45);
   --ds-shadow-hover: 0 24px 56px rgb(0 0 0 / 0.58);
   --ds-hero-gradient: linear-gradient(90deg, #f3efe8 0%, #e4c063 100%);

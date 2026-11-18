@@ -70,6 +70,12 @@ test('默认使用 Acid 酸性荧光主题，Cinematic Video Hero、Immersive Ph
   assert.equal(designMdMeta('acid'), null);
   assert.equal(THEME_STORAGE_KEY, 'delivery-workspace.theme.v2');
 });
+
+test('共享的小圆角令牌不使用胶囊圆角', () => {
+  const designSystem = readFileSync(new URL('../src/app/design-system.css', import.meta.url), 'utf8');
+  assert.doesNotMatch(designSystem, /--ds-radius-(?:sm|xs)\s*:\s*(?:\d{3,}(?:\.\d+)?px|var\(\s*--r-full\b)/);
+});
+
 test('custom theme validates colors and clamps wallpaper and message transparency', () => {
   assert.deepEqual(normalizeCustomTheme({ accent: 'red', background: '#123456', messageOpacity: 10, overlay: 120, position: 'left', wallpaperName: 'demo.png' }), {
     ...DEFAULT_CUSTOM_THEME,
