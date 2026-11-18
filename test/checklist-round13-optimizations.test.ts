@@ -134,8 +134,9 @@ test('Round 13 [第七节-5 & 第七节-7 & 第六节-12]: 打包扫描覆盖更
     assert.doesNotMatch(safe, pattern, safe);
 
   const index = readFileSync(new URL('../server/index.ts', import.meta.url), 'utf8');
-  const shutdownBody = index.slice(index.indexOf('function shutdown()'));
-  assert.match(shutdownBody, /finally \{[\s\S]*releaseStateLease\(\)[\s\S]*process\.exit\(0\)/);
+  const shutdown = index.match(/function shutdown\(exitCode = 0\) \{([\s\S]*?)\n\}/);
+  assert.ok(shutdown, '普通关闭的退出码默认为 0');
+  assert.match(shutdown[1], /finally \{[\s\S]*releaseStateLease\(\)[\s\S]*process\.exit\(exitCode\)/);
   assert.match(index, /process\.on\('unhandledRejection'/);
   assert.match(index, /async function closeStep\(/);
 
