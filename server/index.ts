@@ -29,8 +29,6 @@ import { createAgentUsageStore } from './agent-usage.js';
 import { createAgentTeamGovernance } from './agent-team-governance.js';
 import { createAgentTeamRoutes } from './agent-team-routes.js';
 import { createAgentRuntimeService, resolveWorkspace } from './agent-runtime.js';
-import { createBrowserConnectionHost } from './browser-connection-host.js';
-import { createBrowserConnectionRoute } from './browser-connection-route.js';
 import { createCursorAccountsService } from './cursor-accounts.js';
 import { createCursorAccountsRoute } from './cursor-accounts-route.js';
 import { createDesktopAccountsService, createDesktopAccountsRoute, DesktopAccountError } from './desktop-accounts.js';
@@ -214,8 +212,6 @@ const integrationRuntime = createIntegrationRuntime({ root, directory: dataDirec
 const systemCatalogRoutes = createSystemCatalogRoutes(systemCatalog, { json, body, port });
 const interfaceCenterRoutes = createInterfaceCenterRoutes(interfaceCenter, { json, body, port });
 const agentTranslate = createAgentTranslateService();
-const browserConnection = createBrowserConnectionHost({ rootDirectory: root, dataDirectory });
-const browserConnectionRoute = createBrowserConnectionRoute(browserConnection, { json, body, port });
 // 团队流程派发前读取各执行器额度，账号切换时以 runtimeStatusVersion 隔离缓存，防止旧账号空额度阻塞新账号。
 let currentRuntimeStatusVersion = () => 0;
 function versionedUsageReader<T extends { available: boolean; checkedAt: string; message?: string }>(
@@ -273,7 +269,7 @@ const customPlugins = await createCustomPluginRuntime(customPluginsDirectory, wo
 const pluginJira = await createPluginJira(customPluginsDirectory, customPlugins, sourceBackend.jiraIssueRequest);
 const agentRuntimes = await createAgentRuntimeService(path.join(dataDirectory, 'agent-runtimes'), {
   browserRootDirectory: root,
-  chromeTaskEndpoint: browserConnection.taskEndpoint,
+  browserTaskEndpoint: () => pluginApplications.browserSession(),
   workspaceSnapshotExclusions: [dataDirectory, path.join(root, '.local', 'logs'),
     ...(process.env.DELIVERY_SOURCE_DATA_DIR ? [process.env.DELIVERY_SOURCE_DATA_DIR] : [])],
   readProviderUsage: providerUsageReaders,
@@ -732,7 +728,6 @@ const server = http.createServer(async (request, response) => {
       if (await customPluginRoutes(request, response, url)) return;
       if (await systemCatalogRoutes(request, response, url)) return;
       if (await interfaceCenterRoutes(request, response, url)) return;
-      if (await browserConnectionRoute(request, response, url)) return;
       if (await integrationRuntime.route(request, response, url)) return;
       if (url.pathname === '/api/workspace/browse' || url.pathname === '/api/workspace/select-directory') {
         const host = request.headers.host || '';
@@ -1527,7 +1522,6 @@ function shutdown(exitCode = 0) {
       await closeStep('重启控制', () => workspaceRestart.close());
       await closeStep('SSE 连接', () => closeActiveSseStreams());
       await closeStep('HTTP 服务', () => { server.close(); server.closeIdleConnections?.(); server.closeAllConnections?.(); });
-      await closeStep('浏览器连接', () => browserConnection.disconnect());
       await closeStep('研发订阅', () => { unsubscribeJiraDevRuns(); unsubscribeJiraDevTeams(); });
       await closeStep('研发自动交付', () => jiraDevAutomation?.close());
       for (const [label, action] of [

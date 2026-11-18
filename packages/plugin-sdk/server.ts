@@ -37,3 +37,8 @@ export interface PluginWorkspaces {
   preview(path: string): Promise<PluginWorkspacePreview>;
   remove(input: PluginWorkspaceRemoval): Promise<{ path: string; deleted: true }>;
 }
+
+/** Set by the host worker bridge; never trust a field supplied inside plugin.request input. */
+export interface PluginInvocationContext { readonly source: 'page' | 'plugin' | 'host'; readonly caller?: string }
+/** browser.connection v1: session endpoint is a local capability URL, never return it to a page. */
+export interface PluginBrowserSession { verified: boolean; endpoint: string | null }

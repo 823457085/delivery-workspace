@@ -34,7 +34,7 @@ process.on('message', async message => {
   if (!message || message.type !== 'request') return;
   try {
     application ||= Promise.resolve(import(pathToFileURL(entry).href)).then(module => module.createPlugin({ dataDirectory, workspaceDirectory, configuration, mcp, capabilities, workspaces }));
-    const result = await (await application).request(message.method, message.input);
+    const result = await (await application).request(message.method, message.input, Object.freeze(message.context || {source: 'page'}));
     process.send?.({ id: message.id, result });
   } catch (error) { process.send?.({ id: message.id, error: error instanceof Error ? error.message : '插件执行失败' }); }
 });

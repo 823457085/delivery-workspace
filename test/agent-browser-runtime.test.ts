@@ -80,7 +80,7 @@ test('浏览器配置隔离并行范围、重试复用持久化目录，不继�
     reuseChrome: true, chromeEndpoint }))?.config);
   const missing = await prepareAgentBrowserRuntime({ rootDirectory: root, scope: 'conversation/waiting', reuseChrome: true });
   assert.equal(missing?.config, undefined);
-  assert.match(missing?.instructions || '', /工作台尚未连接日常 Chrome/);
+  assert.match(missing?.instructions || '', /尚未获得已验证的浏览器插件连接/);
   assert.equal((await fs.readdir(path.dirname(config.profile))).length, 2);
   await assert.rejects(prepareAgentBrowserRuntime({ rootDirectory: root, scope: '' }), /不能为空/);
   process.env.DELIVERY_AGENT_BROWSER_BIN = path.join(root, 'missing-driver');

@@ -6,7 +6,6 @@ import type { AgentApiProvider, AgentRuntimeHealth, AgentUsageLimits, Antigravit
 import AgentUsageQuota from './AgentUsageQuota.vue';
 import AgentAntigravityQuota from './AgentAntigravityQuota.vue';
 import { useCompletionNotifyPreference } from './useAgentCompletionNotify';
-import ChromeConnectionCard from '../browser-connection/ChromeConnectionCard.vue';
 import CursorAccountsDialog from './CursorAccountsDialog.vue';
 
 interface UsageCard { key: string; label: string; usage?: AgentUsageLimits }
@@ -56,7 +55,6 @@ function restoreAccountFocus() {
             <button type="button" :disabled="refreshing" aria-label="刷新执行器状态" title="刷新执行器状态" @click="emit('refresh')"><RotateCw :size="14" :class="{ spinning: refreshing }" /></button>
           </div>
         </header>
-        <ChromeConnectionCard compact :active="visible" />
         <div class="connection-scroll" tabindex="0" role="region" aria-label="执行器状态与额度">
           <section class="connection-runtimes" aria-label="执行器状态">
             <h3>执行器状态</h3>

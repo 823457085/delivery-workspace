@@ -1,3 +1,4 @@
+import type { PluginInvocationContext } from '../../packages/plugin-sdk/server.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fork, type ChildProcess } from 'node:child_process';
@@ -32,7 +33,7 @@ export function createPluginApplications(runtime: CustomPluginRuntime, open: (ap
     if (matches.length !== 1) throw new Error(matches.length ? '存在多个能力提供者，请显式选择' : '能力提供者未安装、未启用或未授权');
     const target = matches[0].manifest.id;
     capabilityTargets.set(target, (capabilityTargets.get(target) || 0) + 1);
-    try { return await call(target, { method: input.method, input: input.input }, checkCaller); }
+    try { return await call(target, { method: input.method, input: input.input }, checkCaller, {source:'plugin',caller}); }
     finally { const count = (capabilityTargets.get(target) || 1) - 1; if (count) capabilityTargets.set(target, count); else capabilityTargets.delete(target); }
   }
 
@@ -136,7 +137,7 @@ export function createPluginApplications(runtime: CustomPluginRuntime, open: (ap
     if (actual !== root && !actual.startsWith(root + path.sep) || !(await fs.stat(actual)).isDirectory()) throw new Error('只能使用该插件的工作目录');
     return actual;
   }
-function call(id: string, raw: unknown, guard = () => {}) {
+function call(id: string, raw: unknown, guard = () => {}, context: PluginInvocationContext = {source: 'page'}) {
       const input = z.object({ method: z.string().regex(/^[a-z][a-z0-9/-]{0,80}$/), input: z.unknown().optional() }).strict().parse(raw);
       runtime.applicationEntry(id);
       const epoch = epochs.get(id) || 0;
@@ -150,7 +151,7 @@ function call(id: string, raw: unknown, guard = () => {}) {
           const requestId = randomUUID();
           const timer = setTimeout(() => { stop(id); }, 65_000);
           worker.pending.set(requestId, { resolve, reject, timer });
-          worker.child.send({ type: 'request', id: requestId, ...input }, error => { if (error) stop(id); });
+          worker.child.send({ type: 'request', id: requestId, ...input, context }, error => { if (error) stop(id); });
         });
       });
       queues.set(id, task.catch(() => {}));
@@ -158,6 +159,29 @@ function call(id: string, raw: unknown, guard = () => {}) {
     }
   return {
     stop, runBackground,
+    async browserSession(): Promise<string | undefined> {
+      const providers = runtime.list().plugins.filter(p => p.enabled && p.grants.includes('application.local')
+        && p.grants.includes('browser.provide') && p.manifest.provides?.some(c => c.name === 'browser.connection'
+          && c.version === 1 && c.methods.includes('browser/session')));
+      if (!providers.length) return undefined;
+      if (providers.length !== 1) throw new Error('有多个已授权的浏览器提供者，请只启用一个提供者的任务接入权限');
+      const provider = providers[0], id = provider.manifest.id, epoch = epochs.get(id) || 0;
+      const guard = () => {
+        if (closing || epoch !== (epochs.get(id) || 0)) throw new Error('浏览器提供者状态已变化');
+        if (runtime.assertCapability(id, 'browser.provide').digest !== provider.digest) throw new Error('浏览器提供者版本已变化');
+        runtime.applicationEntry(id);
+      };
+      const result = await call(id, {method:'browser/session'}, guard, {source:'host'});
+      guard();
+      const session = z.object({verified:z.boolean(),endpoint:z.string().max(2000).nullable()}).strict().parse(result);
+      if (!session.verified || !session.endpoint) return undefined;
+      const endpoint = new URL(session.endpoint);
+      if (endpoint.protocol !== 'ws:' || endpoint.hostname !== '127.0.0.1' || !endpoint.port || Number(endpoint.port) < 1
+        || endpoint.username || endpoint.password || endpoint.search || endpoint.hash || endpoint.pathname === '/') {
+        throw new Error('浏览器提供者返回的本机连接地址无效');
+      }
+      return endpoint.href;
+    },
     startBackground() { if (backgroundTimer || closing) return; backgroundTimer = setInterval(() => { void runBackground(); }, 60_000); backgroundTimer.unref(); void runBackground(); },
     async page(id: string) { const { files, entry } = await verified(id); return { themeMode: entry.manifest.theme || 'full', javascript: files['ui.js'].toString('utf8'), css: files['ui.css'].toString('utf8') }; },
     call, capabilityCall,

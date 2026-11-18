@@ -19,7 +19,6 @@ import { promisify } from 'node:util';
 import { cliBinary, cliChildEnvironment, codexChildEnvironment, cursorBinary, claudeBinary, claudeChildEnvironment, kiroBinary, antigravityBinary } from './cli-runtime.js';
 import { forkCodexThread, runCodexLiveTurn, type LiveSteer } from './codex-live-turn.js';
 import { prepareAgentBrowserRuntime } from './agent-browser-runtime.js';
-import { isChromeReuseEnabled } from './browser-connection.js';
 import { openCursorEditor } from './cursor-desktop.mjs';
 import { codexSessionErrorText } from '../shared/codex-session-error.js';
 import { createCodexModelReader, requestCodexModels } from './codex-models.js';
@@ -137,7 +136,7 @@ interface IsolatedWorkspaceIdentity extends WorkspaceIdentity {
 interface ServiceOptions {
   /** 工作台根目录；浏览器登录状态保存在本机私有数据目录。 */
   browserRootDirectory?: string;
-  chromeTaskEndpoint?: () => Promise<string | undefined>;
+  browserTaskEndpoint?: () => Promise<string | undefined>;
   onFinalized?: (run: AgentRun) => Promise<void> | void;
   /** 宿主持续写入的状态和日志目录；只排除当前工作区内部的子目录。 */
   workspaceSnapshotExclusions?: string[];
@@ -773,7 +772,7 @@ function cachedHealth(check: () => Promise<Omit<AgentRuntimeHealth, 'checkedAt'>
   };
 }
 
-export function createCodexAdapter(binary = cliBinary, browserRootDirectory?: string, chromeTaskEndpoint?: ServiceOptions['chromeTaskEndpoint']): AgentRuntimeAdapter {
+export function createCodexAdapter(binary = cliBinary, browserRootDirectory?: string, browserTaskEndpoint?: ServiceOptions['browserTaskEndpoint']): AgentRuntimeAdapter {
   const readModels = createCodexModelReader(() => requestCodexModels(binary));
   const health = cachedHealth(async () => {
     const [version, login] = await Promise.allSettled([
@@ -796,22 +795,19 @@ export function createCodexAdapter(binary = cliBinary, browserRootDirectory?: st
       const run = context.run;
       const scope = run.team ? `team:${run.team.taskId}:${run.team.profileId}`
         : `conversation:${run.conversationId || run.queueRootId || run.id}`;
-      const chromeReuseEnabled = process.platform === 'darwin' && (browserRootDirectory
-        ? await isChromeReuseEnabled(browserRootDirectory) : process.env.DELIVERY_AGENT_BROWSER_REUSE_CHROME === '1');
-      const canReuseChrome = !run.team || (run.accessMode === 'full' && run.task?.role === 'main' && !run.task.workflow);
-      const reuseChrome = chromeReuseEnabled && canReuseChrome;
+      const canUseBrowser = !run.team || (run.accessMode === 'full' && run.task?.role === 'main' && !run.task.workflow);
       let browser: Awaited<ReturnType<typeof prepareAgentBrowserRuntime>>;
       try {
-        browser = browserRootDirectory && !run.task?.sourceId?.startsWith('taskflow:') ? await prepareAgentBrowserRuntime({ rootDirectory: browserRootDirectory, scope,
-          reuseChrome, chromeEndpoint: reuseChrome ? await chromeTaskEndpoint?.() : undefined }) : undefined;
+        if (browserRootDirectory && canUseBrowser && !run.task?.sourceId?.startsWith('taskflow:') && browserTaskEndpoint) {
+          const endpoint = await browserTaskEndpoint();
+          if (endpoint) browser = await prepareAgentBrowserRuntime({rootDirectory:browserRootDirectory,scope,reuseChrome:true,chromeEndpoint:endpoint});
+        }
       } catch {
-        browser = { instructions: '可选浏览器通道暂不可用；继续完成普通代码、文件、测试和可用接口任务。仅依赖此通道的网页步骤记为未验证，不自动切换浏览器、复制登录态或修改授权配置。' };
+        browser = {instructions:'可选浏览器插件通道暂不可用；继续完成普通代码、文件、测试和可用接口任务。请检查浏览器插件是否已启用、授权并连接；仅依赖此通道的网页步骤记为未验证，不自动切换浏览器或修改授权。'};
       }
       if (browser?.config) context.onEvent('lifecycle', '已配置任务浏览器通道；实际连接和页面登录状态在使用时核验');
       else if (browser) context.onEvent('lifecycle', browser.instructions.split('\n')[0]!);
-      const browserInstructions = [browser?.instructions, chromeReuseEnabled && !canReuseChrome
-        ? 'Jira 和 Confluence 请在用户日常使用的 Chrome 中打开。当前分工的独立浏览器用于测试页面，不要在其中打开这些登录页面或要求用户重新登录。'
-        : ''].filter(Boolean).join('\n');
+      const browserInstructions = browser?.instructions || '';
       return runCodexLiveTurn(binary, { ...context, browserConfig: browser?.config },
         withFileAttachments(agentExecutionPrompt(run, context.continueOriginal), context.fileAttachments)
           + (browserInstructions ? `\n\n${browserInstructions}` : ''));
@@ -1113,7 +1109,7 @@ export async function createAgentRuntimeService(directory: string, options: Serv
     await fs.writeFile(temporary, preformattedJson ?? JSON.stringify(value, null, 2), { mode: 0o600 });
     await fs.rename(temporary, filename);
   };
-  const adapters = new Map((options.adapters || [createCodexAdapter(cliBinary, options.browserRootDirectory, options.chromeTaskEndpoint), createCursorAdapter(cursorBinary, path.join(directory, 'taskflow-cursor')), createClaudeAdapter(), createKiroAdapter(kiroBinary, agentExecutionPrompt),
+  const adapters = new Map((options.adapters || [createCodexAdapter(cliBinary, options.browserRootDirectory, options.browserTaskEndpoint), createCursorAdapter(cursorBinary, path.join(directory, 'taskflow-cursor')), createClaudeAdapter(), createKiroAdapter(kiroBinary, agentExecutionPrompt),
     createAntigravityAdapter(antigravityBinary, agentExecutionPrompt), createWorkbuddyAdapter()]).map((adapter) => [adapter.id, adapter]));
   const workspaceIdentity = options.resolveWorkspace || resolveWorkspace;
   const resolveProject = createWorkspaceProjectResolver();
