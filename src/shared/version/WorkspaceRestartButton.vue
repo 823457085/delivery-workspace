@@ -2,10 +2,13 @@
 // 两个版本提示入口复用同一按钮与查询缓存，避免重复点击和各自维护重启进度。
 import { useWorkspaceRestart } from './useWorkspaceRestart';
 
-const { busy, label, progress, restart } = useWorkspaceRestart();
+defineProps<{ hostedOnly?: boolean }>();
+const { query, busy, label, progress, restart } = useWorkspaceRestart();
 </script>
 
 <template>
-  <p v-if="progress" role="status" style="margin: 0 0 8px; font-size: 12px; opacity: 0.9;">{{ progress }}</p>
-  <el-button size="small" type="primary" :loading="busy" :disabled="busy" @click="restart">{{ label }}</el-button>
+  <template v-if="!hostedOnly || query.data.value?.supervisor === 'systemd'">
+    <p v-if="progress" role="status" style="margin: 0 0 8px; font-size: 12px; opacity: 0.9;">{{ progress }}</p>
+    <el-button size="small" type="primary" :loading="busy" :disabled="busy" @click="restart">{{ label }}</el-button>
+  </template>
 </template>

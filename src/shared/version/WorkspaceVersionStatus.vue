@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { reloadWorkspacePage, useWorkspaceVersion } from './useWorkspaceVersion';
+import { useWorkspaceRestart } from './useWorkspaceRestart';
 import WorkspaceRestartButton from './WorkspaceRestartButton.vue';
 
 const { query, state, loaded } = useWorkspaceVersion();
+const { query: restartQuery } = useWorkspaceRestart();
 function dateTime(value?: string) { return value ? new Date(value).toLocaleString() : '未取得'; }
 </script>
 
@@ -17,7 +19,7 @@ function dateTime(value?: string) { return value ? new Date(value).toLocaleStrin
       <el-descriptions-item label="核验状态">{{ query.error.value?.message || state.label }}</el-descriptions-item>
     </el-descriptions>
     <el-button size="small" :loading="query.isFetching.value" @click="query.refetch()">检查版本</el-button>
-    <WorkspaceRestartButton v-if="state.restartRequired || state.buildRequired" />
+    <WorkspaceRestartButton v-if="state.restartRequired || (state.buildRequired && restartQuery.data.value?.supervisor !== 'systemd')" />
     <p v-if="state.buildRequired && query.data.value?.buildError">{{ query.data.value.buildError }}</p>
     <el-button v-if="state.status === 'refresh-required'" size="small" type="primary" @click="reloadWorkspacePage">立即刷新页面</el-button>
   </el-popover>

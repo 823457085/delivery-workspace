@@ -49,7 +49,7 @@ test('启动提示词仅保留一份需求和用户补充，去掉写入副本�
     assert.ok(prompt.includes(item.summary));
     assert.ok(prompt.includes(`${item.role} 独有验收：`));
   }
-  for (const value of [task.taskId, task.branchName, workspace.workspacePath, workspace.baseSha, '2026-11-04', '2026-11-06', 'v3.0.2.0', '商家管理', 'useI18n=false', '"requirementProgress"', '不改 Jira 状态或指派', '不推送', '不重复', '接口返回展示文案原样显示', '父页面 ID：123']) assert.ok(prompt.includes(value), value);
+  for (const value of [task.taskId, task.branchName, workspace.workspacePath, workspace.baseSha, '2026-11-04', '2026-11-06', 'v3.0.2.0', '商家管理', 'useI18n=false', '"requirementProgress"', '不改 Jira 状态或指派', '不推送', '不重复', '复用 transformMessage、$t 或 t 等既有方法', '父页面 ID：123']) assert.ok(prompt.includes(value), value);
   assert.match(title, /APEX-602/);
   assert.deepEqual(task, original);
 });

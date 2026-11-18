@@ -91,7 +91,7 @@ test('待办 HTTP 读写校验 Host、Origin、确认头与 JSON，GET 不执行
   const headers = { Origin: origin, 'Content-Type': 'application/json', 'X-Delivery-Confirmed': 'yes' };
   const post = (body: string, override: Record<string, string> = {}, route = '') => fetch(origin + '/api/workspace-todos' + route,
     { method: 'POST', headers: { ...headers, ...override }, body });
-  assert.deepEqual(await (await fetch(origin + '/api/workspace-todos')).json(), { items: [] });
+  assert.deepEqual(await (await fetch(origin + '/api/workspace-todos')).json(), { items: [], source: { mode: 'local' } });
   for (const override of [{ Origin: 'https://example.com' }, { Origin: '' }, { 'X-Delivery-Confirmed': '' }]) {
     assert.equal((await post('{"title":"不应写入"}', override)).status, 403, JSON.stringify(override));
   }

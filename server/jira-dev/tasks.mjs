@@ -96,7 +96,7 @@ export function buildTaskPrompt({ workflow, projectPath, source = '', details = 
   if (useI18n !== undefined && typeof useI18n !== 'boolean') throw new Error('是否使用多语言位置编码必须为布尔值。');
   const i18nChoice = useI18n === undefined ? '' : useI18n
     ? '本次任务多语言位置编码：开启（useI18n=true，用户明确选择）。按目标仓库实际国际化机制处理本次新增或修改的前端自有文案。'
-    : '本次任务多语言位置编码：关闭（useI18n=false，用户明确选择）。本任务新增或修改的前端自有文案不新分配位置编码，不自动执行专用多语言或导表流程；保留已有 i18n 正常运行，接口返回展示文案原样显示。插件默认流程不得覆盖本次选择。';
+    : '本次任务多语言位置编码：关闭（useI18n=false，用户明确选择）。本任务新增或修改的前端自有文案不新分配位置编码，不自动执行专用多语言或导表流程；保留已有 i18n 正常运行，包括接口提示与国际化编码展示字段的运行时翻译。插件默认流程不得覆盖本次选择。';
   const i18nSelection = useI18n === undefined ? {} : { useI18n };
   if (repairPlan) {
     if (workflow !== 'jira' || repairPlan.sourceKind !== 'defect' || repairPlan.taskId !== taskId) throw new Error('前端修复计划与当前任务不匹配。');
@@ -168,8 +168,9 @@ export function buildTaskPrompt({ workflow, projectPath, source = '', details = 
     destination ? `技术方案归档目录：${destination.site} / ${destination.spaceKey} / ${destination.title}\n父页面 ID：${destination.parentId}\n目录链接：${destination.url}\n${previewOnly ? '本预览确认并开始后，授权生成本任务的技术方案子页并回读；当前预览不发布。' : '本次确认范围包含在上述目录创建或更新本任务的技术方案子页，并回读正文、父页和版本；先保存本机 Markdown 备份。'}不改写目录页，不移动或覆盖其他任务的页面。` : '',
     details ? `用户补充的任务说明：\n${details}` : '',
     i18nChoice,
+    '接口提示（message/msg）及返回国际化编码的展示字段必须按项目现有 i18n 机制处理，复用 transformMessage、$t 或 t 等既有方法，不直接展示 L/APEX/APP 编码，不新增转换器；商品名、用户输入等实际数据保留原值，已是可展示文案的不强制当 key 翻译。字段与请求参数类型遵守接口契约，不自加提示兜底；仅处理任务范围，不因本规则批量改造业务。多语言位置码开关只影响新 key 与导表，不关闭既有运行时翻译。',
     requirementSteps,
-    (useI18n === true || (useI18n === undefined && workflow === 'requirement')) && !previewOnly ? `${workflow === 'requirement' ? '撰写或补充技术方案前' : '开始处理本次前端自有文案前'}读取本插件内置 $jira-dev-i18n（${workflow === 'requirement' ? 'jira-dev-requirement' : 'jira-dev-fix'} 同级技能目录）。按目标仓库实际国际化机制完成本次前端自有文案的多语言接入、位置码与消息语法校验、必要的导入表，不假设语言文件架构；在${workflow === 'requirement' ? '技术方案和' : ''}交接中记录证据。只处理本次新增或修改文案，不扩展改造历史文案；没有文案变更时先核验再说明不涉及。接口返回展示文案原样显示。不得把其他仓库的禁用国际化约定带入，也不自动上传或发布语言包。` : '',
+    (useI18n === true || (useI18n === undefined && workflow === 'requirement')) && !previewOnly ? `${workflow === 'requirement' ? '撰写或补充技术方案前' : '开始处理本次前端自有文案前'}读取本插件内置 $jira-dev-i18n（${workflow === 'requirement' ? 'jira-dev-requirement' : 'jira-dev-fix'} 同级技能目录）。按目标仓库实际国际化机制完成本次前端自有文案的多语言接入、位置码与消息语法校验、必要的导入表，不假设语言文件架构；在${workflow === 'requirement' ? '技术方案和' : ''}交接中记录证据。只处理本次新增或修改文案，不扩展改造历史文案；没有文案变更时先核验再说明不涉及。接口提示与国际化编码展示字段继续使用项目既有运行时翻译。不得把其他仓库的禁用国际化约定带入，也不自动上传或发布语言包。` : '',
     previewOnly ? '' : `本次本地授权：读取资料、拉取已确认的 origin 基准、复用或创建本任务独立 worktree，仅在独立目录实现并验证。先读取每个来源项目的 AGENTS.md 和实际 Git 状态；所选分支与项目规则或任务版本有证据冲突时先消除冲突，缺少版本不阻塞其他已确认工作。多项目时按上面的项目顺序逐项调用 create_jira_dev_workspace（projectPath、baseBranch、branchName${taskId ? `、taskId=${taskId}` : ''}、projectIndex），每个项目只创建一个独立工作区；单项目可省略 projectIndex。已有绑定先核对实际目录，不重复创建。从本次拉取的最新 SHA 创建；不 pull、切换或 reset 来源检出，不退回旧 refs 实施。报告每个项目的绝对路径、基准 SHA 和分支后继续开发。`,
     previewOnly ? '' : '跨项目规则：开发目标以以上来源项目及本任务独立工作区为准，只使用它们适用的项目规则和技术栈；当前聊天默认目录、其他仓库的 AGENTS.md、架构或文案规定不能作为目标项目的规则。',
     `默认不提交、不推送、不部署、${destination ? '不发布上述任务方案之外的 Confluence 内容、' : '不发布 Confluence、'}不改 Jira 状态或指派，不向他人发送消息；面板的具体任务计划确认仅授权该计划中的 Jira 创建、关联和已列明的日期变更${destination ? '及所列目录下本任务技术方案的发布与回读' : ''}，不包含其他外部操作。日期以计划及回读结果为准，不自行补排或覆盖其他任务排期。用户后续明确授权后，完成必要校验并执行该授权范围与结果回读，不重复询问已授权事项。保留无关改动。完成必要检查，区分代码、测试、浏览器与真实接口证据；没有运行的检查不得写成通过。`,

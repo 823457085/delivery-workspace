@@ -15,6 +15,7 @@ import { requestProjectPreview } from './project-preview';
 import { projectRoutingLabel } from '../auto-delivery/plan-list';
 import ShareConnectionCard from './ShareConnectionCard.vue';
 import ChromeConnectionCard from '../browser-connection/ChromeConnectionCard.vue';
+import WorkspaceRestartButton from '../../shared/version/WorkspaceRestartButton.vue';
 
 const CliExecutorCard = defineAsyncComponent(() => import('./CliExecutorCard.vue'));
 const AgentModelDefaultsCard = defineAsyncComponent(() => import('./AgentModelDefaultsCard.vue'));
@@ -379,7 +380,10 @@ async function save() {
         <QueryState :loading="isPending" :error="error" :has-data="!!data" @retry="query.refetch()">
           <div v-if="data">
             <section class="surface">
-              <div class="surface-header"><h2>当前运行环境状态</h2></div>
+              <div class="surface-header">
+                <h2>当前运行环境状态</h2>
+                <div><WorkspaceRestartButton hosted-only /></div>
+              </div>
               <div class="surface-body runtime-status-body">
                 <div class="runtime-summary-strip">
                   <div class="runtime-summary-tile">

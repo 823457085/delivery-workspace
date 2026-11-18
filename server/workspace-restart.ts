@@ -36,6 +36,7 @@ export async function isPm2ManagedWorkspace(root: string) {
 }
 
 interface Options {
+  supervisor?: WorkspaceRestartState['supervisor'];
   available(): Promise<boolean>;
   update?(): Promise<'restart' | 'refresh' | 'current'>;
   prepare?(): Promise<void>;
@@ -57,7 +58,7 @@ export function createWorkspaceRestart(options: Options) {
   let pauseTasks = false;
   let release: (() => void) | undefined;
   const supported = () => available ??= options.available();
-  const snapshot = () => ({ ...current });
+  const snapshot = () => ({ ...current, ...(options.supervisor ? { supervisor: options.supervisor } : {}) });
   async function dashboard() {
     return await supported() ? snapshot() : { status: 'unavailable' as const,
       message: '当前后端未由支持自动恢复的 PM2 工作台服务托管，暂不支持一键重启。', startedAt };

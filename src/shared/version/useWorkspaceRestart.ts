@@ -74,6 +74,7 @@ export function useWorkspaceRestart() {
             status: 'restarting',
             message: '新后端正在接管端口，即将恢复连接…',
             startedAt: previous?.startedAt || baselineStartedAt || new Date().toISOString(),
+            supervisor: previous?.supervisor,
           };
         }
         watchingRestart.value = false;
@@ -131,7 +132,12 @@ export function useWorkspaceRestart() {
   const busy = computed(() => pendingRequests.value > 0 || watchingRestart.value || isWorkspaceRestartPending(query.data.value));
   const label = computed(() => {
     if (reconnecting.value) return '服务秒级重连中';
-    const status = query.data.value?.status;
+    const state = query.data.value;
+    const status = state?.status;
+    if (state?.supervisor === 'systemd') {
+      return status === 'waiting' ? '等待任务结束'
+        : (status && progressLabels[status]) || (pendingRequests.value > 0 ? '正在安排重启' : '重启服务器工作台');
+    }
     return (status && progressLabels[status]) || (pendingRequests.value > 0 ? '正在发起快速重启' : '立即更新并重启');
   });
   const progress = computed(() => {
