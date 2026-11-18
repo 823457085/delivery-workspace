@@ -1,3 +1,4 @@
+import { SDK_VERSION } from '../../packages/plugin-sdk/protocol.js';
 import type { PluginApplications } from './applications.js';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { z } from 'zod';
@@ -33,7 +34,7 @@ export function createCustomPluginRoutes(runtime: CustomPluginRuntime, jira: Plu
           const timer = setInterval(() => response.write(': heartbeat\n\n'), 20000); timer.unref();
           response.once('close', () => { clearInterval(timer); listeners.delete(response); }); return true;
         }
-        if (id === 'protocol') return send(200, { protocol: 1, sdk: '2.1.0', hostApi: [1, 2] });
+        if (id === 'protocol') return send(200, { protocol: 1, sdk: SDK_VERSION, hostApi: [1, 2] });
         if (id === 'catalogs' && io.distribution) return send(200, await io.distribution.catalogs());
         if (id === 'install-tasks' && action && io.distribution) return send(200, await io.distribution.getTask(action));
         if (!id) {

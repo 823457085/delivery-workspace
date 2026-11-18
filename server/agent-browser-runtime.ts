@@ -42,11 +42,11 @@ export async function prepareAgentBrowserRuntime(input: { rootDirectory: string;
   ]);
   if (input.reuseChrome && (!cdp || !binary)) {
     return { instructions: [
-      !binary ? '可选网页自动操作工具 agent-browser 未安装。' : '工作台尚未连接日常 Chrome。',
+      !binary ? '可选网页自动操作工具 agent-browser 未安装。' : '尚未获得已验证的浏览器插件连接。',
       '仅浏览器自动操作受限；继续完成代码、文件、测试和可用接口任务，不要因此停止整项工作。只有必须通过页面执行的步骤才记录为未验证。',
       '需要打开 Jira 或 Confluence 时，请在用户日常使用的 Chrome 中打开目标链接。不要启动独立 Chrome、临时浏览器配置或要求用户在其中登录。',
-      ...(!binary ? ['只有需要通过 agent-browser 自动操作页面时才需要安装该工具，不自动安装或修改全局配置。'] : !cdp ? ['需要自动操作页面时，请先在工作台点击“连接 Chrome”，由用户在 Chrome 中选择允许，再开启新一轮。'] : []),
-      '可在工作台“连接与额度”或“设置 → 连接与项目”的“日常 Chrome”卡片打开设置、连接和查看实际状态。未连接时保留浏览器未测，脚本接口失败不能作为浏览器登录失败的结论。',
+      ...(!binary ? ['只有需要通过 agent-browser 自动操作页面时才需要安装该工具，不自动安装或修改全局配置。'] : !cdp ? ['需要自动操作页面时，请先打开浏览器插件完成连接及浏览器授权，再开启新一轮。'] : []),
+      '请在自定义插件中心打开浏览器插件，核对授权、连接和实际状态。未连接时保留浏览器未测，脚本接口失败不能作为浏览器登录失败的结论。',
     ].join('\n') };
   }
   if (!binary || (!cdp && !chrome)) return undefined;
@@ -87,7 +87,7 @@ export async function prepareAgentBrowserRuntime(input: { rootDirectory: string;
       },
     },
     instructions: [
-      cdp ? '本次 delivery_browser 使用工作台已连接的日常 Chrome，沿用该浏览器有效的登录态。'
+      cdp ? '本次 delivery_browser 使用已授权浏览器插件提供的连接，沿用该浏览器有效的登录态。'
         : '本次已为工作台配置独立浏览器工具 delivery_browser；这表示工具已配置，不代表已经成功连接或登录。',
       '需要打开网页、登录或页面验证时，优先使用 delivery_browser 的工具，先打开任务指定页面并读取快照，确认实际连接状态。不要将桌面 cua 的 host unavailable 当作此浏览器不可用。',
       '若当前桌面会话没有注入 delivery_browser 工具，用 shell 执行下列同一会话的 CLI 前缀，在末尾追加 open <任务页面 URL>、snapshot -i 等命令。沿用此配置，不要删改或改用裸 agent-browser：',

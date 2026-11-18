@@ -14,7 +14,6 @@ import { emptyProjectProfile, projectProfileError, selectProfileProject, validDe
 import { requestProjectPreview } from './project-preview';
 import { projectRoutingLabel } from '../auto-delivery/plan-list';
 import ShareConnectionCard from './ShareConnectionCard.vue';
-import ChromeConnectionCard from '../browser-connection/ChromeConnectionCard.vue';
 import WorkspaceRestartButton from '../../shared/version/WorkspaceRestartButton.vue';
 
 const CliExecutorCard = defineAsyncComponent(() => import('./CliExecutorCard.vue'));
@@ -244,7 +243,7 @@ async function save() {
       </button>
     </section>
     <el-tabs v-model="activeTab" :tab-position="settingsTabPosition" class="settings-tabs" aria-label="设置分类">
-      <el-tab-pane label="连接与项目" name="connections" tabindex="0"><ChromeConnectionCard :active="activeTab === 'connections'" /><ShareConnectionCard /></el-tab-pane>
+      <el-tab-pane label="连接与项目" name="connections" tabindex="0"><ShareConnectionCard /></el-tab-pane>
       <el-tab-pane label="固定插件" name="integrations" lazy tabindex="0"><p>管理工作台提供的固定外部集成及内置模块；连接配置持续保留，无需从自定义插件市场重复安装。</p><IntegrationPluginsCard /></el-tab-pane>
       <el-tab-pane label="自定义插件" name="plugins" lazy tabindex="0"><CustomPluginManager /></el-tab-pane>
       <el-tab-pane label="模型与执行" name="models" lazy tabindex="0"><AgentModelDefaultsCard /><CliExecutorCard /></el-tab-pane>

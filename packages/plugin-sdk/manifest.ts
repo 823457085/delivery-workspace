@@ -8,7 +8,7 @@ export const capabilitySchema = z.enum([
   'workspace.todos.write',
   'jira.read',
   'jira.create',
-  'conversation.context', 'application.local', 'conversation.compose', 'workspace.open', 'capabilities.call', 'workspaces.read', 'workspaces.cleanup', 'background.run',
+  'conversation.context', 'application.local', 'conversation.compose', 'workspace.open', 'capabilities.call', 'workspaces.read', 'workspaces.cleanup', 'background.run', 'browser.provide',
 ]);
 export const pluginFieldTypeSchema = z.enum([
   'text',
@@ -77,7 +77,7 @@ export const pluginManifestSchema = z.object({
   author: z.string().min(1).max(120).optional(),
   homepage: z.url().max(1000).optional(),
   releaseNotes: z.string().max(4000).optional(),
-  compatibility: z.object({ protocol: z.literal(1), sdk: z.enum(['2.1.0', '2.2.0']) }).strict().optional(),
+  compatibility: z.object({ protocol: z.literal(1), sdk: z.enum(['2.1.0', '2.2.0', '2.2.1']) }).strict().optional(),
   theme: z.enum(['full', 'mode', 'independent']).optional(),
   dependencies: z.array(z.string().max(300)).max(20).optional(),
   provides: z.array(z.object({ name: z.string().regex(/^[a-z][a-z0-9.-]{1,79}$/), version: z.literal(1), methods: z.array(z.string().regex(/^[a-z][a-z0-9/-]{0,80}$/)).min(1).max(30) }).strict()).max(20).optional(),

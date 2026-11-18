@@ -166,3 +166,7 @@ export function createPlugin(host) {
 通过固定版本 SDK 的 `PluginApplicationHost.workspaces` 访问 `access()`、`list()`、`preview(path)`、`remove({path,revision,confirmName,idleBefore?})`。宿主只提供会话关联 worktree 的受控能力，不依赖插件 ID。`workspaces.read`、`workspaces.cleanup` 分别授权；周期回收额外检查 `background.run`、宿主管理目录与至少一天闲置。执行前会重新检查会话、进程、未提交/忽略文件和目录身份，保留分支与会话记录。
 
 插件用可选声明 `background: {method,intervalSeconds}`（至少 60 秒）申请后台唤醒，需 `background.run`。定时策略由插件私有存储维护，默认关闭；安装不能自动开启删除。停用、移除、撤权停止后续任务，隐藏菜单不停止。超时、断线及不确定结果不得自动重放；配置与历史数据默认保留。现有 2.1.0 包无需增加字段。
+
+## 浏览器提供者（SDK 2.2.1）
+
+浏览器连接管理由自定义插件提供，宿主不固定注册 Chrome 页面或连接。提供者声明、输入输出与可信调用上下文见 [SDK 契约](../packages/plugin-sdk/README.md#221浏览器连接提供者)。AI 普通任务在未安装、未授权、连接失败或缺少 agent-browser 时继续运行，网页步骤应报告未验证。仅启用一个提供者的 `browser.provide` 权限；关闭页面与隐藏菜单不等于停用，停用或撤权关闭插件自有通道，不关闭外部浏览器。
