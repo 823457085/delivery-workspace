@@ -1,13 +1,22 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { createWorkspaceTodos } from './workspace-todos.js';
 
-export function createWorkspaceTodoRoutes(service: Awaited<ReturnType<typeof createWorkspaceTodos>>, io: {
+type TodoSource = { mode: 'local' } | { mode: 'taskflow'; url: string; ready: boolean };
+type TodoService = Awaited<ReturnType<typeof createWorkspaceTodos>> & { refresh?: () => Promise<void>; source?: () => TodoSource };
+
+export function createWorkspaceTodoRoutes(service: TodoService, io: {
   json(response: ServerResponse, status: number, value: unknown): void;
   body(request: IncomingMessage, limit?: number): Promise<unknown>; port: number;
 }) {
   return async (request: IncomingMessage, response: ServerResponse, url: URL): Promise<boolean> => {
     if (!['/api/workspace-todos', '/api/workspace-todos/delete'].includes(url.pathname)) return false;
-    if (request.method === 'GET' && url.pathname === '/api/workspace-todos') { io.json(response, 200, { items: service.list() }); return true; }
+    if (request.method === 'GET' && url.pathname === '/api/workspace-todos') {
+      let warning: string | undefined;
+      try { await service.refresh?.(); } catch (error) { warning = error instanceof Error ? error.message : '任务中心待办读取失败'; }
+      const source = service.source?.() || { mode: 'local' };
+      if (warning && source.mode === 'taskflow' && !source.ready) { io.json(response, 502, { message: warning }); return true; }
+      io.json(response, 200, { items: service.list(), source, ...(warning ? { warning } : {}) }); return true;
+    }
     if (request.method !== 'POST') { io.json(response, 405, { message: '请求方法不支持' }); return true; }
     if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(request.socket.remoteAddress || '')
       || ![`localhost:${io.port}`, `127.0.0.1:${io.port}`].includes(request.headers.host || '')

@@ -99,9 +99,9 @@ await host.copy('需要复制的代码');
 
 安装快照：`.data/custom-plugins/packages/<id>/<digest>/`；应用数据：`.data/custom-plugins/data/<id>/application/`；工作目录为其 `workspace/` 子目录（前缀随 `DELIVERY_DATA_DIR` 变化）。移除入口不删除数据。
 
-Go 示例：`node plugins/go-learning/build.mjs` 构建独立包，再从自定义插件管理中检查 `plugins/go-learning/package` 的绝对目录，核对来源、授权并添加。也可使用该插件自带安装脚本。构建其他工具时无需改宿主注册表或重编译宿主；只有新增通用宿主协议需要更新宿主。
+应用在独立插件仓库构建和发布。宿主的插件中心支持从市场选择发布版本，或检查本机 `.dwp` 和包目录。核对来源和授权后安装。发布流程见[三仓库协作协议](plugin-repository-contract.md)。
 
-针对性测试：`node --import tsx --test test/plugin-applications.test.ts test/custom-plugins.test.ts test/go-learning.test.ts`。测试使用临时目录；Go 真实运行结果、浏览器页面结果与操作系统应用打开结果需分别报告。
+宿主测试：`node --import tsx --test test/plugin-applications.test.ts test/custom-plugins.test.ts test/plugin-workspaces.test.ts`。具体应用的业务测试在对应的插件仓库执行。
 
 ## 文本文件导出
 

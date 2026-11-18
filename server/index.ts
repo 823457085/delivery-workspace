@@ -52,9 +52,11 @@ import { createWecomIntegration } from './wecom-integration.js';
 import { createWorkspaceTodos } from './workspace-todos.js';
 import { createOverseasRequirements, createOverseasRequirementRoutes } from './overseas-requirements.js';
 import { createWorkspaceTodoRoutes } from './workspace-todo-routes.js';
+import { createTaskflowTodos } from './taskflow-todos.js';
 import { createProjectWorkspaces } from './project-workspaces.js';
 import { createProjectWorkspaceRoutes } from './project-workspace-routes.js';
 import { createProjectLaunch, createProjectLaunchRoutes } from './project-launch.js';
+import { createWorkspaceBrowserRoute } from './workspace-browser.js';
 import { createWorkspaceUsageCheck, readWorkspaceCwds } from './project-workspace-usage.js';
 import { createWorkspaceReports } from './workspace-reports.js';
 import { createWorkspaceReportRoutes } from './workspace-report-routes.js';
@@ -126,6 +128,7 @@ import {
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const distDirectory = path.resolve(process.env.DELIVERY_DIST_DIR || path.join(root, 'dist'));
+const hostedBySystemd = process.env.DELIVERY_WORKSPACE_SUPERVISOR === 'systemd';
 const readVersion = await createWorkspaceVersionReader(root, distDirectory);
 let startupBuildError: string | undefined;
 const readWorkspaceVersion = async () => {
@@ -138,7 +141,13 @@ const port = Number(process.env.PORT ?? 5199);
 const dataDirectory = process.env.DELIVERY_DATA_DIR ?? path.join(root, '.data');
 const workspaceBuildOptions = { logFile: path.join(dataDirectory, 'workspace-build.log') };
 const releaseStateLease = await acquireStateServiceLease(dataDirectory);
-if (!process.argv.includes('--dev')) {
+if (hostedBySystemd) {
+  const version = await readVersion();
+  if (!version.diskBuildSourceHash || version.frontend?.buildSourceHash !== version.diskBuildSourceHash) {
+    startupBuildError = '服务器发布包缺少与当前源码匹配的页面产物，请重新发布工作台。';
+    console.error(startupBuildError);
+  }
+} else if (!process.argv.includes('--dev')) {
   try {
     const result = await ensureWorkspaceBuild(root, distDirectory, workspaceBuildOptions);
     console.log(result.rebuilt ? '页面自动构建完成' : '页面构建已是最新');
@@ -196,7 +205,10 @@ const [
   createSystemCatalog(path.join(dataDirectory, 'system-catalog'), sourceBackend.confluenceReadRequest, undefined, sourceBackend.readLocalProjects),
   createInterfaceCenter(path.join(dataDirectory, 'interface-center')),
   createAgentUsageStore(path.join(dataDirectory, 'agent-runtimes'), { writeJson: stateBackup.writeJson }),
-  createWorkspaceTodos(path.join(dataDirectory, 'workspace-todos')),
+  createWorkspaceTodos(path.join(dataDirectory, 'workspace-todos')).then(local => createTaskflowTodos(local, {
+    markerFile: path.join(dataDirectory, 'workspace-todos', 'taskflow-imported.json'),
+    disabled: process.env.DELIVERY_TASKFLOW_TODOS !== '1', log: message => console.log(message),
+  })),
 ]);
 const integrationRuntime = createIntegrationRuntime({ root, directory: dataDirectory, source: sourceBackend, port, json, body });
 const systemCatalogRoutes = createSystemCatalogRoutes(systemCatalog, { json, body, port });
@@ -256,6 +268,7 @@ const providerUsageReaders = {
   antigravity: readAntigravityGateUsage,
 };
 const customPluginsDirectory = path.join(dataDirectory, 'custom-plugins');
+void workspaceTodos.refresh().catch(error => console.warn(`任务中心待办暂未加载：${error instanceof Error ? error.message : error}`));
 const customPlugins = await createCustomPluginRuntime(customPluginsDirectory, workspaceTodos);
 const pluginJira = await createPluginJira(customPluginsDirectory, customPlugins, sourceBackend.jiraIssueRequest);
 const agentRuntimes = await createAgentRuntimeService(path.join(dataDirectory, 'agent-runtimes'), {
@@ -434,6 +447,7 @@ const projectWorkspaces = await createProjectWorkspaces(path.join(dataDirectory,
 const projectWorkspaceRoutes = createProjectWorkspaceRoutes(projectWorkspaces, { json, body, port });
 const projectLaunch = createProjectLaunch(path.join(dataDirectory, 'project-launch'), { root, dataDir: dataDirectory, selfPort: port });
 const projectLaunchRoutes = createProjectLaunchRoutes(projectLaunch, { json, body, port });
+const workspaceBrowserRoute = createWorkspaceBrowserRoute();
 const workspaceReportRoutes = createWorkspaceReportRoutes(workspaceReports, { json, body, port });
 
 const readCodexPlanUsage = createCodexPlanUsageReader();
@@ -629,8 +643,10 @@ async function restartBlockers() {
   return blockers;
 }
 const workspaceRestart = createWorkspaceRestart({
-  available: () => isPm2ManagedWorkspace(root), prepare: () => agentRuntimes.prepareWorkspaceRestart(),
-  update: process.argv.includes('--dev') ? undefined : async () => {
+  supervisor: hostedBySystemd ? 'systemd' : undefined,
+  available: async () => hostedBySystemd || await isPm2ManagedWorkspace(root),
+  prepare: hostedBySystemd ? undefined : () => agentRuntimes.prepareWorkspaceRestart(),
+  update: hostedBySystemd || process.argv.includes('--dev') ? undefined : async () => {
     const [{ backend }, plugins] = await Promise.all([readVersion(), integrationPlugins.list()]);
     const pluginNeedsRestart = plugins.some(plugin => plugin.restartRequired);
     const next = await ensureWorkspaceBuild(root, distDirectory, { ...workspaceBuildOptions, prepareOnly: true });
@@ -650,7 +666,7 @@ const workspaceRestart = createWorkspaceRestart({
     if (backup.entries.some(entry => entry.status === 'failed')) throw new Error('关键状态备份失败，未执行重启，请检查本机存储。');
     if ((await restartBlockers()).length) throw new Error('任务状态发生变化，未执行重启，请重试。');
     closeActiveSseStreams();
-    await shutdown();
+    await shutdown(hostedBySystemd ? 75 : 0);
   },
 });
 const workspaceRestartRoute = createWorkspaceRestartRoute(workspaceRestart);
@@ -718,6 +734,14 @@ const server = http.createServer(async (request, response) => {
       if (await interfaceCenterRoutes(request, response, url)) return;
       if (await browserConnectionRoute(request, response, url)) return;
       if (await integrationRuntime.route(request, response, url)) return;
+      if (url.pathname === '/api/workspace/browse' || url.pathname === '/api/workspace/select-directory') {
+        const host = request.headers.host || '';
+        if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(request.socket.remoteAddress || '')
+          || ![`localhost:${port}`, `127.0.0.1:${port}`].includes(host)
+          || request.headers.origin !== `http://${host}`) { json(response, 403, { message: '请从当前工作台选择文件夹' }); return; }
+        await workspaceBrowserRoute(request, response, url.pathname.endsWith('/browse') ? 'browse' : 'select');
+        return;
+      }
       if (url.pathname === '/api/workspace/select') { await workspacePicker(request, response, port); return; }
       if (url.pathname === '/api/workspace/terminal') { await workspaceTerminal(request, response, port); return; }
       if (url.pathname === '/api/workspace/cursor') { await workspaceCursor(request, response, port); return; }
@@ -1494,7 +1518,7 @@ async function closeStep(label: string, action: () => unknown) {
   try { await action(); }
   catch (error) { console.error(`关闭 ${label} 失败，继续关闭其余服务：`, error instanceof Error ? error.message : error); }
 }
-function shutdown() {
+function shutdown(exitCode = 0) {
   return shutdownTask ??= (async () => {
     // 极端情况下关闭卡死时，30 秒后强制退出，避免 PM2 等待无限期挂起。
     const forceExit = setTimeout(() => { console.error('关闭超时，强制退出'); process.exit(1); }, 30_000);
@@ -1525,7 +1549,7 @@ function shutdown() {
       await closeStep('状态备份', () => stateBackup.close());
       await closeStep('状态租约', () => releaseStateLease());
       clearTimeout(forceExit);
-      process.exit(0);
+      process.exit(exitCode);
     }
   })();
 }

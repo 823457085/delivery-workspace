@@ -42,13 +42,17 @@ test('活动任务状态兼容大小写，未启动合入 pending 可单独排�
   }
 });
 
-test('等待现有任务自然结束，期间不封锁请求，空闲后再重启', async t => {
+test('systemd 实例直接等待当前任务空闲，期间仍可请求，空闲后才重启', async t => {
   let checks = 0;
   let running = true;
   const { service, calls } = restartFixture(t, {
+    supervisor: 'systemd',
     blockers: async () => { checks++; return running ? ['Agent 运行中'] : []; },
   });
-  assert.equal((await service.request()).status, 'waiting');
+  assert.equal((await service.dashboard()).supervisor, 'systemd');
+  const request = await service.request();
+  assert.equal(request.status, 'waiting');
+  assert.equal(request.supervisor, 'systemd');
   await until(() => checks >= 3);
   const state = await service.dashboard();
   assert.equal(state.status, 'waiting');

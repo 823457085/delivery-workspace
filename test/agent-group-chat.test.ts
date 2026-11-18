@@ -368,7 +368,13 @@ test('暂停时阻止后续成员；继续只接续未完成角色，不重放�
   const gate = new Promise<void>(resolve => release = resolve);
   let first = true;
   const f = await fixture(async context => {
-    if (context.run.team?.profileId === 'two' && first) { first = false; await Promise.race([gate, new Promise<void>(resolve => context.signal.addEventListener('abort', () => resolve(), { once: true }))]); }
+    if (context.run.team?.profileId === 'two' && first) {
+      first = false;
+      // 暂停也可能发生在会话 ID 落盘期间，AbortSignal 不会补发已经触发的事件。
+      if (!context.signal.aborted) {
+        await Promise.race([gate, new Promise<void>(resolve => context.signal.addEventListener('abort', () => resolve(), { once: true }))]);
+      }
+    }
     return `完成-${context.run.team?.profileId}`;
   });
   try {

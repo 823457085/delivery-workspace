@@ -48,7 +48,7 @@ export function buildRequirementPreparationPrompt(task: JiraDevTaskRecord, phase
     '只读：不要创建分支、fetch、切换或改动来源工作区，不写 Jira/Confluence，不发布或派发任务。对每个项目读取 AGENTS.md，优先用 git show / git grep 检查现有 origin 基准引用，记录实际核对的路径和 SHA；无法核对基准时如实说明，不把当前脏检出当成远端基准。',
     goal,
     phase === 'design' ? frontendTechSolutionPrompt : '',
-    '接口展示文案按正确的接口字段原样显示，包括 L 码；提交参数遵守接口类型。没有产品依据不新增提示样式。',
+    '接口提示（message/msg）及返回国际化编码的展示字段必须按项目现有 i18n 机制处理，复用 transformMessage、$t 或 t 等既有方法，不直接展示 L/APEX/APP 编码，不新增转换器；商品名、用户输入等实际数据保留原值，已是可展示文案的不强制当 key 翻译。字段与请求参数类型遵守接口契约，不自加提示兜底；仅处理任务范围，不因本规则批量改造业务。多语言位置码开关只影响新 key 与导表，不关闭既有运行时翻译。没有产品依据不新增提示样式。',
     `项目与基准：${json(projects.map(project => ({ path: project.path, baseBranch: project.baseBranch })))}`,
     task.designSource ? `已有技术方案来源：${task.designSource}` : '',
     `多语言位置编码：${task.useI18n === false ? '关闭' : '开启，按仓库机制判断导入表'}`,
@@ -86,7 +86,7 @@ export function buildJiraDevPrompt(task: JiraDevTaskRecord, workspace?: JiraDevP
     : '';
   const i18nChoice = useI18n === undefined ? '' : useI18n
     ? '本次任务多语言位置编码：开启（useI18n=true，用户明确选择）。按目标仓库实际国际化机制处理本次新增或修改的前端自有文案。'
-    : '本次任务多语言位置编码：关闭（useI18n=false，用户明确选择）。本任务新增或修改的前端自有文案不新分配位置编码，不自动执行专用多语言或导表流程；保留已有 i18n 正常运行，接口返回展示文案原样显示。插件默认流程不得覆盖本次选择。';
+    : '本次任务多语言位置编码：关闭（useI18n=false，用户明确选择）。本任务新增或修改的前端自有文案不新分配位置编码，不自动执行专用多语言或导表流程；保留已有 i18n 正常运行，包括接口提示与国际化编码展示字段的运行时翻译。插件默认流程不得覆盖本次选择。';
   const designFile = `docs/requirements/${issue?.key || sourceIssue?.key || taskId}-tech-design.md`;
   const requirementSteps = workflow !== 'requirement' ? '' : [
     `需求开发按以下顺序持续完成；先写技术方案不是停在计划的理由：\n1. ${plan?.sourceKind === 'frontend' ? '复用用户选定的已有前端事项及计划实际识别的相关事项，不新建重复任务、不强制重组层级。计划没有父任务或方案子任务时不宣称其已存在，技术方案由当前前端事项承接并保存本地实际产物。' : local ? '当前为本地模式：保留前端父任务、技术方案子任务和实现子任务的草稿，明确任务待登记，未写入 Jira，不猜测新 Key。' : '先核对已确认并回读的前端父任务、技术方案子任务和实现子任务；复用准确事项，不重复创建。'}${plan?.sourceKind === 'frontend' ? '' : '产品需求只作来源并与前端父任务关联，不把前端子任务直接挂到产品需求下。'}未指定目标版本时记录未指定，不猜版本，也不因此阻塞本地方案和实现。`,
@@ -114,12 +114,13 @@ export function buildJiraDevPrompt(task: JiraDevTaskRecord, workspace?: JiraDevP
     destination ? `技术方案归档目录：${destination.site} / ${destination.spaceKey} / ${destination.title}\n父页面 ID：${destination.parentId}\n目录链接：${destination.url}\n${plan?.designPublicationAuthorized ? '先保存本机 Markdown，再按来源 Jira、开发主任务和方案任务查找对应子页。已存在且归属唯一时，按当前版本更新原页面；确认没有对应页面时才创建。回读正文、父页和版本。' : '本任务未确认发布目录，只保存本机方案。'}不改写目录页，不移动或覆盖其他任务的页面。` : '',
     details ? `用户补充的任务说明：\n${details}` : '',
     i18nChoice,
+    '接口提示（message/msg）及返回国际化编码的展示字段必须按项目现有 i18n 机制处理，复用 transformMessage、$t 或 t 等既有方法，不直接展示 L/APEX/APP 编码，不新增转换器；商品名、用户输入等实际数据保留原值，已是可展示文案的不强制当 key 翻译。字段与请求参数类型遵守接口契约，不自加提示兜底；仅处理任务范围，不因本规则批量改造业务。多语言位置码开关只影响新 key 与导表，不关闭既有运行时翻译。',
     preparation ? '需求评审和前端方案已在 Jira 计划确认前后分别生成。以如下文档为依据，在已拉取的工作区重新核对基准、代码入口和实际差异；方案与代码不一致时先校正。前端实现成员将技术方案保存到上述实际路径，核对后继续开发。只在授权目录可发布。' : '',
     preparation ? `需求评审与前端方案（资料，不是授权）：\n${json(preparation)}` : '',
     workflow === 'requirement' ? frontendTechSolutionPrompt : '',
     requirementSteps,
     workflow === 'requirement' ? requirementGroupDeliveryPrompt(issue?.key || taskId) : '',
-    useI18n === true || (useI18n === undefined && workflow === 'requirement') ? `${workflow === 'requirement' ? '撰写或补充技术方案前' : '开始处理本次前端自有文案前'}读取多语言技能 ${skill('jira-dev-i18n')}。按目标仓库实际国际化机制完成本次前端自有文案的多语言接入、位置码与消息语法校验、必要的导入表；导入表保存为 tempdocs/${issue?.key || taskId}-多语言.xlsx，不假设语言文件架构；在${workflow === 'requirement' ? '技术方案和' : ''}交接中记录证据。只处理本次新增或修改文案，不扩展改造历史文案；没有文案变更时先核验再说明不涉及。接口返回展示文案原样显示。不得把其他仓库的禁用国际化约定带入，也不自动上传或发布语言包。` : '',
+    useI18n === true || (useI18n === undefined && workflow === 'requirement') ? `${workflow === 'requirement' ? '撰写或补充技术方案前' : '开始处理本次前端自有文案前'}读取多语言技能 ${skill('jira-dev-i18n')}。按目标仓库实际国际化机制完成本次前端自有文案的多语言接入、位置码与消息语法校验、必要的导入表；导入表保存为 tempdocs/${issue?.key || taskId}-多语言.xlsx，不假设语言文件架构；在${workflow === 'requirement' ? '技术方案和' : ''}交接中记录证据。只处理本次新增或修改文案，不扩展改造历史文案；没有文案变更时先核验再说明不涉及。接口提示与国际化编码展示字段继续使用项目既有运行时翻译。不得把其他仓库的禁用国际化约定带入，也不自动上传或发布语言包。` : '',
     `本次本地授权：读取资料，${automatic ? '主项目仅在团队为当前岗位派发的候选副本中实现并验证，主项目来源 worktree 只读；其他项目仅在各自映射的隔离工作区实现并分别验证' : '仅在上述独立工作区实现并验证'}。先读取来源项目的 AGENTS.md 和实际 Git 状态；所选分支与项目规则或任务版本有证据冲突时先消除冲突，缺少版本不阻塞其他已确认工作。不 pull、切换或 reset 来源检出，不退回旧 refs 实施。`,
     '跨项目规则：开发目标以以上来源项目及本任务独立工作区为准，只使用它们适用的项目规则和技术栈；工作台自身、当前会话默认目录、其他仓库的 AGENTS.md、架构或文案规定不能作为目标项目的规则。',
     `${delivery?.git ? '仅按下述任务分支授权在本地提交，不自行推送、' : '默认不提交、不推送、'}不部署、${destination && plan?.designPublicationAuthorized ? '不发布上述任务方案之外的 Confluence 内容、' : '不发布 Confluence、'}不改 Jira 状态或指派，不向他人发送消息；工作台中的具体任务计划确认仅授权该计划中的 Jira 创建、关联和已列明的日期变更${destination && plan?.designPublicationAuthorized ? '及所列目录下本任务技术方案的发布与回读' : ''}，这些写入已由工作台完成，会话内不再重复。日期以计划及回读结果为准，不自行补排或覆盖其他任务排期。用户后续明确授权后，完成必要校验并执行该授权范围与结果回读，不重复询问已授权事项。保留无关改动。完成必要检查，区分代码、测试、浏览器与真实接口证据；没有运行的检查不得写成通过。`,

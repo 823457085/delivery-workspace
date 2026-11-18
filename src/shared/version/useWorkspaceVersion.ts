@@ -93,8 +93,9 @@ export function useWorkspaceVersionNotice() {
       ElMessage.warning('后端已重新启动，运行版本仍待更新，请检查服务启动配置。');
     }
   });
-  watch([state, query.data], ([current, version]) => {
-    const key = `${current.status}:${version?.frontend?.id || ''}`;
+  watch([state, query.data, restartQuery.data], ([current, version, restart]) => {
+    const hosted = restart?.supervisor === 'systemd';
+    const key = `${current.status}:${version?.frontend?.id || ''}:${hosted}`;
     if (!current.refreshRequired && !current.restartRequired && !current.buildRequired) {
       notification?.close();
       notified = '';
@@ -107,10 +108,13 @@ export function useWorkspaceVersionNotice() {
       || (current.restartRequired && !current.buildRequired
         ? '页面产物已是最新（无需重新打包），点击即可保存会话状态并快速重启后端。'
         : '将增量校验构建并平滑同步后端，当前会话与任务会在重启后自动恢复。');
-    const message = current.restartRequired || current.buildRequired
+    const hostedBuildRequired = hosted && current.buildRequired;
+    const message = hostedBuildRequired
+      ? (version?.buildError || '当前服务器需要发布与源码匹配的页面产物。')
+      : current.restartRequired || current.buildRequired
       ? h('div', [h('p', { style: 'margin: 0 0 8px; line-height: 1.5;' }, hintText), h(WorkspaceRestartButton)])
       : h(ElButton, { size: 'small', type: 'primary', onClick: reloadWorkspacePage }, () => '立即刷新页面');
-    notification = ElNotification({ title: current.label, message, type: 'warning', duration: 0, position: 'bottom-right', offset: 48 }, appContext);
+    notification = ElNotification({ title: hostedBuildRequired ? '服务器页面待发布' : current.label, message, type: 'warning', duration: 0, position: 'bottom-right', offset: 48 }, appContext);
   }, { immediate: true });
   onScopeDispose(() => notification?.close());
 }
