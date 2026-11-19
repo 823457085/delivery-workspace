@@ -14,7 +14,7 @@ const frame = (value: DesktopObject) => {
   return Buffer.concat([header, body]);
 };
 
-async function peer(options: { version?: number; stateId?: string; owner?: boolean; wrongReceipt?: boolean; invalidFrame?: boolean } = {}) {
+async function peer(options: { version?: number; stateId?: string; owner?: boolean; wrongReceipt?: boolean; invalidFrame?: boolean; state?: DesktopObject } = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'delivery-desktop-ipc-'));
   const socketPath = path.join(directory, 'ipc.sock');
   const sockets = new Set<net.Socket>();
@@ -46,7 +46,7 @@ async function peer(options: { version?: number; stateId?: string; owner?: boole
           snapshots++;
           const params = { hostId: 'local', conversationId: threadId, change: { type: 'snapshot', revision: snapshots,
             conversationState: { id: options.stateId || threadId, hostId: 'local', cwd: directory,
-              resumeState: 'resumed', threadRuntimeStatus: { type: 'idle' } } } };
+              resumeState: 'resumed', threadRuntimeStatus: { type: 'idle' }, ...options.state } } };
           socket.write(frame({ type: 'broadcast', method: 'thread-stream-state-changed', version: 11, sourceClientId: 'unrelated-client', params }));
           socket.write(frame({ type: 'broadcast', method: 'thread-stream-state-changed', version: options.version ?? 11, sourceClientId: ownerId, params }));
         } else if (message.method === 'thread-follower-start-turn') {
@@ -86,8 +86,26 @@ test('desktop IPC 使用本用户 socket、身份握手与 owner 定向请求，
   } finally { await p.close(); }
 });
 
+test('desktop v13 快照保留 canonical 轮次和安全状态，只读检查不派发任务', async () => {
+  const state = { turns: [], requests: [{ id: 'pending-approval' }],
+    unconfirmedTurnSubmissions: [{ clientUserMessageId: 'pending-message' }],
+    threadRuntimeStatus: { type: 'active' }, turnHistory: { kind: 'canonical', history: {
+      entitiesByKey: { 'turn:live': { turnId: 'live', status: 'inProgress', items: [] } },
+    } } };
+  const p = await peer({ version: 13, state });
+  try {
+    const desktop = await connectCodexDesktopThread(threadId, { socketPath: p.socketPath });
+    try {
+      const snapshot = await desktop.snapshot();
+      assert.equal(snapshot.id, threadId);
+      for (const [key, value] of Object.entries(state)) assert.deepEqual(snapshot[key], value);
+      assert.ok(!p.received.some(message => String(message.method).startsWith('thread-follower-')));
+    } finally { desktop.close(); }
+  } finally { await p.close(); }
+});
+
 test('desktop 协议不兼容或会话 ID 不一致时拒绝，不发送任务', async () => {
-  for (const options of [{ version: 99 }, { stateId: 'another-thread' }]) {
+  for (const options of [{ version: 12 }, { version: 99 }, { stateId: 'another-thread' }, { version: 13, stateId: 'another-thread' }]) {
     const p = await peer(options);
     try {
       const desktop = await connectCodexDesktopThread(threadId, { socketPath: p.socketPath, timeoutMs: 200 });
