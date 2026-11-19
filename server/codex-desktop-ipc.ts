@@ -8,6 +8,11 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { codexHome } from './cli-runtime.js';
 
+// v13 桌面快照仍使用 change.conversationState，本文消费的归属、运行状态与
+// canonical turnHistory 字段保持不变；start-turn / interrupt-turn 仍为 v2 / v4。
+// 只接纳已核对的版本，不能通过范围比较或忽略版本来放行未知协议。
+const supportedSnapshotVersions: readonly number[] = [11, 13];
+
 export type DesktopObject = Record<string, unknown>;
 export function desktopObject(value: unknown): DesktopObject {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as DesktopObject : {};
@@ -67,7 +72,10 @@ export async function connectCodexDesktopThread(threadId: string, options: { soc
           const change = desktopObject(params.change);
           if (message.sourceClientId !== ownerId || params.hostId !== 'local' || params.conversationId !== threadId
             || change.type !== 'snapshot') continue;
-          if (message.version !== 11) throw new Error('Codex 桌面会话协议版本不兼容');
+          if (typeof message.version !== 'number' || !supportedSnapshotVersions.includes(message.version)) {
+            const received = Number.isSafeInteger(message.version) ? String(message.version) : '缺失或无效';
+            throw new Error(`Codex 桌面会话协议版本不兼容（收到 ${received}，支持 ${supportedSnapshotVersions.join('、')}）；请更新工作台适配。`);
+          }
           const state = desktopObject(change.conversationState);
           if (state.id !== threadId) throw new Error('Codex 桌面返回的会话 ID 不一致');
           clearTimeout(snapshotWaiter.timer); snapshotWaiter.resolve(state); snapshotWaiter = undefined;
