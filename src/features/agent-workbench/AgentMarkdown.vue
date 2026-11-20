@@ -18,7 +18,7 @@ const AgentPluginRecordCard = defineAsyncComponent(() => import('../custom-plugi
 const AgentCodeArtifactPreview = defineAsyncComponent(() => import('./AgentCodeArtifactPreview.vue'));
 const AgentMermaidPreview = defineAsyncComponent(() => import('./AgentMermaidPreview.vue'));
 
-const props = defineProps<{ source: string; canAskCode?: boolean }>();
+const props = withDefaults(defineProps<{ source: string; canAskCode?: boolean; renderBusinessCards?: boolean }>(), { renderBusinessCards: true });
 const emit = defineEmits<{ askCode: [payload: { language: string | undefined; code: string }] }>();
 const blocks = computed(() => parseAgentMarkdown(props.source));
 const copiedIndex = shallowRef<number | null>(null);
@@ -181,8 +181,8 @@ onBeforeUnmount(() => {
       <component :is="`h${block.level}`" v-if="block.type === 'heading'" class="markdown-heading"><AgentMarkdownInline :nodes="block.content" /></component>
       <p v-else-if="block.type === 'paragraph'" class="markdown-paragraph"><AgentMarkdownInline :nodes="block.content" /></p>
       <blockquote v-else-if="block.type === 'quote'" class="markdown-quote"><AgentMarkdownInline :nodes="block.content" /></blockquote>
-      <AgentDeliveryReport v-else-if="block.type === 'code' && block.language === 'delivery-report'" :source="block.text" />
-      <AgentPluginRecordCard v-else-if="block.type === 'code' && (block.language === 'plugin-record' || block.language === 'custom-plugin-record')" :source="block.text" />
+      <AgentDeliveryReport v-else-if="renderBusinessCards && block.type === 'code' && block.language === 'delivery-report'" :source="block.text" />
+      <AgentPluginRecordCard v-else-if="renderBusinessCards && block.type === 'code' && (block.language === 'plugin-record' || block.language === 'custom-plugin-record')" :source="block.text" />
       <div v-else-if="block.type === 'code'" class="markdown-code-wrap">
         <div class="markdown-code-bar">
           <div class="code-bar-meta">

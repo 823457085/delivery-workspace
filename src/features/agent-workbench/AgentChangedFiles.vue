@@ -17,6 +17,8 @@ import {
   type DiffReviewSeverity,
 } from '../../../shared/diff-review-basket';
 import { presentGitDiff, splitGitDiff } from '../project-inventory/git-diff';
+import AgentMarkdown from './AgentMarkdown.vue';
+import { canPreviewMarkdown, changedFileCopyText, resolveChangedFileViewMode, type ChangedFileViewMode } from './changed-file-preview';
 
 interface ChangedFilePreview {
   path: string;
@@ -46,7 +48,7 @@ const activeFile = shallowRef<AgentChangedFile | null>(null);
 const previewLoading = shallowRef(false);
 const previewError = shallowRef('');
 const previewData = shallowRef<ChangedFilePreview | null>(null);
-const viewMode = shallowRef<'unified' | 'split' | 'content'>('unified');
+const viewMode = shallowRef<ChangedFileViewMode>('unified');
 const copied = shallowRef(false);
 const reviewBasket = shallowRef<DiffReviewCommentItem[]>([]);
 const showBasketList = shallowRef(false);
@@ -72,11 +74,8 @@ const diffPresentation = computed(() => presentGitDiff(previewData.value?.patch 
 const splitRows = computed(() => (viewMode.value === 'split' ? splitGitDiff(diffPresentation.value.lines) : []));
 const hasPatch = computed(() => Boolean(previewData.value?.patch?.trim()));
 const hasContent = computed(() => Boolean(previewData.value?.content?.length));
-const effectiveMode = computed<'unified' | 'split' | 'content'>(() => {
-  if (viewMode.value === 'content' && hasContent.value) return 'content';
-  if (!hasPatch.value && hasContent.value) return 'content';
-  return viewMode.value === 'split' ? 'split' : 'unified';
-});
+const hasMarkdown = computed(() => canPreviewMarkdown(previewData.value));
+const effectiveMode = computed(() => resolveChangedFileViewMode(viewMode.value, previewData.value));
 const contentLines = computed(() => {
   const raw = previewData.value?.content || '';
   if (!raw) return [];
@@ -121,8 +120,7 @@ async function previewFile(file: AgentChangedFile) {
     if (seq !== previewSeq) return;
     if (!response.ok) throw new Error(result.message || '读取文件预览失败');
     previewData.value = result;
-    if (!result.patch?.trim() && result.content) viewMode.value = 'content';
-    else if (viewMode.value === 'content' && !result.content && result.patch?.trim()) viewMode.value = 'unified';
+    viewMode.value = canPreviewMarkdown(result) ? 'markdown' : resolveChangedFileViewMode(viewMode.value, result);
   } catch (error) {
     if (seq !== previewSeq) return;
     previewError.value = error instanceof Error ? error.message : '读取文件预览失败';
@@ -137,9 +135,7 @@ function stepPreview(delta: -1 | 1) {
 }
 
 async function copyPreviewText() {
-  const text = effectiveMode.value === 'content'
-    ? (previewData.value?.content || '')
-    : (previewData.value?.patch || previewData.value?.content || '');
+  const text = changedFileCopyText(effectiveMode.value, previewData.value);
   if (!text) return;
   try {
     await navigator.clipboard.writeText(text);
@@ -350,13 +346,14 @@ function submitReviewBasket() {
               <el-button size="small" :disabled="activeIndex < 0 || activeIndex >= files.length - 1" title="下一个文件" @click="stepPreview(1)"><ChevronRight :size="13" /></el-button>
             </div>
             <el-radio-group v-if="previewData && !previewData.binary" v-model="viewMode" size="small" aria-label="预览视图切换">
+              <el-radio-button v-if="hasMarkdown" value="markdown">Markdown 预览</el-radio-button>
               <el-radio-button value="unified" :disabled="!hasPatch">统一差异</el-radio-button>
               <el-radio-button value="split" :disabled="!hasPatch">左右对比</el-radio-button>
               <el-radio-button value="content" :disabled="!hasContent">文件内容</el-radio-button>
             </el-radio-group>
             <el-button v-if="previewData && !previewData.binary && (hasPatch || hasContent)" size="small" @click="copyPreviewText">
               <Check v-if="copied" :size="13" /><Copy v-else :size="13" />
-              <span style="margin-left: 4px">{{ copied ? '已复制' : effectiveMode === 'content' ? '复制代码' : '复制 Diff' }}</span>
+              <span style="margin-left: 4px">{{ copied ? '已复制' : effectiveMode === 'markdown' ? '复制 Markdown' : effectiveMode === 'content' ? '复制代码' : '复制 Diff' }}</span>
             </el-button>
             <el-button v-if="canAsk && activeFile" size="small" type="primary" @click="askAboutFile(activeFile)">
               <MessageSquarePlus :size="13" /><span style="margin-left: 4px">让 AI 改此文件</span>
@@ -371,7 +368,10 @@ function submitReviewBasket() {
       <div class="changed-drawer-body">
         <p v-if="previewData?.truncated" class="changed-drawer-notice">文件体积较大，当前仅展示前 512 KB 预览内容。</p>
         <p v-if="canAsk && activeFile && previewData && !previewData.binary && (hasPatch || hasContent)" class="changed-line-ask-tip">
+          <template v-if="effectiveMode === 'markdown'">当前展示文件内容的 Markdown 排版；添加行级批注请切换到“文件内容”或差异视图。</template>
+          <template v-else>
           提示：点击任意行号可添加<strong>行级审查批注</strong>（支持跨多个文件累积到批注篮后汇总发送给 AI），也可一键带入 <code>@{{ activeFile.path }}:行号</code>。
+          </template>
         </p>
 
         <div v-if="canAsk && reviewBasket.length" class="changed-review-basket" role="region" aria-label="行级审查批注篮">
@@ -451,6 +451,9 @@ function submitReviewBasket() {
         <el-alert v-else-if="previewError" :title="previewError" type="error" :closable="false" show-icon />
         <div v-else-if="previewData?.binary" class="changed-drawer-empty">
           二进制文件不支持文本差异预览，可点击右上角在 Cursor 中打开或直接下载。
+        </div>
+        <div v-else-if="effectiveMode === 'markdown'" :key="activeFile?.path" class="changed-markdown-view" tabindex="0" role="region" aria-label="Markdown 文件预览">
+          <AgentMarkdown :source="previewData?.content || ''" :render-business-cards="false" />
         </div>
         <div v-else-if="effectiveMode === 'split' && hasPatch" class="changed-diff-view" tabindex="0">
           <div class="changed-diff-pair changed-diff-headings"><span>变更前</span><span>变更后</span></div>
@@ -541,6 +544,11 @@ function submitReviewBasket() {
 .changed-line-ask-tip code{font-family:var(--mono);color:var(--ui-accent)}
 .changed-drawer-empty{display:grid;place-items:center;min-height:220px;padding:24px;border:1px solid var(--ui-border);border-radius:12px;color:var(--ui-muted);font-size:13.5px;text-align:center}
 .changed-diff-view{flex:1;min-height:0;overflow:auto;border:1px solid var(--ui-border);border-radius:12px;background:var(--ui-surface);padding:6px 0}
+.changed-markdown-view{flex:1;min-height:0;overflow:auto;border:1px solid var(--ui-border);border-radius:12px;background:var(--ui-surface);color:var(--ui-text);padding:20px;scrollbar-gutter:stable}
+.changed-markdown-view :deep(.agent-markdown){font-size:14px;line-height:1.7}
+.changed-markdown-view :deep(h1){font-size:24px}
+.changed-markdown-view :deep(h2){font-size:20px}
+.changed-markdown-view :deep(h3){font-size:17px}
 .changed-diff-line{display:grid;grid-template-columns:48px 48px 24px minmax(0,1fr);padding-right:14px;min-height:25px;color:var(--ui-text);font:12.5px/1.75 var(--mono,ui-monospace,monospace)}
 .changed-diff-line.is-content{grid-template-columns:54px minmax(0,1fr);gap:12px}
 .changed-diff-line code{min-width:0;font:inherit;white-space:pre-wrap;overflow-wrap:anywhere;tab-size:2}
