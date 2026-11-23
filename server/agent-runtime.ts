@@ -28,7 +28,7 @@ import { checkAgentRecovery, readProcessStartTime } from './agent-recovery.js';
 import { CodexDesktopTurnUnconfirmedError, readCodexDesktopSnapshot } from './codex-desktop-turn.js';
 import { largeStateBytes, type createStateBackupStore } from './state-backup.js';
 import { resolveRenamedWorkspace } from './generated-workspace.js';
-import { createWorkspaceProjectResolver } from './workspace-project.js';
+import { createWorkspaceProjectResolver, resolveWorkspaceDirectory } from './workspace-project.js';
 import type { ResolvedAgentAttachment } from './agent-attachments.js';
 import { canContinueStoppedCodexRun, isAgentImageAttachment, maxAgentConversationWorkspaces } from '../shared/agent-runtime.js';
 import { createKiroAdapter } from './kiro-runtime.js';
@@ -763,32 +763,34 @@ async function runCli(provider: AgentProvider, binary: string, args: string[], c
   });
 }
 
-function cachedHealth(check: () => Promise<Omit<AgentRuntimeHealth, 'checkedAt'>>, ttlMs = 30_000) {
+function cachedHealth(check: (force: boolean) => Promise<Omit<AgentRuntimeHealth, 'checkedAt'>>, ttlMs = 30_000) {
   let cached: AgentRuntimeHealth | undefined;
   return async (force = false) => {
     if (!force && cached && Date.now() - Date.parse(cached.checkedAt) < ttlMs) return cached;
-    cached = { ...await check(), checkedAt: new Date().toISOString() };
+    cached = { ...await check(force), checkedAt: new Date().toISOString() };
     return cached;
   };
 }
 
 export function createCodexAdapter(binary = cliBinary, browserRootDirectory?: string, browserTaskEndpoint?: ServiceOptions['browserTaskEndpoint']): AgentRuntimeAdapter {
   const readModels = createCodexModelReader(() => requestCodexModels(binary));
-  const health = cachedHealth(async () => {
+  const health = cachedHealth(async force => {
+    const env = codexChildEnvironment();
     const [version, login] = await Promise.allSettled([
-      exec(binary, ['--version'], { timeout: 10_000 }),
-      exec(binary, ['login', 'status'], { timeout: 10_000 }),
+      exec(binary, ['--version'], { env, timeout: 10_000 }),
+      exec(binary, ['login', 'status'], { env, timeout: 10_000 }),
     ]);
-    const versionText = version.status === 'fulfilled' ? cleanText(version.value.stdout, 200) : '';
+    const versionText = version.status === 'fulfilled' ? cleanText(version.value.stdout || version.value.stderr, 200) : '';
     const loginText = login.status === 'fulfilled' ? `${login.value.stdout}\n${login.value.stderr}` : '';
-    const authenticated = /(?:Logged in|API key configured)/i.test(loginText);
-    const ready = !!versionText && authenticated;
-    const catalog = ready ? await readModels() : { models: [{ id: '', label: 'CLI 默认（当前配置）' }], defaultModel: '', message: '',
-      configuredModel: undefined, configuredServiceTier: undefined };
+    const authenticated = /(?:Logged in|API key configured)/i.test(loginText) && !/not logged in/i.test(loginText);
+    const catalog = versionText && authenticated ? await readModels(force) : undefined;
+    const ready = !!catalog && !catalog.connectionError;
     return { provider: 'codex' as const, label: 'Codex CLI', binary, version: versionText, authenticated, ready,
-      message: ready ? catalog.message || '本机 Codex CLI 可用于 Agent、Plan 和 Ask 模式' : !versionText ? '未找到可用的 Codex CLI' : 'Codex CLI 尚未登录',
-      modes: ['agent', 'plan', 'ask'] as AgentRunMode[], models: catalog.models, defaultModel: catalog.defaultModel,
-      configuredModel: catalog.configuredModel, configuredServiceTier: catalog.configuredServiceTier, writable: true };
+      message: catalog ? catalog.connectionError || catalog.message || '本机 Codex CLI 可用于 Agent、Plan 和 Ask 模式'
+        : !versionText ? '未找到可用的 Codex CLI' : 'Codex CLI 尚未登录',
+      modes: ['agent', 'plan', 'ask'] as AgentRunMode[], models: catalog?.models ?? [{ id: '', label: 'CLI 默认（当前配置）' }],
+      defaultModel: catalog?.defaultModel ?? '', configuredModel: catalog?.configuredModel,
+      configuredServiceTier: catalog?.configuredServiceTier, writable: true };
   });
   return { id: 'codex', health,
     execute: async (context) => {
@@ -944,10 +946,20 @@ export function createClaudeAdapter(binary = claudeBinary): AgentRuntimeAdapter 
   } };
 }
 
-export async function resolveWorkspace(workspacePath: string): Promise<WorkspaceIdentity> {
-  if (!path.isAbsolute(workspacePath)) throw new Error('工作区必须通过本机文件夹选择器选择');
-  const selected = await fs.realpath(workspacePath);
-  if (!(await fs.stat(selected)).isDirectory()) throw new Error('所选工作区不是有效文件夹');
+function isRuntimeSessionArea(runtimeDirectory: string, workspacePath: string) {
+  const relative = path.relative(runtimeDirectory, workspacePath);
+  return relative === '' || relative === 'sessions' || relative.startsWith(`sessions${path.sep}`);
+}
+
+export async function resolveWorkspace(workspacePath: string, runtimeDirectory?: string): Promise<WorkspaceIdentity> {
+  const selected = await resolveWorkspaceDirectory(workspacePath);
+  if (runtimeDirectory && isRuntimeSessionArea(runtimeDirectory, workspacePath) && path.relative(workspacePath, selected)) {
+    throw new Error('会话工作区目录已变化，请重新选择工作区');
+  }
+  // 新装时数据目录通常在 Git 克隆内，续聊要沿用临时会话目录，不能解析成外层仓库。
+  if (runtimeDirectory && isRuntimeSessionArea(runtimeDirectory, selected)) {
+    return { workspacePath: selected, branch: '', headSha: '' };
+  }
   let root = '';
   try { root = (await exec('git', ['-C', selected, 'rev-parse', '--show-toplevel'], { timeout: 5000 })).stdout.trim(); }
   catch { return { workspacePath: selected, branch: '', headSha: '' }; }
@@ -1111,7 +1123,7 @@ export async function createAgentRuntimeService(directory: string, options: Serv
   };
   const adapters = new Map((options.adapters || [createCodexAdapter(cliBinary, options.browserRootDirectory, options.browserTaskEndpoint), createCursorAdapter(cursorBinary, path.join(directory, 'taskflow-cursor')), createClaudeAdapter(), createKiroAdapter(kiroBinary, agentExecutionPrompt),
     createAntigravityAdapter(antigravityBinary, agentExecutionPrompt), createWorkbuddyAdapter()]).map((adapter) => [adapter.id, adapter]));
-  const workspaceIdentity = options.resolveWorkspace || resolveWorkspace;
+  const workspaceIdentity = options.resolveWorkspace || ((workspacePath: string) => resolveWorkspace(workspacePath, directory));
   const resolveProject = createWorkspaceProjectResolver();
   async function exposeProjectWorkspace<T extends { workspacePath: string; sourceWorkspacePath?: string }>(run: T) {
     Object.defineProperty(run, 'projectWorkspacePath', { configurable: true, enumerable: true,

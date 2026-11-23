@@ -172,7 +172,7 @@ defineExpose({ createWorkspace: () => workspacePicker.value?.create(),  focusPro
               <AgentModelSpeed v-model:service-tier="serviceTier" :runtime="runtime" :model="model" />
               <el-button text size="small" aria-label="管理自定义模型" @click="emit('configureModels')"><Settings2 :size="13" /></el-button>
             </div>
-            <el-button class="send-button" type="primary" :disabled="!canStart || attachmentDraft?.pending" :loading="changing === 'start'" aria-label="创建并发送" @click="submit">
+            <el-button class="send-button" type="primary" :disabled="!canStart || attachmentDraft?.pending" :title="runtime && !runtime.ready ? runtime.message : undefined" :loading="changing === 'start'" aria-label="创建并发送" @click="submit">
               <template #icon><Send :size="15" /></template>发送
             </el-button>
           </div>

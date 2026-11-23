@@ -6,6 +6,20 @@ import { promisify } from 'node:util';
 const exec = promisify(execFile);
 const internalWorkspace = /(?:^|\/)\.data\/agent-runtimes\/(sessions|workspaces)\/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}(?:\/|$)/i;
 
+export async function resolveWorkspaceDirectory(workspacePath: string) {
+  if (!path.isAbsolute(workspacePath) || /[\x00-\x1f\x7f]/.test(workspacePath)) {
+    throw new Error('请选择或输入工作区的完整绝对路径');
+  }
+  const directory = await fs.realpath(workspacePath).catch(cause => {
+    throw new Error('工作区目录不存在或无法访问，请重新选择工作区', { cause });
+  });
+  const stats = await fs.stat(directory).catch(cause => {
+    throw new Error('工作区目录不存在或无法访问，请重新选择工作区', { cause });
+  });
+  if (!stats.isDirectory()) throw new Error('所选工作区不是有效文件夹');
+  return directory;
+}
+
 /** 只解析展示归属；执行目录、源目录和分支始终由原记录决定。 */
 export function createWorkspaceProjectResolver() {
   const cache = new Map<string, { expiresAt: number; result: Promise<string | undefined> }>();

@@ -66,6 +66,13 @@ export function workbenchRuntime(runtime: AgentRuntimeHealth, defaults: AgentMod
       ? { ...model, defaultEffort: defaults.reasoningEffort } : model) };
 }
 
+export function workbenchConversationRuntime(runtime: AgentRuntimeHealth, defaults?: AgentModelDefaults): AgentRuntimeHealth {
+  const preferred = workbenchRuntime(runtime, defaults);
+  if (preferred.models.some(model => model.id === preferred.defaultModel)) return preferred;
+  const defaultModel = runtime.models.find(model => model.id === runtime.defaultModel)?.id ?? runtime.models[0]?.id ?? '';
+  return defaultModel === runtime.defaultModel ? runtime : { ...runtime, defaultModel };
+}
+
 export interface AgentUsageWindow {
   usedPercent: number;
   remainingPercent: number;

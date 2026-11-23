@@ -37,7 +37,7 @@ test('successive selections return the newly chosen ordinary folder', async t =>
   }
 });
 
-async function fixture(t: TestContext, choose: (signal: AbortSignal) => Promise<string | null>) {
+async function fixture(t: TestContext, choose?: (signal: AbortSignal) => Promise<string | null>) {
   const handler = createWorkspacePickerRoute(choose);
   const server = http.createServer((request, response) => void handler(request, response, request.socket.localPort!));
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -99,6 +99,27 @@ test('picker errors release the lock and do not return an invented workspace', a
   assert.equal((await response.json()).message, '选择器不可用');
   fail = false;
   assert.deepEqual(await (await post()).json(), { cancelled: true });
+});
+
+test('systems without the native picker fall back to the web picker after request checks', async t => {
+  const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+  Object.defineProperty(process, 'platform', { ...platform, value: 'linux' });
+  let response: Response;
+  try {
+    const { post } = await fixture(t);
+    assert.equal((await post({ Origin: 'https://foreign.test' })).status, 403);
+    assert.equal((await post({}, '{"path":"/tmp"}')).status, 400);
+    response = await post();
+    assert.equal(response.status, 501);
+  } finally { Object.defineProperty(process, 'platform', platform); }
+  const picker = useWorkspacePicker(async () => response);
+  const pending = picker.choose('/home/test/project');
+  await Promise.resolve();
+  assert.equal(picker.browserOpen.value, true);
+  assert.equal(picker.browserPath.value, '/home/test/project');
+  const selection = { cancelled: false as const, workspacePath: '/home/test/project', branch: '', message: 'selected' };
+  picker.completeBrowser(selection);
+  assert.deepEqual(await pending, selection);
 });
 
 test('form picker ignores double clicks and treats cancellation and failure as no selection', async () => {

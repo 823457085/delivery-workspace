@@ -11,7 +11,9 @@ type JsonObject = Record<string, unknown>;
 export interface CodexModelCatalog {
   models: AgentModelOption[]; defaultModel: string; message?: string;
   configuredModel?: string; configuredServiceTier?: string | null;
+  connectionError?: string;
 }
+class CodexConnectionError extends Error {}
 const cliDefault: AgentModelOption = { id: '', label: 'CLI 默认（当前配置）' };
 const object = (value: unknown): JsonObject => value && typeof value === 'object' ? value as JsonObject : {};
 const effort = (value: unknown): value is AgentReasoningEffort => agentReasoningEfforts.includes(value as AgentReasoningEffort);
@@ -66,11 +68,12 @@ export function requestCodexModels(binary = cliBinary, args = ['app-server', '--
       child.once('close', () => clearTimeout(forceKill));
       if (error) reject(error); else resolve(value!);
     };
-    const timer = setTimeout(() => finish(new Error('Codex 模型读取超时')), timeoutMs);
+    const timer = setTimeout(() => finish(requestId === 1
+      ? new CodexConnectionError('初始化超时') : new Error('Codex 模型读取超时')), timeoutMs);
     const write = (message: JsonObject) => child.stdin.write(`${JSON.stringify(message)}\n`);
-    child.on('error', () => finish(new Error('Codex 模型连接失败')));
-    child.on('close', () => finish(new Error('Codex 模型连接提前结束')));
-    child.stdin.on('error', () => finish(new Error('Codex 模型连接已关闭')));
+    child.on('error', () => finish(new CodexConnectionError('进程启动失败')));
+    child.on('close', code => finish(new CodexConnectionError(`连接提前结束${code === null ? '' : `（退出码 ${code}）`}`)));
+    child.stdin.on('error', () => finish(new CodexConnectionError('连接已关闭')));
     child.stderr.on('data', () => { /* 不向前端暴露账户或环境诊断。 */ });
     child.stdout.on('data', (chunk: Buffer) => {
       bytes += chunk.length;
@@ -86,12 +89,15 @@ export function requestCodexModels(binary = cliBinary, args = ['app-server', '--
         catch (error) { finish(error as Error); }
         return;
       }
-      if (message.error) { finish(new Error('Codex 模型查询失败')); return; }
       if (requestId === 1) {
+        if (message.error || !message.result || typeof message.result !== 'object') {
+          finish(new CodexConnectionError('初始化请求失败')); return;
+        }
         write({ method: 'initialized' });
         write({ id: ++requestId, method: 'model/list', params: { limit: 100, includeHidden: false } });
         return;
       }
+      if (message.error) { finish(new Error('Codex 模型查询失败')); return; }
       const result = object(message.result);
       if (!Array.isArray(result.data)) { finish(new Error('Codex 模型响应无效')); return; }
       items.push(...result.data);
@@ -111,15 +117,18 @@ export function requestCodexModels(binary = cliBinary, args = ['app-server', '--
 }
 
 export function createCodexModelReader(read = () => requestCodexModels(), ttlMs = 30_000) {
+  let lastSuccessful: CodexModelCatalog | undefined;
   let cached: CodexModelCatalog | undefined;
   let expiresAt = 0;
   let pending: Promise<CodexModelCatalog> | undefined;
-  return async (): Promise<CodexModelCatalog> => {
-    if (cached && Date.now() < expiresAt) return cached;
+  return async (force = false): Promise<CodexModelCatalog> => {
     if (pending) return pending;
-    pending = read().then(value => { cached = value; return value; }).catch(() => {
-      cached = { ...(cached || { models: [cliDefault], defaultModel: '' }),
-        message: cached ? '模型同步失败，暂用上次模型列表' : '模型暂不可用，可使用 CLI 默认或自定义模型' };
+    if (!force && cached && Date.now() < expiresAt) return cached;
+    pending = read().then(value => { lastSuccessful = cached = value; return value; }).catch(error => {
+      cached = { ...(lastSuccessful || { models: [cliDefault], defaultModel: '' }),
+        message: lastSuccessful ? '模型同步失败，暂用上次模型列表' : '模型暂不可用，可使用 CLI 默认或自定义模型',
+        ...(error instanceof CodexConnectionError
+          ? { connectionError: `Codex 执行通道${error.message}，请检查 CLI 配置或更新 CLI 后刷新连接状态` } : {}) };
       return cached;
     }).finally(() => { expiresAt = Date.now() + ttlMs; pending = undefined; });
     return pending;

@@ -37,6 +37,22 @@ test('CLI 在 PATH 中可用，并通过真实路径识别同目录 code-mode-ho
   } finally { await fs.rm(directory, { recursive: true, force: true }); }
 });
 
+test('Windows 可从 Path 发现原生 Codex 和 Cursor 执行器，并优先使用完整 Codex 运行时', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'delivery-windows-cli-'));
+  try {
+    const firstBin = path.join(directory, 'first-bin');
+    const runtime = path.join(directory, 'runtime');
+    const isolated = await binary(path.join(firstBin, 'codex.exe'));
+    const codex = await binary(path.join(runtime, 'codex.exe'));
+    const cursor = await binary(path.join(runtime, 'agent.exe'));
+    await binary(path.join(runtime, 'codex-code-mode-host.exe'));
+    const environment = { Path: [firstBin, runtime].join(path.win32.delimiter) };
+    assert.equal(findCliOnPath('codex', environment, 'win32'), isolated);
+    assert.equal(isCompleteCodexRuntime(codex, 'win32'), true);
+    assert.deepEqual(resolveCliBinaries(environment, directory, 'win32'), { codex, cursor });
+  } finally { await fs.rm(directory, { recursive: true, force: true }); }
+});
+
 test('macOS 可发现用户 Applications 中的完整 Codex.app 运行时', async () => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'delivery-macos-cli-'));
   try {
@@ -95,18 +111,20 @@ test('Node 在 import CLI 配置前加载 .env 中的运行时路径', async () 
   } finally { await fs.rm(directory, { recursive: true, force: true }); }
 });
 
-test('doctor 只报告登录状态，不输出 CLI 认证命令返回的内容', async () => {
+test('doctor 区分已登录和执行通道就绪，不输出 CLI 原始诊断', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'delivery-doctor-redaction-'));
   try {
     const fixture = path.join(directory, 'codex');
-    await fs.writeFile(fixture, '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "codex 1.2.3 STDOUT_SECRET_TEST"; echo "codex 9.9.9 STDERR_SECRET_TEST" >&2; else echo "Logged in SECRET_TEST_DO_NOT_PRINT"; fi\n', { mode: 0o755 });
+    await fs.writeFile(fixture, '#!/bin/sh\ncase "$1" in\n  --version) echo "codex 1.2.3 STDOUT_SECRET_TEST"; echo "codex 9.9.9 STDERR_SECRET_TEST" >&2;;\n  login) echo "Logged in SECRET_TEST_DO_NOT_PRINT";;\n  app-server) read -r request; echo "APP_SERVER_SECRET_TEST" >&2; exit 2;;\nesac\n', { mode: 0o755 });
     await binary(path.join(directory, 'codex-code-mode-host'));
-    const result = await exec(process.execPath, ['--import', 'tsx', 'scripts/doctor.mjs'], { cwd: root,
-      env: { ...process.env, DELIVERY_CODEX_BIN: fixture, DELIVERY_CURSOR_BIN: path.join(directory, 'missing-cursor') }, timeout: 30_000 });
-    assert.match(result.stdout, /Codex CLI: codex-cli 1\.2\.3 · 已登录/);
-    assert.equal(result.stdout.includes('SECRET_TEST_DO_NOT_PRINT'), false);
-    assert.equal(result.stdout.includes('STDOUT_SECRET_TEST'), false);
-    assert.equal(result.stdout.includes('STDERR_SECRET_TEST'), false);
+    await assert.rejects(exec(process.execPath, ['--import', 'tsx', 'scripts/doctor.mjs'], { cwd: root,
+      env: { ...process.env, DELIVERY_CODEX_BIN: fixture, DELIVERY_CURSOR_BIN: path.join(directory, 'missing-cursor') }, timeout: 30_000 }),
+    (error: Error & { code?: number; stdout?: string }) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stdout || '', /\[WARN\] Codex CLI: codex-cli 1\.2\.3 · 已登录.*执行通道连接提前结束（退出码 2）/);
+      assert.doesNotMatch(error.stdout || '', /SECRET_TEST/);
+      return true;
+    });
   } finally { await fs.rm(directory, { recursive: true, force: true }); }
 });
 

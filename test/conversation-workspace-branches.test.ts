@@ -55,7 +55,8 @@ test('分支多选及顺序保存重载，旧数据兼容，拒绝其他项目�
  const store=await createConversationWorkspaces(file);
  let state=await store.update({action:'save',revision:0,workspace:{name:'old',projectPaths:[f.source]}});
  assert.equal((await createConversationWorkspaces(file)).read().workspaces[0].projectBranches,undefined);
- state=await store.update({action:'save',revision:state.revision,workspace:{...state.workspaces[0],projectBranches:{[f.source]:['feature/b','feature/a','feature/b']}}});
+ const withTrailingSeparator = f.source + path.sep;
+ state=await store.update({action:'save',revision:state.revision,workspace:{...state.workspaces[0],projectPaths:[withTrailingSeparator],projectBranches:{[withTrailingSeparator]:['feature/b','feature/a','feature/b']}}});
  assert.deepEqual((await createConversationWorkspaces(file)).read().workspaces[0].projectBranches?.[f.source],['feature/b','feature/a']);
  await assert.rejects(store.update({action:'save',revision:state.revision,workspace:{...state.workspaces[0],projectBranches:{'/other':['main']}}}),/属于/);
  assert.deepEqual(store.read(),state);

@@ -5,6 +5,7 @@ import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import type {ConversationWorkspace} from '../shared/conversation-workspaces.js';
 import {withProjectGitLock} from './project-git.js';
+import { resolveWorkspaceDirectory } from './workspace-project.js';
 const exec = promisify(execFile);
 async function git(directory:string,args:string[]) {
   return (await exec('git',['-c','core.hooksPath=/dev/null','-C',directory,...args],{
@@ -18,7 +19,7 @@ export async function prepareConversationWorkspaceBranches(workspace:Conversatio
   const plan: {sourcePath:string;branch:string;common:string}[]=[];
   // Validate all selections before creating any directories.
   for(const sourcePath of workspace.projectPaths){
-    const source=await fs.realpath(sourcePath);
+    const source=await resolveWorkspaceDirectory(sourcePath);
     const branches=workspace.projectBranches?.[sourcePath]||[];
     if(!branches.length){plan.push({sourcePath:source,branch:'',common:''});continue;}
     const common=await fs.realpath((await git(source,['rev-parse','--path-format=absolute','--git-common-dir'])).trim());
@@ -40,7 +41,7 @@ export async function prepareConversationWorkspaceBranches(workspace:Conversatio
         if(matches.length){
           const existing=matches[0].find(field=>field.startsWith('worktree '))?.slice(9);
           if(!existing)throw new Error('无法确认分支目录');
-          const canonical=await fs.realpath(existing);
+          const canonical=await resolveWorkspaceDirectory(existing);
           const common=await fs.realpath((await git(canonical,['rev-parse','--path-format=absolute','--git-common-dir'])).trim());
           if(common!==item.common||(await git(canonical,['symbolic-ref','--quiet','HEAD'])).trim()!==`refs/heads/${item.branch}`)throw new Error('分支目录已变化，请重试');
           return canonical;

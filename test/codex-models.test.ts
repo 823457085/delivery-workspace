@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { createCodexModelReader, normalizeCodexModels, requestCodexModels } from '../server/codex-models.js';
 import { codexServiceTier, modelSpeed } from '../src/features/agent-workbench/model-speed.js';
 import type { AgentRuntimeHealth } from '../shared/agent-runtime.js';
-import { codexWorkbenchDefaults, workbenchRuntime } from '../shared/agent-runtime.js';
+import { codexWorkbenchDefaults, workbenchConversationRuntime, workbenchRuntime } from '../shared/agent-runtime.js';
 
 const fixture = fileURLToPath(new URL('./fixtures/codex-model-server.mjs', import.meta.url));
 test('工作台默认 Sol 6.1 Ultra 普通速度，保留所有模型与推理档位且不修改 CLI 目录', () => {
@@ -24,7 +24,10 @@ test('工作台默认 Sol 6.1 Ultra 普通速度，保留所有模型与推理�
   assert.deepEqual(selected.models[3], runtime.models[3], '其他模型保留真实默认强度和完整可选档位');
   assert.deepEqual(selected.models[4], runtime.models[4], '自定义模型仍可选');
   assert.deepEqual(runtime, original);
-  assert.deepEqual(workbenchRuntime({ ...runtime, models: [runtime.models[3]] }).models, [runtime.models[3]], '默认模型不可用也不隐藏其他选择');
+  const native = workbenchConversationRuntime({ ...runtime, models: runtime.models.slice(0, 2) });
+  assert.equal(native.defaultModel, 'older-model', '目录没有工作台偏好时沿用当前账号默认模型');
+  assert.equal(workbenchConversationRuntime({ ...runtime, models: [runtime.models[0]] }).defaultModel, '', '仅 CLI 默认可用时允许直接发送');
+  assert.equal(workbenchConversationRuntime({ ...runtime, models: [runtime.models[3]] }).defaultModel, 'gpt-6-astra', '目录的默认项缺失时选可用模型');
   const restricted = { ...runtime.models[2], efforts: ['medium'] as const, defaultEffort: 'medium' as const };
   assert.deepEqual(workbenchRuntime({ ...runtime, models: [{ ...restricted, efforts: [...restricted.efforts] }] }).models,
     [{ ...restricted, efforts: [...restricted.efforts] }], '不能伪造 CLI 不支持的 Ultra 档位');
@@ -85,9 +88,26 @@ test('倍速按所选模型和 CLI 实际配置显示，原样保留倍率描述
 });
 
 test('协议失败、分页循环、超时会释放查询进程且不泄露诊断', async () => {
-  await assert.rejects(requestCodexModels(process.execPath, [fixture, 'error']), /Codex 模型查询失败/);
+  await assert.rejects(requestCodexModels(process.execPath, [fixture, 'error']), /初始化请求失败/);
   await assert.rejects(requestCodexModels(process.execPath, [fixture, 'loop']), /分页异常/);
-  await assert.rejects(requestCodexModels(process.execPath, [fixture, 'timeout'], 100), /读取超时/);
+  await assert.rejects(requestCodexModels(process.execPath, [fixture, 'timeout'], 100), /初始化超时/);
+});
+
+test('连接未就绪时保留最近目录，手动刷新可立即恢复，单独的模型查询失败允许使用 CLI 默认', async () => {
+  let scenario = '';
+  const read = createCodexModelReader(() => requestCodexModels(process.execPath, [fixture, scenario]));
+  const initial = await read();
+  scenario = 'error';
+  const disconnected = await read(true);
+  assert.match(disconnected.connectionError || '', /执行通道初始化请求失败/);
+  assert.doesNotMatch(JSON.stringify(disconnected), /private diagnostic/);
+  assert.deepEqual(disconnected.models, initial.models);
+  scenario = 'model-error';
+  const unsupported = await read(true);
+  assert.equal(unsupported.connectionError, undefined);
+  assert.match(unsupported.message || '', /模型同步失败/);
+  scenario = '';
+  assert.deepEqual(await read(true), initial);
 });
 
 test('并发发现合并成一次查询，缓存过期后读取新模型，断线保留已知列表后恢复', async () => {

@@ -143,8 +143,17 @@ export function runCodexLiveTurn(binary: string, context: LiveContext, prompt: s
         const item = pending.get(message.id);
         if (!item) return;
         pending.delete(message.id); clearTimeout(item.timer);
-        if (message.error) { diagnostics.error(message.error); item.reject(new Error(codexErrorMessage(message.error, 'Codex 请求失败'), { cause: message.error })); }
-        else item.resolve(object(message.result));
+      if (message.error) { diagnostics.error(message.error); item.reject(new Error(codexErrorMessage(message.error, 'Codex 请求失败'), { cause: message.error })); }
+      else {
+        const response = object(message.result);
+        const acknowledgedTurnId = object(response.turn).id;
+        // 回执和完成通知可能在同一批 stdout，必须在处理下一行前识别当前轮次。
+        if (item.method === 'turn/start' && !turnId && typeof acknowledgedTurnId === 'string' && acknowledgedTurnId) {
+          turnId = acknowledgedTurnId;
+          void recordTurn(turnId).catch(error => finish(error instanceof Error ? error : new Error(String(error))));
+        }
+        item.resolve(response);
+      }
         finishCompletedTurn();
         return;
       }

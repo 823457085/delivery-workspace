@@ -47,10 +47,12 @@ createInterface({ input: process.stdin }).on('line', line => {
   }
   if (method === 'turn/start') {
     if (threadId === recoverableId) {
-      output({ id, result: { turn: { id: 'turn-live-test' } } });
-      output({ method: 'turn/started', params: { threadId, turn: { id: 'turn-live-test' } } });
-      output({ method: 'item/completed', params: { threadId, turnId: 'turn-live-test', item: { type: 'agentMessage', text: JSON.stringify({ threadId, requests }) } } });
-      output({ method: 'turn/completed', params: { threadId, turn: { id: 'turn-live-test', status: 'completed' } } });
+      const batch = [
+        { id, result: { turn: { id: 'turn-live-test' } } },
+        { method: 'item/completed', params: { threadId, turnId: 'turn-live-test', item: { type: 'agentMessage', text: JSON.stringify({ threadId, requests }) } } },
+        { method: 'turn/completed', params: { threadId, turn: { id: 'turn-live-test', status: 'completed' } } },
+      ];
+      process.stdout.write(batch.map(message => JSON.stringify(message)).join('\n') + '\n');
       return;
     }
     if (params.input[0].text === 'writer-busy') {

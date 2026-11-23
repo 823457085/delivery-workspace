@@ -22,7 +22,6 @@ try {
 JSON.stringify(selected);`;
 
 async function chooseNativeFolder(signal: AbortSignal): Promise<string | null> {
-  if (process.platform !== 'darwin') throw new Error('当前本机文件夹选择器仅支持 macOS');
   try {
     const { stdout } = await exec('/usr/bin/osascript', ['-l', 'JavaScript', '-e', folderScript], { signal, timeout: 120_000, maxBuffer: 16_384 });
     return JSON.parse(stdout);
@@ -54,6 +53,9 @@ export function createWorkspacePickerRoute(chooseFolder = chooseNativeFolder) {
       for await (const chunk of request) { raw += chunk; if (raw.length > 1000) throw new Error('选择请求过大'); }
       const input = JSON.parse(raw);
       if (!input || Array.isArray(input) || typeof input !== 'object' || Object.keys(input).length) throw new Error('文件夹选择不接受路径或脚本参数');
+      if (chooseFolder === chooseNativeFolder && process.platform !== 'darwin') {
+        send(501, { message: '当前系统请使用网页目录选择器' }); return;
+      }
       if (selecting) { send(409, { message: '已有文件夹选择器打开，请先完成或取消选择' }); return; }
       selecting = ownsPicker = true;
       response.once('close', abort);
