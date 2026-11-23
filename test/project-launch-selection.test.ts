@@ -44,13 +44,13 @@ async function until(check: () => boolean) {
   assert.ok(check(), '项目状态未按预期更新');
 }
 
-async function fixture(options: { saved?: Record<string, string>; cached?: boolean; snapshots?: LaunchSnapshot[] } = {}) {
+async function fixture(options: { saved?: Record<string, string>; cached?: boolean; snapshots?: LaunchSnapshot[]; readError?: string } = {}) {
   const snapshots = new Map((options.snapshots || [project(workspaceA), project(workspaceB)]).map(value => [value.workspacePath, value]));
   const props = reactive({ workspacePaths: [...snapshots.keys()] });
   const storage = new Map(Object.entries(options.saved || {}));
   const requests: { path: string; body: Record<string, unknown> }[] = [], errors: string[] = [];
   const tabs: { closed: boolean; location: { href: string; replace: (address: string) => void }; close: () => void }[] = [];
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity, staleTime: Infinity } } });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity, staleTime: options.readError ? 0 : Infinity } } });
   if (options.cached) for (const [path, snapshot] of snapshots) client.setQueryData(['project-launch', path], structuredClone(snapshot));
   const cleanups: (() => void)[] = [];
   const bindings = { computed, nextTick, ref, watch, projectEnvironments,
@@ -70,6 +70,7 @@ async function fixture(options: { saved?: Record<string, string>; cached?: boole
       const body = init.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {};
       if (init.method === 'POST') requests.push({ path: url.pathname, body });
       const path = init.method === 'GET' ? url.searchParams.get('path')! : String(body.workspacePath);
+      if (init.method === 'GET' && options.readError) return { ok: false, json: async () => ({ message: options.readError }) };
       const value = snapshots.get(path);
       assert.ok(value, `未知测试项目 ${path}`);
       return { ok: true, json: async () => structuredClone(value) };
@@ -80,7 +81,7 @@ async function fixture(options: { saved?: Record<string, string>; cached?: boole
     command, selected, config, status, currentAddress, historyAddress, executions, selectedExecution, runningExecution, runningCount, serviceRunning,
     canExecute, feedback, recordLabel, recordsOpen, executionLabels, execute, stop, cancelExecution,
     completion, duration, time, setLogElement, rememberLogScroll };`)(...Object.values(bindings)))!;
-  await until(() => state.snapshot.value?.workspacePath === props.workspacePaths[0]);
+  await until(() => options.readError ? state.query.isError.value : state.snapshot.value?.workspacePath === props.workspacePaths[0]);
   return { state, storage, requests, errors, props, tabs,
     respond(snapshot: LaunchSnapshot) { snapshots.set(snapshot.workspacePath, structuredClone(snapshot)); },
     update(snapshot: LaunchSnapshot) { snapshots.set(snapshot.workspacePath, structuredClone(snapshot)); client.setQueryData(['project-launch', snapshot.workspacePath], structuredClone(snapshot)); },
@@ -101,6 +102,21 @@ async function fixture(options: { saved?: Record<string, string>; cached?: boole
     },
     close() { cleanups.forEach(cleanup => cleanup()); lifetime.stop(); client.clear(); } };
 }
+
+test('后台读取项目指令失败只在启动区提示，有缓存时也不能执行过期命令', async () => {
+  const readError = '项目 package.json 无法读取';
+  for (const cached of [false, true]) {
+    const f = await fixture({ readError, cached });
+    try {
+      assert.match(await f.render(), /项目 package\.json 无法读取/);
+      assert.equal(f.state.canExecute.value, false);
+      await f.state.execute();
+      assert.deepEqual(f.requests, []);
+      assert.deepEqual(f.errors, []);
+      if (!cached) assert.doesNotMatch(await f.render(), /aria-label="执行所选项目指令"/);
+    } finally { f.close(); }
+  }
+});
 
 test('启动与构建按操作及五种环境选中精确命令，发送真实ID和指纹且不混入单测/check', async () => {
   const f = await fixture();

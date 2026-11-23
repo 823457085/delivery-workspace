@@ -10,7 +10,6 @@ const client = useQueryClient(), workspace = ref(''), recordsOpen = ref(false), 
 const actionKind = ref<'install' | 'run' | 'build'>('run'), environment = ref<ProjectEnvironment>('dev'), legacySelection = ref('');
 const now = ref(Date.now());
 let disposed = false, operation = 0, timer: ReturnType<typeof setInterval> | undefined;
-let lastReadError = '';
 let launchTab: { tab: Window; configId: string; executionId?: string } | undefined;
 const observed = new Map<string, ProjectExecution['state']>();
 const logElements = new Map<string, HTMLElement>(), readingLogs = new Set<string>();
@@ -24,7 +23,6 @@ watch(() => props.workspacePaths, paths => {
 watch(workspace, path => {
   operation++; busy.value = ''; recordsOpen.value = false;
   closeLaunchTab();
-  lastReadError = '';
   observed.clear(); logElements.clear(); readingLogs.clear();
   actionKind.value = 'run'; environment.value = 'dev'; legacySelection.value = '';
   try {
@@ -66,10 +64,6 @@ watch(() => Boolean(snapshot.value?.executions?.some(item => item.state === 'run
     timer = setInterval(() => { now.value = Date.now(); }, 1000);
   }
 }, { immediate: true });
-watch(query.error, error => {
-  if (!error) lastReadError = '';
-  else if (!disposed && error.message !== lastReadError) { lastReadError = error.message; ElMessage.error(error.message); }
-});
 const categories = [{ kind: 'install', label: '安装' }, { kind: 'run', label: '启动' }, { kind: 'build', label: '构建' }] as const;
 const environmentCommand = (value: ProjectEnvironment) => snapshot.value?.commands?.find(item => item.kind === actionKind.value && item.environment === value);
 const command = computed(() => actionKind.value === 'install' ? snapshot.value?.commands?.find(item => item.kind === 'install') : environmentCommand(environment.value));
@@ -84,8 +78,8 @@ const runningCount = computed(() => snapshot.value?.executions?.filter(item => i
 const serviceRunning = computed(() => command.value?.kind === 'run' && ['running', 'starting'].includes(status.value?.state || ''));
 const currentAddress = computed(() => command.value?.kind === 'run' && config.value
   ? runningAddress(snapshot.value, config.value.id) : undefined);
-const canExecute = computed(() => !busy.value && !!command.value && !runningCount.value && !serviceRunning.value);
-const feedback = computed(() => snapshot.value?.discoveryMessage ?? runningExecution.value?.message
+const canExecute = computed(() => !query.isError.value && !busy.value && !!command.value && !runningCount.value && !serviceRunning.value);
+const feedback = computed(() => query.error.value?.message ?? snapshot.value?.discoveryMessage ?? runningExecution.value?.message
   ?? (command.value?.kind === 'run' ? status.value?.message : undefined) ?? selectedExecution.value?.message ?? '');
 const executionLabels = { running: '进行中', succeeded: '成功', failed: '失败', cancelled: '已取消', interrupted: '已中断' };
 const recordLabel = computed(() => runningCount.value ? `进行中 ${runningCount.value}` : executions.value[0]
@@ -267,10 +261,10 @@ async function stop() {
     <el-select v-if="workspacePaths.length > 1" v-model="workspace" size="small" aria-label="运行项目" class="launch-project">
       <el-option v-for="path in workspacePaths" :key="path" :value="path" :label="path.split('/').filter(Boolean).at(-1)" />
     </el-select>
-    <el-select v-model="actionKind" size="small" aria-label="项目操作" :disabled="!!busy" class="launch-action">
+    <el-select v-if="snapshot" v-model="actionKind" size="small" aria-label="项目操作" :disabled="!!busy" class="launch-action">
       <el-option v-for="item in categories" :key="item.kind" :value="item.kind" :label="item.label" />
     </el-select>
-    <el-select v-if="actionKind !== 'install'" v-model="environment" size="small" aria-label="项目环境" :disabled="!!busy || query.isFetching.value && !snapshot" class="launch-environment">
+    <el-select v-if="snapshot && actionKind !== 'install'" v-model="environment" size="small" aria-label="项目环境" :disabled="!!busy" class="launch-environment">
       <el-option v-for="item in projectEnvironments" :key="item" :value="item" :label="item" :disabled="!environmentCommand(item)">
         <span>{{ item }}</span><small v-if="snapshot && !environmentCommand(item)" class="launch-unavailable">未配置</small>
       </el-option>
@@ -281,9 +275,9 @@ async function stop() {
     </el-popover>
     <el-button v-if="serviceRunning && status?.managed !== false" size="small" aria-label="停止当前环境" :loading="busy === 'stop'" :disabled="!!busy" @click="stop"><Square :size="13" />停止</el-button>
     <el-button v-else-if="runningExecution" size="small" aria-label="取消当前指令" :loading="busy === `cancel:${runningExecution.id}`" :disabled="!!busy" @click="cancelExecution(runningExecution)"><Square :size="13" />取消</el-button>
-    <el-button v-else-if="!serviceRunning" size="small" aria-label="执行所选项目指令" :title="command?.command || '请选择项目指令'" :loading="busy === 'execute'" :disabled="!canExecute" @click="execute"><Play :size="13" />执行</el-button>
-    <el-button size="small" class="launch-record-button" aria-label="查看项目执行记录" @click="recordsOpen = true"><History :size="13" />执行记录<span v-if="recordLabel" :class="{ 'launch-active': runningCount }">{{ recordLabel }}</span></el-button>
-    <span v-if="feedback" class="launch-status" :title="feedback">{{ feedback }}</span>
+    <el-button v-else-if="snapshot && !serviceRunning" size="small" aria-label="执行所选项目指令" :title="command?.command || '请选择项目指令'" :loading="busy === 'execute'" :disabled="!canExecute" @click="execute"><Play :size="13" />执行</el-button>
+    <el-button v-if="snapshot" size="small" class="launch-record-button" aria-label="查看项目执行记录" @click="recordsOpen = true"><History :size="13" />执行记录<span v-if="recordLabel" :class="{ 'launch-active': runningCount }">{{ recordLabel }}</span></el-button>
+    <span v-if="feedback" class="launch-status" role="status" :title="feedback">{{ feedback }}</span>
     <a v-if="currentAddress" class="launch-address" :href="currentAddress" target="_blank" rel="noopener noreferrer" aria-label="打开运行页面" :title="currentAddress"><ExternalLink :size="13" />{{ currentAddress }}</a>
     <el-drawer v-model="recordsOpen" title="项目执行记录" size="min(680px, 96vw)" append-to-body destroy-on-close class="project-launch-records">
       <p class="launch-directory">{{ workspace }}</p>

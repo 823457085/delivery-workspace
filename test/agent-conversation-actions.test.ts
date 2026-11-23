@@ -6,7 +6,7 @@ import ts from 'typescript';
 import { computed, effectScope, nextTick, reactive, shallowRef, watch } from 'vue';
 import { useAgentConversationDrafts } from '../src/features/agent-workbench/useAgentConversationDrafts.js';
 import { AgentAttachmentDraft } from '../src/features/agent-workbench/useAgentAttachments.js';
-import { agentConversationContinuation, agentConversationInsertRun, buildAgentConversations, findAgentConversation, reconcileAgentConversation, resumedConversationId,
+import { agentConversationContinuation, agentConversationInsertRun, agentConversationWorkspacePaths, buildAgentConversations, findAgentConversation, reconcileAgentConversation, resumedConversationId,
   type AgentConversation as Conversation } from '../src/features/agent-workbench/conversation.js';
 import type { AgentConversationDeleteResult, AgentConversationDeleteTarget, AgentProvider, AgentRun, AgentRunMode, AgentRuntimeHealth, StartAgentRunInput } from '../shared/agent-runtime.js';
 import { codexWorkbenchDefaults, workbenchConversationRuntime, workbenchRuntime } from '../shared/agent-runtime.js';
@@ -363,7 +363,7 @@ type Actions = {
   openRun: (id: string) => Promise<boolean>;
 };
 
-function sendingFixture(initial = buildAgentConversations([run('a'), run('b')])) {
+function sendingFixture(initial = buildAgentConversations([run('a'), run('b')]), trackOptimisticRun?: (action: 'add' | 'remove', value: AgentRun | string) => void) {
   const scope = effectScope();
   const selectedConversationId = shallowRef(initial[0].id);
   const creating = shallowRef(false);
@@ -403,7 +403,7 @@ function sendingFixture(initial = buildAgentConversations([run('a'), run('b')]))
     retry: (...args: unknown[]) => { retryInputs.push(args); return response.promise; },
     orchestrate: (_parent: unknown, input: unknown) => { workflowInputs.push(input); return workflowResponse.promise; },
     resumedConversationId, reconcileAgentConversation, providerSwitchInput, agentConversationContinuation, agentConversationInsertRun,
-    query: { refetch: () => queryRefresh.promise }, findAgentConversation,
+    query: { refetch: () => queryRefresh.promise }, findAgentConversation, trackOptimisticRun,
     canStart: shallowRef(true), start: (input: unknown) => { reportInputs.push(input); return response.promise; }, form, workspacePaths: shallowRef([]), newAttachments, newAttachmentDraft, submittingNew, selectedWorkspaceId, workspaceStore, panelDisposed: false, resetForm: () => {},
     dailyReportStarting, changing: shallowRef(''), sideWorkspacePath: shallowRef('/repo'), dailyReportRuntime: shallowRef({}),
     dailyReportForDate: () => undefined,
@@ -412,6 +412,27 @@ function sendingFixture(initial = buildAgentConversations([run('a'), run('b')]))
   }, true))!;
   return { actions, automaticTeam, teamChat, teamInputs, teamResponse, form, selectedConversationId, conversations, drafts, creating, response, resumeInputs, retryInputs, workflowResponse, workflowInputs, queryRefresh, dailyReportStarting, reportInputs, newAttachments, newAttachmentDraft, forkAttachmentDraft, submittingNew, selectedWorkspaceId, workspaceStore, dispose: () => scope.stop() };
 }
+
+test('独立会话发送和排队的临时轮次不会把内部执行目录当成项目', async () => {
+  for (const status of ['completed', 'running'] as const) {
+    const original = { ...run('standalone'), status, workspacePath: '/runtime/sessions/standalone', sourceWorkspacePath: '' };
+    const added: AgentRun[] = [];
+    const state = sendingFixture(buildAgentConversations([original]), (action, value) => {
+      if (action === 'add' && typeof value !== 'string') added.push(value);
+    });
+    try {
+      state.drafts.draft.value = '继续当前会话';
+      const pending = state.actions.sendMessage({ queuePlacement: 'append' });
+      state.response.resolve(undefined);
+      await pending;
+      assert.equal(state.resumeInputs.length, 1);
+      assert.equal(added.length, 1);
+      assert.equal(added[0].status, status === 'running' ? 'queued' : 'running');
+      assert.equal(added[0].workspacePath, original.workspacePath);
+      assert.deepEqual(agentConversationWorkspacePaths(buildAgentConversations(added)[0]), []);
+    } finally { state.dispose(); }
+  }
+});
 
 test('工作区列表尚未就绪仍可发送独立会话，绑定工作区时等待同步', async () => {
   const state = sendingFixture();

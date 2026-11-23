@@ -643,6 +643,9 @@ async function sendMessage(selection: ConversationSendSelection, side?: {
       objective,
       attachments: sentDraft.attachments,
       workspacePath: conversation.workspace?.workspacePath ?? continuation.workspacePath,
+      // 独立会话的空源目录也要保留，内部执行目录不能用于发现项目命令。
+      sourceWorkspacePath: continuation.sourceWorkspacePath,
+      projectWorkspacePath: conversation.workspace?.projectWorkspacePath ?? continuation.projectWorkspacePath,
       branch: conversation.workspace?.branch ?? continuation.branch,
       headSha: '',
       status: nativeBusy ? 'queued' : 'running',
