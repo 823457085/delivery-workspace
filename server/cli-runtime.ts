@@ -3,26 +3,60 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-export function isCompleteCodexRuntime(binary: string) {
-  return fs.existsSync(binary) && fs.existsSync(path.join(path.dirname(binary), 'codex-code-mode-host'));
+function executable(filename: string) {
+  try {
+    fs.accessSync(filename, fs.constants.X_OK);
+    return fs.statSync(filename).isFile();
+  } catch { return false; }
 }
 
-const configuredCodex = process.env.DELIVERY_CODEX_BIN;
-const codexCandidates = [
-  configuredCodex,
-  path.join(os.homedir(), 'Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex'),
-  path.join(os.homedir(), 'Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex'),
-  path.join(os.homedir(), 'Applications/ChatGPT.app/Contents/Resources/codex'),
-  '/Applications/ChatGPT.app/Contents/Resources/codex',
-  ...(process.env.PATH || '').split(path.delimiter).filter(Boolean).map(directory => path.join(directory, 'codex')),
-].filter((candidate): candidate is string => !!candidate);
+export function isCompleteCodexRuntime(binary: string, platform = process.platform) {
+  if (!executable(binary)) return false;
+  try {
+    // PATH 里的符号链接须检查真实可执行文件旁边的 host。
+    const directory = path.dirname(fs.realpathSync(binary));
+    const host = path.join(directory, 'codex-code-mode-host');
+    return executable(host) || (platform === 'win32' && executable(`${host}.exe`));
+  } catch { return false; }
+}
 
-// 新版 Codex 的命令工具依赖同目录 code-mode host；孤立复制单个二进制会导致所有读取命令启动失败。
-export const cliBinary = codexCandidates.find(isCompleteCodexRuntime)
-  || codexCandidates.find((candidate) => fs.existsSync(candidate))
-  || path.join(os.homedir(), 'Applications/ChatGPT.app/Contents/Resources/codex');
+function cliCandidatesOnPath(command: string, environment: NodeJS.ProcessEnv, platform: NodeJS.Platform) {
+  const searchPath = environment.PATH ?? (platform === 'win32' ? environment.Path : undefined) ?? '';
+  const delimiter = platform === 'win32' ? path.win32.delimiter : path.posix.delimiter;
+  return searchPath.split(delimiter).filter(Boolean).flatMap(directory => {
+    const candidate = path.resolve(directory, command);
+    return platform === 'win32' ? [`${candidate}.exe`, candidate] : [candidate];
+  });
+}
+
+export function findCliOnPath(command: string, environment = process.env, platform = process.platform) {
+  return cliCandidatesOnPath(command, environment, platform).find(executable);
+}
+
+export function resolveCliBinaries(environment = process.env, userDirectory = os.homedir(), platform = process.platform) {
+  const desktopCandidates = platform === 'darwin' ? [path.join(userDirectory, 'Applications'), '/Applications']
+    .flatMap(directory => ['ChatGPT.app', 'Codex.app'].map(app => path.join(directory, app, 'Contents/Resources')))
+    .flatMap(resources => [
+      path.join(resources, 'codex-cli/bin/codex'),
+      path.join(resources, 'codex-cli/CodexCLI.app/Contents/MacOS/codex'),
+      path.join(resources, 'codex'),
+    ]) : [];
+  const codexCandidates = [environment.DELIVERY_CODEX_BIN, ...desktopCandidates, ...cliCandidatesOnPath('codex', environment, platform)]
+    .filter((candidate): candidate is string => !!candidate);
+  // 桌面 Codex 的命令工具依赖 code-mode host，优先使用完整运行时。
+  const codex = codexCandidates.find(candidate => isCompleteCodexRuntime(candidate, platform))
+    || codexCandidates.find(executable) || environment.DELIVERY_CODEX_BIN || 'codex';
+  const cursor = environment.DELIVERY_CURSOR_BIN || findCliOnPath('cursor-agent', environment, platform)
+    || findCliOnPath('agent', environment, platform)
+    || [path.join(userDirectory, '.local/bin/cursor-agent'), path.join(userDirectory, '.local/bin/agent')].find(executable)
+    || 'cursor-agent';
+  return { codex, cursor };
+}
+
+const binaries = resolveCliBinaries();
+export const cliBinary = binaries.codex;
 export const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
-export const cursorBinary = process.env.DELIVERY_CURSOR_BIN || path.join(os.homedir(), '.local/bin/cursor-agent');
+export const cursorBinary = binaries.cursor;
 export const claudeBinary = process.env.DELIVERY_CLAUDE_BIN || [
   path.join(os.homedir(), '.local/bin/claude'),
   path.join(os.homedir(), '.local/share/delivery-ai-clis/node_modules/.bin/claude'),

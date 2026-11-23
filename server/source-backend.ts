@@ -3,9 +3,8 @@
  * 不再通过 5188 HTTP 服务获取。这一层只负责加载本地凭据、启停调度器与将既有
  * IncomingMessage 交给内嵌处理器；业务契约仍由 jira-backend 模块维护，避免迁移时重写状态机。
  */
-import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { AutomationData, CatchupData, IssueResponse, JiraDevScanPreview, JiraIssue, PlanItem, ProjectsData } from '../shared/hub.js';
 
@@ -30,25 +29,15 @@ interface JiraBackendModule {
   getLocalProjects(refresh?: boolean): Promise<ProjectsData>;
 }
 
-function unquote(value: string) {
-  if (value.length >= 2 && ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))) {
-    return value.slice(1, -1);
-  }
-  return value;
-}
-
-async function loadCredentialEnvironment(filename: string) {
-  let content: string;
-  try { content = await fs.readFile(filename, 'utf8'); }
+export function initializeSourceEnvironment(port: number, repositoryRoot = fileURLToPath(new URL('..', import.meta.url))) {
+  process.env.DELIVERY_PORT = String(port);
+  const credentials = path.resolve(repositoryRoot, process.env.DELIVERY_CREDENTIALS_FILE || '.env');
+  try { process.loadEnvFile(credentials); }
   catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
-    throw error;
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
-  for (const line of content.split(/\r?\n/)) {
-    const match = line.match(/^\s*(?:export\s+)?([A-Z_][A-Z0-9_]*)\s*=\s*(.*)\s*$/);
-    if (!match || process.env[match[1]] !== undefined) continue;
-    process.env[match[1]] = unquote(match[2]);
-  }
+  process.env.DELIVERY_SOURCE_DATA_DIR ||= path.resolve(repositoryRoot, process.env.DELIVERY_DATA_DIR || '.data', 'source');
+  return { credentials, dataDirectory: process.env.DELIVERY_SOURCE_DATA_DIR };
 }
 
 export interface SourceBackend {
@@ -72,11 +61,7 @@ export interface SourceBackend {
 }
 
 export async function createSourceBackend(port: number): Promise<SourceBackend> {
-  process.env.DELIVERY_PORT = String(port);
-  const supportRoot = path.join(os.homedir(), 'Library', 'Application Support', 'DeliveryWorkspace');
-  process.env.DELIVERY_SOURCE_DATA_DIR ||= path.join(supportRoot, 'source');
-  const credentials = process.env.DELIVERY_CREDENTIALS_FILE || path.join(supportRoot, 'credentials', 'jira.env');
-  await loadCredentialEnvironment(credentials);
+  initializeSourceEnvironment(port);
 
   const specifier = new URL('./jira-backend/server.mjs', import.meta.url).href;
   const backend = await import(specifier) as JiraBackendModule;

@@ -9,7 +9,7 @@ import { AgentAttachmentDraft } from '../src/features/agent-workbench/useAgentAt
 import { agentConversationContinuation, agentConversationInsertRun, buildAgentConversations, findAgentConversation, reconcileAgentConversation, resumedConversationId,
   type AgentConversation as Conversation } from '../src/features/agent-workbench/conversation.js';
 import type { AgentConversationDeleteResult, AgentConversationDeleteTarget, AgentProvider, AgentRun, AgentRunMode, AgentRuntimeHealth, StartAgentRunInput } from '../shared/agent-runtime.js';
-import { codexWorkbenchDefaults, workbenchRuntime } from '../shared/agent-runtime.js';
+import { codexWorkbenchDefaults, workbenchConversationRuntime, workbenchRuntime } from '../shared/agent-runtime.js';
 import { providerSwitchInput } from '../src/features/agent-workbench/provider-switch.js';
 import { codexServiceTier } from '../src/features/agent-workbench/model-speed.js';
 import { useAgentModelSelection } from '../src/features/agent-workbench/model-selection.js';
@@ -239,15 +239,25 @@ test('统一应用刷新已挂载新建会话的模型与强度并保留草稿�
   const statement = tree.statements.find(node => node.getText(tree).startsWith('watch(() => agentModelDefaults.value.revision'))!;
   const code = ts.transpileModule(statement.getText(tree), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
   const form = reactive({ provider: 'codex', model: 'manual', reasoningEffort: 'low', objective: '保留草稿' });
-  const agentModelDefaults = shallowRef({ model: 'gpt-6.1-sol', reasoningEffort: 'ultra', revision: '' });
+  const agentModelDefaults = shallowRef({ ...codexWorkbenchDefaults, revision: '' });
+  const catalog = shallowRef({ provider: 'codex', defaultModel: 'account-model', models: [
+    { id: 'gpt-6.1-sol', label: 'Sol', efforts: ['low', 'ultra'], defaultEffort: 'low' },
+    { id: 'account-model', label: 'Account model', efforts: ['medium'], defaultEffort: 'medium' },
+  ] } as AgentRuntimeHealth);
+  const selectedRuntime = computed(() => workbenchConversationRuntime(catalog.value, agentModelDefaults.value));
   const scope = effectScope();
   try {
-    scope.run(() => new Function('watch', 'form', 'agentModelDefaults', code)(watch, form, agentModelDefaults));
+    scope.run(() => new Function('watch', 'form', 'agentModelDefaults', 'selectedRuntime', code)(watch, form, agentModelDefaults, selectedRuntime));
     agentModelDefaults.value = { ...agentModelDefaults.value, revision: 'apply' };
     await nextTick();
     assert.equal(form.model, 'gpt-6.1-sol');
     assert.equal(form.reasoningEffort, 'ultra');
     assert.equal(form.objective, '保留草稿');
+    catalog.value = { ...catalog.value, models: catalog.value.models.slice(1) };
+    agentModelDefaults.value = { ...agentModelDefaults.value, revision: 'apply-missing-model' };
+    await nextTick();
+    assert.equal(form.model, 'account-model');
+    assert.equal(form.reasoningEffort, 'medium');
     for (const provider of ['cursor', 'claude']) {
       form.provider = provider; form.model = provider === 'cursor' ? 'auto' : 'opus'; form.reasoningEffort = '';
       agentModelDefaults.value = { ...agentModelDefaults.value, revision: `apply-${provider}` };
@@ -372,13 +382,15 @@ function sendingFixture(initial = buildAgentConversations([run('a'), run('b')]))
   const forkAttachments = shallowRef<typeof image[]>([]);
   const forkAttachmentDraft = shallowRef(new AgentAttachmentDraft(forkAttachments));
   const submittingNew = shallowRef(false);
+  const selectedWorkspaceId = shallowRef('');
+  const workspaceStore = { ready: shallowRef(true), busy: shallowRef(false) };
   // 原有动作回归继续覆盖手动模式；自动模式另用真实发送函数和独立可控回执覆盖。
   const automaticTeam = shallowRef(false);
   const form = { objective: '自动聊天目标', workspacePath: '', accessMode: 'full' as const };
   const teamInputs: unknown[][] = [];
   const teamResponse = deferred<{ task: unknown; runId: string; conversationId: string } | undefined>();
   const teamChat = { task: shallowRef(undefined), allTasks: shallowRef([]), changing: shallowRef(''), refetch: async () => {}, send: (...args: unknown[]) => { teamInputs.push(args); return teamResponse.promise; } };
-  const actions = scope.run(() => loadActions<Actions>(panelPath, ['sendMessage', 'sendChatMessage', 'startAgentWorkflow', 'retryRun', 'selectConversation', 'openCreate', 'submit', 'forkConversation', 'generateDailyReport', 'openRun'], {
+  const actions = scope.run(() => loadActions<Actions>(panelPath, ['sendMessage', 'sendChatMessage', 'startAgentWorkflow', 'retryRun', 'selectConversation', 'openCreate', 'canSubmitWorkspaceSelection', 'submit', 'forkConversation', 'generateDailyReport', 'openRun'], {
     selectedConversationId, creating, conversations, watch, automaticTeam, teamChat,
     groupMode: shallowRef(false), data: shallowRef({ runs: [] }),
     selectedConversation: computed(() => findAgentConversation(conversations.value, selectedConversationId.value)),
@@ -392,14 +404,47 @@ function sendingFixture(initial = buildAgentConversations([run('a'), run('b')]))
     orchestrate: (_parent: unknown, input: unknown) => { workflowInputs.push(input); return workflowResponse.promise; },
     resumedConversationId, reconcileAgentConversation, providerSwitchInput, agentConversationContinuation, agentConversationInsertRun,
     query: { refetch: () => queryRefresh.promise }, findAgentConversation,
-    canStart: shallowRef(true), start: (input: unknown) => { reportInputs.push(input); return response.promise; }, form, workspacePaths: shallowRef([]), newAttachments, newAttachmentDraft, submittingNew, panelDisposed: false, resetForm: () => {},
+    canStart: shallowRef(true), start: (input: unknown) => { reportInputs.push(input); return response.promise; }, form, workspacePaths: shallowRef([]), newAttachments, newAttachmentDraft, submittingNew, selectedWorkspaceId, workspaceStore, panelDisposed: false, resetForm: () => {},
     dailyReportStarting, changing: shallowRef(''), sideWorkspacePath: shallowRef('/repo'), dailyReportRuntime: shallowRef({}),
     dailyReportForDate: () => undefined,
     createDailyReportInput: (date: string) => ({ objective: date, mode: 'ask' }), agentModelDefaults: shallowRef(codexWorkbenchDefaults),
     fork: () => response.promise, forkSource: shallowRef({ id: 'a' }), forkObjective: shallowRef('基于此会话新建'), forkAttachments, forkAttachmentDraft,
   }, true))!;
-  return { actions, automaticTeam, teamChat, teamInputs, teamResponse, form, selectedConversationId, conversations, drafts, creating, response, resumeInputs, retryInputs, workflowResponse, workflowInputs, queryRefresh, dailyReportStarting, reportInputs, newAttachments, newAttachmentDraft, forkAttachmentDraft, submittingNew, dispose: () => scope.stop() };
+  return { actions, automaticTeam, teamChat, teamInputs, teamResponse, form, selectedConversationId, conversations, drafts, creating, response, resumeInputs, retryInputs, workflowResponse, workflowInputs, queryRefresh, dailyReportStarting, reportInputs, newAttachments, newAttachmentDraft, forkAttachmentDraft, submittingNew, selectedWorkspaceId, workspaceStore, dispose: () => scope.stop() };
 }
+
+test('工作区列表尚未就绪仍可发送独立会话，绑定工作区时等待同步', async () => {
+  const state = sendingFixture();
+  try {
+    state.workspaceStore.ready.value = false;
+    state.selectedWorkspaceId.value = 'project:/repo';
+    state.form.workspacePath = '/repo';
+    await state.actions.submit();
+    assert.equal(state.reportInputs.length, 0);
+
+    state.selectedWorkspaceId.value = '';
+    state.form.workspacePath = '';
+    state.response.resolve(undefined);
+    await state.actions.submit();
+    assert.equal((state.reportInputs[0] as StartAgentRunInput).workspacePath, '');
+    assert.equal((state.reportInputs[0] as StartAgentRunInput).workspaceId, undefined);
+  } finally { state.dispose(); }
+});
+
+test('手动选择项目支持 Windows、UNC 和 macOS/Linux 的绝对目录，拒绝相对目录', () => {
+  const samplePaths = ['C:\\Dev\\我的项目', 'D:/工作区/project', '\\\\server\\share\\project', '/home/dev/project'];
+  const manualPath = shallowRef('');
+  const paths = shallowRef<string[]>([]);
+  const errors: string[] = [];
+  const { addPath } = loadActions<{ addPath(): void }>('../src/features/agent-workbench/AgentConversationWorkspacePicker.vue', ['addPath'],
+    { manualPath, paths, primary: shallowRef(''), ElMessage: { error: (message: string) => { errors.push(message); } } });
+  for (const sample of [...samplePaths, 'C:relative', 'relative/path']) {
+    manualPath.value = sample;
+    addPath();
+  }
+  assert.deepEqual(paths.value, samplePaths);
+  assert.equal(errors.length, 2);
+});
 
 test('附件上传或移除期间，普通发送、插入和实现复核均保留草稿且不提交', async () => {
   for (const operation of ['upload', 'remove'] as const) {
@@ -1052,7 +1097,7 @@ test('新建普通会话固定使用单 Agent，忽略旧自动偏好，重复�
     await state.actions.submit();
     assert.equal(state.teamInputs.length, 0);
     assert.equal(state.reportInputs.length, 1, '新建只调用单 Agent start');
-    assert.deepEqual(state.reportInputs[0], { objective: '你好', workspacePath: '', accessMode: 'full', serviceTier: undefined, isolateWorkspace: false, attachmentIds: [image.id] });
+    assert.deepEqual(state.reportInputs[0], { objective: '你好', workspacePath: '', branch: undefined, accessMode: 'full', serviceTier: undefined, isolateWorkspace: false, attachmentIds: [image.id] });
     state.actions.selectConversation('b');
     state.drafts.draft.value = 'B的新草稿';
     state.response.resolve({ id: 'new-agent' });

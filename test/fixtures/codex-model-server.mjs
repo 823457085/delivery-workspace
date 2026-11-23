@@ -13,6 +13,7 @@ createInterface({ input: process.stdin }).on('line', line => {
   }
   if (method !== 'model/list') throw new Error('Only model discovery is allowed');
   if (params.includeHidden !== false) throw new Error('Hidden models requested');
+  if (scenario === 'model-error') return reply({ id, error: { message: 'private diagnostic' } });
   const cursor = params.cursor;
   const data = cursor ? [{ model: 'new-model', displayName: 'New model', isDefault: true,
     supportedReasoningEfforts: [{ reasoningEffort: 'high' }], defaultReasoningEffort: 'high',

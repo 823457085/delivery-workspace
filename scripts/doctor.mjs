@@ -4,9 +4,11 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { cliBinary, cursorBinary, codexChildEnvironment, isCompleteCodexRuntime } from '../server/cli-runtime.ts';
+import { createCodexModelReader } from '../server/codex-models.ts';
 import { minimumNode, supportedNode } from './runtime-requirements.mjs';
 
 const exec = promisify(execFile);
+const readCodexModels = createCodexModelReader();
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 let failures = 0;
 function report(level, label, detail) {
@@ -43,16 +45,19 @@ for (const [binary, label, instructions] of [
 async function provider(label, binary, statusArguments) {
   const [version, login] = await Promise.all([probe(binary, ['--version']), probe(binary, statusArguments)]);
   const authenticated = login.ok && (label === 'Codex'
-    ? /logged in/i.test(login.output) && !/not logged in/i.test(login.output)
+    ? /logged in|api key configured/i.test(login.output) && !/not logged in/i.test(login.output)
     : !!login.output && !/not logged in|unauthenticated|unauthorized/i.test(login.output));
+  const connectionError = label === 'Codex' && version.ok && authenticated
+    ? (await readCodexModels()).connectionError : undefined;
+  const ready = version.ok && authenticated && !connectionError;
   // 认证命令输出只用于判断，绝不输出原文或读取 auth.json。
-  report(version.ok && authenticated ? 'OK' : 'WARN', `${label} CLI`, !version.ok
+  report(ready ? 'OK' : 'WARN', `${label} CLI`, !version.ok
     ? `未找到可用 CLI；配置 DELIVERY_${label.toUpperCase()}_BIN 或加入 PATH`
-    : `${versionText(label, version.stdout)} · ${authenticated ? '已登录' : '未登录，请使用本机 CLI 登录'} · ${binary}`);
-  return version.ok && authenticated;
+    : `${versionText(label, version.stdout)} · ${authenticated ? '已登录' : '未登录，请使用本机 CLI 登录'} · ${binary}${connectionError ? ` · ${connectionError}` : ''}`);
+  return ready;
 }
 const ready = await Promise.all([provider('Codex', cliBinary, ['login', 'status']), provider('Cursor', cursorBinary, ['status'])]);
-report(ready.some(Boolean) ? 'OK' : 'FAIL', 'Agent 执行', ready.some(Boolean) ? '至少一个已登录的 CLI 可用' : '请安装并登录 Codex CLI 或 Cursor CLI');
+report(ready.some(Boolean) ? 'OK' : 'FAIL', 'Agent 执行', ready.some(Boolean) ? '至少一个已登录的 CLI 可用' : '请按上面的诊断修复 Codex CLI 或 Cursor CLI');
 report('INFO', 'Codex 运行时', isCompleteCodexRuntime(cliBinary) ? '检测到同目录 codex-code-mode-host，保留完整桌面运行时' : '使用独立 CLI；若配置桌面二进制，请保留同目录完整资源');
 report(fs.existsSync(path.join(root, '.env')) ? 'OK' : 'WARN', '本机配置', fs.existsSync(path.join(root, '.env')) ? '.env 已存在（不显示配置内容）' : '先执行 pnpm run setup 创建 .env');
 report(fs.existsSync(path.join(root, 'dist', 'index.html')) ? 'OK' : 'WARN', '前端构建', fs.existsSync(path.join(root, 'dist', 'index.html')) ? 'dist/index.html 已存在' : '执行 pnpm build 或 pnpm run setup');

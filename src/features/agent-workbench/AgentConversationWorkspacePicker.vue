@@ -7,7 +7,7 @@ const picker = useWorkspacePicker();
 import { Folder, ChevronDown, Plus, Settings2 } from '@lucide/vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { ConversationWorkspace } from '../../../shared/conversation-workspaces';
-import type { AgentWorkspaceOption } from './workspace-catalog';
+import { workspacePathLabel, type AgentWorkspaceOption } from './workspace-catalog';
 const props=defineProps<{groups:ConversationWorkspace[];projects:AgentWorkspaceOption[];disabled?:boolean;editorOnly?:boolean;removeWorkspace?:(id:string)=>Promise<boolean>;saveWorkspace:(workspace:Omit<ConversationWorkspace,'id'>&{id?:string})=>Promise<ConversationWorkspace>}>();
 const selected=defineModel<string>({default:''});
 const open=ref(false),editing=ref(false),editingId=ref<string>(),name=ref(''),paths=ref<string[]>([]),primary=ref(''),saving=ref(false),query=ref(''),manualPath=ref('');
@@ -16,7 +16,7 @@ const projectBranches=ref<Record<string,string[]>>({});
 const busy=computed(()=>saving.value);
 const availableProjects=computed(()=>{
  const catalog=new Map(props.projects.map(project=>[project.path,project]));
- for(const path of paths.value)if(!catalog.has(path))catalog.set(path,{path,label:path.split('/').filter(Boolean).at(-1)||path,branch:'',source:'custom'});
+ for(const path of paths.value)if(!catalog.has(path))catalog.set(path,{path,label:workspacePathLabel(path),branch:'',source:'custom'});
  return [...catalog.values()].filter(project=>`${project.label} ${project.path} ${project.branch||''} ${(projectBranches.value[project.path]||[]).join(' ')}`.toLowerCase().includes(projectQuery.value.trim().toLowerCase()));
 });
 function toggleProject(path:string){if(paths.value.includes(path))paths.value=paths.value.filter(item=>item!==path);else if(paths.value.length<10)paths.value=[...paths.value,path];primary.value=paths.value[0]||'';}
@@ -24,7 +24,15 @@ const current=computed(()=>props.groups.find(g=>g.id===selected.value));
 const filtered=computed(()=>props.groups.filter(g=>`${g.name} ${g.projectPaths.join(' ')}`.toLowerCase().includes(query.value.trim().toLowerCase())));
 function edit(group?:ConversationWorkspace){open.value=false;editingId.value=group?.id;name.value=group?.name||'';paths.value=[...(group?.projectPaths||[])];projectBranches.value=structuredClone(group?.projectBranches?JSON.parse(JSON.stringify(group.projectBranches)):{});primary.value=paths.value[0]||'';manualPath.value='';projectQuery.value='';editing.value=true;}
 function choose(id:string){selected.value=id;open.value=false;}
-function addPath(){const path=manualPath.value.trim();if(!path.startsWith('/')){ElMessage.error('请输入项目的绝对目录');return;}if(!paths.value.includes(path)&&paths.value.length<10)paths.value=[...paths.value,path];primary.value=paths.value[0]||'';manualPath.value='';}
+function addPath() {
+ const path = manualPath.value.trim();
+ if (!/^(?:\/|[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+)/.test(path) || /[\x00-\x1f\x7f]/.test(path)) {
+  ElMessage.error('请输入项目的绝对目录'); return;
+ }
+ if (!paths.value.includes(path) && paths.value.length < 10) paths.value = [...paths.value, path];
+ primary.value = paths.value[0] || '';
+ manualPath.value = '';
+}
 async function chooseFolder(){const selection=await picker.choose(primary.value);if(selection){manualPath.value=selection.workspacePath;addPath();}else if(picker.error.value)ElMessage.error(picker.error.value);}
 async function save(){saving.value=true;try{const workspace=await props.saveWorkspace({...(editingId.value?{id:editingId.value}:{}),name:name.value,projectPaths:paths.value,projectBranches:Object.fromEntries(paths.value.filter(path=>projectBranches.value[path]?.length).map(path=>[path,projectBranches.value[path]]))});selected.value=workspace.id;editing.value=false;}catch(e){ElMessage.error(e instanceof Error?e.message:'保存工作区失败');}finally{saving.value=false;}}
 async function remove() {
@@ -68,7 +76,7 @@ defineExpose({create:()=>edit(),edit,duplicate,rename});
    <div class="workspace-picker-options">
     <button type="button" class="workspace-choice" :class="{active:!selected}" @click="choose('')"><strong>不选择工作区</strong><small>独立会话，可稍后拖入工作区</small></button>
     <div v-for="group in filtered" :key="group.id" class="workspace-picker-row">
-     <button type="button" class="workspace-choice" :class="{active:selected===group.id}" @click="choose(group.id)"><strong>{{group.name}}</strong><small>{{group.projectPaths.length}} 个项目 · {{group.projectPaths.map(p=>p.split('/').pop()).join('、')||'未添加项目'}}</small></button>
+     <button type="button" class="workspace-choice" :class="{active:selected===group.id}" @click="choose(group.id)"><strong>{{group.name}}</strong><small>{{group.projectPaths.length}} 个项目 · {{group.projectPaths.map(workspacePathLabel).join('、')||'未添加项目'}}</small></button>
      <button type="button" class="workspace-edit" :aria-label="`编辑工作区 ${group.name}`" @click="edit(group)"><Settings2 :size="14"/></button>
     </div>
    </div>

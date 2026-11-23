@@ -164,6 +164,29 @@ test('普通目录仍按原目录分组，显式未绑定和旧内部会话目�
   }
 });
 
+test('Git 克隆中的无项目会话续聊仍在其独立目录，不能把会话目录绑定成项目', { timeout: 10000 }, async t => {
+  const repository = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'workspace-clone-')));
+  t.after(() => fs.rm(repository, { recursive: true, force: true }));
+  await exec('git', ['init', repository]);
+  const runtimeDirectory = path.join(repository, 'custom-data', 'agent-runtimes');
+  const executed: AgentRun[] = [];
+  const service = await createAgentRuntimeService(runtimeDirectory, { adapters: [fixtureAdapter(executed)] });
+  try {
+    const first = await service.start({ provider: 'codex', mode: 'ask', model: '', objective: '第一轮', workspacePath: '' });
+    await waitForResult(first);
+    const resumed = await service.resume(first.id, '第二轮');
+    await waitForResult(resumed);
+    assert.equal(resumed.workspacePath, first.workspacePath);
+    assert.equal(resumed.branch, '');
+    assert.deepEqual(executed.map(run => run.workspacePath), [first.workspacePath, first.workspacePath]);
+    await assert.rejects(service.bindConversationWorkspace(first.conversationId!, first.workspacePath), /会话临时目录不能绑定为项目/);
+    await fs.rename(first.workspacePath, `${first.workspacePath}-original`);
+    await fs.symlink(repository, first.workspacePath, process.platform === 'win32' ? 'junction' : 'dir');
+    await assert.rejects(service.resume(resumed.id, '目录已被替换'), /会话工作区目录已变化/);
+    assert.equal(executed.length, 2);
+  } finally { await service.close(); }
+});
+
 test('运行中的会话可保存新工作区，旧队列完成后在同一会话创建新的执行线程', { timeout: 15000 }, async () => {
   const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'agent-bind-workspace-')));
   const runtimeDirectory = path.join(directory, 'data', 'agent-runtimes');

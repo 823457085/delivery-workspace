@@ -9,7 +9,7 @@ import { GitFork, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen
 import { ElMessage } from 'element-plus';
 import type { AgentAccessMode, AgentApiProvider, AgentAttachment, AgentProvider, AgentQueuePlacement, AgentReasoningEffort, AgentRun, AgentRunMode, AgentServiceTier, SpawnAgentTaskInput, StartAgentRunInput, StartAgentTaskWorkflowInput, AgentWorkflowAction } from '../../../shared/agent-runtime';
 import type { AgentTeamRequest } from './AgentTeamDialog.vue';
-import { codexWorkbenchDefaults, workbenchRuntime } from '../../../shared/agent-runtime';
+import { codexWorkbenchDefaults, workbenchConversationRuntime } from '../../../shared/agent-runtime';
 import type { DeliveryAcceptanceRecord } from '../../../shared/delivery-acceptance';
 import { agentModelDefaults } from '../../shared/agent-model-defaults';
 import { useWorkspacePicker } from '../../shared/useWorkspacePicker';
@@ -158,7 +158,7 @@ watch(() => form.serviceTier, (value) => {
     catch { /* 当前页面仍使用选中的档位 */ }
   }
 });
-const runtimes = computed(() => (data.value?.runtimes || []).map(runtime => workbenchRuntime(runtime, agentModelDefaults.value)));
+const runtimes = computed(() => (data.value?.runtimes || []).map(runtime => workbenchConversationRuntime(runtime, agentModelDefaults.value)));
 const workflows = computed(() => data.value?.workflows || []);
 const dailyReportStarting = shallowRef(false);
 const dailyReportRuntime = computed(() => runtimes.value.find((runtime) => runtime.provider === 'codex'));
@@ -418,7 +418,7 @@ watch(selectedRuntime, (runtime, previous) => {
   }
   if (!runtime.modes.includes(form.mode)) form.mode = runtime.modes.includes('ask') ? 'ask' : runtime.modes[0] || 'ask';
   if (form.mode !== 'agent' || (runtime.accessModes && !runtime.accessModes.includes(form.accessMode))) form.accessMode = 'workspace';
-  if (!form.model || !runtime.models.some((item) => item.id === form.model)) form.model = runtime.defaultModel;
+  if (!runtime.models.some((item) => item.id === form.model)) form.model = runtime.defaultModel;
 }, { immediate: true });
 watch(selectedModelOption, (option) => {
   const efforts = option?.efforts || [];
@@ -427,9 +427,11 @@ watch(selectedModelOption, (option) => {
   }
 }, { immediate: true });
 watch(() => agentModelDefaults.value.revision, () => {
-  if (form.provider !== (agentModelDefaults.value.provider || 'codex')) return;
-  form.model = agentModelDefaults.value.model;
-  form.reasoningEffort = agentModelDefaults.value.reasoningEffort;
+  const runtime = selectedRuntime.value;
+  if (!runtime || form.provider !== (agentModelDefaults.value.provider || 'codex')) return;
+  form.model = runtime.defaultModel;
+  const option = runtime.models.find(model => model.id === form.model);
+  form.reasoningEffort = option?.defaultEffort || (form.provider === 'codex' ? option?.efforts?.[0] || '' : '');
 });
 
 function resetForm() {
@@ -507,8 +509,11 @@ async function chooseWorkspace() {
   form.workspacePath = nextPaths[0] || selection.workspacePath;
   if (nextPaths.length === 1) form.branch = selection.branch;
 }
+function canSubmitWorkspaceSelection() {
+  return !selectedWorkspaceId.value || (workspaceStore.ready.value && !workspaceStore.busy.value);
+}
 async function submit() {
-  if (!workspaceStore.ready.value || workspaceStore.busy.value) return;
+  if (!canSubmitWorkspaceSelection()) return;
   if (!canStart.value || submittingNew.value || newAttachmentDraft.value.pending) return;
   const requestSelectionRevision = selectionRevision;
   submittingNew.value = true;
@@ -979,7 +984,7 @@ onBeforeUnmount(() => {
         <AgentPanelResize v-show="!mobile && desktopDetailsOpen" v-model="rightWidth" side="right" variant="project-studio" />
         <AgentNewConversation v-if="creating" v-show="!workbenchOpen" ref="newConversationPane" v-model:provider="form.provider" v-model:mode="form.mode" v-model:access-mode="form.accessMode" v-model:model="form.model" v-model:service-tier="form.serviceTier" v-model:reasoning-effort="form.reasoningEffort"
           v-model:workspace-id="selectedWorkspaceId" :workspace-groups="namedWorkspaces" :save-workspace="workspaceStore.save" :remove-workspace="workspaceStore.remove" v-model:objective="form.objective" v-model:attachments="newAttachments" v-model:workspace-path="form.workspacePath" v-model:workspace-paths="workspacePaths" class="conversation-column"
-          :runtimes="runtimes" :workspaces="workspaceOptions" :business-options="businessMentions" :changing="submittingNew ? 'start' : changing || teamChat.changing.value" :can-start="canStart && workspaceStore.ready.value && !workspaceStore.busy.value" :attachment-draft="newAttachmentDraft"
+          :runtimes="runtimes" :workspaces="workspaceOptions" :business-options="businessMentions" :changing="submittingNew ? 'start' : changing || teamChat.changing.value" :can-start="canStart && canSubmitWorkspaceSelection()" :attachment-draft="newAttachmentDraft"
           @send="submit" @choose-workspace="chooseWorkspace" @configure-models="openModelSettings()">
           <template #header-actions><span id="new-connection-status"></span></template>
         </AgentNewConversation>

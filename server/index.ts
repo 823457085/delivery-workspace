@@ -1312,7 +1312,11 @@ const server = http.createServer(async (request, response) => {
           const input = agentStartSchema.parse(await body(request));
           if (input.workspaceId) {
             const group = conversationWorkspaces.get(input.workspaceId);
-            if ((group.projectPaths[0] || '') !== input.workspacePath) throw new Error('工作区项目已变化，请重新选择工作区');
+            const primaryProject = group.projectPaths[0];
+            const expectedProject = primaryProject
+              ? path.isAbsolute(input.workspacePath) && path.relative(primaryProject, input.workspacePath) === ''
+              : input.workspacePath === '';
+            if (!expectedProject) throw new Error('工作区项目已变化，请重新选择工作区');
             const bindings = await prepareConversationWorkspaceBranches(group, path.join(dataDirectory, 'conversation-branch-workspaces'));
             input.workspacePath = bindings[0]?.workspacePath || '';
             input.branch = undefined;

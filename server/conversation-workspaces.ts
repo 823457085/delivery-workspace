@@ -5,9 +5,9 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { z } from 'zod';
 import type { ConversationWorkspaceState } from '../shared/conversation-workspaces.js';
 const id = z.string().min(1).max(5000).refine(v => !['__proto__', 'constructor', 'prototype'].includes(v));
-const projectPath = z.string().min(1).max(4000).refine(v => path.isAbsolute(v) && !/[\x00-\x1f\x7f]/.test(v), '项目必须是绝对目录');
+const projectPath = z.string().min(1).max(4000).refine(v => path.isAbsolute(v) && !/[\x00-\x1f\x7f]/.test(v), '项目必须是绝对目录').transform(v => path.resolve(v));
 const branches = z.record(projectPath, z.array(z.string().min(1).max(300).refine(value=>!/[\x00-\x1f\x7f]/.test(value))).max(8).transform(values=>[...new Set(values)]));
-const workspace = z.object({ id, name: z.string().trim().min(1).max(100), projectBranches: branches.optional(), projectPaths: z.array(projectPath).max(10).transform(v => [...new Set(v.map(p => path.resolve(p)))]) }).strict();
+const workspace = z.object({ id, name: z.string().trim().min(1).max(100), projectBranches: branches.optional(), projectPaths: z.array(projectPath).max(10).transform(v => [...new Set(v)]) }).strict();
 const stateSchema = z.object({ revision: z.number().int().nonnegative(), workspaces: z.array(workspace).max(1000), assignments: z.record(id, z.string().max(5000)), deletedWorkspaceIds: z.array(id).optional() }).strict();
 const revision = z.number().int().nonnegative();
 const actionSchema = z.discriminatedUnion('action', [
