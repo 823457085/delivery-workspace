@@ -565,7 +565,10 @@ const remoteDelivery = await createAgentRemoteDelivery({ directory: path.join(da
   publishComment: (taskId, body) => jiraDev.publishDeliveryComment(taskId, body), publishDesign: input => confluenceDelivery.publish(input),
   saveDesign: (taskId, input) => jiraDev.saveDeliveryDesign(taskId, input) });
 const groupChatRoutes = createAgentGroupChatRoutes(groupChat, { json, body, port }, remoteDelivery);
-const deployments = await createJenkinsDeployments(dataDirectory, { readProjects: () => sourceBackend.readLocalProjects() });
+const deployments = await createJenkinsDeployments(dataDirectory, {
+  readProjects: () => sourceBackend.readLocalProjects(),
+  credentialsPath: process.env.DELIVERY_JENKINS_CONFIG_FILE,
+});
 const yunxiaoDeployments = await createYunxiaoDeployments(dataDirectory);
 const deploymentsRoute = createJenkinsDeploymentsRoute(deployments, yunxiaoDeployments);
 const vite = process.argv.includes('--dev') ? await (await import('vite')).createServer({ root, server: { middlewareMode: true }, appType: 'spa' }) : null;
@@ -1529,7 +1532,8 @@ const server = http.createServer(async (request, response) => {
     if (mutation) pendingMutations--;
   }
 });
-server.listen(port, '127.0.0.1', () => {
+const listenHost = process.env.HOST?.trim() || '127.0.0.1';
+server.listen(port, listenHost, () => {
   if (process.env.DELIVERY_SCHEDULER_DISABLED !== '1') sourceBackend.start();
   workspaceReports.start();
   if (process.env.DELIVERY_SCHEDULER_DISABLED !== '1') projectWorkspaces.start();
