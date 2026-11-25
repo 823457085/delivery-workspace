@@ -12,11 +12,11 @@
  * 3. 点击重启时通过 `suspendSharedEventSources` 广播立即释放所有标签页物理 SSE 连接，确保重启请求与健康轮询零排队。
  */
 
-const CHANNEL_NAME = 'delivery-workspace-sse-v1';
-const LOCK_NAME = 'delivery-workspace-sse-leader-v1';
+const CHANNEL_NAME = 'delivery-workspace-sse-v2';
+const LOCK_NAME = 'delivery-workspace-sse-leader-v2';
 
 export const WORKSPACE_MULTIPLEX_URLS = [
-  '/api/agent-runtimes/events?updates=runs',
+  '/api/agent-runtimes/events?updates=summaries',
   '/api/agent-runtimes/team-tasks/events',
   '/api/workflow/events',
 ] as const;
@@ -285,7 +285,7 @@ class WorkspaceSseHub {
     }
     if (this.multiplexSource) return;
     let openedOnce = false;
-    const source = new EventSource('/api/workspace/events');
+    const source = new EventSource('/api/workspace/events?agentRuns=summaries');
     this.multiplexSource = source;
     source.addEventListener('open', () => {
       openedOnce = true;

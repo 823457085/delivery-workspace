@@ -25,6 +25,7 @@ import {
   getNextAutomationRun,
   getVersionDateAction,
   getIgnoredAutomationIssueKeys,
+  hasTaskSegmentDescriptionMarker,
   isIssueDone,
   isScheduledSliceIssue,
   isThreeDaySplitTask,
@@ -706,8 +707,9 @@ function normalizeIssue(issue) {
           summary: fields.parent.fields?.summary || ""
         }
       : null,
+    subtasksComplete: Array.isArray(fields.subtasks) && fields.subtasks.every((item) => Boolean(item?.key)),
     subtasks: Array.isArray(fields.subtasks)
-      ? fields.subtasks.map((item) => ({
+      ? fields.subtasks.filter((item) => item?.key).map((item) => ({
           key: item.key,
           summary: item.fields?.summary || "",
           status: item.fields?.status?.name || "",
@@ -2782,29 +2784,21 @@ function taskSegmentMarker(segment) {
   return `delivery-segment-${segment.index}-of-${segment.total}`;
 }
 
-function taskSegmentSummary(issue, segment) {
-  return buildRequirementSegmentTitles(issue, segment.total)[segment.index - 1] || issue.summary;
-}
-
 function taskSegmentDescription(issue, segment, maxDays, summary) {
-  const placeholder = /第\s*\d+\s*项功能$/u.test(summary);
-  const scope = placeholder ? "本排期段尚未绑定独立功能。开发前确认具体范围和验收条件。" : summary;
-  const deliverables = placeholder ? "待确认范围后填写具体交付物和验证标准。"
-    : /技术方案$/u.test(summary) ? "技术方案，记录影响范围、接口及验证计划。"
-      : /联调自测$/u.test(summary) ? "联调和自测记录，注明环境、验证结果及待验证项。"
-        : "本任务范围内的代码改动和自测记录，注明待验证项。";
+  const deliverables = /技术方案$/u.test(summary) ? "技术方案，记录影响范围、接口及验证计划。"
+    : /联调自测$/u.test(summary) ? "联调和自测记录，注明环境、验证结果及待验证项。"
+      : "本任务范围内的代码改动和自测记录，注明待验证项。";
   return renderDevelopmentDescription({
     source: `父任务：[${issue.key}|${issue.url}]`,
-    implementation: `${scope}\n\n计划范围：${segment.startDate} 至 ${segment.endDate}，每项最多 ${maxDays} 个工作日。`,
+    implementation: `${summary}\n\n计划范围：${segment.startDate} 至 ${segment.endDate}，每项最多 ${maxDays} 个工作日。`,
     deliverables,
-    impact: placeholder ? "具体影响范围待确认。" : "限于本子任务在父任务中对应的范围。",
+    impact: "限于本子任务在父任务中对应的范围。",
     references: jiraReferenceLinks(issue.description) || "见父任务的需求和相关文档。",
     markers: [`自动规则标识：${THREE_DAY_SPLIT_LABEL}/${taskSegmentMarker(segment)}`],
   });
 }
 
-async function createAutomationTaskSegment(issue, segment, maxDays, authHeaders) {
-  const summary = taskSegmentSummary(issue, segment);
+async function createAutomationTaskSegment(issue, segment, summary, maxDays, authHeaders) {
   const fields = {
     project: { key: issue.project },
     parent: { key: issue.key },
@@ -2932,8 +2926,12 @@ async function ensureAutomationTaskSegments(issues, settings, { preview = false,
     if (segments.length === 0) continue;
 
     const knownChildren = childIssuesByParent.get(issue.key) || [];
-    if (issue.subtasks?.some(({ key }) => !knownChildren.some((child) => child.key === key))) {
+    if (issue.subtasksComplete === false || issue.subtasks?.some(({ key }) => !knownChildren.some((child) => child.key === key))) {
       results.push({ parentKey: issue.key, status: "blocked", message: "部分子任务不在巡检读取范围内，无法核对已有切片" });
+      continue;
+    }
+    if (knownChildren.some((child) => !isThreeDaySplitTask(child))) {
+      results.push({ parentKey: issue.key, status: "blocked", message: "已有独立业务子任务，请沿用现有子任务排期" });
       continue;
     }
     const orderedChildren = [...knownChildren].sort(automationChildOrder);
@@ -2950,18 +2948,29 @@ async function ensureAutomationTaskSegments(issues, settings, { preview = false,
       })));
       continue;
     }
+    const titles = buildRequirementSegmentTitles(issue, segments.length);
     const assignedKeys = new Set();
-    for (const segment of segments) {
-      const marker = taskSegmentMarker(segment);
-      const expectedSummary = taskSegmentSummary(issue, segment);
-      const existing = findMatchingManagedSegmentSubtask(knownChildren, assignedKeys, {
-        marker,
-        expectedSummary,
+    const matchedChildren = segments.map((segment, index) => {
+      const child = findMatchingManagedSegmentSubtask(knownChildren, assignedKeys, {
+        marker: taskSegmentMarker(segment),
+        expectedSummary: titles[index],
       });
+      if (child) assignedKeys.add(child.key);
+      return child;
+    });
+    if (assignedKeys.size < knownChildren.length) {
+      results.push({ parentKey: issue.key, status: "blocked", message: "已有自动拆分子任务与当前排期无法对应，未重复拆分" });
+      continue;
+    }
+    if (assignedKeys.size < segments.length && titles.length !== segments.length) {
+      results.push({ parentKey: issue.key, status: "blocked", message: "父任务没有提供足够明确的子任务范围，未自动拆分" });
+      continue;
+    }
+
+    for (const [index, segment] of segments.entries()) {
+      const existing = matchedChildren[index];
       if (existing) {
-        assignedKeys.add(existing.key);
-        const hasMarker = String(existing.description || "")
-          .includes(`${THREE_DAY_SPLIT_LABEL}/${marker}`);
+        const hasMarker = hasTaskSegmentDescriptionMarker(existing.description, taskSegmentMarker(segment));
         const datesMatch = existing.startDate === segment.startDate && existing.endDate === segment.endDate;
         if (hasMarker && datesMatch) {
           results.push({
@@ -2973,7 +2982,7 @@ async function ensureAutomationTaskSegments(issues, settings, { preview = false,
           });
           continue;
         }
-        const action = buildSplitScanAction(issue, segment, existing);
+        const action = buildSplitScanAction(issue, segment, existing.summary, existing);
         if (preview) {
           results.push({ action });
           continue;
@@ -3000,7 +3009,7 @@ async function ensureAutomationTaskSegments(issues, settings, { preview = false,
         continue;
       }
 
-      const action = buildSplitScanAction(issue, segment);
+      const action = buildSplitScanAction(issue, segment, titles[index]);
       if (preview) {
         results.push({ action });
         continue;
@@ -3010,23 +3019,10 @@ async function ensureAutomationTaskSegments(issues, settings, { preview = false,
         const created = await createAutomationTaskSegment(
           issue,
           segment,
+          titles[index],
           settings.maxTaskSpanDays,
           authHeaders
         );
-        const createdIssue = {
-          key: created.key,
-          summary: expectedSummary,
-          description: taskSegmentDescription(
-            issue,
-            segment,
-            settings.maxTaskSpanDays,
-            expectedSummary
-          ),
-          startDate: segment.startDate,
-          endDate: segment.endDate,
-          labels: [THREE_DAY_SPLIT_LABEL, marker]
-        };
-        knownChildren.push(createdIssue);
         results.push({
           parentKey: issue.key,
           issueKey: created.key,
@@ -3047,12 +3043,12 @@ async function ensureAutomationTaskSegments(issues, settings, { preview = false,
   return results;
 }
 
-function buildSplitScanAction(parent, segment, existing) {
+function buildSplitScanAction(parent, segment, summary, existing) {
   return {
     kind: existing ? "split-update" : "split-create",
     issueKey: existing?.key || parent.key,
     target: `${segment.startDate} ～ ${segment.endDate}`,
-    reason: taskSegmentSummary(parent, segment)
+    reason: summary
   };
 }
 

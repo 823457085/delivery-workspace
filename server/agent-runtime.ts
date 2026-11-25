@@ -18,6 +18,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { promisify } from 'node:util';
 import { cliBinary, cliChildEnvironment, codexChildEnvironment, cursorBinary, claudeBinary, claudeChildEnvironment, kiroBinary, antigravityBinary } from './cli-runtime.js';
 import { forkCodexThread, runCodexLiveTurn, type LiveSteer } from './codex-live-turn.js';
+import { isMissingNativeSession, NativeSessionUnavailableError, nativeSessionScope } from './native-session-return.js';
 import { prepareAgentBrowserRuntime } from './agent-browser-runtime.js';
 import { openCursorEditor } from './cursor-desktop.mjs';
 import { codexSessionErrorText } from '../shared/codex-session-error.js';
@@ -29,6 +30,7 @@ import { CodexDesktopTurnUnconfirmedError, readCodexDesktopSnapshot } from './co
 import { largeStateBytes, type createStateBackupStore } from './state-backup.js';
 import { resolveRenamedWorkspace } from './generated-workspace.js';
 import { createWorkspaceProjectResolver, resolveWorkspaceDirectory } from './workspace-project.js';
+import { createAgentTurnPreviewStore } from './agent-turn-previews.js';
 import type { ResolvedAgentAttachment } from './agent-attachments.js';
 import { canContinueStoppedCodexRun, isAgentImageAttachment, maxAgentConversationWorkspaces } from '../shared/agent-runtime.js';
 import { createKiroAdapter } from './kiro-runtime.js';
@@ -47,9 +49,10 @@ import {
 import { buildWorkflowContext, changedPathsOf, localWorkflowWorkspace, writeReviewMaterials, type AgentWorkflowWorkspace } from './agent-workflow.js';
 import { analyzeRepoBlastRadius, formatBlastRadiusForPrompt } from './repo-blast-radius.js';
 import { buildCrossAgentHandoffPacket, formatHandoffPacketForPrompt, redactSensitiveHandoffText, type HandoffTurnInput } from '../shared/agent-handoff-packet.js';
+import { projectAgentRunSummary } from '../shared/agent-runtime.js';
 import type {
   AgentTaskRole, AgentAccessMode, AgentAttachment, AgentChangedFile, AgentContinuation, AgentConversationDeleteResult, AgentConversationDeleteTarget, AgentConversationWorkspace, AgentConversationWorkspaceLocation, AgentCustomModelInput, AgentProvider, AgentQueuePlacement, AgentReasoningEffort, AgentServiceTier, AgentRun, AgentRunEvent, AgentRunMode,
-  AgentKnowledgeMatch, AgentRuntimeDashboard, AgentRuntimeHealth, AgentTaskLink, AgentWorkspaceBranches, CodexSessionDetail, CodexSessionSummary, CodexSyncState,
+  AgentConversationHistoryPage, AgentKnowledgeMatch, AgentRuntimeDashboard, AgentRuntimeHealth, AgentTaskLink, AgentWorkspaceBranches, CodexSessionDetail, CodexSessionSummary, CodexSyncState,
   SpawnAgentTaskInput, StartAgentRunInput, StartAgentTaskWorkflowInput, AgentProfileId, AgentTeamTemplateId, AgentWorkflowAction,
   AgentWorkflowStage, AgentWorkspaceVersion, AgentUsageLimits,
 } from '../shared/agent-runtime.js';
@@ -85,6 +88,7 @@ interface ExecutionContext {
   onUsage?(event: unknown): void;
   run: AgentRun;
   resumeSessionId?: string;
+  returningToNativeSession?: boolean;
   continueOriginal?: boolean;
   forkSessionId?: string;
   forkLastTurnId?: string;
@@ -118,6 +122,7 @@ export interface AgentRuntimeAdapter {
   id: AgentProvider;
   health(force?: boolean): Promise<AgentRuntimeHealth>;
   invalidateHealth?(): void;
+  nativeSessionScope?(): Promise<string | undefined>;
   execute(context: ExecutionContext): Promise<string>;
 }
 
@@ -177,6 +182,8 @@ interface StoredCodexSessions {
 interface GitWorkspaceFileState {
   status: AgentChangedFile['status'];
   fingerprint: string;
+  mode?: number;
+  renamedFrom?: string;
 }
 
 const ignoredWorkspaceDirectories = new Set(['.git', '.delivery-artifacts', 'node_modules', 'dist', 'build', 'coverage', '.cache', '.next', '.nuxt']);
@@ -189,6 +196,7 @@ const sensitiveKnowledgeFile = /(?:^|\/)(?:\.env(?:\.|$)|\.npmrc$|\.netrc$|id_rs
 
 export interface GitWorkspaceSnapshot {
   headSha: string;
+  gitPrefix?: string;
   files: Record<string, GitWorkspaceFileState>;
 }
 
@@ -267,12 +275,12 @@ function gitFileStatus(code: string): AgentChangedFile['status'] {
 async function fileFingerprint(workspacePath: string, relativePath: string) {
   try {
     const target = path.resolve(workspacePath, relativePath);
-    if (target !== workspacePath && !target.startsWith(`${workspacePath}${path.sep}`)) return '';
+    if (target !== workspacePath && !target.startsWith(`${workspacePath}${path.sep}`)) return { fingerprint: '' };
     const stat = await fs.lstat(target);
-    if (stat.isSymbolicLink()) return `link:${await fs.readlink(target)}`;
-    if (!stat.isFile()) return `type:${stat.mode}`;
-    return createHash('sha1').update(await fs.readFile(target)).digest('hex');
-  } catch { return ''; }
+    if (stat.isSymbolicLink()) return { fingerprint: `link:${await fs.readlink(target)}`, mode: stat.mode };
+    if (!stat.isFile()) return { fingerprint: `type:${stat.mode}`, mode: stat.mode };
+    return { fingerprint: createHash('sha1').update(await fs.readFile(target)).digest('hex'), mode: stat.mode };
+  } catch { return { fingerprint: '' }; }
 }
 
 async function plainWorkspaceFiles(workspacePath: string, limit = 20_000, excludedDirectories: string[] = []) {
@@ -354,11 +362,11 @@ async function searchGitWorkspaceContents(workspacePath: string, files: string[]
 }
 
 async function snapshotPlainWorkspace(workspacePath: string, excludedDirectories: string[] = []): Promise<GitWorkspaceSnapshot> {
-  const files: Record<string, GitWorkspaceFileState> = {};
+  const files: Record<string, GitWorkspaceFileState> = Object.create(null);
   for (const relativePath of await plainWorkspaceFiles(workspacePath, 20_000, excludedDirectories)) {
     try {
       const stat = await fs.stat(path.join(workspacePath, relativePath));
-      files[relativePath] = { status: 'modified', fingerprint: `${stat.size}:${stat.mtimeMs}` };
+      files[relativePath] = { status: 'modified', fingerprint: `${stat.size}:${stat.mtimeMs}`, mode: stat.mode };
     } catch { /* Files may disappear while the Agent is running. */ }
   }
   return { headSha: '', files };
@@ -373,24 +381,30 @@ export async function snapshotGitWorkspace(workspacePath: string, excludedDirect
   excludedDirectories = childSnapshotExclusions(workspacePath, excludedDirectories);
   try {
     if (!(await fs.stat(workspacePath)).isDirectory()) return { headSha: '', files: {} };
-    const [head, status] = await Promise.all([
+    const [head, status, prefix] = await Promise.all([
       exec('git', ['-C', workspacePath, 'rev-parse', 'HEAD'], { timeout: 5000, maxBuffer: 100_000 }),
-      exec('git', ['-C', workspacePath, 'status', '--porcelain=v1', '-z', '--untracked-files=all'], { timeout: 5000, maxBuffer: 2_000_000 }),
+      exec('git', ['-C', workspacePath, 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--', '.'], { timeout: 5000, maxBuffer: 2_000_000 }),
+      exec('git', ['-C', workspacePath, 'rev-parse', '--show-prefix'], { timeout: 5000, maxBuffer: 100_000 }),
     ]);
     const entries = status.stdout.split('\0');
-    const files: Record<string, GitWorkspaceFileState> = {};
+    const gitPrefix = prefix.stdout.replace(/\r?\n$/, '');
+    const files: Record<string, GitWorkspaceFileState> = Object.create(null);
     for (let index = 0; index < entries.length; index += 1) {
       const entry = entries[index];
       if (entry.length < 4) continue;
       const code = entry.slice(0, 2);
-      const relativePath = entry.slice(3);
+      const repositoryPath = entry.slice(3);
+      const oldPath = code.includes('R') || code.includes('C') ? entries[++index] : undefined;
+      if (!repositoryPath.startsWith(gitPrefix)) continue;
+      const relativePath = repositoryPath.slice(gitPrefix.length);
+      const renamedFrom = code.includes('R') && oldPath?.startsWith(gitPrefix) ? oldPath.slice(gitPrefix.length) : undefined;
       if (!relativePath || relativePath === '.delivery-artifacts' || relativePath.startsWith('.delivery-artifacts/')) continue;
       const absolute = path.resolve(workspacePath, relativePath);
       const excluded = excludedDirectories.some(root => absolute === path.resolve(root) || absolute.startsWith(`${path.resolve(root)}${path.sep}`));
-      if (!excluded) files[relativePath] = { status: gitFileStatus(code), fingerprint: await fileFingerprint(workspacePath, relativePath) };
-      if (code.includes('R') || code.includes('C')) index += 1;
+      if (!excluded) files[relativePath] = { status: gitFileStatus(code), ...await fileFingerprint(workspacePath, relativePath),
+        ...(renamedFrom ? { renamedFrom } : {}) };
     }
-    return { headSha: head.stdout.trim(), files };
+    return { headSha: head.stdout.trim(), ...(gitPrefix ? { gitPrefix } : {}), files };
   } catch {
     try { return await snapshotPlainWorkspace(workspacePath, excludedDirectories); }
     catch { return { headSha: '', files: {} }; }
@@ -422,32 +436,50 @@ async function captureJiraDevVerification(run: AgentRun) {
 }
 
 export async function changedFilesSince(workspacePath: string, before: GitWorkspaceSnapshot, excludedDirectories: string[] = []): Promise<AgentChangedFile[]> {
+  return (await workspaceChanges(workspacePath, before, excludedDirectories)).files;
+}
+
+async function workspaceChanges(workspacePath: string, before: GitWorkspaceSnapshot, excludedDirectories: string[]) {
   excludedDirectories = childSnapshotExclusions(workspacePath, excludedDirectories);
   const after = await snapshotGitWorkspace(workspacePath, excludedDirectories);
   const changed = new Map<string, AgentChangedFile['status']>();
+  const renames = new Map<string, string>();
+  const priorRenameTargets = new Map(Object.entries(before.files).flatMap(([name, file]) =>
+    file.renamedFrom ? [[file.renamedFrom, name] as const] : []));
   for (const relativePath of new Set([...Object.keys(before.files), ...Object.keys(after.files)])) {
-    const previous = before.files[relativePath];
+    const previous = Object.hasOwn(before.files, relativePath) ? before.files[relativePath] : undefined;
     const current = after.files[relativePath];
-    if (!previous || !current || previous.status !== current.status || previous.fingerprint !== current.fingerprint) {
+    if (!previous || !current || previous.status !== current.status || previous.fingerprint !== current.fingerprint
+      || (previous.mode !== undefined && current.mode !== undefined && previous.mode !== current.mode)) {
       changed.set(relativePath, !previous ? (after.headSha ? current!.status : 'added') : !current ? 'deleted' : current.status);
+      if (!previous && current?.renamedFrom) renames.set(relativePath, priorRenameTargets.get(current.renamedFrom) || current.renamedFrom);
     }
   }
   if (before.headSha && after.headSha && before.headSha !== after.headSha) {
     try {
-      const diff = await exec('git', ['-C', workspacePath, 'diff', '--name-status', '--find-renames', before.headSha, after.headSha],
+      const diff = await exec('git', ['-C', workspacePath, 'diff', '--name-status', '-z', '--find-renames', '--relative', before.headSha, after.headSha, '--', '.'],
         { timeout: 5000, maxBuffer: 2_000_000 });
-      for (const line of diff.stdout.split(/\r?\n/).filter(Boolean)) {
-        const [code, ...paths] = line.split('\t');
-        const relativePath = paths.at(-1);
-        if (relativePath) changed.set(relativePath, gitFileStatus(code));
+      const entries = diff.stdout.split('\0');
+      for (let index = 0; index < entries.length - 1;) {
+        const code = entries[index++];
+        const oldPath = code.startsWith('R') || code.startsWith('C') ? entries[index++] : undefined;
+        const relativePath = entries[index++];
+        if (!relativePath) continue;
+        changed.set(relativePath, gitFileStatus(code));
+        if (code.startsWith('R') && oldPath && !Object.hasOwn(before.files, relativePath)) {
+          renames.set(relativePath, priorRenameTargets.get(oldPath) || oldPath);
+        }
       }
     } catch { /* Dirty workspace evidence remains available when the commit diff cannot be read. */ }
   }
-  return [...changed.entries()].filter(([relativePath]) => {
+  for (const source of renames.values()) if (changed.get(source) === 'deleted') changed.delete(source);
+  const files = [...changed.entries()].filter(([relativePath]) => {
     const absolute = path.resolve(workspacePath, relativePath);
-    return !excludedDirectories.some(root => absolute === root || absolute.startsWith(`${root}${path.sep}`));
+    return relativePath !== '.delivery-artifacts' && !relativePath.startsWith('.delivery-artifacts/')
+      && !excludedDirectories.some(root => absolute === root || absolute.startsWith(`${root}${path.sep}`));
   }).map(([relativePath, status]) => ({ path: relativePath, status }))
     .sort((left, right) => left.path.localeCompare(right.path)).slice(0, 300);
+  return { files, renames };
 }
 
 export async function resultArtifactFiles(workspacePath: string, result: string): Promise<AgentChangedFile[]> {
@@ -651,7 +683,9 @@ async function runCli(provider: AgentProvider, binary: string, args: string[], c
     let completedResult = provider !== 'claude';
     let claudeSessionId = context.resumeSessionId || '';
     let confirmedClaudeSession = false;
+    let confirmedCursorResume = false;
     let stopped = false;
+    let receivedEvent = false;
     let failure = '';
     let childClosed = false;
     let pidRecording: Promise<void> = Promise.resolve();
@@ -680,6 +714,7 @@ async function runCli(provider: AgentProvider, binary: string, args: string[], c
         let event: Record<string, unknown>;
         try { event = JSON.parse(line) as Record<string, unknown>; }
         catch { return; /* CLI diagnostics can share stdout; never echo unparsed content to the page. */ }
+      receivedEvent = true;
         outputProcessing = outputProcessing.then(async () => {
           if (failure || stopped) return;
           context.onUsage?.(event);
@@ -688,6 +723,12 @@ async function runCli(provider: AgentProvider, binary: string, args: string[], c
             if (claudeSessionId && claudeSessionId !== sessionId) { terminate('Claude Code 返回的会话 ID 与本轮不一致，已停止运行'); return; }
             claudeSessionId = sessionId;
             confirmedClaudeSession = true;
+          }
+          if (provider === 'cursor' && context.returningToNativeSession && sessionId) {
+            if (sessionId !== context.resumeSessionId) {
+              terminate('Cursor 返回的原生会话 ID 与请求不一致，已停止运行'); return;
+            }
+            confirmedCursorResume = true;
           }
           if (sessionId) await context.onSession(sessionId);
           if (provider === 'claude' && event.type === 'result') {
@@ -745,9 +786,16 @@ async function runCli(provider: AgentProvider, binary: string, args: string[], c
       context.signal.removeEventListener('abort', stop);
       if (stopped || context.signal.aborted) { reject(new Error('运行已停止')); return; }
       if (failure) { reject(new Error(failure)); return; }
+      if (code !== 0 && provider === 'cursor' && context.returningToNativeSession && context.resumeSessionId && !receivedEvent
+        && diagnostic.split(/\r?\n/).some(line => isMissingNativeSession(line, context.resumeSessionId!, provider))) {
+        reject(new NativeSessionUnavailableError()); return;
+      }
       if (code !== 0) { reject(new Error(agentCliFailureMessage(provider, code, diagnostic))); return; }
       if (!completedResult) { reject(new Error('Claude Code 未返回本轮成功结束记录，请核对已有结果后重试')); return; }
       if (provider === 'claude' && !confirmedClaudeSession) { reject(new Error('Claude Code 未返回可确认的会话 ID')); return; }
+      if (provider === 'cursor' && context.returningToNativeSession && !confirmedCursorResume) {
+        reject(new Error('Cursor 未确认已续接请求的原生会话，请核对本轮结果后再继续')); return;
+      }
       resolve(result || 'CLI 已完成本轮任务，但没有返回可展示的最终文本。');
     });
     child.stdin!.on('error', () => { /* close/error reports the actual failure */ });
@@ -792,7 +840,7 @@ export function createCodexAdapter(binary = cliBinary, browserRootDirectory?: st
       defaultModel: catalog?.defaultModel ?? '', configuredModel: catalog?.configuredModel,
       configuredServiceTier: catalog?.configuredServiceTier, writable: true };
   });
-  return { id: 'codex', health,
+  return { id: 'codex', health, nativeSessionScope: () => nativeSessionScope('codex', binary),
     execute: async (context) => {
       const run = context.run;
       const scope = run.team ? `team:${run.team.taskId}:${run.team.profileId}`
@@ -852,7 +900,7 @@ export function createCursorAdapter(binary = cursorBinary, taskFlowConfigRoot?: 
         : `暂时无法确认登录状态：Cursor CLI ${loginTimedOut ? '登录检查超时' : '登录检查失败'}，请刷新连接状态后重试`,
       modes: ['agent', 'plan', 'ask'] as AgentRunMode[], models, defaultModel: 'auto', writable: true };
   });
-  return { id: 'cursor', health,
+  return { id: 'cursor', health, nativeSessionScope: () => nativeSessionScope('cursor', binary),
     execute: async (context) => {
       let environment: Record<string, string> | undefined;
       if (context.run.task?.sourceId?.startsWith('taskflow:')) {
@@ -1077,6 +1125,7 @@ export async function createAgentRuntimeService(directory: string, options: Serv
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
   directory = await fs.realpath(directory);
   const snapshotExclusions = [directory, ...(options.workspaceSnapshotExclusions || [])];
+  const turnPreviews = createAgentTurnPreviewStore(directory);
   const file = path.join(directory, 'agent-runs.json');
   const customModelFile = path.join(directory, 'custom-models.json');
   // 密钥独立保存在本机，不进入模型目录、运行记录或通用状态备份。
@@ -1188,16 +1237,19 @@ export async function createAgentRuntimeService(directory: string, options: Serv
   let conversationWorkspaces: Record<string, AgentConversationWorkspace> = {};
   let codexSync: CodexSyncState = { syncedAt: '', total: 0, hidden: 0 };
   let hiddenCodexSessionIds = new Set<string>();
-  // 同步只刷新工作台已关联的线程；目录、标题和旧同步缓存都不能证明个人会话属于工作台。
-  function filterCodexSessions(sessions: CodexSessionSummary[]) {
-    const linkedIds = new Set(runs.filter((run) => run.provider === 'codex' || run.providerSwitch?.from === 'codex')
+  // 目录、标题和旧同步缓存都不能证明个人会话属于工作台。
+  function linkedCodexSessionIds() {
+    return new Set(runs.filter((run) => run.provider === 'codex' || run.providerSwitch?.from === 'codex')
       .flatMap((run) => [run.originSessionId,
         ...(run.provider === 'codex' ? [run.sessionId, run.continuation?.sessionId] : [])]).filter(Boolean));
+  }
+  function filterCodexSessions(sessions: CodexSessionSummary[]) {
+    const linkedIds = linkedCodexSessionIds();
     return sessions.filter((session) => linkedIds.has(session.id) && !session.archived && !hiddenCodexSessionIds.has(session.id));
   }
   try {
-    const parsed = await readState<AgentRun[]>(file);
-    runs = Array.isArray(parsed) ? parsed.map((run) => ({ ...run, model: cleanText(run.model, 100),
+    const parsed = await readState<Array<AgentRun & { codexSubagents?: unknown }>>(file);
+    runs = Array.isArray(parsed) ? parsed.map(({ codexSubagents: _legacyProgress, ...run }) => ({ ...run, model: cleanText(run.model, 100),
       accessMode: run.accessMode === 'full' && run.mode === 'agent' ? 'full' : 'workspace',
       serviceTier: run.serviceTier === 'default' || run.serviceTier === 'priority' ? run.serviceTier : undefined,
       reasoningEffort: cleanText(run.reasoningEffort, 20) as AgentReasoningEffort | '', attachments: storedAttachments(run.attachments), liveInputReady: false,
@@ -1406,6 +1458,7 @@ export async function createAgentRuntimeService(directory: string, options: Serv
     supplementsLen: number;
     compact: string;
   }>();
+  let persistedPreviewRuns = new Set(runs.filter(run => run.frozenFilePreviews).map(run => run.id));
   const serializeStoredRun = (item: AgentRun) => {
     if (!['completed', 'failed', 'cancelled'].includes(item.status) || item.pid !== null
       || active.has(item.id) || waiting.has(item.id)) {
@@ -1454,6 +1507,9 @@ export async function createAgentRuntimeService(directory: string, options: Serv
     const preformattedJson = compactLength > largeStateBytes ? `[${parts.join(',')}]\n` : undefined;
     await writeState(file, stored, preformattedJson);
     const storedIds = new Set(stored.map(run => run.id));
+    const removedPreviews = [...persistedPreviewRuns].filter(id => !storedIds.has(id));
+    persistedPreviewRuns = new Set(stored.filter(run => run.frozenFilePreviews).map(run => run.id));
+    await Promise.all(removedPreviews.map(id => turnPreviews.remove(id).catch(() => {})));
     for (const id of serializedRunCache.keys()) if (!storedIds.has(id)) serializedRunCache.delete(id);
     for (const id of readyResultVersions.keys()) if (!storedIds.has(id)) readyResultVersions.delete(id);
     for (const run of stored) {
@@ -1517,6 +1573,26 @@ export async function createAgentRuntimeService(directory: string, options: Serv
     return runs.filter(run => run.recovery && (run.status === 'interrupted' || ['completed', 'resumed'].includes(run.recovery.state)))
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt)).map(exposeResultReady);
   }
+  async function captureTurnStart(run: AgentRun) {
+    if (run.mode !== 'agent') return undefined;
+    const before = await snapshotGitWorkspace(run.workspacePath, snapshotExclusions);
+    await turnPreviews.captureBefore(run.id, run.workspacePath, before).catch(() => {});
+    return before;
+  }
+
+  async function captureTurnChanges(run: AgentRun, before: GitWorkspaceSnapshot, result: string, continueOriginal: boolean, pending = false) {
+    const [{ files, renames }, generated] = await Promise.all([
+      workspaceChanges(run.workspacePath, before, snapshotExclusions),
+      resultArtifactFiles(run.workspacePath, result),
+    ]);
+    const allFiles = mergeChangedFiles(files, [...generated, ...(continueOriginal ? run.changedFiles || [] : [])]);
+    if (run.frozenFilePreviews && !pending) {
+      const statuses = await turnPreviews.finish(run.id, run.workspacePath, before, allFiles, renames, continueOriginal).catch(() => undefined);
+      return allFiles.map(file => ({ ...file, status: statuses?.get(file.path) || file.status }));
+    }
+    return allFiles;
+  }
+
   async function reconcileRun(run: AgentRun) {
     if (!run.recovery || run.recovery.state === 'resumed' || run.status !== 'interrupted') return run;
     const before = run.recovery.workspaceBefore;
@@ -1524,8 +1600,8 @@ export async function createAgentRuntimeService(directory: string, options: Serv
     const update = await checkAgentRecovery(run, codexSessionSource, undefined, options.readCodexDesktopSnapshot);
     if (desktopObservation && (update.status === 'completed'
       || update.recovery?.stopRequested && ['failed', 'cancelled'].includes(update.status))) {
-      run.changedFiles = mergeChangedFiles(before ? await changedFilesSince(run.workspacePath, before, snapshotExclusions) : run.changedFiles || [],
-        await resultArtifactFiles(run.workspacePath, update.result));
+      run.changedFiles = before ? await captureTurnChanges(run, before, update.result, !!run.continuedAt)
+        : mergeChangedFiles(run.changedFiles || [], await resultArtifactFiles(run.workspacePath, update.result));
       if (update.recovery) delete update.recovery.workspaceBefore;
     }
     if (run.status === update.status && run.result === update.result && run.error === update.error
@@ -1645,10 +1721,23 @@ export async function createAgentRuntimeService(directory: string, options: Serv
         if (configuredNativeTools(run)) run.nativeConfiguredTools = true;
         // 宿主派发默认信任本轮实际目录，也覆盖旧队列和重启后续接的运行。
         if (run.provider === 'cursor') run.cursorTrustPath = run.workspacePath;
+        const scope = await adapter.nativeSessionScope?.().catch(() => undefined);
+        const returnSource = !resumeSessionId && !forkSessionId && !continueOriginal
+          ? await nativeReturnSource(run, scope) : undefined;
+        if (returnSource) resumeSessionId = returnSource.sessionId;
+        const previousScope = resumeSessionId && (returnSource || runs.some(item => item.id !== run.id
+          && item.provider === run.provider && item.sessionId === resumeSessionId
+          && conversationIdFor(item) === conversationIdFor(run) && item.nativeSessionScope === scope));
+        if (scope && (!resumeSessionId || previousScope)) run.nativeSessionScope = scope;
+        else delete run.nativeSessionScope;
         if (run.workspaceTransition && !resumeSessionId) {
           run.workspaceTransition.context = await providerSwitchContext(run, '切换工作区后');
-        } else if (run.providerSwitch && !resumeSessionId) {
-          run.providerSwitch.context = await providerSwitchContext(run);
+        } else if (run.providerSwitch && (!resumeSessionId || returnSource)) {
+          run.providerSwitch.context = returnSource
+            ? await providerSwitchContext(run, '跨执行器交接', returnSource.id)
+            : await providerSwitchContext(run);
+          if (returnSource) run.providerSwitch.resumedFromRunId = returnSource.id;
+          else delete run.providerSwitch.resumedFromRunId;
         }
         if (run.accessTransition && !resumeSessionId) {
           run.accessTransition.context = await providerSwitchContext(run, '权限变化后新建原生会话');
@@ -1659,8 +1748,9 @@ export async function createAgentRuntimeService(directory: string, options: Serv
           : run.workspaceTransition ? '已切换工作区，正在启动新执行会话'
           : run.accessTransition ? '访问权限已变化，已保留聊天背景并启动新的原生会话'
           : run.providerSwitch ? `已切换到 ${providerNames[run.provider]} CLI${run.model ? ` · ${run.model}` : ''}` : '正在启动 Agent');
+        if (run.mode === 'agent') run.frozenFilePreviews = true;
         await persist();
-        workspaceBefore = run.mode === 'agent' ? await snapshotGitWorkspace(run.workspacePath, snapshotExclusions) : undefined;
+        workspaceBefore = await captureTurnStart(run);
         const attachmentReadDirectories: string[] = [...(run.team?.artifactDirectories || [])];
         if (run.provider === 'claude' || run.provider === 'antigravity') {
           for (const previous of runs.filter(item => item.id !== run.id && item.provider === run.provider
@@ -1674,8 +1764,9 @@ export async function createAgentRuntimeService(directory: string, options: Serv
             if (await fs.lstat(materials).then(stat => stat.isDirectory(), () => false)) attachmentReadDirectories.push(materials);
           }
         }
-        const result = await adapter.execute({ run, resumeSessionId, continueOriginal, forkSessionId, forkLastTurnId, imagePaths, fileAttachments,
-          onBeforeTurn: async () => { workspaceBefore = run.mode === 'agent' ? await snapshotGitWorkspace(run.workspacePath, snapshotExclusions) : undefined; },
+        const execution: ExecutionContext = { run, resumeSessionId, continueOriginal, forkSessionId, forkLastTurnId, imagePaths, fileAttachments,
+          returningToNativeSession: !!returnSource,
+          onBeforeTurn: async () => { workspaceBefore = await captureTurnStart(run); },
           onUsage: event => {
             const usage = extractAgentUsage(run.provider, event);
             if (!usage) return;
@@ -1715,7 +1806,21 @@ export async function createAgentRuntimeService(directory: string, options: Serv
             run.liveInputReady = !!steer;
             notify(run);
           },
-        });
+        };
+        let result: string;
+        try {
+          result = await adapter.execute(execution);
+        } catch (error) {
+          if (!(error instanceof NativeSessionUnavailableError) || !returnSource || !run.providerSwitch
+            || controller.signal.aborted || run.sessionId || run.codexTurnId || run.toolExecutionStarted || run.result) throw error;
+          run.nativeSessionScope = await adapter.nativeSessionScope?.().catch(() => undefined);
+          run.providerSwitch.context = await providerSwitchContext(run);
+          delete run.providerSwitch.resumedFromRunId;
+          addEvent(run, 'lifecycle', '原生会话已不可用，已保留交接背景并启动新会话');
+          await persist();
+          if (controller.signal.aborted) throw error;
+          result = await adapter.execute({ ...execution, resumeSessionId: '', returningToNativeSession: false });
+        }
         if (result || !continueOriginal) run.result = result;
         run.status = 'completed';
         run.error = '';
@@ -1732,12 +1837,7 @@ export async function createAgentRuntimeService(directory: string, options: Serv
         liveInputs.delete(run.id);
         run.liveInputReady = false;
         if (workspaceBefore) {
-          const [workspaceFiles, generatedFiles] = await Promise.all([
-            changedFilesSince(run.workspacePath, workspaceBefore, snapshotExclusions),
-            resultArtifactFiles(run.workspacePath, run.result),
-          ]);
-          const previousFiles = continueOriginal ? run.changedFiles || [] : [];
-          run.changedFiles = mergeChangedFiles(workspaceFiles, [...generatedFiles, ...previousFiles]);
+          run.changedFiles = await captureTurnChanges(run, workspaceBefore, run.result, continueOriginal, observingDesktop(run));
         }
         await captureJiraDevVerification(run);
         run.usage ||= emptyAgentUsage(run.provider);
@@ -1959,18 +2059,42 @@ export async function createAgentRuntimeService(directory: string, options: Serv
     return current;
   }
 
-  async function providerSwitchContext(run: AgentRun, reason = '跨执行器交接') {
+  function previousConversationRuns(run: AgentRun) {
     const ordered = [...runs].reverse().filter(item => conversationIdFor(item) === conversationIdFor(run))
       .sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt));
     const index = ordered.findIndex(item => item.id === run.id);
-    const previous = ordered.slice(0, index < 0 ? ordered.length : index);
+    return ordered.slice(0, index < 0 ? ordered.length : index);
+  }
+
+  async function nativeReturnSource(run: AgentRun, scope: string | undefined) {
+    if (!scope || !run.providerSwitch || run.workspaceTransition || run.accessTransition
+      || run.team || run.task || !['codex', 'cursor'].includes(run.provider)) return;
+    const previous = previousConversationRuns(run);
+    const source = previous.reverse().find(item => item.provider === run.provider && (item.sessionId || item.toolExecutionStarted));
+    if (!source || source.status !== 'completed' || !source.resultReady || !sessionPattern.test(source.sessionId)
+      || source.nativeSessionScope !== scope || source.mode !== run.mode || source.accessMode !== run.accessMode
+      || source.branch !== run.branch || !equalWorkspacePaths(usedWorkspacePaths(source), usedWorkspacePaths(run))
+      || run.branch === 'detached HEAD' && source.headSha !== run.headSha
+      || source.requiresIsolation || source.continuation || source.team || source.task) return;
+    const accessSource = nativeAccessSource(source);
+    if (accessSource.mode !== run.mode || accessSource.accessMode !== run.accessMode) return;
+    if (runs.some(item => item.provider === run.provider && item.sessionId === source.sessionId
+      && (conversationIdFor(item) !== conversationIdFor(run) || active.has(item.id) || observingDesktop(item)))) return;
+    const workspace = await workspaceIdentity(run.workspacePath).catch(() => undefined);
+    if (workspace?.workspacePath === run.workspacePath && workspace.branch === run.branch
+      && (run.branch !== 'detached HEAD' || workspace.headSha === run.headSha)) return source;
+  }
+
+  async function providerSwitchContext(run: AgentRun, reason = '跨执行器交接', afterRunId = '') {
+    const before = previousConversationRuns(run);
+    const previous = afterRunId ? before.slice(before.findIndex(item => item.id === afterRunId) + 1) : before;
     const currentWorkspaces = usedWorkspacePaths(run);
     const hasOtherWorkspace = previous.some(item => !equalWorkspacePaths(usedWorkspacePaths(item), currentWorkspaces));
     const history = previous.map(item => ({ user: [item.objective, ...(item.supplements || []).map(value => value.objective)].join('\n'),
       assistant: item.result, status: item.status as string }));
     const importedInputs: AgentUserInput[] = [];
     const importedTurns: HandoffTurnInput[] = [];
-    if (history.length < 6 && run.originSessionId && codexSessions.some(item => item.id === run.originSessionId)
+    if (!afterRunId && history.length < 6 && run.originSessionId && codexSessions.some(item => item.id === run.originSessionId)
       && !hiddenCodexSessionIds.has(run.originSessionId)) {
       const detail = await codexSession(run.originSessionId);
       const localTurns = new Set(previous.map(item => item.codexTurnId).filter(Boolean));
@@ -2186,6 +2310,9 @@ export async function createAgentRuntimeService(directory: string, options: Serv
       && [item.workspacePath, ...(extraWritableWorkspaces(item) || [])].includes(identity.workspacePath));
     if (input.isolateWorkspace && selectedWorkspace) {
       const isolated = await isolatedWorkspaceCreator(identity.workspacePath, requestedBranch, runId, runOptions.branchPrefix);
+      if (forkSessionId && (!isolated.isolatedWorkspace || isolated.workspacePath === identity.workspacePath)) {
+        throw new Error('并行开发需要可创建独立分支的 Git 工作区');
+      }
       identity = isolated;
       workspaceMetadata = { sourceWorkspacePath: taskWorkspaceMetadata?.sourceWorkspacePath ?? isolated.sourceWorkspacePath,
         baseBranch: taskWorkspaceMetadata?.baseBranch ?? isolated.baseBranch, isolatedWorkspace: isolated.isolatedWorkspace };
@@ -3154,7 +3281,7 @@ export async function createAgentRuntimeService(directory: string, options: Serv
   }
 
   async function fork(runId: string, objective: string, model?: string, reasoningEffort?: AgentReasoningEffort | '', attachmentIds: string[] = [],
-    serviceTier?: AgentServiceTier, requestedMode?: AgentRunMode) {
+    serviceTier?: AgentServiceTier, requestedMode?: AgentRunMode, isolateWorkspace = false) {
     const source = runs.find((run) => run.id === runId);
     if (!source) throw new Error('找不到该 Agent 运行');
     assertConversationWorkspaceApplied(source);
@@ -3167,16 +3294,19 @@ export async function createAgentRuntimeService(directory: string, options: Serv
       .filter(run => hasCompletedCodexForkPoint(run) && run.workspacePath === workspacePath
         && run.createdAt <= source.createdAt && conversationIdFor(run) === conversationId)
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
+    if (isolateWorkspace && !anchor) throw new Error('并行开发需要至少一个已完成的 Codex 轮次来继承上下文');
     const writeJob: SchedulerJob = { id: '', provider: 'codex', workspacePath, writer: true, manual: true };
-    const mode = requestedMode ?? (source.mode === 'agent' && canSchedule(writeJob, activeSchedulerJobs()).reason === 'workspace_busy'
-      ? 'ask' : source.mode);
+    const mode = isolateWorkspace ? 'agent' : requestedMode ?? (source.mode === 'agent'
+      && canSchedule(writeJob, activeSchedulerJobs()).reason === 'workspace_busy' ? 'ask' : source.mode);
     return start({ provider: 'codex', mode, model: model === undefined ? source.model : model,
       reasoningEffort: reasoningEffort === undefined ? source.reasoningEffort : reasoningEffort,
       serviceTier: serviceTier === undefined ? source.serviceTier : serviceTier,
-      objective, attachmentIds, accessMode: mode === 'agent' ? source.accessMode : 'workspace', workspacePath },
+      objective, attachmentIds, accessMode: mode === 'agent' && !isolateWorkspace ? source.accessMode : 'workspace',
+      workspacePath, isolateWorkspace },
     '', '', '', anchor?.sessionId, 'append', undefined,
-    { sourceWorkspacePath, baseBranch, isolatedWorkspace },
-    { forkLastTurnId: anchor?.codexTurnId, additionalWorkspacePaths: source.additionalWorkspacePaths });
+    isolateWorkspace ? undefined : { sourceWorkspacePath, baseBranch, isolatedWorkspace },
+    { forkLastTurnId: anchor?.codexTurnId, branchPrefix: 'feature/',
+      additionalWorkspacePaths: isolateWorkspace ? undefined : source.additionalWorkspacePaths });
   }
 
   async function addCustomModel(input: AgentCustomModelInput) {
@@ -3282,6 +3412,7 @@ export async function createAgentRuntimeService(directory: string, options: Serv
       if (target !== run.workspacePath && !target.startsWith(`${run.workspacePath}${path.sep}`)) {
         throw new Error('文件路径超出运行工作区');
       }
+      if (run.frozenFilePreviews && file.status !== 'generated') return turnPreviews.preview(runId, file);
       const baseRef = /^[0-9a-f]{7,64}$/i.test(run.headSha || '') ? run.headSha : 'HEAD';
       const diffResult = await exec('git', ['-C', run.workspacePath, '--literal-pathspecs', 'diff', '--no-ext-diff', '--no-textconv', '--no-color', baseRef, '--', file.path],
         { timeout: 10_000, maxBuffer: 4 * 1024 * 1024 }).catch(() => ({ stdout: '' }));
@@ -3655,10 +3786,15 @@ export async function createAgentRuntimeService(directory: string, options: Serv
     return codexSync;
   }
 
-  async function codexSession(id: string) {
-    if (hiddenCodexSessionIds.has(id)) throw new Error('该 Codex 会话已从 Delivery Workspace 删除');
-    if (!codexSessions.some((session) => session.id === id)) throw new Error('该 Codex 会话尚未同步');
-    const session = codexSessionDetails[id] || await resolveRenamedWorkspace(await codexSessionSource.session(id));
+  async function codexSession(id: string, fresh = false) {
+    if (hiddenCodexSessionIds.has(id)) throw Object.assign(new Error('该 Codex 会话已从 Delivery Workspace 删除'), { statusCode: 404 });
+    if (!(fresh ? linkedCodexSessionIds().has(id) : codexSessions.some((session) => session.id === id))) {
+      throw Object.assign(new Error('该 Codex 会话尚未同步'), { statusCode: 404 });
+    }
+    const cached = codexSessionDetails[id];
+    const read = () => codexSessionSource.session(id).then(resolveRenamedWorkspace);
+    const session = fresh ? await read().catch(error => { if (cached) return cached; throw error; }) : cached || await read();
+    if (session.archived) throw Object.assign(new Error('该 Codex 会话已归档'), { statusCode: 404 });
     return { ...session, projectWorkspacePath: await resolveProject(session) };
   }
 
@@ -3835,8 +3971,13 @@ export async function createAgentRuntimeService(directory: string, options: Serv
       continuedAt: continueOriginal ? now : run.continuedAt,
       recovery: run.recovery?.stopRequested && run.recovery.nativeObservation === 'codex-desktop' ? undefined : run.recovery,
       status: 'queued', pid: null, error: '' };
-    // 续接同一 Codex 会话会产生新的 turn；旧轮次只用于历史核对，不能限制本轮回写。
-    if (run.provider === 'codex') updates.codexTurnId = undefined;
+    if (run.provider === 'codex') {
+      if (run.sessionId && run.codexTurnId) {
+        updates.codexPriorTurnIds = [...new Set([...(run.codexPriorTurnIds || []), run.codexTurnId])];
+      }
+      // 新原生轮次仍通过 onTurn 回写为当前轮次。
+      updates.codexTurnId = undefined;
+    }
     const queued = { ...run, ...updates };
     addEvent(queued, 'lifecycle', message, false);
     await persist(queued);
@@ -3941,6 +4082,60 @@ export async function createAgentRuntimeService(directory: string, options: Serv
     })) };
   }
 
+  function summarizeRun(run: AgentRun) {
+    return projectAgentRunSummary(run, conversationIdFor(run));
+  }
+
+  function conversationSnapshot(): AgentRuntimeDashboard {
+    return { ...snapshot(), runs: runs.map(summarizeRun) };
+  }
+
+  function conversationHistory(id: string, before?: string): AgentConversationHistoryPage {
+    // 会话 ID 优先。旧运行链接仍能进入所属会话；共享的 Codex 原生线程不能合并多个分叉。
+    const local = runs.find(run => conversationIdFor(run) === id) || runs.find(run => run.id === id);
+    const codexIds = local ? [] : [...new Set(runs.filter(run => run.originSessionId === id
+      || run.provider === 'codex' && (run.sessionId === id || run.continuation?.sessionId === id)).map(conversationIdFor))];
+    const conversationId = local ? conversationIdFor(local) : codexIds.length === 1 ? codexIds[0] : id;
+    const history = runs.filter(run => conversationIdFor(run) === conversationId);
+    const positions = new Map(history.map((run, index) => [run.id, index]));
+    const anchor = before ? positions.get(before) : undefined;
+    if (before && anchor === undefined) throw Object.assign(new Error('会话历史已更新，请重新加载后继续'), { statusCode: 409 });
+    const start = anchor === undefined ? 0 : anchor + 1;
+    let end = Math.min(start + 16, history.length);
+    if (!before) {
+      // 正在执行或待操作的轮次即使较旧，也留在首屏，保留队列操作和暂停恢复入口。
+      end = history.reduce((limit, run, index) => activeStatuses.has(run.status) || run.pausedForEdit || observingDesktop(run)
+        ? Math.max(limit, index + 1) : limit, end);
+    }
+    for (let index = start; index < end; index++) {
+      const run = history[index];
+      const target = run.revisesRunId || run.recoveryOfRunId || run.roundContinuationOfRunId;
+      const parent = target ? positions.get(target) : undefined;
+      if (parent !== undefined) end = Math.max(end, parent + 1);
+    }
+    const page = history.slice(start, end).map(run => run.conversationId ? run : { ...run, conversationId });
+    return { revision, runs: page, olderCursor: end < history.length ? history[end - 1].id : null };
+  }
+
+  function searchConversationHistory(query: string) {
+    const term = query.trim().toLowerCase();
+    const matches = new Map<string, string>();
+    for (const run of runs) {
+      const id = conversationIdFor(run);
+      if (!term || matches.has(id)) continue;
+      for (const field of [run.objective, run.result, run.error]) {
+        if (!field) continue;
+        const index = field.toLowerCase().indexOf(term);
+        if (index < 0) continue;
+        const start = Math.max(0, index - 20), end = Math.min(field.length, index + Math.max(42, Math.min(term.length, 80)));
+        const text = field.slice(start, end).replace(/\s+/g, ' ').trim();
+        matches.set(id, `${start ? '…' : ''}${text}${end < field.length ? '…' : ''}`);
+        break;
+      }
+    }
+    return { conversationIds: [...matches.keys()], snippets: Object.fromEntries(matches) };
+  }
+
   async function dashboard(force = false): Promise<AgentRuntimeDashboard> {
     return snapshot(await runtimeStatuses(force));
   }
@@ -4031,7 +4226,8 @@ export async function createAgentRuntimeService(directory: string, options: Serv
     return entries;
   }
 
-  return { dashboard, snapshot, runtimeStatuses, runtimeStatusResult, runtimeStatusVersion: () => runtimeStatusVersion, withProviderMaintenance, recoveryRuns,
+  return { dashboard, snapshot, conversationSnapshot, conversationHistory, searchConversationHistory, summarizeRun,
+    runtimeStatuses, runtimeStatusResult, runtimeStatusVersion: () => runtimeStatusVersion, withProviderMaintenance, recoveryRuns,
     sessionWorkspaces,
     activeWorkspacePaths: () => runs.filter(run => activeStatuses.has(run.status) || observingDesktop(run))
       .flatMap(run => [...usedWorkspacePaths(run), run.sourceWorkspacePath, ...(run.team?.workspacePaths || [])].filter((value): value is string => !!value)),
@@ -4169,7 +4365,8 @@ export async function createAgentRuntimeService(directory: string, options: Serv
     retry: (runId: string, cursorTrustPath?: string, selection?: Partial<Pick<AgentRun, 'mode' | 'accessMode'>>) => exclusive(() => retry(runId, cursorTrustPath, selection)),
     resumeCodexSession: (sessionId: string, objective: string, model?: string, reasoningEffort?: AgentReasoningEffort | '', attachmentIds: string[] = [], accessMode: AgentAccessMode = 'full', serviceTier?: AgentServiceTier) => exclusive(() => resumeCodexSession(sessionId, objective, model, reasoningEffort, attachmentIds, accessMode, serviceTier)),
     fork: (runId: string, objective: string, model?: string, reasoningEffort?: AgentReasoningEffort | '', attachmentIds: string[] = [],
-      serviceTier?: AgentServiceTier, mode?: AgentRunMode) => exclusive(() => fork(runId, objective, model, reasoningEffort, attachmentIds, serviceTier, mode)),
+      serviceTier?: AgentServiceTier, mode?: AgentRunMode, isolateWorkspace?: boolean) =>
+      exclusive(() => fork(runId, objective, model, reasoningEffort, attachmentIds, serviceTier, mode, isolateWorkspace)),
     addCustomModel: (input: AgentCustomModelInput) => exclusive(() => addCustomModel(input)),
     removeCustomModel: (id: string) => exclusive(() => removeCustomModel(id)),
     workspaceFiles,

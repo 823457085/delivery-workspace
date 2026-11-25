@@ -5,7 +5,8 @@ import fs from 'node:fs';
 import ts from 'typescript';
 import { computed, effectScope, shallowRef } from 'vue';
 import { QueryClient, useQuery } from '@tanstack/vue-query';
-import { createRuntimeRefresh, createRuntimeStreamState } from '../src/features/agent-workbench/runtime-stream-state.js';
+import { agentConversationIndexKey, createRuntimeRefresh, createRuntimeStreamState, sameAgentRunSummary } from '../src/features/agent-workbench/runtime-stream-state.js';
+import { useAgentConversationHistories } from '../src/features/agent-workbench/useAgentConversationHistories.js';
 
 function fixture() {
   const source = fs.readFileSync(new URL('../src/features/agent-workbench/useAgentRuntimes.ts', import.meta.url), 'utf8');
@@ -18,7 +19,8 @@ function fixture() {
   const messages: { type: string; message: string }[] = [];
   const queryOptions: Parameters<typeof useQuery>[0][] = [];
   const unmounted: (() => void)[] = [];
-  const dependencies = { computed, shallowRef, createRuntimeRefresh, createRuntimeStreamState,
+  const dependencies = { computed, shallowRef, agentConversationIndexKey, createRuntimeRefresh, createRuntimeStreamState,
+    sameAgentRunSummary, useAgentConversationHistories,
     useQuery: (options: Parameters<typeof useQuery>[0]) => { queryOptions.push(options); return useQuery(options, client); }, useQueryClient: () => client,
     onMounted: () => {}, onUnmounted: (fn: () => void) => unmounted.push(fn),
     ElMessage: { success: (message: string) => messages.push({ type: 'success', message }),
@@ -40,7 +42,7 @@ const snapshot = (remainingPercent: number) => ({ revision: 1, runtimes: [], run
 test('首次慢查询期间点击立即强制刷新；连点只发一次，迟到结果不覆盖新额度', async () => {
   const f = fixture();
   try {
-    assert.equal(f.requests[0].url, '/api/agent-runtimes?status=0');
+    assert.equal(f.requests[0].url, '/api/agent-runtimes?status=0&view=conversations');
     assert.equal(f.requests[1].url, '/api/agent-runtimes/status');
     f.requests[0].resolve(snapshot(0));
     const refreshed = f.state.refreshStatus();
@@ -147,7 +149,7 @@ test('保存和移除模型立即强制回读状态，初次慢目录回包不�
     const adding = f.state.addCustomModel({ provider: 'codex', modelId: 'custom-model', label: 'L123' });
     assert.equal(f.requests[2].url, '/api/agent-runtimes/models');
     f.requests[2].resolve({}); await flush();
-    assert.equal(f.requests[3].url, '/api/agent-runtimes?status=0');
+    assert.equal(f.requests[3].url, '/api/agent-runtimes?status=0&view=conversations');
     f.requests[3].resolve(snapshot(67)); await flush();
     assert.equal(f.requests[1].signal.aborted, true);
     assert.equal(f.requests[4].url, '/api/agent-runtimes/status?refresh=1');

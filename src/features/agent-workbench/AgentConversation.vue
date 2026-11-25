@@ -7,7 +7,7 @@ import type { ConversationWorkspace } from '../../../shared/conversation-workspa
  * 它不直接请求后端，发送、停止和详情操作全部通过显式事件交给容器，避免隐藏副作用。
  */
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, shallowRef, useTemplateRef, watch } from 'vue';
-import { Activity, ArrowDown, ArrowUp, Bookmark, PackageCheck, Check, ChevronDown, ChevronRight, CircleStop, CornerUpLeft, Copy, Download, Ellipsis, File, FileText, Folder, GitBranch, GitFork, Info,
+import { Activity, ArrowDown, ArrowUp, Bookmark, PackageCheck, Check, ChevronDown, ChevronRight, CircleStop, CornerUpLeft, Copy, Download, Ellipsis, ExternalLink, File, FileText, Folder, GitBranch, GitFork, Info,
   ListOrdered, Pencil, Pin, Play, Quote, RotateCcw, Search, Trash2, X } from '@lucide/vue';
 import { ElMessage } from 'element-plus';
 import { agentProviderLabels, canContinueStoppedCodexRun, isAgentImageAttachment, type AgentAccessMode, type AgentAttachment, type AgentChangedFile, type AgentProvider, type AgentQueuePlacement, type AgentReasoningEffort, type AgentRun, type AgentRunMode, type AgentRuntimeHealth, type AgentServiceTier } from '../../../shared/agent-runtime';
@@ -38,7 +38,8 @@ const AgentTaskPromptDrawer = defineAsyncComponent(() => import('./AgentTaskProm
 import { jiraTaskPromptTitle } from './message-text';
 import AgentTranslatedText from './AgentTranslatedText.vue';
 import AgentTranslateToggle from './AgentTranslateToggle.vue';
-import { agentConversationBranch, agentConversationCodePaths, agentConversationForkSource, agentConversationStatus, agentConversationWorkspacePath, agentConversationWorkspacePaths, canSteerAgentRun, agentRunErrorText, agentConversationProjectPath, agentRunStatus, isLegacyRestartContinuation, isRestartableAgentRun, isRetryableSessionBusyRun, type AgentConversation } from './conversation';
+import { agentConversationBranch, agentConversationCodePaths, agentConversationContinuation, agentConversationForkSource, agentConversationStatus, agentConversationWorkspacePath, agentConversationWorkspacePaths, canSteerAgentRun, agentRunErrorText, agentConversationProjectPath, agentRunStatus, isLegacyRestartContinuation, isRestartableAgentRun, isRetryableSessionBusyRun, type AgentConversation } from './conversation';
+import { threadUrl } from '../workbench/domain';
 import { downloadConversation } from './conversation-export';
 import { conversationFileDeliveries, conversationResultDownloads } from './conversation-deliveries';
 import type { AgentBusinessMention } from './agent-business-context';
@@ -52,7 +53,8 @@ import { buildConversationClipboardDigest, countKeywordOccurrences, stepSearchMa
 import { useAgentBookmarks, type AgentMessageBookmark } from './useAgentBookmarks';
 import { teamRoomAcceptanceRecord, type AdvancedTeamTask, type TeamRoom, type TeamDecision } from './team-api';
 
-const props = defineProps<{ workspace?: ConversationWorkspace; workspaceName?: string; conversation?: AgentConversation; visible?: boolean; changing: string; runtimes: AgentRuntimeHealth[]; sideForkAvailable?: boolean; projectlessFork?: boolean;
+const props = defineProps<{ workspace?: ConversationWorkspace; workspaceName?: string; conversation?: AgentConversation; visible?: boolean; changing: string; runtimes: AgentRuntimeHealth[]; sideForkAvailable?: boolean; projectlessFork?: boolean; canBringToMain?: boolean;
+  olderHistory?: boolean; loadingOlder?: boolean; historyError?: boolean; loadOlder?: () => Promise<unknown>; retryHistory?: () => unknown;
   workspaceOptions?: AgentWorkspaceOption[]; choosingWorkspace?: boolean;
   saveWorkspace?: (conversation: AgentConversation, paths: string[]) => Promise<boolean>;
   browseWorkspace?: (initialPath: string) => Promise<string | undefined>;
@@ -61,7 +63,7 @@ const automatic = defineModel<boolean>('automatic', { default: false });
 const draft = defineModel<string>({ default: '' });
 const attachments = defineModel<AgentAttachment[]>('attachments', { default: () => [] });
 const emit = defineEmits<{ manageWorkspace: [id:string]; send: [selection: { provider: AgentProvider; mode?: AgentRunMode; model: string; reasoningEffort: AgentReasoningEffort | ''; accessMode: AgentAccessMode;
-  queuePlacement: AgentQueuePlacement; serviceTier?: AgentServiceTier; workflow?: boolean; team?: AgentTeamRequest; question?: TeamQuestionTarget }]; accessChange: [accessMode: AgentAccessMode]; stop: [run: AgentRun]; edit: [run: AgentRun]; steer: [run: AgentRun]; removeQueued: [run: AgentRun]; retry: [run: AgentRun, selection?: Pick<AgentRun, 'mode' | 'accessMode'>]; fork: [run: AgentRun]; forkSide: [run: AgentRun]; pin: [conversation: AgentConversation]; rename: [conversation: AgentConversation]; renameTitle: [conversation: AgentConversation, title: string]; remove: [conversation: AgentConversation]; inspect: [run: AgentRun]; configureModels: []; teamDecision: [action: TeamDecision]; teamCommand: [command: '暂停任务' | '继续执行']; chooseTeamWorkspace: []; providerChange: [provider: AgentProvider]; openGroup: [roomId: string] }>();
+  queuePlacement: AgentQueuePlacement; serviceTier?: AgentServiceTier; workflow?: boolean; team?: AgentTeamRequest; question?: TeamQuestionTarget }]; accessChange: [accessMode: AgentAccessMode]; stop: [run: AgentRun]; edit: [run: AgentRun]; steer: [run: AgentRun]; removeQueued: [run: AgentRun]; retry: [run: AgentRun, selection?: Pick<AgentRun, 'mode' | 'accessMode'>]; fork: [run: AgentRun]; forkSide: [run: AgentRun]; pin: [conversation: AgentConversation]; rename: [conversation: AgentConversation]; renameTitle: [conversation: AgentConversation, title: string]; remove: [conversation: AgentConversation]; inspect: [run: AgentRun]; configureModels: []; teamDecision: [action: TeamDecision]; teamCommand: [command: '暂停任务' | '继续执行']; chooseTeamWorkspace: []; providerChange: [provider: AgentProvider]; openGroup: [roomId: string]; bringToMain: [text: string] }>();
 const editingTitle = shallowRef(false);
 const titleDraft = shallowRef('');
 const titleInput = useTemplateRef<HTMLInputElement>('titleInput');
@@ -132,6 +134,14 @@ const searchQueries = new Map<string, string>();
 const scrollPositions = new Map<string, number>();
 let copyTimer: ReturnType<typeof setTimeout> | undefined;
 const latest = computed(() => props.conversation?.latest);
+const codexDesktopUrl = computed(() => {
+  if (!props.conversation || props.conversation.teamChat) return;
+  const run = agentConversationContinuation(props.conversation);
+  return run.provider === 'codex' ? threadUrl(run.continuation?.sessionId || run.sessionId) : undefined;
+});
+function openCodexDesktop() {
+  if (codexDesktopUrl.value) window.location.assign(codexDesktopUrl.value);
+}
 const forkSource = computed(() => agentConversationForkSource(props.conversation, props.projectlessFork));
 const status = computed(() => props.conversation && agentConversationStatus(props.conversation));
 const runtime = computed(() => props.runtimes.find((item) => item.provider === latest.value?.provider));
@@ -305,8 +315,27 @@ function stepSearchTurn(delta: 1 | -1) {
   jumpToTurn(next);
 }
 let scrollQueued = false;
+let prependingHistory = false;
+async function loadOlderHistory() {
+  const viewport = messageViewport.value;
+  const id = props.conversation?.id;
+  if (!viewport || !id || !props.loadOlder || prependingHistory) return;
+  const top = viewport.scrollTop;
+  const height = viewport.scrollHeight;
+  prependingHistory = true;
+  try {
+    await props.loadOlder();
+    await nextTick();
+    if (props.conversation?.id === id && messageViewport.value === viewport) {
+      viewport.scrollTop = top + Math.max(0, viewport.scrollHeight - height);
+      rememberScroll();
+    }
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error));
+  } finally { prependingHistory = false; }
+}
 watch(() => [props.conversation?.id, entrySignature.value] as const, async ([id], [previousId]) => {
-  if (id !== previousId || scrollQueued) return;
+  if (id !== previousId || scrollQueued || prependingHistory) return;
   const viewport = messageViewport.value;
   if (!viewport || !viewport.clientHeight || searchQuery.value || !isChatVisible()) return;
   const followsLatest = !awayFromLatest.value || nearLatest(viewport);
@@ -547,6 +576,7 @@ defineExpose({ focusComposer });
           <el-dropdown trigger="click" popper-class="studio-conversation-menu">
             <button type="button" class="studio-panel-toggle" aria-label="更多会话操作" title="更多会话操作"><Ellipsis :size="18" /></button>
             <template #dropdown><el-dropdown-menu>
+              <el-dropdown-item v-if="codexDesktopUrl" @click="openCodexDesktop"><ExternalLink :size="14" />在 Codex 桌面端打开</el-dropdown-item>
               <el-dropdown-item v-if="forkSource" :disabled="!!changing" @click="emit('fork', forkSource)"><GitFork :size="14" />基于此会话新建</el-dropdown-item>
               <el-dropdown-item v-if="sideForkAvailable && forkSource" :disabled="!!changing" @click="emit('forkSide', forkSource)"><GitFork :size="14" />在侧边新建继承会话</el-dropdown-item>
               <el-dropdown-item :disabled="!!changing" @click="startTitleEdit"><Pencil :size="14" />修改标题</el-dropdown-item>
@@ -716,6 +746,9 @@ defineExpose({ focusComposer });
       </section>
       <div v-show="conversationView === 'chat'" ref="messageViewport" class="message-viewport" aria-live="polite" @scroll.passive="rememberScroll" @mouseup="captureViewportSelection" @keyup="captureViewportSelection">
         <div class="message-list">
+          <div v-if="olderHistory" class="history-loading">
+            <el-button link :loading="loadingOlder" @click="loadOlderHistory">加载更早的会话记录</el-button>
+          </div>
           <template v-for="(entry, entryIndex) in transcriptEntries" :key="entry.id">
           <div v-if="entry.kind === 'run'" :data-turn-index="entryIndex" class="message-turn" :class="{ 'is-settled-turn': !searchQuery && entryIndex < transcriptEntries.length - 2 && entry.runs.every(item => !['running', 'queued'].includes(item.run.status) && !item.run.pausedForEdit) }">
             <template v-for="{ run, id } in entry.runs" :key="id">
@@ -790,7 +823,10 @@ defineExpose({ focusComposer });
             </div>
             <AgentChangedFiles v-for="item in currentFileDeliveries" :key="item.run.id" :files="item.run.changedFiles!" :run-id="item.run.id" :can-ask="!pausedRun" @ask-file="(file, line) => askChangedFile(file, line, item.run.workspacePath)" @apply-review-prompt="applyChangedFileReviewPrompt($event, item.run.workspacePath)" />
           </section>
-          <div v-if="!conversation.loaded" class="history-loading"><el-skeleton :rows="2" animated /></div>
+          <div v-if="!conversation.loaded" class="history-loading">
+            <el-button v-if="historyError" link @click="retryHistory?.()">重新读取会话</el-button>
+            <el-skeleton v-else :rows="2" animated />
+          </div>
           <el-empty v-if="searchQuery && !visibleEntries.length" description="当前会话没有匹配内容" :image-size="56" />
         </div>
       </div>
@@ -806,6 +842,7 @@ defineExpose({ focusComposer });
           <button type="button" class="selection-quote-chip" title="让 AI 用通俗易懂的大白话解释这段内容" @click="applySelectionAction('explain')">通俗解释</button>
           <button v-if="!selectionLooksLikeError" type="button" class="selection-quote-chip" title="若这是异常信息，让 AI 直接排查原因并给修复方案" @click="applySelectionAction('fix-error')">排查报错</button>
           <button v-if="selectedQuoteText.length >= 24" type="button" class="selection-quote-chip" title="让 AI 提炼这段内容的核心要点与待办事项" @click="applySelectionAction('summarize')">提炼要点</button>
+          <button v-if="canBringToMain" type="button" class="selection-quote-chip" @click="emit('bringToMain', selectedQuoteText); selectedQuoteText = ''">带回主会话</button>
           <button type="button" class="selection-quote-chip" title="复制选中文字" @click="copySelectedQuote">复制</button>
         </div>
         <button type="button" class="selection-quote-close" aria-label="关闭划词快捷提示" @click="selectedQuoteText = ''"><X :size="12" /></button>

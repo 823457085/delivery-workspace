@@ -2,6 +2,7 @@ import { shallowRef } from 'vue';
 import { ElMessage } from 'element-plus';
 import { useQueryClient } from '@tanstack/vue-query';
 import type { AgentRun } from '../../../shared/agent-runtime';
+import { agentConversationIndexKey } from './runtime-stream-state';
 
 export function useAgentRecovery() {
   const runs = shallowRef<AgentRun[]>([]);
@@ -17,7 +18,10 @@ export function useAgentRecovery() {
       const result = await response.json();
       if (!response.ok) throw new Error(result.message || '中断任务读取失败');
       runs.value = result.runs;
-      if (reconcile) await client.invalidateQueries({ queryKey: ['agent-runtimes'] });
+      if (reconcile) await Promise.all([
+        client.invalidateQueries({ queryKey: ['agent-runtimes'] }),
+        client.invalidateQueries({ queryKey: agentConversationIndexKey }),
+      ]);
     } catch (error) { ElMessage.error(error instanceof Error ? error.message : String(error)); }
     finally { loading.value = false; }
   }

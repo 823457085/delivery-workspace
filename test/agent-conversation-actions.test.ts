@@ -25,12 +25,25 @@ function loadActions<T>(path: string, names: string[], dependencies: Record<stri
   const raw = readFileSync(new URL(path, import.meta.url), 'utf8');
   const source = raw.match(/<script[^>]*>([\s\S]*?)<\/script>/)?.[1] || raw;
   const tree = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const included = new Set(names);
+  if (path.endsWith('/useAgentRuntimes.ts')) {
+    included.add('submittingConversations');
+    included.add('claimConversationSubmission');
+  }
+  if (names.includes('sendMessage')) {
+    included.add('sendingConversationIds');
+    included.add('trackConversationSend');
+    included.add('needsLocalHistory');
+  }
+  if (navigation) {
+    included.add('selectionRevision');
+    included.add('pendingSelectionRevision');
+  }
   const pieces: string[] = [];
   const visit = (node: ts.Node) => {
-    if (ts.isFunctionDeclaration(node) && node.name && names.includes(node.name.text)) {
+    if (ts.isFunctionDeclaration(node) && node.name && included.has(node.name.text)) {
       pieces.push(node.getText(tree));
-    } else if (navigation && ts.isVariableStatement(node) && node.declarationList.declarations.some((item) =>
-      ['selectionRevision', 'pendingSelectionRevision'].includes(item.name.getText(tree)))) {
+    } else if (ts.isVariableStatement(node) && node.declarationList.declarations.some((item) => included.has(item.name.getText(tree)))) {
       pieces.push(node.getText(tree));
     } else if (navigation && ts.isExpressionStatement(node) && node.getText(tree).startsWith('watch([conversations,')) {
       pieces.push(node.getText(tree));
@@ -363,11 +376,14 @@ type Actions = {
   openRun: (id: string) => Promise<boolean>;
 };
 
-function sendingFixture(initial = buildAgentConversations([run('a'), run('b')]), trackOptimisticRun?: (action: 'add' | 'remove', value: AgentRun | string) => void) {
+function sendingFixture(initial = buildAgentConversations([run('a'), run('b')]), trackOptimisticRun?: (action: 'add' | 'remove', value: AgentRun | string) => void,
+  submitResume?: (...args: unknown[]) => Promise<AgentRun | undefined>) {
   const scope = effectScope();
   const selectedConversationId = shallowRef(initial[0].id);
   const creating = shallowRef(false);
   const conversations = shallowRef<Conversation[]>(initial);
+  const selectedConversation = computed(() => findAgentConversation(conversations.value, selectedConversationId.value));
+  const mainHistory = { ready: shallowRef(true) };
   const drafts = useAgentConversationDrafts(selectedConversationId);
   const response = deferred<{ id: string; conversationId?: string } | undefined>();
   const resumeInputs: unknown[][] = [];
@@ -391,15 +407,16 @@ function sendingFixture(initial = buildAgentConversations([run('a'), run('b')]),
   const teamResponse = deferred<{ task: unknown; runId: string; conversationId: string } | undefined>();
   const teamChat = { task: shallowRef(undefined), allTasks: shallowRef([]), changing: shallowRef(''), refetch: async () => {}, send: (...args: unknown[]) => { teamInputs.push(args); return teamResponse.promise; } };
   const actions = scope.run(() => loadActions<Actions>(panelPath, ['sendMessage', 'sendChatMessage', 'startAgentWorkflow', 'retryRun', 'selectConversation', 'openCreate', 'canSubmitWorkspaceSelection', 'submit', 'forkConversation', 'generateDailyReport', 'openRun'], {
-    selectedConversationId, creating, conversations, watch, automaticTeam, teamChat,
+    selectedConversationId, creating, conversations, watch, shallowRef, automaticTeam, teamChat,
     groupMode: shallowRef(false), data: shallowRef({ runs: [] }),
-    selectedConversation: computed(() => findAgentConversation(conversations.value, selectedConversationId.value)),
+    selectedConversation, selectedSummary: selectedConversation, mainHistory,
     isPending: shallowRef(false), error: shallowRef(undefined), selectionInitialized: shallowRef(true),
     pendingConversationId: shallowRef(''), rememberedConversationId: '',
     draft: drafts.draft, draftAttachments: drafts.attachments,
     clearConversationDraft: drafts.clear, restoreConversationDraft: drafts.restore, moveConversationDraft: drafts.move,
+    mergeRequestWatch: { move: () => {}, remove: () => {} },
     attachmentsPending: drafts.attachmentsPending,
-    resume: (...args: unknown[]) => { resumeInputs.push(args); return response.promise; }, resumeCodexSession: () => response.promise,
+    resume: (...args: unknown[]) => { resumeInputs.push(args); return submitResume ? submitResume(...args) : response.promise; }, resumeCodexSession: () => response.promise,
     retry: (...args: unknown[]) => { retryInputs.push(args); return response.promise; },
     orchestrate: (_parent: unknown, input: unknown) => { workflowInputs.push(input); return workflowResponse.promise; },
     resumedConversationId, reconcileAgentConversation, providerSwitchInput, agentConversationContinuation, agentConversationInsertRun,
@@ -412,6 +429,44 @@ function sendingFixture(initial = buildAgentConversations([run('a'), run('b')]),
   }, true))!;
   return { actions, automaticTeam, teamChat, teamInputs, teamResponse, form, selectedConversationId, conversations, drafts, creating, response, resumeInputs, retryInputs, workflowResponse, workflowInputs, queryRefresh, dailyReportStarting, reportInputs, newAttachments, newAttachmentDraft, forkAttachmentDraft, submittingNew, selectedWorkspaceId, workspaceStore, dispose: () => scope.stop() };
 }
+
+test('A 提交期间 B 可以独立发消息，同一会话的重复提交仍被阻止', async () => {
+  const a = deferred<AgentRun>(), b = deferred<AgentRun>();
+  const requests: string[] = [];
+  const { resume } = loadActions<{ resume: (...args: unknown[]) => Promise<AgentRun | undefined> }>(
+    '../src/features/agent-workbench/useAgentRuntimes.ts', ['resume'], {
+      changing: shallowRef(''), ElMessage: { success: () => {}, warning: () => {}, error: (message: string) => assert.fail(message) },
+      post: (path: string) => {
+        requests.push(path);
+        return path.includes('/runs/a/') ? a.promise : b.promise;
+      },
+    });
+  const state = sendingFixture(undefined, undefined, resume);
+  const selection = { queuePlacement: 'append' as const };
+  try {
+    state.actions.selectConversation('a');
+    state.drafts.draft.value = 'A 的消息';
+    const pendingA = state.actions.sendMessage(selection);
+    state.actions.selectConversation('b');
+    state.drafts.draft.value = 'B 的消息';
+    const pendingB = state.actions.sendMessage(selection);
+    state.actions.selectConversation('a');
+    state.drafts.draft.value = 'A 的下一条草稿';
+    const duplicateA = state.actions.sendMessage(selection);
+    assert.equal(state.resumeInputs.length, 2);
+    const duplicateRun = resume({ ...run('another-a-run'), conversationId: 'a' }, 'A 的重复消息', '', '');
+    assert.deepEqual(requests, ['/api/agent-runtimes/runs/a/resume', '/api/agent-runtimes/runs/b/resume']);
+    await duplicateA;
+    assert.equal(await duplicateRun, undefined);
+    b.resolve({ ...run('b-accepted'), conversationId: 'b' });
+    state.queryRefresh.resolve();
+    await pendingB;
+    assert.equal(state.selectedConversationId.value, 'a');
+    a.resolve({ ...run('a-accepted'), conversationId: 'a' });
+    await pendingA;
+    assert.equal(state.drafts.draft.value, 'A 的下一条草稿');
+  } finally { state.dispose(); }
+});
 
 test('独立会话发送和排队的临时轮次不会把内部执行目录当成项目', async () => {
   for (const status of ['completed', 'running'] as const) {
@@ -1061,6 +1116,7 @@ test('批量删除部分失败只清理成功项，且等待关联团队刷新�
     panelPath, ['removeAgentConversations'], {
       removeConversations: runtime.removeConversations,
       clearConversationDraft: (id: string) => { cleared.push(id); return { attachments: [id] }; },
+      mergeRequestWatch: { move: () => {}, remove: () => {} },
       removePendingAgentAttachments: async (items: unknown[]) => { attachments.push(...items); },
     });
   const pending = panel.removeAgentConversations(targets);
@@ -1097,6 +1153,7 @@ for (const outcome of ['cancel', 'failure', 'success'] as const) {
     const panel = loadActions<{ removeAgentConversation: (conversation: { id: string; source: 'workspace' }) => Promise<void> }>(
       panelPath, ['removeAgentConversation'], {
         removeConversation: runtime.removeConversation, clearConversationDraft: drafts.clear,
+        mergeRequestWatch: { move: () => {}, remove: () => {} },
         removePendingAgentAttachments: async (attachments: unknown[]) => { removedAttachments += attachments.length; },
       });
     await panel.removeAgentConversation({ id: 'a', source: 'workspace' });

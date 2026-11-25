@@ -14,7 +14,7 @@ import subprocess
 import sys
 import tempfile
 
-from keychain_native import put_password
+from keychain_native import put_password, put_password_with_security
 
 DATA = Path.home() / '.local/share/cursor-accounts'
 CONFIG = Path.home() / '.cursor/cli-config.json'
@@ -65,7 +65,11 @@ class Keychain:
         else:
             if any(char in text for text in (service, account, value) for char in ('\n', '\r', '\0')):
                 raise Error('凭据包含不支持的控制字符。')
-            status = put_password(service, account, value)
+            status = None
+            if service == SERVICE or service in TOKEN_SERVICES:
+                status = put_password_with_security(service, account, value)
+            if status is None:
+                status = put_password(service, account, value)
             if status:
                 raise Error('钥匙串写入失败（代码 %s）；原账号备份仍保留。' % status)
             return

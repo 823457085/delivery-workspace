@@ -4,7 +4,9 @@
  */
 import type { AgentRun, AgentRuntimeDashboard } from '../../../shared/agent-runtime';
 
-export function createRuntimeStreamState() {
+export const agentConversationIndexKey = ['agent-conversation-index'] as const;
+
+export function createRuntimeStreamState(sameRun?: (left: AgentRun, right: AgentRun) => boolean) {
   const updates = new Map<string, { revision: number; run: AgentRun }>();
   // POST 只确认一条运行，不能把整个列表的 SSE 水位推进到响应版本。
   const accepted = new Map<string, { revision: number; run: AgentRun }>();
@@ -15,13 +17,18 @@ export function createRuntimeStreamState() {
     if (!fresh.length && !acknowledged.length) return snapshot;
     let runs = new Map(snapshot.runs.map(run => [run.id, run]));
     const locks = new Map(snapshot.activeWorkspaceLocks.map(lock => [lock.runId, lock]));
+    let changed = false;
     for (const { run } of [...fresh, ...acknowledged]) {
+      const current = runs.get(run.id);
+      if (current && sameRun?.(current, run)) continue;
+      changed = true;
       // 同毫秒的新运行保持后端的新到旧顺序；正文更新不改变已有运行的位置。
       if (runs.has(run.id)) runs.set(run.id, run);
       else runs = new Map([[run.id, run], ...runs]);
       if (run.status === 'running') locks.set(run.id, { runId: run.id, workspacePath: run.workspacePath, provider: run.provider });
       else locks.delete(run.id);
     }
+    if (!changed) return snapshot;
     return { ...snapshot, revision: Math.max(snapshot.revision || 0, ...fresh.map(item => item.revision)),
       // HTTP 快照已限制历史数量，并额外保留每个会话的最新运行；SSE 不能再次截掉这些记录。
       runs: [...runs.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
@@ -47,6 +54,16 @@ export function createRuntimeStreamState() {
       return merge(value);
     },
   };
+}
+
+/** 写入正文的时间戳不会改变侧栏摘要；终态时间仍要更新，供排序和未读判断。 */
+export function sameAgentRunSummary(left: AgentRun, right: AgentRun) {
+  if (left === right) return true;
+  if (left.status !== right.status) return false;
+  if (left.status === 'running' || left.status === 'queued') {
+    return JSON.stringify(left) === JSON.stringify({ ...right, updatedAt: left.updatedAt });
+  }
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 export function createRuntimeRefresh(refresh: () => Promise<unknown>, delayMs = 40) {

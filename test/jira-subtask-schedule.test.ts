@@ -3,8 +3,12 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { runInNewContext } from 'node:vm';
 import { createRequirementStore } from '../server/jira-dev/index.mjs';
 import { jiraDevStartBlocker } from '../shared/jira-dev.js';
+import { jiraReferenceLinks, renderDevelopmentDescription } from '../shared/jira-development-description.mjs';
+// @ts-expect-error 原系统 ESM 模块没有全量类型声明。
+const automationCore = await import('../server/jira-backend/automation-core.mjs');
 
 const source = { key: 'APEX-562', url: 'https://jira.example.test/browse/APEX-562', summary: '【商家账户】升级账户管理', description: '需求原文 L123',
   project: { id: '1', key: 'APEX' }, startDate: '2026-11-02', endDate: '2026-11-13', fixVersions: [], links: [] as any[] };
@@ -593,4 +597,85 @@ test('旧版已应用或结果未知的计划保留原确认内容，不因标�
       assert.equal(f.writes.length, writes);
     } finally { await f.close(); }
   }
+});
+
+async function automaticSplitFixture() {
+  const backend = await readFile(new URL('../server/jira-backend/server.mjs', import.meta.url), 'utf8');
+  const splitSource = backend.slice(backend.indexOf('const automationProjectKeys = new Set('), backend.indexOf('function isJiraMaintenanceItem('));
+  const writes: Array<{ method: string; fields: Record<string, unknown> }> = [];
+  const split: (issues: object[], settings: object, options: object) => Promise<Array<{
+    status: string; issueKey: string; message: string; action?: { kind: string; reason: string };
+  }>> = runInNewContext(`${splitSource}\nensureAutomationTaskSegments;`, {
+    ...automationCore, jiraReferenceLinks, renderDevelopmentDescription, AbortSignal,
+    jiraBaseUrl: 'https://jira.example.test', catchupJiraRequestTimeoutMs: 1000, catchupJiraSubtaskTypeId: '11',
+    getAuthHeaders: () => ({}),
+    fetch: async (_url: string, init: { method: string; body: string }) => {
+      const { fields } = JSON.parse(init.body);
+      writes.push({ method: init.method, fields });
+      return Response.json({ key: `APEX-${900 + writes.length}` });
+    },
+  });
+  const parent = { key: 'APEX-790', project: 'APEX', issueType: '任务', status: '待开始',
+    url: 'https://jira.example.test/browse/APEX-790', summary: '【商家账户】完成账户管理',
+    description: 'h2. 子任务拆分\n# 编写账户管理技术方案\n# 实现账户状态筛选\n# 完成账户管理联调自测',
+    startDate: '2026-11-23', endDate: '2026-12-02',
+    subtasksComplete: true, subtasks: [] as Array<{ key: string }> };
+  const settings = { autoSplitLongTasks: true, maxTaskSpanDays: 3 };
+  return { parent, writes, preview: (issues: object[]) => split(issues, settings, { preview: true }),
+    apply: (issues: object[], approved?: Set<string>) => split(issues, settings, { approved }) };
+}
+
+test('自动拆分预览和执行都跳过范围不足、子任务未读全或已有独立任务的父任务', async () => {
+  const f = await automaticSplitFixture();
+  const child = { key: 'APEX-806', project: 'APEX', issueType: '子任务', parent: { key: f.parent.key }, summary: '实现账户状态筛选' };
+  const managed = { ...child, key: 'APEX-817', summary: '【商家账户】编写账户管理技术方案',
+    description: `自动规则标识：${automationCore.THREE_DAY_SPLIT_LABEL}/delivery-segment-1-of-3`, endDate: '2026-11-24' };
+  const oldMarker = managed.description.replace('-of-3', '-of-4');
+  const cases = [
+    { issues: [{ ...f.parent, description: '见需求文档' }], reason: /范围/ },
+    { issues: [{ ...f.parent, description: 'h2. 前端范围\n* 实现账户状态筛选' }], reason: /范围/ },
+    { issues: [{ ...f.parent, subtasksComplete: false }], reason: /读取范围/ },
+    { issues: [{ ...f.parent, subtasks: [{ key: child.key }] }], reason: /读取范围/ },
+    { issues: [{ ...f.parent, subtasks: [child, managed] }, child, managed], reason: /独立业务子任务/ },
+    { issues: [{ ...f.parent, subtasks: [{ key: child.key }] }, { ...child, description: oldMarker, summary: '旧拆分子任务' }], reason: /无法对应/ },
+    { issues: [{ ...f.parent, description: '见需求文档', subtasks: [managed] }, managed], reason: /范围/ },
+  ];
+  for (const { issues, reason } of cases) {
+    for (const run of [f.preview, f.apply]) {
+      const result = await run(issues);
+      assert.equal(result.length, 1);
+      assert.equal(result[0].status, 'blocked');
+      assert.match(result[0].message, reason);
+      assert.equal(result[0].action, undefined);
+    }
+  }
+  assert.equal(f.writes.length, 0);
+});
+
+test('自动拆分按父任务范围生成可审核的标题，重试复用已创建切片并保留改期能力', async () => {
+  const f = await automaticSplitFixture();
+  const preview = await f.preview([f.parent]);
+  const titles = ['【商家账户】编写账户管理技术方案', '【商家账户】实现账户状态筛选', '【商家账户】完成账户管理联调自测'];
+  assert.deepEqual(Array.from(preview, ({ action }) => action?.reason), titles);
+  assert.equal(f.writes.length, 0);
+  const approved = new Set(Array.from(preview, ({ action }) => JSON.stringify(action)));
+  const created = await f.apply([f.parent], approved);
+  assert.ok(created.every((item) => item.status === 'created'));
+  assert.deepEqual(f.writes.map(({ fields }) => fields.summary), titles);
+  assert.ok(f.writes.every(({ method }) => method === 'POST'));
+
+  const children = f.writes.map(({ fields }, index) => ({ key: created[index].issueKey, project: 'APEX',
+    parent: { key: f.parent.key }, summary: fields.summary, description: fields.description,
+    startDate: fields.customfield_10109, endDate: fields.customfield_10110 }));
+  const parent = { ...f.parent, description: '', subtasks: children.map(({ key }) => ({ key })) };
+  const retried = await f.apply([parent, ...children]);
+  assert.equal(retried.length, children.length);
+  assert.ok(retried.every((item) => item.status === 'skipped'));
+  assert.equal(f.writes.length, children.length);
+
+  children[0].endDate = '2026-11-24';
+  await f.apply([parent, ...children]);
+  assert.equal(f.writes.length, children.length + 1);
+  assert.equal(f.writes.at(-1)?.method, 'PUT');
+  assert.equal(f.writes.at(-1)?.fields.customfield_10110, '2026-11-25');
 });

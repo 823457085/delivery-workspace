@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from cursor_accounts import keychain_json
 import keychain_native
-from keychain_native import put_password
+from keychain_native import put_password, put_password_with_security
 
 
 @unittest.skipUnless(sys.platform == 'darwin' and os.environ.get('DELIVERY_TEST_TEMP_KEYCHAIN') == '1',
@@ -20,7 +20,7 @@ class NativeKeychainTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory(prefix='delivery-keychain-test-')
         self.addCleanup(self.directory.cleanup)
         self.keychain = str(Path(self.directory.name) / 'fixture.keychain-db')
-        self.security('-i', input='create-keychain -p fixture-only "' + self.keychain + '"\n')
+        self.security('-i', input='create-keychain -p 990919 "' + self.keychain + '"\n')
         self.addCleanup(self.security, 'delete-keychain', self.keychain)
 
     def security(self, *arguments, **kwargs):
@@ -52,16 +52,43 @@ class NativeKeychainTests(unittest.TestCase):
         after = self.security('dump-keychain', '-a', self.keychain).stdout
         self.assertEqual(before[before.index('access:'):], after[after.index('access:'):])
 
+    def test_security_write_preserves_partition_across_updates(self):
+        # macOS enables partition ACLs for keychains created in ~/Library/Keychains.
+        keychains = Path.home() / 'Library/Keychains'
+        with tempfile.TemporaryDirectory(prefix='delivery-keychain-test-', dir=keychains) as directory:
+            requested = Path(directory) / 'fixture.keychain'
+            keychain = Path(str(requested) + '-db')
+            self.security('-i', input='create-keychain -p 990919 "' + str(requested) + '"\n')
+            try:
+                self.assertTrue(keychain.is_file())
+                for credential in ('fixture-before', '测试 "引号" \\ 路径'):
+                    value = json.dumps({'credential': credential}, ensure_ascii=False)
+                    self.assertEqual(put_password_with_security('fixture-service', 'partition',
+                                                                value, keychain), 0)
+                    access = self.security('dump-keychain', '-a', str(keychain)).stdout
+                    self.assertIn('/usr/bin/security (OK)', access)
+                    self.assertIn('description: apple-tool:', access)
+                    self.assertNotIn('<any>', access)
+                    stored = self.security('find-generic-password', '-s', 'fixture-service',
+                                           '-a', 'partition', '-w', str(keychain)).stdout.strip()
+                    self.assertEqual(keychain_json(stored), {'credential': credential})
+            finally:
+                self.security('delete-keychain', str(keychain if keychain.is_file() else requested))
+
     def test_unavailable_keychain_returns_failure_without_touching_default_keychain(self):
-        self.assertNotEqual(put_password('fixture-service', 'missing', 'fixture-value',
-                                         self.keychain + '.missing'), 0)
+        missing = self.keychain + '.missing'
+        self.assertNotEqual(put_password('fixture-service', 'missing', 'fixture-value', missing), 0)
+        with patch.object(keychain_native.subprocess, 'run') as run:
+            self.assertEqual(put_password_with_security('fixture-service', 'missing',
+                                                        'fixture-value', missing), -25294)
+        run.assert_not_called()
 
     def test_locked_keychain_fails_without_prompt_and_preserves_existing_password(self):
         self.assertEqual(put_password('fixture-service', 'locked', 'fixture-before', self.keychain), 0)
         self.security('lock-keychain', self.keychain)
         self.assertNotEqual(put_password('fixture-service', 'locked', 'fixture-after', self.keychain), 0)
         self.assertNotEqual(put_password('fixture-service', 'new-locked', 'fixture-after', self.keychain), 0)
-        self.security('-i', input='unlock-keychain -p fixture-only "' + self.keychain + '"\n')
+        self.security('-i', input='unlock-keychain -p 990919 "' + self.keychain + '"\n')
         self.assertEqual(self.read('locked'), 'fixture-before')
 
     def test_failed_native_write_preserves_old_item_and_removes_only_new_placeholder(self):

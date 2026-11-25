@@ -148,3 +148,61 @@ test('SSE 保留 HTTP 快照中的旧会话，后续完整快照仍可清理历�
   assert.equal(updated.runs.find(item => item.id === recent[0].id)?.result, '新正文');
   assert.equal(state.snapshot(snapshot(3, [recent[0]])).runs.length, 1);
 });
+
+test('会话摘要保留运行与变更状态，打开后按页读取原文，并按会话推送轻量更新', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'delivery-conversation-index-'));
+  const stored = Array.from({ length: 20 }, (_, index) => {
+    const id = `history-${index}`;
+    const at = new Date(Date.UTC(2026, 10, 24, 12, 0, 20 - index)).toISOString();
+    return { ...run(id, `第 ${index} 轮回复`, 'completed'), conversationId: 'history',
+      createdAt: at, updatedAt: at, pid: null, workspacePath: directory, sessionId: 'native-history',
+      objective: `任务 ${index}\n${'详细内容'.repeat(1000)}${index === 19 ? '只在最后一页出现的关键词' : ''}`,
+      changedFiles: [{ path: 'result.txt', status: 'generated' as const }],
+      events: [{ id: 'event', type: 'message' as const, message: '完整过程', createdAt: at }],
+      teamContext: '服务端上下文',
+    };
+  });
+  const other = { ...run('other', '另一会话的回复', 'completed'), conversationId: 'other', pid: null,
+    createdAt: stored[0].createdAt, updatedAt: stored[0].updatedAt, workspacePath: directory };
+  await fs.writeFile(path.join(directory, 'agent-runs.json'), JSON.stringify([...stored, other]));
+  const service = await createAgentRuntimeService(directory, { adapters: [] });
+  const frames: string[] = [];
+  const stream = createAgentRuntimeStream(frame => frames.push(frame), true, service.summarizeRun);
+  try {
+    const summaries = service.conversationSnapshot().runs;
+    assert.equal(summaries.length, 21);
+    assert.equal(summaries[0].objective, stored[0].objective.slice(0, 512));
+    assert.equal(summaries[0].summaryOnly, true);
+    assert.equal(summaries[0].resultReady, true);
+    assert.equal(summaries[0].hasChangedFiles, true);
+    assert.equal(summaries[0].changedFiles, undefined);
+    assert.equal(summaries[0].result, '');
+    assert.deepEqual(summaries[0].events, []);
+    assert.equal(summaries[0].teamContext, undefined);
+
+    const first = service.conversationHistory('native-history');
+    assert.equal(first.runs.length, 16);
+    assert.equal(first.runs[0].objective, stored[0].objective);
+    assert.equal(first.runs[0].events[0].message, '完整过程');
+    assert.ok(first.olderCursor);
+    const last = service.conversationHistory('history', first.olderCursor);
+    assert.deepEqual([...first.runs, ...last.runs].map(item => item.id), stored.map(item => item.id));
+    assert.equal(last.olderCursor, null);
+    assert.throws(() => service.conversationHistory('history', 'other'), /会话历史已更新/);
+    const pending = service.getRun(stored[18].id)!;
+    pending.pausedForEdit = true;
+    const withPending = service.conversationHistory('history');
+    assert.equal(withPending.runs.at(-1)?.id, pending.id);
+    assert.deepEqual(service.conversationHistory('history', withPending.olderCursor!).runs.map(item => item.id), [stored[19].id]);
+    const search = service.searchConversationHistory('最后一页出现的关键词');
+    assert.deepEqual(search.conversationIds, ['history']);
+    assert.match(search.snippets.history, /最后一页出现的关键词/);
+
+    stream.update(1, service.getRun(stored[0].id));
+    stream.update(2, service.getRun('other'));
+    stream.update(3);
+    const frame = JSON.parse(frames[0].split('data: ')[1]);
+    assert.deepEqual(frame.conversationIds, ['history', 'other']);
+    assert.ok(frame.runs.every((item: AgentRun) => item.summaryOnly && !item.result && item.events.length === 0));
+  } finally { stream.close(); await service.close(); await fs.rm(directory, { recursive: true, force: true }); }
+});

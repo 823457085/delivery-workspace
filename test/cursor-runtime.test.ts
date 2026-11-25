@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createCursorAdapter } from '../server/agent-runtime.js';
+import { NativeSessionUnavailableError } from '../server/native-session-return.js';
 import { readDeliveryReport } from '../shared/delivery-report.js';
 import type { AgentRun } from '../shared/agent-runtime.js';
 
@@ -85,6 +86,22 @@ test('Cursor 只展示完整回复，思考片段、用户回显和工具文本�
     assert.deepEqual(messages, ['正在核对旧版本，确认变更范围。', '核对完成，已确认变更范围。', ...(hasResult ? ['已完成本轮核对。'] : [])]);
     assert.equal(result, hasResult ? '已完成本轮核对。' : '核对完成，已确认变更范围。');
   }
+});
+
+test('切回 Cursor 要求原生会话匹配，原 chat 明确缺失时才允许回退', async () => {
+  let observedSession = '';
+  const context = { run: { ...sample, objective: 'native-return-check' },
+    returningToNativeSession: true, fileAttachments: [], imagePaths: [], signal: new AbortController().signal,
+    onPid() {}, onSession(id: string) { observedSession = id; }, onEvent() {} };
+  const adapter = createCursorAdapter(fixture);
+  assert.equal(await adapter.execute({ ...context, resumeSessionId: 'existing-cursor-chat' }), 'Cursor resumed existing chat');
+  assert.equal(observedSession, 'existing-cursor-chat');
+  observedSession = '';
+  await assert.rejects(adapter.execute({ ...context, resumeSessionId: 'missing-cursor-chat' }), NativeSessionUnavailableError);
+  await assert.rejects(adapter.execute({ ...context, resumeSessionId: 'missing-cursor-chat', returningToNativeSession: false }),
+    error => !(error instanceof NativeSessionUnavailableError));
+  await assert.rejects(adapter.execute({ ...context, resumeSessionId: 'different-cursor-chat' }), /原生会话 ID 与请求不一致/);
+  assert.equal(observedSession, '');
 });
 
 test('Cursor 聚合结果只在精确拼接已观察连续消息且末条为严格报告时保留末条原文', async t => {

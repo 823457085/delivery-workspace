@@ -4,10 +4,11 @@
  */
 import type { AgentConversation } from './conversation';
 
-export type SessionQuickFilter = 'all' | 'active' | 'changed' | 'attention';
+export type SessionQuickFilter = 'all' | 'unread' | 'active' | 'changed' | 'attention';
 
 export interface SessionQuickFilterCounts {
   all: number;
+  unread: number;
   active: number;
   changed: number;
   attention: number;
@@ -18,7 +19,7 @@ export function isSessionActive(conversation: AgentConversation): boolean {
 }
 
 export function isSessionChangedFiles(conversation: AgentConversation): boolean {
-  return conversation.runs.some(run => (run.changedFiles?.length || 0) > 0);
+  return conversation.runs.some(run => run.hasChangedFiles || (run.changedFiles?.length || 0) > 0);
 }
 
 export function isSessionAttentionNeeded(conversation: AgentConversation): boolean {
@@ -29,8 +30,11 @@ export function isSessionAttentionNeeded(conversation: AgentConversation): boole
 export function matchesSessionQuickFilter(
   conversation: AgentConversation,
   filter: SessionQuickFilter,
+  unread = false,
 ): boolean {
   switch (filter) {
+    case 'unread':
+      return unread;
     case 'active':
       return isSessionActive(conversation);
     case 'changed':
@@ -45,17 +49,21 @@ export function matchesSessionQuickFilter(
 
 export function summarizeSessionQuickFilters(
   conversations: readonly AgentConversation[],
+  unreadIds?: ReadonlySet<string>,
 ): SessionQuickFilterCounts {
+  let unread = 0;
   let active = 0;
   let changed = 0;
   let attention = 0;
   for (const conv of conversations) {
+    if (unreadIds?.has(conv.id)) unread++;
     if (isSessionActive(conv)) active++;
     if (isSessionChangedFiles(conv)) changed++;
     if (isSessionAttentionNeeded(conv)) attention++;
   }
   return {
     all: conversations.length,
+    unread,
     active,
     changed,
     attention,

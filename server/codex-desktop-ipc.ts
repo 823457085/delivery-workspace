@@ -32,6 +32,7 @@ export async function connectCodexDesktopThread(threadId: string, options: { soc
   let buffer = Buffer.alloc(0);
   let clientId = '';
   let ownerId = '';
+  let snapshotVersion: number | undefined;
   let closedError: Error | undefined;
   let snapshotWaiter: { resolve(value: DesktopObject): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> } | undefined;
   const fail = (error: Error) => {
@@ -78,6 +79,7 @@ export async function connectCodexDesktopThread(threadId: string, options: { soc
           }
           const state = desktopObject(change.conversationState);
           if (state.id !== threadId) throw new Error('Codex 桌面返回的会话 ID 不一致');
+          snapshotVersion = message.version;
           clearTimeout(snapshotWaiter.timer); snapshotWaiter.resolve(state); snapshotWaiter = undefined;
         }
       }
@@ -101,6 +103,7 @@ export async function connectCodexDesktopThread(threadId: string, options: { soc
     ownerId = String(owner.handledByClientId || '');
     if (!ownerId) throw new Error('未找到 Codex 原会话的持有者');
     return {
+      get snapshotVersion() { return snapshotVersion; },
       request: async (method: string, params: DesktopObject, version: number) => {
         const response = await request(method, params, version, 30_000);
         if (response.handledByClientId !== ownerId || response.method !== method) throw new Error('Codex 桌面回执与原会话持有者不一致');

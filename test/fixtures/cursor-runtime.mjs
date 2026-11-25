@@ -2,6 +2,16 @@
 // Local CLI peer: echo the received prompt; hold a run for virtual-time/abort checks.
 const output = value => process.stdout.write(JSON.stringify(value) + '\n');
 const prompt = process.argv.at(-1);
+const resumeSession = process.argv.includes('--resume') ? process.argv[process.argv.indexOf('--resume') + 1] : '';
+if (resumeSession === 'missing-cursor-chat') {
+  process.stderr.write(`Chat ${resumeSession} not found\n`);
+  process.exit(1);
+}
+if (prompt.includes('native-return-check') && resumeSession === 'existing-cursor-chat') {
+  output({ type: 'system', session_id: resumeSession });
+  output({ type: 'result', result: 'Cursor resumed existing chat' });
+  process.exit(0);
+}
 if (prompt.includes('require-workspace-trust') && !process.argv.includes('--trust')) {
   process.stderr.write('Workspace Trust Required: Do you trust the contents of this directory?');
   process.exit(1);

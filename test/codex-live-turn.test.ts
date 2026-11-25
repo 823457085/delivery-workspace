@@ -7,6 +7,7 @@ import { forkCodexThread, runCodexLiveTurn, type LiveSteer } from '../server/cod
 import { createAgentRuntimeService, type AgentRuntimeAdapter } from '../server/agent-runtime.js';
 import type { AgentRun } from '../shared/agent-runtime.js';
 import { codexWriterHeldMessage } from '../shared/codex-session-error.js';
+import { NativeSessionUnavailableError } from '../server/native-session-return.js';
 
 const fixture = path.resolve('test/fixtures/codex-live-server.mjs');
 const sample: AgentRun = { id: 'test', provider: 'codex', mode: 'ask', accessMode: 'workspace', model: '', reasoningEffort: '',
@@ -73,6 +74,21 @@ test('Codex 原会话有 active writer 时显示可操作的中文提示', { tim
     return true;
   });
   assert.equal(sessionId, 'original-session');
+});
+
+test('切回 Codex 时只有 thread/resume 的原生会话明确缺失才允许回退', { timeout: 5000 }, async () => {
+  let observedSession = '', observedTurn = '';
+  const context = { run: sample, resumeSessionId: 'missing-native-session', imagePaths: [],
+    signal: new AbortController().signal, onPid() {}, onSession(id: string) { observedSession = id; },
+    onTurn(id: string) { observedTurn = id; }, onEvent() {} };
+  await assert.rejects(runCodexLiveTurn(fixture, { ...context, returningToNativeSession: true }, 'user task'), NativeSessionUnavailableError);
+  assert.equal(observedSession, '');
+  assert.equal(observedTurn, '');
+  await assert.rejects(runCodexLiveTurn(fixture, context, 'user task'), /no rollout found/);
+  await assert.rejects(runCodexLiveTurn(fixture, { ...context, returningToNativeSession: true,
+    resumeSessionId: 'original-session' }, 'writer-busy'), error => !(error instanceof NativeSessionUnavailableError));
+  assert.equal(observedSession, 'original-session');
+  assert.equal(observedTurn, '');
 });
 
 test('新建、续接与分叉均注入任务浏览器，同时保留本轮推理强度和权限配置', { timeout: 5000 }, async () => {

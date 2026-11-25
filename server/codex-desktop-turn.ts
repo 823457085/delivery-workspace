@@ -136,8 +136,20 @@ export async function runCodexDesktopTurn(context: LiveContext, prompt: string, 
     submitted = true;
     const receipt = await desktop.request('thread-follower-start-turn', { conversationId: threadId,
       turnStart: { request, context: { inheritThreadSettings: false, useAppServerPermissionDefault: false } } }, 2);
-    turnId = String(object(object(receipt.result).turn).id || '');
-    if (!turnId) throw new Error('Codex 桌面未返回本轮 ID，无法确认是否启动；请检查原会话后再操作');
+    const receivedTurnId = String(object(object(receipt.result).turn).id || '');
+    if (!receivedTurnId) throw new Error('Codex 桌面未返回本轮 ID，无法确认是否启动；请检查原会话后再操作');
+    if (desktop.snapshotVersion === 13) {
+      // 并发发送时 Codex 可能把输入并入另一端刚开始的一轮，并返回它的 ID。
+      const deadline = Date.now() + 30_000;
+      while (true) {
+        const turn = desktopTurnFromSnapshot(await readSnapshot(), threadId, receivedTurnId);
+        const opening = Array.isArray(turn?.items) ? turn.items.map(object).find(item => item.type === 'userMessage') : undefined;
+        if (opening?.clientId === request.clientUserMessageId) break;
+        if (opening || Date.now() >= deadline) throw new Error('未能确认返回轮次由工作台发起，请在 Codex 桌面端核对原会话');
+        await delay(options.pollMs ?? 750, undefined, { signal });
+      }
+    }
+    turnId = receivedTurnId;
     await context.onSession(threadId);
     await context.onTurn?.(turnId);
     context.onEvent('lifecycle', '原会话由空闲桌面端持有，已通过原会话继续执行');

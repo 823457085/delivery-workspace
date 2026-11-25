@@ -10,7 +10,7 @@ import StatusPill from '../../shared/ui/StatusPill.vue';
 import { dateTime } from '../../shared/format';
 import { agentProviderLabels } from '../../../shared/agent-runtime';
 
-const props = defineProps<{ conversation: AgentConversation; selected: boolean; selecting?: boolean; checked?: boolean; disabled?: boolean; searchQuery?: string }>();
+const props = defineProps<{ conversation: AgentConversation; selected: boolean; selecting?: boolean; checked?: boolean; disabled?: boolean; searchQuery?: string; searchSnippet?: string; unread?: boolean }>();
 const status = computed(() => agentConversationStatus(props.conversation));
 const matchedSnippet = computed(() => {
   const term = props.searchQuery?.trim().toLowerCase();
@@ -26,7 +26,7 @@ const matchedSnippet = computed(() => {
       return `${start > 0 ? '…' : ''}${flat.slice(start, end)}${end < flat.length ? '…' : ''}`;
     }
   }
-  return '';
+  return props.searchSnippet || '';
 });
 const providerShort = computed(() => {
   const raw = agentProviderLabels[props.conversation.latest.provider] || props.conversation.latest.provider;
@@ -88,9 +88,10 @@ function cancelRename() {
     <button
       type="button"
       class="session-item"
-      :class="{ selected: selecting ? checked : selected }"
+      :class="{ selected: selecting ? checked : selected, unread }"
       :disabled="selecting && disabled"
       :aria-pressed="selecting ? checked : selected"
+      :aria-label="unread ? `${conversation.title}，完成未读` : undefined"
       @click="editing ? undefined : (selecting ? emit('toggle', conversation.id) : emit('select', conversation.id))"
     >
       <input
@@ -107,6 +108,7 @@ function cancelRename() {
         @blur="commitRename"
       />
       <strong v-else class="session-title" :title="`${conversation.title}（双击可改名）`" @dblclick.stop.prevent="startRename">{{ conversation.title }}</strong>
+      <i v-if="unread && !editing" class="session-unread-dot" title="完成未读" aria-hidden="true" />
       <small v-if="matchedSnippet" class="session-match-snippet" :title="matchedSnippet">{{ matchedSnippet }}</small>
 
       <div class="session-card-meta">
@@ -130,6 +132,8 @@ function cancelRename() {
 .session-checkbox { flex: 0 0 auto; margin: 0 0 0 6px; accent-color: var(--ui-accent); }
 .session-row-selecting .session-item { flex: 1; min-width: 0; }
 .session-row-selecting .session-item:disabled { cursor: wait; }
+.session-unread-dot { position: absolute; top: 12px; right: 9px; width: 6px; height: 6px; border-radius: 50%; background: var(--ui-accent); }
+.session-item.unread .session-title { padding-right: 12px; }
 
 .session-row {
   position: relative;

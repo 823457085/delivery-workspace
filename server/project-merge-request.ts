@@ -14,6 +14,7 @@ import {
   type MergeDiffTriageSummary,
 } from './pr-review-intelligence.js';
 import { analyzeRepoBlastRadius } from './repo-blast-radius.js';
+import type { MergeRequestWatchStatus } from '../shared/merge-request-watch.js';
 import {
   draftCategorizedReleaseNotes,
   evaluateDeliveryReadinessScorecard,
@@ -384,7 +385,9 @@ async function githubClient(repository: URL, options: Options): Promise<External
   };
 }
 
-async function gitlabClient(repository: URL, options: Options): Promise<ExternalPlatformClient | undefined> {
+async function gitlabClient(repository: URL, options: Options): Promise<(ExternalPlatformClient & {
+  readStatus(id: number): Promise<MergeRequestWatchStatus>;
+}) | undefined> {
   const loadedToken = await readOptionalTokenFile(path.join(options.dataDirectory, 'gitlab-credentials.json'), 'GitLab ');
   if (!loadedToken) return undefined;
   const authToken: string = loadedToken;
@@ -431,6 +434,8 @@ async function gitlabClient(repository: URL, options: Options): Promise<External
     source_branch?: unknown;
     target_branch?: unknown;
     author?: { name?: unknown; username?: unknown } | null;
+    sha?: unknown; head_pipeline?: { sha?: unknown; status?: unknown } | null;
+    detailed_merge_status?: unknown; has_conflicts?: unknown;
   };
 
   function parseMr(raw: unknown): ProjectMergeRequestListItem {
@@ -463,6 +468,27 @@ async function gitlabClient(repository: URL, options: Options): Promise<External
   return {
     kind: 'GitLab',
     listOpen,
+    async readStatus(id) {
+      const endpoint = `/merge_requests/${id}`;
+      const value = await glApi(endpoint) as GlMr;
+      const request = parseMr(value);
+      if (request.id !== id) throw fail('GitLab 返回的合并请求编号不一致。');
+      const state = watchState(request.state);
+      const headSha = revisionSha(value.sha);
+      const pipeline = headSha && value.head_pipeline?.sha === headSha ? value.head_pipeline.status : undefined;
+      const approval = state === 'open'
+        ? await glApi(`${endpoint}/approvals`).catch(() => undefined) as { approved?: unknown } | undefined
+        : undefined;
+      const mergeStatus = value.detailed_merge_status;
+      const checking = mergeStatus === 'checking' || mergeStatus === 'unchecked' || mergeStatus === 'approvals_syncing';
+      const conflict = value.has_conflicts === true || mergeStatus === 'conflict' ? true
+        : value.has_conflicts === false && !checking ? false : undefined;
+      return { provider: 'GitLab', id, title: request.title, url: request.url, state, headSha,
+        checks: normalizeWatchChecks(pipeline), conflict,
+        review: mergeStatus === 'requested_changes' ? 'changes-requested'
+          : approval?.approved === true ? 'approved'
+            : approval?.approved === false ? 'pending' : undefined };
+    },
     async findExisting(info) {
       const openList = await listOpen();
       const matched = openList.find(item => item.sourceBranch === info.sourceBranch && item.targetBranch === info.targetBranch);
@@ -594,6 +620,88 @@ export async function listProjectMergeRequests(input: unknown, options: Options)
     }
   }
   return { requests };
+}
+
+function revisionSha(value: unknown) {
+  return typeof value === 'string' && /^[a-f0-9]{40,64}$/i.test(value) ? value : undefined;
+}
+
+function watchState(value: string): MergeRequestWatchStatus['state'] {
+  switch (value.toUpperCase()) {
+    case 'MERGED': return 'merged';
+    case 'CLOSED': return 'closed';
+    case 'OPEN': case 'OPENED': case 'UNDER_DEV': case 'UNDER_REVIEW': case 'TO_BE_MERGED': return 'open';
+    default: throw fail('代码平台返回了无法识别的合并请求状态。');
+  }
+}
+
+function normalizeWatchChecks(value: unknown): MergeRequestWatchStatus['checks'] {
+  switch (typeof value === 'string' ? value.toLowerCase() : '') {
+    case 'pass': case 'success': return 'passed';
+    case 'fail': case 'failed': return 'failed';
+    case 'created': case 'pending': case 'running': case 'preparing': case 'waiting_for_resource': return 'running';
+    default: return undefined;
+  }
+}
+
+async function readCodeupWatchStatus(repository: URL, id: number, options: Options): Promise<MergeRequestWatchStatus> {
+  const client = await codeupClient(repository, options);
+  if (!client) throw fail('请先在云效设置中保存具有合并请求读取权限的个人访问令牌。');
+  const endpoint = `/repositories/${client.repositoryId}/changeRequests/${id}`;
+  const { value } = await client.api(endpoint);
+  const mr = value as CodeupRequestResponse & { projectId?: unknown };
+  if (mr?.localId !== id || (mr.projectId ?? mr.targetProjectId) !== client.repositoryId || typeof mr.title !== 'string') {
+    throw fail('Codeup 返回的合并请求与当前仓库不一致。');
+  }
+  const state = watchState(String(mr.status || mr.state || ''));
+  const reviewers = mr.reviewers as { reviewOpinionStatus?: unknown }[] | undefined;
+  const review = !Array.isArray(reviewers) || !reviewers.length ? undefined
+    : reviewers.some(item => item?.reviewOpinionStatus === 'NOT_PASS') ? 'changes-requested'
+      : reviewers.every(item => item?.reviewOpinionStatus === 'PASS') ? 'approved' : 'pending';
+  let headSha: string | undefined, checks: MergeRequestWatchStatus['checks'];
+  if (state === 'open') {
+    const patches = await client.api(`${endpoint}/diffs/patches`).catch(() => undefined);
+    if (Array.isArray(patches?.value)) {
+      const latest = patches.value.filter(patch => patch?.relatedMergeItemType === 'MERGE_SOURCE' &&
+        Number.isSafeInteger(patch.versionNo) && revisionSha(patch.commitId) && typeof patch.patchSetBizId === 'string')
+        .sort((a, b) => b.versionNo - a.versionNo)[0];
+      headSha = revisionSha(latest?.commitId);
+      if (headSha && latest.patchSetBizId) {
+        const ci = await client.api(`${endpoint}/ciCheckList?${new URLSearchParams({ patchSetBizId: latest.patchSetBizId })}`).catch(() => undefined);
+        const report = ci?.value as { checkList?: { ciTestCheckType?: unknown; state?: unknown; invalid?: unknown }[] } | undefined;
+        const states = Array.isArray(report?.checkList)
+          ? report.checkList.filter(item => item?.ciTestCheckType === 'FLOW' && item.invalid !== true).map(item => normalizeWatchChecks(item.state)) : [];
+        if (states.includes('failed')) checks = 'failed';
+        else if (states.includes('running')) checks = 'running';
+        else if (states.length && states.every(value => value === 'passed')) checks = 'passed';
+      }
+    }
+  }
+  return { provider: 'Codeup', id, title: mr.title, url: '', state, headSha, checks, review,
+    conflict: mr.conflictCheckStatus === 'HAS_CONFLICT' ? true : mr.conflictCheckStatus === 'NO_CONFLICT' ? false : undefined };
+}
+
+const watchInputSchema = z.object({ path: repositorySchema.shape.path, url: z.string().max(2048) }).strict();
+export async function readProjectMergeRequestWatch(input: unknown, options: Options): Promise<MergeRequestWatchStatus> {
+  const data = watchInputSchema.parse(input);
+  const request = URL.parse(data.url);
+  if (!request || request.protocol !== 'https:' || request.username || request.password) throw fail('请填写合并请求的 HTTPS 详情链接。', 400);
+  const isCodeup = request.origin === 'https://codeup.aliyun.com';
+  if (!isCodeup && !/gitlab/i.test(request.hostname)) throw fail('目前可跟踪 Codeup 和 GitLab 合并请求。', 400);
+  const suffix = request.pathname.match(isCodeup ? /\/(?:change|merge_requests)\/(\d+)\/?$/ : /\/(?:-\/)?merge_requests\/(\d+)\/?$/);
+  const id = Number(suffix?.[1]);
+  if (!suffix || !Number.isSafeInteger(id) || id <= 0) throw fail('请填写指向具体合并请求的链接。', 400);
+  const requestRepoPath = request.pathname.slice(0, suffix.index);
+  const git = await readProjectGitSnapshot(data.path);
+  const repository = git.remotes.flatMap(remote => remote.webUrl ? [URL.parse(remote.webUrl)] : []).find(candidate =>
+    candidate?.origin === request.origin && !candidate.username && !candidate.password &&
+    candidate.pathname.replace(/\/$/, '') === requestRepoPath);
+  if (!repository) throw fail('合并请求链接需对应当前会话项目的 Git 远端。', 400);
+  const url = `${request.origin}${requestRepoPath}/${isCodeup ? 'change' : '-/merge_requests'}/${id}`;
+  if (isCodeup) return { ...await readCodeupWatchStatus(repository, id, options), url };
+  const client = await gitlabClient(repository, options);
+  if (!client) throw fail('请先在账号设置中保存具有合并请求读取权限的 GitLab 令牌。');
+  return { ...await client.readStatus(id), url };
 }
 
 export async function mergeProjectMergeRequest(input: unknown, options: Options) {

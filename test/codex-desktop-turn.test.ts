@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import os from 'node:os';
 import { CodexDesktopTurnUnconfirmedError, desktopTurnFromSnapshot, runCodexDesktopTurn } from '../server/codex-desktop-turn.js';
-import type { DesktopObject } from '../server/codex-desktop-ipc.js';
+import { desktopObject as object, type DesktopObject } from '../server/codex-desktop-ipc.js';
 import type { LiveContext } from '../server/codex-live-turn.js';
 
 const threadId = '33333333-3333-3333-3333-333333333333';
@@ -29,6 +29,7 @@ function fixture() {
   };
   const monitor = { snapshot: async (): Promise<DesktopObject> => snapshot([{ id: turnId, status: 'completed', items: [{ id: 'answer', type: 'agentMessage', text: 'done' }] }]) };
   const desktop = {
+    snapshotVersion: 11,
     snapshot: async (): Promise<DesktopObject> => calls.length ? monitor.snapshot() : idle(),
     request: async (method: string, params: DesktopObject, version: number): Promise<DesktopObject> => {
       calls.push({ method, params, version });
@@ -48,6 +49,30 @@ test('轮次已启动后状态超时会重连原轮次，提示词只发送一�
   assert.equal(await runCodexDesktopTurn(f.context, 'prompt', f.options), 'done');
   assert.equal(connections, 2);
   assert.equal(f.calls.filter(call => call.method === 'thread-follower-start-turn').length, 1);
+});
+
+test('v13 只跟踪由本次输入开启的轮次，桌面已开始轮次的回执保留待核对状态', async () => {
+  for (const fromWorkbench of [true, false]) {
+    const f = fixture();
+    f.desktop.snapshotVersion = 13;
+    f.monitor.snapshot = async () => {
+      const clientId = object(object(f.calls[0].params.turnStart).request).clientUserMessageId;
+      return snapshot([{ id: turnId, status: 'completed', items: [
+        { type: 'userMessage', clientId: fromWorkbench ? clientId : 'desktop-input' },
+        { type: 'agentMessage', text: 'done' },
+      ] }]);
+    };
+    const run = runCodexDesktopTurn(f.context, 'prompt', f.options);
+    if (fromWorkbench) {
+      assert.equal(await run, 'done');
+      assert.deepEqual(f.sessions, [threadId]);
+    } else {
+      await assert.rejects(run, /未能确认返回轮次由工作台发起/);
+      assert.deepEqual(f.sessions, []);
+      assert.deepEqual(f.outputs, []);
+    }
+    assert.deepEqual(f.calls.map(call => call.method), ['thread-follower-start-turn']);
+  }
 });
 
 test('持续观察超时返回可恢复的未知状态，不重复启动或中断业务轮次', async () => {

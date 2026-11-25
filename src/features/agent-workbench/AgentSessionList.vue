@@ -14,7 +14,7 @@ import AgentSessionItem from './AgentSessionItem.vue';
 import { isPinnedAgentSession } from './session-pins';
 import { matchesSessionQuickFilter, summarizeSessionQuickFilters, type SessionQuickFilter } from './session-quick-filter';
 
-const props = defineProps<{ workspaceState: ConversationWorkspaceState; workspaceBusy: boolean; conversations: AgentConversation[]; selectedId: string; changing: string; pinnedIds: ReadonlySet<string> }>();
+const props = defineProps<{ workspaceState: ConversationWorkspaceState; workspaceBusy: boolean; conversations: AgentConversation[]; selectedId: string; changing: string; pinnedIds: ReadonlySet<string>; unreadIds?: ReadonlySet<string> }>();
 const emit = defineEmits<{ createWorkspace: []; createWorkspaceConversation: [id:string]; renameWorkspace: [id:string]; removeWorkspace: [id:string]; duplicateWorkspace: [id:string]; manageWorkspace: [id:string]; moveWorkspace: [ids:string[]]; moveConversation: [conversationId:string,workspaceId:string]; select: [id: string]; create: []; groups: []; sync: []; remove: [conversations: AgentConversation[]]; rename: [id: string, title: string] }>();
 const collapsedGroupsStorageKey = 'agent-session-collapsed-groups:v1';
 function readCollapsedGroups() {
@@ -42,7 +42,26 @@ const collapsedGroups = shallowRef(readCollapsedGroups());
 const previewLimit = 10;
 const recentWindowMs = 7 * 24 * 60 * 60 * 1000;
 
-type ConversationGroup = { path: string; label: string; conversations: AgentConversation[] };
+type ConversationGroup = { path: string; label: string; conversations: AgentConversation[]; unreadCount: number };
+
+const searchMatch = shallowRef<{ term: string; ids: Set<string>; snippets?: Record<string, string> }>();
+watch(() => query.value.trim(), (term, _previous, onCleanup) => {
+  if (typeof window === 'undefined' || !term || term.length > 512) return;
+  const abort = new AbortController();
+  const timer = setTimeout(async () => {
+    try {
+      const params = new URLSearchParams({ q: term });
+      const response = await fetch(`/api/agent-runtimes/conversations/search?${params}`, { signal: abort.signal });
+      if (!response.ok) return;
+      const data: { conversationIds: string[]; snippets?: Record<string, string> } = await response.json();
+      if (!abort.signal.aborted) {
+        searchMatch.value = { term, ids: new Set(data.conversationIds), snippets: data.snippets };
+      }
+    } catch { /* Local title and branch matching remains available during disconnects. */ }
+  }, 180);
+  onCleanup(() => { clearTimeout(timer); abort.abort(); });
+});
+const currentSearchMatch = computed(() => searchMatch.value?.term === query.value.trim() ? searchMatch.value : undefined);
 
 const recentConversations = computed(() => {
   const cutoff = Date.now() - recentWindowMs;
@@ -57,18 +76,19 @@ const scopedConversations = computed(() => (query.value.trim() || showOlder.valu
 
 function passQuickFilter(conversation: AgentConversation) {
   return typeof matchesSessionQuickFilter === 'function'
-    ? matchesSessionQuickFilter(conversation, quickFilter.value)
+    ? matchesSessionQuickFilter(conversation, quickFilter.value, props.unreadIds?.has(conversation.id))
     : true;
 }
 
 const quickFilterCounts = computed(() =>
   typeof summarizeSessionQuickFilters === 'function'
-    ? summarizeSessionQuickFilters(props.conversations)
-    : { all: props.conversations.length, active: 0, changed: 0, attention: 0 },
+    ? summarizeSessionQuickFilters(props.conversations, props.unreadIds)
+    : { all: props.conversations.length, active: 0, changed: 0, attention: 0, unread: 0 },
 );
 
 function matchesConversation(conversation: AgentConversation, term: string) {
   if (!term) return true;
+  if (currentSearchMatch.value?.ids.has(conversation.id)) return true;
   return [conversation.title, conversation.latest.baseBranch || conversation.latest.branch, conversation.latest.sessionId,
     agentConversationProjectPath(conversation), conversation.workspace?.workspacePath, conversation.workspace?.branch,
     ...(conversation.workspace?.additionalWorkspaces || []).flatMap(item => [item.workspacePath, item.branch]),
@@ -87,7 +107,7 @@ function getWorkspaceLabel(workspacePath: string) {
 }
 
 const projectGroups = computed<ConversationGroup[]>(() => conversationWorkspaceGroups(props.workspaceState, props.conversations)
-  .map(group=>({path:group.id,label:group.name,conversations:group.conversations.filter(c=>scopedConversations.value.some(item=>item.id===c.id))})));
+  .map(group=>({path:group.id,label:group.name,conversations:group.conversations.filter(c=>scopedConversations.value.some(item=>item.id===c.id)),unreadCount:0})));
 watch(projectGroups, groups => { if(projectFilter.value !== 'all' && !groups.some(g=>g.path===projectFilter.value)) projectFilter.value='all'; });
 const dragSource = shallowRef<{type:'workspace'|'conversation';id:string}>();
 const dropTarget = shallowRef<string|null>(null);
@@ -175,11 +195,13 @@ const visibleGroups = computed<ConversationGroup[]>(() => {
   return projectGroups.value
     .filter((group) => projectFilter.value === 'all' || group.path === projectFilter.value)
     .map((group) => {
-      const conversations = group.conversations.filter((conversation) => !isPinnedAgentSession(props.pinnedIds, conversation) && passQuickFilter(conversation));
-      if (!term || [group.label, group.path].some((value) => value.toLowerCase().includes(term))) return { ...group, conversations };
+      let conversations = group.conversations.filter((conversation) => !isPinnedAgentSession(props.pinnedIds, conversation) && passQuickFilter(conversation));
+      if (term && ![group.label, group.path].some((value) => value.toLowerCase().includes(term)))
+        conversations = conversations.filter((conversation) => matchesConversation(conversation, term));
       return {
         ...group,
-        conversations: conversations.filter((conversation) => matchesConversation(conversation, term)),
+        conversations,
+        unreadCount: conversations.filter(({ id }) => props.unreadIds?.has(id)).length,
       };
     })
     .filter((group) => group.conversations.length > 0 || (!term && quickFilter.value === 'all'));
@@ -268,6 +290,7 @@ function toggleGroup(path: string) {
       <label class="project-filter"><Folder :size="13" /><select v-model="projectFilter" aria-label="按工作区筛选"><option value="all">全部工作区（{{ projectGroups.filter(group => group.path).length }}）</option><option v-for="group in projectGroups" :key="group.path" :value="group.path">{{ group.label }}（{{ group.conversations.length }}）</option></select><ChevronDown :size="13" /></label>
       <div class="session-quick-pills" role="tablist" aria-label="按会话状态快速筛选">
         <button type="button" role="tab" :aria-selected="quickFilter === 'all'" :class="{ active: quickFilter === 'all' }" @click="quickFilter = 'all'">全部</button>
+        <button type="button" role="tab" :aria-selected="quickFilter === 'unread'" :class="{ active: quickFilter === 'unread' }" @click="quickFilter = quickFilter === 'unread' ? 'all' : 'unread'">未读<em v-if="quickFilterCounts.unread">{{ quickFilterCounts.unread }}</em></button>
         <button type="button" role="tab" :aria-selected="quickFilter === 'active'" :class="{ active: quickFilter === 'active' }" @click="quickFilter = quickFilter === 'active' ? 'all' : 'active'">进行中<em v-if="quickFilterCounts.active">{{ quickFilterCounts.active }}</em></button>
         <button type="button" role="tab" :aria-selected="quickFilter === 'changed'" :class="{ active: quickFilter === 'changed' }" @click="quickFilter = quickFilter === 'changed' ? 'all' : 'changed'">有改代码<em v-if="quickFilterCounts.changed">{{ quickFilterCounts.changed }}</em></button>
         <button type="button" role="tab" :aria-selected="quickFilter === 'attention'" :class="{ active: quickFilter === 'attention', 'is-alert': quickFilterCounts.attention > 0 }" @click="quickFilter = quickFilter === 'attention' ? 'all' : 'attention'">异常<em v-if="quickFilterCounts.attention">{{ quickFilterCounts.attention }}</em></button>
@@ -275,7 +298,7 @@ function toggleGroup(path: string) {
     </div>
     <div class="workspace-create"><button type="button" :disabled="workspaceBusy" @click="emit('createWorkspace')"><Plus :size="13"/>新建工作区</button><small>可拖动排序或移动任务</small></div>
     <div class="session-sidebar-heading">
-      <strong>{{ query.trim() ? '全量检索结果' : showOlder ? '全部历史会话' : '置顶与最近 7 天' }}</strong>
+      <strong>{{ query.trim() ? '全量检索结果' : quickFilter === 'unread' ? '完成未读' : showOlder ? '全部历史会话' : '置顶与最近 7 天' }}</strong>
       <span>{{ visibleConversationCount }} / {{ availableConversationCount }}</span>
       <button v-if="olderConversationCount > 0 && !query.trim()" type="button" class="older-toggle-btn" @click="showOlder = !showOlder">
         {{ showOlder ? '仅近7天' : `+更早(${olderConversationCount})` }}
@@ -292,21 +315,27 @@ function toggleGroup(path: string) {
         <div class="pinned-heading"><Pin :size="12" /><strong>置顶</strong><span>{{ pinnedConversations.length }}</span></div>
         <AgentSessionItem v-for="conversation in pinnedConversations" :key="conversation.id" :conversation="conversation"
           :selected="conversation.id === selectedId" :selecting="batchMode" :checked="checkedIds.has(conversation.id)" :disabled="!!changing"
-          :draggable="!workspaceBusy && !changing" @dragstart.stop="beginDrag($event,'conversation',conversation.id)" @dragend="endDrag" :search-query="query.trim()"
+          :draggable="!workspaceBusy && !changing" @dragstart.stop="beginDrag($event,'conversation',conversation.id)" @dragend="endDrag" :search-query="query.trim()" :search-snippet="currentSearchMatch?.snippets?.[conversation.id]" :unread="unreadIds?.has(conversation.id)"
           @select="emit('select', $event)" @toggle="toggleChecked" @rename="(id, title) => emit('rename', id, title)" />
       </section>
       <section v-for="group in visibleGroups" :key="group.path" class="project-group" :class="{'drop-target':dropTarget===group.path}" @dragover="overGroup($event,group.path)" @drop="dropGroup($event,group.path)">
-        <button type="button" :draggable="!!group.path && !workspaceBusy && !changing" @dragstart="beginDrag($event,'workspace',group.path)" @dragend="endDrag" class="project-heading" :title="group.path" :aria-expanded="!isGroupCollapsed(group.path)" @click="toggleGroup(group.path)" @contextmenu="showWorkspaceMenu($event,group.path)" @keydown="workspaceMenuKey($event,group.path)"><GripVertical v-if="group.path" :size="12" class="workspace-grip"/><ChevronDown :size="12" :class="{ collapsed: isGroupCollapsed(group.path) }" /><Folder :size="13" /><strong>{{ group.label }}</strong><span>{{ group.conversations.length }}</span></button>
+        <button type="button" :draggable="!!group.path && !workspaceBusy && !changing" @dragstart="beginDrag($event,'workspace',group.path)" @dragend="endDrag" class="project-heading" :title="group.path" :aria-expanded="!isGroupCollapsed(group.path)"
+          :aria-label="isGroupCollapsed(group.path) && group.unreadCount ? `${group.label}，${group.conversations.length} 个会话，${group.unreadCount} 个完成未读` : undefined"
+          @click="toggleGroup(group.path)" @contextmenu="showWorkspaceMenu($event,group.path)" @keydown="workspaceMenuKey($event,group.path)">
+          <GripVertical v-if="group.path" :size="12" class="workspace-grip"/><ChevronDown :size="12" :class="{ collapsed: isGroupCollapsed(group.path) }" /><Folder :size="13" /><strong>{{ group.label }}</strong>
+          <i v-if="isGroupCollapsed(group.path) && group.unreadCount" class="project-unread-dot" title="有完成未读的会话" aria-hidden="true" />
+          <span>{{ group.conversations.length }}</span>
+        </button>
         <div v-show="!isGroupCollapsed(group.path)" class="project-conversations">
           <AgentSessionItem v-for="conversation in displayedConversations(group)" :key="conversation.id" :conversation="conversation"
             :selected="conversation.id === selectedId" :selecting="batchMode" :checked="checkedIds.has(conversation.id)" :disabled="!!changing"
-            :draggable="!workspaceBusy && !changing" @dragstart.stop="beginDrag($event,'conversation',conversation.id)" @dragend="endDrag" :search-query="query.trim()"
+            :draggable="!workspaceBusy && !changing" @dragstart.stop="beginDrag($event,'conversation',conversation.id)" @dragend="endDrag" :search-query="query.trim()" :search-snippet="currentSearchMatch?.snippets?.[conversation.id]" :unread="unreadIds?.has(conversation.id)"
             @select="emit('select', $event)" @toggle="toggleChecked" @rename="(id, title) => emit('rename', id, title)" />
           <button v-if="!batchMode && !query.trim() && projectFilter === 'all' && group.conversations.length > previewLimit" type="button" class="project-more" @click="toggleGroupExpansion(group.path)">{{ expandedGroups.has(group.path) ? '收起更多' : `展开显示 ${group.conversations.length - previewLimit} 个` }}</button>
         </div>
       </section>
     </div>
-    <el-empty v-else :description="recentConversations.length || pinnedIds.size ? '没有匹配的会话' : '最近 7 天没有会话'" :image-size="48" />
+    <el-empty v-else :description="quickFilter === 'unread' && !query.trim() && projectFilter === 'all' ? '没有完成未读的会话' : recentConversations.length || pinnedIds.size ? '没有匹配的会话' : '最近 7 天没有会话'" :image-size="48" />
     <details class="session-tools">
       <summary><Settings2 :size="15" /><span>会话工具</span><ChevronDown :size="13" class="tools-chevron" /></summary>
       <div class="session-tools-content">
@@ -344,6 +373,7 @@ function toggleGroup(path: string) {
 .workspace-create{display:flex;align-items:center;justify-content:space-between;padding:5px 12px;gap:6px}.workspace-create button{display:flex;align-items:center;gap:4px;padding:4px 6px;background:transparent;border:0;color:var(--agent-accent);font-size:11px;cursor:pointer}.workspace-create small{font-size:10px;color:var(--agent-muted)}.drop-target{outline:2px solid var(--agent-accent);outline-offset:-2px;border-radius:6px;background:var(--ui-accent-soft)}.workspace-grip{opacity:.55;cursor:grab}
 
 
+.project-unread-dot{width:6px;height:6px;flex:none;border-radius:50%;background:var(--ui-accent)}
 .older-toggle-btn{margin-left:auto;padding:2px 7px;border:1px solid var(--ui-border);border-radius:999px;background:var(--ui-raised);color:var(--ui-accent);font:500 11px/16px var(--mono);cursor:pointer;transition:border-color 160ms ease,background 160ms ease}.older-toggle-btn:hover{border-color:var(--ui-accent);background:var(--ui-accent-soft)}
 .session-quick-pills{display:flex;align-items:center;gap:4px;margin:0 10px 4px;overflow-x:auto;scrollbar-width:none}.session-quick-pills::-webkit-scrollbar{display:none}.session-quick-pills button{display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 7px;border:1px solid var(--ui-border);border-radius:999px;background:var(--ui-raised);color:var(--ui-muted);font:500 11px/1 var(--sans);white-space:nowrap;cursor:pointer;transition:background 160ms ease,color 160ms ease,border-color 160ms ease}.session-quick-pills button:hover{color:var(--ui-text);border-color:color-mix(in srgb,var(--ui-accent) 40%,var(--ui-border))}.session-quick-pills button.active{border-color:color-mix(in srgb,var(--ui-accent) 45%,var(--ui-border));background:var(--ui-accent-soft);color:var(--ui-accent);font-weight:600}.session-quick-pills button em{padding:0 4px;border-radius:999px;background:color-mix(in srgb,var(--ui-surface) 75%,transparent);font:600 10px/14px var(--mono);font-style:normal;font-variant-numeric:tabular-nums}.session-quick-pills button.is-alert:not(.active) em{color:var(--ui-danger,#dc2626)}
 .session-batch-toolbar{display:flex;align-items:center;gap:8px;min-height:36px;margin:0 12px 6px;color:var(--ui-secondary);font-size:12px;line-height:16px}.session-batch-toolbar label{display:flex;align-items:center;gap:6px;white-space:nowrap;cursor:pointer}.session-batch-toolbar input{margin:0;accent-color:var(--ui-accent)}.session-batch-toolbar>span{flex:1;white-space:nowrap;color:var(--ui-muted)}.session-batch-toolbar button{padding:4px 6px;border:0;border-radius:6px;background:transparent;color:var(--ui-secondary);font:500 12px/16px var(--sans);cursor:pointer}.session-batch-toolbar button:hover:not(:disabled){background:var(--ui-hover);color:var(--ui-text)}.session-batch-toolbar .session-batch-delete{color:var(--ui-danger,var(--ui-accent))}.session-batch-toolbar button:disabled{opacity:.45;cursor:not-allowed}

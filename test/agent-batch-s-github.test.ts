@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { effectScope, ref } from 'vue';
+import { effectScope, nextTick, ref } from 'vue';
 import type { AgentRun } from '../shared/agent-runtime.js';
-import { buildAgentConversations } from '../src/features/agent-workbench/conversation.js';
+import { buildAgentConversations, type AgentConversation } from '../src/features/agent-workbench/conversation.js';
+import { useAgentUnreadSessions } from '../src/features/agent-workbench/useAgentUnreadSessions.js';
 import {
   AGENT_INPUT_HISTORY_KEY,
   readInputHistory,
@@ -123,7 +124,7 @@ test('inferCodeBlockFilename 与 inspectJsonCodeBlock 智能提取注释文件�
   assert.equal(inspectJsonCodeBlock('json', '{ broken json').valid, false);
 });
 
-test('summarizeSessionQuickFilters 与 matchesSessionQuickFilter 准确分类进行中、有改代码与异常会话', () => {
+test('会话快捷筛选区分未读、进行中、有改代码和异常', () => {
   const mkRun = (id: string, overrides: Partial<AgentRun>): AgentRun => ({
     id,
     provider: 'codex',
@@ -149,21 +150,72 @@ test('summarizeSessionQuickFilters 与 matchesSessionQuickFilter 准确分类进
   const conversations = buildAgentConversations([
     mkRun('c1', { status: 'running' }),
     mkRun('c2', { status: 'failed', error: 'Build error', changedFiles: [{ path: 'src/a.ts', status: 'modified' }] }),
-    mkRun('c3', { status: 'completed', changedFiles: [{ path: 'src/b.ts', status: 'added' }] }),
+    mkRun('c3', { status: 'completed', hasChangedFiles: true }),
     mkRun('c4', { status: 'completed' }),
   ]);
 
-  const counts = summarizeSessionQuickFilters(conversations);
+  const unread = new Set(['c3']);
+  const counts = summarizeSessionQuickFilters(conversations, unread);
   assert.deepEqual(counts, {
     all: 4,
+    unread: 1,
     active: 1,
     changed: 2,
     attention: 1,
   });
 
+  assert.deepEqual(conversations.filter(c => matchesSessionQuickFilter(c, 'unread', unread.has(c.id))).map(c => c.id), ['c3']);
   assert.equal(conversations.filter(c => matchesSessionQuickFilter(c, 'active')).length, 1);
   assert.equal(conversations.filter(c => matchesSessionQuickFilter(c, 'changed')).length, 2);
   assert.equal(conversations.filter(c => matchesSessionQuickFilter(c, 'attention')).length, 1);
+});
+
+test('完成未读跨刷新保留，详情画面读到当前结果后才清除', async () => {
+  const now = Date.parse('2026-11-15T10:00:00Z');
+  const run = (id: string, time: number, extra: Partial<AgentRun> = {}): AgentRun => ({
+    id, conversationId: 'thread', provider: 'codex', mode: 'agent', accessMode: 'workspace',
+    model: 'gpt-5', reasoningEffort: '', objective: id, workspacePath: '/repo',
+    branch: 'main', headSha: '', status: 'completed', sessionId: 'cli', pid: null,
+    result: 'ok', error: '', events: [], createdAt: new Date(time - 10).toISOString(),
+    updatedAt: new Date(time).toISOString(), ...extra,
+  });
+  const old = run('old', now - 1), saved = run('saved', now + 50);
+  const conversations = ref(buildAgentConversations([old]));
+  const visible = ref<AgentConversation[]>([]);
+  const storage = createMemoryStorage(), scope = effectScope();
+  const unread = scope.run(() => useAgentUnreadSessions(conversations, visible, storage, now))!;
+  assert.equal(unread.value.size, 0);
+  for (const latest of [run('failed', now + 1, { status: 'failed' }), run('cancelled', now + 2, { status: 'cancelled' }),
+    run('saving', now + 3, { resultReady: false })]) {
+    conversations.value = buildAgentConversations([latest]);
+    assert.equal(unread.value.size, 0);
+  }
+  conversations.value = buildAgentConversations([saved]);
+  assert.deepEqual([...unread.value], ['thread']);
+  visible.value = buildAgentConversations([saved]).map(conversation => ({ ...conversation, loaded: false }));
+  await nextTick();
+  assert.deepEqual([...unread.value], ['thread']);
+  visible.value = buildAgentConversations([old]);
+  await nextTick();
+  assert.deepEqual([...unread.value], ['thread']);
+  scope.stop();
+
+  const refreshed = effectScope();
+  visible.value = [];
+  const restoredUnread = refreshed.run(() => useAgentUnreadSessions(conversations, visible, storage, now + 100))!;
+  assert.deepEqual([...restoredUnread.value], ['thread']);
+  visible.value = buildAgentConversations([saved]);
+  await nextTick();
+  assert.equal(restoredUnread.value.size, 0);
+  refreshed.stop();
+
+  const reopened = effectScope();
+  visible.value = [];
+  const read = reopened.run(() => useAgentUnreadSessions(conversations, visible, storage, now + 100))!;
+  assert.equal(read.value.size, 0);
+  conversations.value = buildAgentConversations([run('next-result', now + 200)]);
+  assert.deepEqual([...read.value], ['thread']);
+  reopened.stop();
 });
 
 test('command-palette-history 按使用频次与时间衰减计算 Frecency 提权分值', () => {

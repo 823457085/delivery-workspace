@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { agentExecutionPrompt, createAgentRuntimeService, type AgentRuntimeAdapter } from '../server/agent-runtime.js';
+import { NativeSessionUnavailableError } from '../server/native-session-return.js';
 import type { CodexSessionSource } from '../server/codex-session-source.js';
 import type { AgentProvider, AgentRun, AgentRuntimeHealth, CodexSessionDetail, StartAgentRunInput } from '../shared/agent-runtime.js';
 import { buildAgentConversationList } from '../src/features/agent-workbench/conversation.js';
@@ -20,6 +21,7 @@ function adapterFixture(controlled = false) {
   const finishes = new Map<string, (result?: string) => void>();
   const adapters: AgentRuntimeAdapter[] = (['codex', 'cursor'] as const).map(provider => ({
     id: provider,
+    nativeSessionScope: async () => `fixture-account:${provider}`,
     health: async (): Promise<AgentRuntimeHealth> => ({ provider, label: provider, binary: `/fixture/${provider}`,
       version: 'test', authenticated: true, ready: true, message: 'ready', modes: ['agent', 'plan', 'ask'],
       models: [{ id: 'test-model', label: 'test-model' }], defaultModel: 'test-model', writable: true, checkedAt: new Date().toISOString() }),
@@ -92,7 +94,7 @@ test('完全访问的必要登录和既有任务授权持续生效，不被缩�
   assert.match(ask, /只读模式/); assert.doesNotMatch(ask, /登录、认证续期和重复验证/);
 });
 
-test('同一对话双向切换执行器，原生会话各自新建且后续续聊只恢复对应执行器', { timeout: 10000 }, async () => {
+test('首次切换新建原生会话，切回各自的原生会话只补上中间的进展', { timeout: 10000 }, async () => {
   const state = await directory();
   const fixture = adapterFixture();
   const options = { adapters: fixture.adapters, resolveWorkspace: async (selected: string) => identity(selected), codexSessionSource: emptySource };
@@ -121,23 +123,35 @@ test('同一对话双向切换执行器，原生会话各自新建且后续续�
 
     const back = await service.start(input('codex', '回到 Codex 检查结果', original.conversationId));
     await completed(back);
-    assert.equal(fixture.executions[3].resumeSessionId, '');
+    assert.equal(fixture.executions[3].resumeSessionId, original.sessionId);
     assert.equal(fixture.executions[3].forkSessionId, '');
-    assert.notEqual(back.sessionId, original.sessionId);
+    assert.equal(back.sessionId, original.sessionId);
     assert.notEqual(back.sessionId, switched.sessionId);
     assert.equal(back.providerSwitch?.from, 'cursor');
+    assert.equal(back.providerSwitch?.resumedFromRunId, original.id);
+    assert.match(back.providerSwitch?.context || '', /请继续修复/);
+    assert.match(back.providerSwitch?.context || '', /补充验证/);
+    assert.doesNotMatch(back.providerSwitch?.context || '', /检查已有代码/);
     const codexFollowup = await service.resume(back.id, '继续核对');
     await completed(codexFollowup);
     assert.equal(fixture.executions[4].resumeSessionId, back.sessionId);
     assert.deepEqual(original, originalSnapshot);
 
+    const cursorBack = await service.start(input('cursor', '切回 Cursor 核对', original.conversationId));
+    await completed(cursorBack);
+    assert.equal(fixture.executions[5].resumeSessionId, switched.sessionId);
+    assert.equal(cursorBack.providerSwitch?.resumedFromRunId, cursorFollowup.id);
+    assert.match(cursorBack.providerSwitch?.context || '', /回到 Codex 检查结果/);
+    assert.match(cursorBack.providerSwitch?.context || '', /继续核对/);
+    assert.doesNotMatch(cursorBack.providerSwitch?.context || '', /检查已有代码|请继续修复|补充验证/);
+
     const dashboard = await service.dashboard();
     const conversations = buildAgentConversationList(dashboard.runs, dashboard.codexSessions, {}, dashboard.conversationTitles);
     assert.equal(conversations.length, 1);
     assert.equal(conversations[0].id, original.conversationId);
-    assert.equal(conversations[0].title, '继续核对');
+    assert.equal(conversations[0].title, '切回 Cursor 核对');
     assert.deepEqual(new Set(conversations[0].runs.map(run => run.objective)),
-      new Set(['检查已有代码', '请继续修复', '补充验证', '回到 Codex 检查结果', '继续核对']));
+      new Set(['检查已有代码', '请继续修复', '补充验证', '回到 Codex 检查结果', '继续核对', '切回 Cursor 核对']));
 
     await service.close();
     service = await createAgentRuntimeService(state, options);
@@ -145,6 +159,12 @@ test('同一对话双向切换执行器，原生会话各自新建且后续续�
     assert.equal(restored.conversationId, original.conversationId);
     assert.equal(restored.objective, '请继续修复');
     assert.deepEqual(restored.providerSwitch, switched.providerSwitch);
+    const codexBack = await service.start(input('codex', '重启后切回 Codex', original.conversationId));
+    await completed(codexBack);
+    assert.equal(codexBack.sessionId, original.sessionId);
+    assert.equal(codexBack.providerSwitch?.resumedFromRunId, codexFollowup.id);
+    assert.match(codexBack.providerSwitch?.context || '', /切回 Cursor 核对/);
+    assert.doesNotMatch(codexBack.providerSwitch?.context || '', /检查已有代码|请继续修复|补充验证|回到 Codex 检查结果|继续核对/);
   } finally { await service.close(); await fs.rm(state, { recursive: true, force: true }); }
 });
 
@@ -175,14 +195,87 @@ test('运行中依次排队切 Cursor、续聊和切回 Codex，按提交顺序�
     assert.equal(fixture.executions.length, 3);
     fixture.finishes.get(followup.id)!('第三轮最终结果');
     await until(() => fixture.finishes.has(back.id));
-    assert.equal(fixture.executions[3].resumeSessionId, '');
+    assert.equal(fixture.executions[3].resumeSessionId, first.sessionId);
     assert.equal(fixture.executions[3].provider, 'codex');
     assert.match(fixture.executions[3].run.providerSwitch?.context || '', /第三轮最终结果/);
+    assert.doesNotMatch(fixture.executions[3].run.providerSwitch?.context || '', /第一轮最终结果/);
     fixture.finishes.get(back.id)!();
     await completed(back);
     assert.deepEqual(fixture.executions.map(item => item.run.id), [first.id, cursor.id, followup.id, back.id]);
     assert.equal(new Set((await service.dashboard()).runs.map(run => run.conversationId)).size, 1);
   } finally { await service.close(); await fs.rm(state, { recursive: true, force: true }); }
+});
+
+test('切回执行器时账号、模式或分支已经变化，使用完整交接创建新会话', async t => {
+  for (const change of ['account', 'mode', 'branch'] as const) {
+    await t.test(change, async () => {
+      const state = await directory();
+      const fixture = adapterFixture();
+      const codex = fixture.adapters.find(adapter => adapter.id === 'codex')!;
+      let account = 'original-account', branch = 'feature/original-branch';
+      codex.nativeSessionScope = async () => account;
+      const service = await createAgentRuntimeService(state, { adapters: fixture.adapters, codexSessionSource: emptySource,
+        resolveWorkspace: async selected => ({ ...identity(selected), branch }) });
+      try {
+        const original = await service.start(input('codex', '切换前的原始任务'));
+        await completed(original);
+        const other = await service.start(input('cursor', '中间的补充任务', original.conversationId));
+        await completed(other);
+        if (change === 'account') account = 'changed-account';
+        if (change === 'branch') branch = 'feature/changed-branch';
+        const back = await service.start({ ...input('codex', '切回继续', original.conversationId), mode: change === 'mode' ? 'plan' : 'ask' });
+        await completed(back);
+        assert.equal(fixture.executions[2].resumeSessionId, '');
+        assert.notEqual(back.sessionId, original.sessionId);
+        assert.equal(back.providerSwitch?.resumedFromRunId, undefined);
+        assert.match(back.providerSwitch?.context || '', /切换前的原始任务/);
+        assert.match(back.providerSwitch?.context || '', /中间的补充任务/);
+      } finally { await service.close(); await fs.rm(state, { recursive: true, force: true }); }
+    });
+  }
+});
+
+test('返回原生会话仅在明确未启动时退回新会话，其他错误保留原轮状态', async t => {
+  for (const failure of ['missing', 'network', 'already-started'] as const) {
+    await t.test(failure, async () => {
+      const state = await directory();
+      const fixture = adapterFixture();
+      const codex = fixture.adapters.find(adapter => adapter.id === 'codex')!;
+      const execute = codex.execute;
+      codex.execute = async context => {
+        if (!context.returningToNativeSession) return execute(context);
+        fixture.executions.push({ provider: 'codex', run: structuredClone(context.run),
+          resumeSessionId: context.resumeSessionId || '', forkSessionId: '' });
+        if (failure === 'network') throw new Error('fixture transport disconnected');
+        if (failure === 'already-started') await context.onSession(context.resumeSessionId!);
+        throw new NativeSessionUnavailableError();
+      };
+      const service = await createAgentRuntimeService(state, { adapters: fixture.adapters,
+        resolveWorkspace: async selected => identity(selected), codexSessionSource: emptySource });
+      try {
+        const original = await service.start(input('codex', '切换前的原始任务'));
+        await completed(original);
+        await completed(await service.start(input('cursor', '中间进展', original.conversationId)));
+        const back = await service.start(input('codex', '切回后的新要求', original.conversationId));
+        await until(() => !!back.resultReady || back.status === 'failed');
+        assert.equal(fixture.executions[2].resumeSessionId, original.sessionId);
+        assert.doesNotMatch(fixture.executions[2].run.providerSwitch?.context || '', /切换前的原始任务/);
+        if (failure === 'missing') {
+          assert.equal(back.status, 'completed');
+          assert.equal(fixture.executions.length, 4);
+          assert.equal(fixture.executions[3].resumeSessionId, '');
+          assert.match(fixture.executions[3].run.providerSwitch?.context || '', /切换前的原始任务/);
+          assert.match(fixture.executions[3].run.providerSwitch?.context || '', /中间进展/);
+          assert.notEqual(back.sessionId, original.sessionId);
+          assert.equal(back.providerSwitch?.resumedFromRunId, undefined);
+        } else {
+          assert.equal(back.status, 'failed');
+          assert.equal(fixture.executions.length, 3);
+        }
+        assert.equal(fixture.executions.filter(item => item.run.id === back.id && !item.resumeSessionId).length, failure === 'missing' ? 1 : 0);
+      } finally { await service.close(); await fs.rm(state, { recursive: true, force: true }); }
+    });
+  }
 });
 
 test('继续不存在的会话或不匹配的工作区不创建运行；同执行器继续只恢复已有原生会话', { timeout: 10000 }, async () => {
@@ -440,11 +533,11 @@ test('切回 Codex 后的普通排队续聊不能调整方向跨过中间切换�
     await until(() => fixture.finishes.has(cursor.id));
     fixture.finishes.get(cursor.id)!();
     await until(() => fixture.finishes.has(back.id));
-    assert.equal(fixture.executions[2].resumeSessionId, '');
+    assert.equal(fixture.executions[2].resumeSessionId, first.sessionId);
     fixture.finishes.get(back.id)!();
     await until(() => fixture.finishes.has(followup.id));
     assert.equal(fixture.executions[3].resumeSessionId, back.sessionId);
-    assert.notEqual(fixture.executions[3].resumeSessionId, first.sessionId);
+    assert.equal(fixture.executions[3].resumeSessionId, first.sessionId);
     assert.deepEqual(fixture.executions.map(item => item.run.id), [first.id, cursor.id, back.id, followup.id]);
     fixture.finishes.get(followup.id)!();
     await completed(followup);

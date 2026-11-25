@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import ts from 'typescript';
 import { computed, effectScope, nextTick, shallowRef } from 'vue';
-import { createRuntimeRefresh, createRuntimeStreamState } from '../src/features/agent-workbench/runtime-stream-state.js';
+import { agentConversationIndexKey, createRuntimeRefresh, createRuntimeStreamState, sameAgentRunSummary } from '../src/features/agent-workbench/runtime-stream-state.js';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -31,7 +31,7 @@ function fixture() {
     addEventListener(name: string, listener: (event: unknown) => void) { this.listeners.set(name, listener); }
     close() {}
   }
-  const snapshot = { revision: 1, runtimeStatusVersion: 1, runtimes: [], runs: [{ id: 'run', result: '已保存的回复', status: 'running',
+  const snapshot = { revision: 1, runtimeStatusVersion: 1, runtimes: [], runs: [{ id: 'run', objective: '已保存的会话', result: '', status: 'running',
     createdAt: '2026-11-02T00:00:00Z', workspacePath: '/fixture', provider: 'antigravity' }],
     activeWorkspaceLocks: [], codexSessions: [], conversationTitles: {}, codexSync: { total: 0, hidden: 0, syncedAt: '' } };
   const useQuery = (options: any) => {
@@ -47,15 +47,17 @@ function fixture() {
     return query;
   };
   const dependencies = { computed, shallowRef, useQuery, createRuntimeRefresh, createRuntimeStreamState, EventSource,
+    agentConversationIndexKey, sameAgentRunSummary,
+    useAgentConversationHistories: () => ({ reconcileIndex: () => {}, requestRefresh: () => {}, requestRunUpdates: () => {} }),
     onMounted: (fn: () => void) => mounted.push(fn), onUnmounted: (fn: () => void) => unmounted.push(fn),
     useQueryClient: () => ({ cancelQueries: async () => {}, setQueryData: (key: string[], update: (current: unknown) => unknown) => {
       const query = queries.get(key[0]); query.data.value = update(query.data.value);
-    } }),
+    }, refetchQueries: async () => {} }),
     ElMessage: { error: (message: string) => messages.push(message) },
     fetch: async (url: string) => {
       urls.push(url);
       if (url.startsWith('/api/agent-runtimes/status')) return { ok: true, json: () => connection.promise };
-      assert.equal(url, '/api/agent-runtimes?status=0');
+      assert.equal(url, '/api/agent-runtimes?status=0&view=conversations');
       return { ok: true, json: async () => structuredClone(snapshot) };
     } };
   const scope = effectScope();
@@ -64,27 +66,27 @@ function fixture() {
   return { state, connection, urls, queries, messages,
     replaceSnapshot: (fields: Record<string, unknown>) => Object.assign(snapshot, fields),
     update: () => stream!.listeners.get('runs')!({ data: JSON.stringify({ revision: 2,
-      runs: [{ ...snapshot.runs[0], result: '最新流式回复' }] }) }),
+      runs: [{ ...snapshot.runs[0], status: 'completed' }] }) }),
     close: () => { unmounted.forEach(fn => fn()); scope.stop(); } };
 }
 
 const flush = async () => { await new Promise(resolve => setImmediate(resolve)); await nextTick(); };
 
-test('连接与额度仍在等待时，首屏会话和 SSE 正文已可用；迟到的状态不覆盖正文', async () => {
+test('连接与额度仍在等待时，首屏会话和 SSE 摘要已可用；迟到的状态不覆盖运行状态', async () => {
   const f = fixture();
   try {
     await flush();
     assert.equal(f.state.query.isPending.value, false);
-    assert.equal(f.state.query.data.value.runs[0].result, '已保存的回复');
+    assert.equal(f.state.query.data.value.runs[0].objective, '已保存的会话');
     assert.equal(f.queries.get('agent-runtime-status').isPending.value, true);
     f.update();
-    assert.equal(f.state.query.data.value.runs[0].result, '最新流式回复');
+    assert.equal(f.state.query.data.value.runs[0].status, 'completed');
     f.connection.resolve({ runtimeStatusVersion: 1, runtimes: [{ provider: 'antigravity', ready: true, models: [{ id: 'native', label: 'L123' }] }] });
     await flush();
     assert.equal(f.state.query.data.value.runtimes[0].models[0].label, 'L123');
-    assert.equal(f.state.query.data.value.runs[0].result, '最新流式回复');
+    assert.equal(f.state.query.data.value.runs[0].status, 'completed');
     await f.state.query.refetch();
-    assert.equal(f.state.query.data.value.runs[0].result, '最新流式回复');
+    assert.equal(f.state.query.data.value.runs[0].status, 'completed');
   } finally { f.close(); }
 });
 
@@ -125,7 +127,7 @@ test('旧状态在新版维护快照后迟到不恢复旧账号；同版的新�
     f.queries.get('agent-runtime-status').data.value = { runtimeStatusVersion: 2, runtimes: [current] };
     assert.equal(f.state.query.data.value.runtimes[0].models[0].label, 'L456');
     assert.equal(f.state.query.data.value.revision, 3);
-    assert.equal(f.state.query.data.value.runs[0].result, '已保存的回复');
+    assert.equal(f.state.query.data.value.runs[0].objective, '已保存的会话');
     f.queries.get('agent-runtime-status').data.value = { runtimeStatusVersion: 3, runtimes: [current] };
     assert.equal(f.state.query.data.value.runtimeStatusVersion, 3, '状态更新比本地快照新时也立即投影');
     assert.equal(f.state.query.data.value.runtimes[0].models[0].label, 'L456');
@@ -140,11 +142,11 @@ test('状态查询失败不清空会话或恢复首屏加载；手动刷新仍�
     await flush();
     assert.equal(f.state.query.isPending.value, false);
     assert.equal(f.state.query.error.value, null);
-    assert.equal(f.state.query.data.value.runs[0].result, '已保存的回复');
+    assert.equal(f.state.query.data.value.runs[0].objective, '已保存的会话');
     assert.deepEqual(f.messages, []);
     await f.state.refreshStatus();
     assert.ok(f.urls.includes('/api/agent-runtimes/status?refresh=1'));
     assert.deepEqual(f.messages, ['连接查询暂不可用']);
-    assert.equal(f.state.query.data.value.runs[0].result, '已保存的回复');
+    assert.equal(f.state.query.data.value.runs[0].objective, '已保存的会话');
   } finally { f.close(); }
 });

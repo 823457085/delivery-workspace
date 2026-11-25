@@ -184,10 +184,16 @@ test('重启后可在同一条已暂停的 Codex 消息继续，不重复发提�
     assert.equal(f.executions[2].session, 'session-kept');
     assert.match(f.executions[2].prompt, /只继续剩余工作/);
     assert.doesNotMatch(f.executions[2].prompt, /当前任务内容/);
+    assert.ok(previousTurn);
     assert.notEqual(first.codexTurnId, previousTurn);
+    assert.deepEqual(first.codexPriorTurnIds, [previousTurn]);
+    const history = reopened.conversationHistory(latest.conversationId || latest.id);
+    assert.deepEqual(history.runs.find(run => run.id === latest.id)?.codexPriorTurnIds, [previousTurn]);
     assert.deepEqual((await reopened.dashboard()).runs.map(run => run.id).sort(), [original.id, latest.id].sort());
     f.executions[2].finish();
-    await waitFor(() => first.status === 'completed');
+    await waitFor(() => first.resultReady === true);
+    const stored: AgentRun[] = JSON.parse(await fs.readFile(path.join(f.directory, 'agent-runs.json'), 'utf8'));
+    assert.deepEqual(stored.find(run => run.id === latest.id)?.codexPriorTurnIds, [previousTurn]);
   } finally { await reopened?.close(); await f.close(); }
 });
 

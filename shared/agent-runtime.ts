@@ -248,13 +248,15 @@ export interface AgentRun {
   supplements?: { id: string; objective: string; attachments: AgentAttachment[]; createdAt: string; knowledgeContext?: string }[];
   knowledgeContext?: string;
   /** 跨执行器的内部交接资料；用户消息与会话标题只使用 objective。 */
-  providerSwitch?: { from: AgentProvider; context: string };
+  providerSwitch?: { from: AgentProvider; context: string; resumedFromRunId?: string };
   /** 权限变化时新建原生会话，保留工作台聊天背景，不继承旧会话的工具限制。 */
   accessTransition?: { fromMode: AgentRunMode; fromAccessMode: AgentAccessMode; context: string };
   workspaceTransition?: { context: string };
   additionalWorkspacePaths?: string[];
   /** 宿主已使用本机工具配置启动完全访问；缺省的旧受限 full 会话只迁移一次。 */
   nativeConfiguredTools?: true;
+  /** 用于核对本机执行器登录配置是否沿用，原生会话本身保存在 CLI 中。 */
+  nativeSessionScope?: string;
   id: string;
   parentRunId?: string;
   /** Stable UI conversation identity; a precise fork may keep this while changing Codex threads. */
@@ -264,6 +266,8 @@ export interface AgentRun {
   originSessionId?: string;
   /** Codex app-server turn ID for this run, used as an exact fork boundary. */
   codexTurnId?: string;
+  /** 续跑前已属于同一工作台轮次的原生轮次，用于会话历史合并。 */
+  codexPriorTurnIds?: string[];
   /** This historical physical thread mixed multiple UI conversations and must be precisely forked before reuse. */
   requiresIsolation?: boolean;
   /** A prepared thread/worktree for the next turn; historical run metadata stays unchanged. */
@@ -304,6 +308,12 @@ export interface AgentRun {
   /** 本轮已观察到工具调用；独立于会截断的事件列表，历史缺省表示未知。 */
   toolExecutionStarted?: boolean;
   changedFiles?: AgentChangedFile[];
+  /** 新轮次的文件预览来自已保存的轮次快照，旧轮次沿用实时预览。 */
+  frozenFilePreviews?: true;
+  /** 会话列表只携带变更标记，具体文件从会话详情加载。 */
+  hasChangedFiles?: boolean;
+  /** 侧栏投影，正文与执行资料需单独加载。 */
+  summaryOnly?: true;
   task?: AgentTaskLink;
   /** 团队流程在启动时生成的岗位上下文；仅用于提示词与审计。 */
   workflowContext?: string;
@@ -315,6 +325,42 @@ export interface AgentRun {
   workflowSnapshot?: AgentWorkspaceVersion;
   createdAt: string;
   updatedAt: string;
+}
+
+/** 侧栏保留排序、队列、项目与状态字段。正文、日志和执行资料由会话详情提供。 */
+export function projectAgentRunSummary(run: AgentRun, conversationId = run.conversationId): AgentRun {
+  const recovery = run.recovery && {
+    previousStatus: run.recovery.previousStatus, previousPid: run.recovery.previousPid,
+    state: run.recovery.state, checkedAt: run.recovery.checkedAt, message: '',
+    resumedRunId: run.recovery.resumedRunId, nativeObservation: run.recovery.nativeObservation,
+    stopRequested: run.recovery.stopRequested,
+  };
+  return {
+    id: run.id, conversationId, parentRunId: run.parentRunId, queueRootId: run.queueRootId,
+    originSessionId: run.originSessionId, sessionId: run.sessionId, codexTurnId: run.codexTurnId,
+    requiresIsolation: run.requiresIsolation, continuation: run.continuation,
+    provider: run.provider, mode: run.mode, accessMode: run.accessMode, model: run.model,
+    reasoningEffort: run.reasoningEffort, serviceTier: run.serviceTier, customModelId: run.customModelId,
+    workspacePath: run.workspacePath, projectWorkspacePath: run.projectWorkspacePath,
+    sourceWorkspacePath: run.sourceWorkspacePath, additionalWorkspacePaths: run.additionalWorkspacePaths,
+    branch: run.branch, headSha: run.headSha, baseBranch: run.baseBranch, isolatedWorkspace: run.isolatedWorkspace,
+    status: run.status, pid: run.pid, resultReady: run.resultReady, recovery,
+    pausedForEdit: run.pausedForEdit, liveInputReady: run.liveInputReady,
+    recoveryOfRunId: run.recoveryOfRunId, continuedAt: run.continuedAt, revisesRunId: run.revisesRunId,
+    roundContinuationOfRunId: run.roundContinuationOfRunId || (run.events?.some(event => event.type === 'lifecycle'
+      && event.message === '已调整方向：停止当前轮后将立即执行此消息') ? run.parentRunId : undefined),
+    workspaceRestartResumedAt: run.workspaceRestartResumedAt,
+    task: run.task, team: run.team, toolExecutionStarted: run.toolExecutionStarted,
+    summaryOnly: true, hasChangedFiles: !!(run.hasChangedFiles || run.changedFiles?.length),
+    objective: (run.objective || '').trimStart().slice(0, 512), error: (run.error || '').slice(0, 320), result: '', events: [],
+    createdAt: run.createdAt, updatedAt: run.updatedAt,
+  };
+}
+
+export interface AgentConversationHistoryPage {
+  revision: number;
+  runs: AgentRun[];
+  olderCursor: string | null;
 }
 
 export function canContinueStoppedCodexRun(run: AgentRun) {
