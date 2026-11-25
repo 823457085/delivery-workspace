@@ -1,0 +1,15 @@
+.git
+.github
+node_modules
+dist
+packages/plugin-sdk/dist
+.local
+.data
+.env
+.env.*
+!.env.example
+outputs
+.verify
+*.log
+.DS_Store
+._*
