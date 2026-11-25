@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import type { AgentRun, CodexSessionDetail, CodexSessionSummary } from '../shared/agent-runtime.js';
 import { emptyAgentUsage } from '../shared/agent-usage.js';
 import { estimateConversationContextMeter } from '../shared/agent-composer-preflight.js';
-import { agentConversationStatus, agentRunErrorText, agentRunStatus, buildAgentConversationList, buildAgentConversations, findAgentConversation,
+import { agentConversationCodexHistoryIds, agentConversationStatus, agentRunErrorText, agentRunStatus, buildAgentConversationList, buildAgentConversations, findAgentConversation,
   codexConversationContext, isRestartableAgentRun, isRetryableSessionBusyRun, reconcileAgentConversation, resumedConversationId } from '../src/features/agent-workbench/conversation.js';
 
 function run(id: string, parentRunId = '', createdAt = '2026-09-16T00:00:00.000Z'): AgentRun {
@@ -236,9 +236,10 @@ test('历史 Codex 会话续接后保留原消息并合并本地新轮次', () =
     workspacePath: '/repo', branch: 'feature/test', headSha: 'abc', model: 'test-model', reasoningEffort: 'high', archived: false,
     createdAt: '2026-09-16T00:00:00.000Z', updatedAt: '2026-09-16T00:01:00.000Z' };
   const detail: CodexSessionDetail = { ...session, turns: [{ id: 'turn-1', userMessage: '原问题', agentMessage: '原回答',
-    createdAt: session.createdAt, updatedAt: session.updatedAt }] };
+    createdAt: session.createdAt, updatedAt: session.updatedAt }, { id: 'local-turn', userMessage: '原生工作台指令', agentMessage: '重复内容',
+    createdAt: '2026-09-16T00:02:00.000Z', updatedAt: '2026-09-16T00:02:00.000Z' }] };
   const continued = { ...run('local-run', '', '2026-09-16T00:02:00.000Z'), originSessionId: session.id,
-    sessionId: session.id, objective: '继续处理', result: '续接回答' };
+    sessionId: session.id, codexTurnId: 'local-turn', objective: '继续处理', result: '续接回答' };
   const conversations = buildAgentConversationList([continued], [session], { [session.id]: detail });
   assert.equal(conversations.length, 1);
   assert.equal(conversations[0].id, continued.id);
@@ -251,6 +252,58 @@ test('历史 Codex 会话续接后保留原消息并合并本地新轮次', () =
   assert.equal(agentRunStatus(conversations[0].runs[0]).label, '历史记录');
   assert.equal(agentRunStatus(conversations[0].runs[1]).label, '本轮完成');
   assert.equal('syncedHistory' in continued, false);
+});
+
+test('已关联的工作台 Codex 会话只追加精确锚点之后的已完成桌面轮次', () => {
+  const local = { ...run('forked-run', '', '2026-09-16T00:02:00.000Z'), codexTurnId: 'workbench-turn' };
+  const later = { ...run('later-run', local.id, '2026-09-16T00:04:00.000Z'), codexTurnId: 'next-workbench-turn' };
+  const detail: CodexSessionDetail = { id: local.sessionId, title: '原生会话', preview: '摘要', workspacePath: '/repo',
+    branch: 'feature/test', headSha: 'abc', model: 'test-model', reasoningEffort: 'high', archived: false,
+    createdAt: '2026-09-16T00:00:00.000Z', updatedAt: '2026-09-16T00:05:00.000Z',
+    turns: ['inherited-turn', local.codexTurnId, 'desktop-turn', later.codexTurnId, 'in-progress-turn'].map((id, index) => {
+      const createdAt = `2026-09-16T00:0${index + 1}:00.000Z`;
+      return { id, createdAt, updatedAt: createdAt, completedAt: id === 'in-progress-turn' ? null : createdAt,
+        userMessage: `message-${id}`, agentMessage: `result-${id}` };
+    }) };
+  const [conversation] = buildAgentConversationList([later, local], [], { [detail.id]: detail });
+  assert.deepEqual(agentConversationCodexHistoryIds(conversation), [detail.id]);
+  assert.deepEqual(conversation.runs.map(item => item.id), [local.id, 'desktop-turn', later.id]);
+  assert.equal(conversation.latest.id, later.id);
+  assert.equal(agentRunStatus(conversation.runs[1]).value, 'history');
+});
+
+test('续跑后折叠旧原生轮次的执行指令，保留本地消息、附件与桌面独立消息', () => {
+  const at = (seconds: string) => `2026-09-16T00:00:${seconds}Z`;
+  const first = { ...run('first', '', at('00')), codexTurnId: 'first-native' };
+  const objective = '检查页面';
+  const continuation = { ...run('resumed', first.id, at('10.500')), objective, continuedAt: at('40'),
+    codexTurnId: 'resume-native', status: 'running' as const,
+    attachments: [{ id: 'fixture', name: 'image.png', mimeType: 'image/png', size: 1, url: '/fixture' }] };
+  const nativeTurn = (id: string, second: string, userMessage: string, agentMessage = '', end = at('34')) => ({
+    id, createdAt: at(second), updatedAt: end, completedAt: end, userMessage, agentMessage,
+  });
+  const wrapped = `${objective}\n\n工作台执行上下文：你由 Delivery Workspace 以 Agent 模式调用。请完成上述用户任务。\n\n浏览器设置`;
+  const detail: CodexSessionDetail = { id: first.sessionId, title: '原生会话', preview: '', workspacePath: '/repo',
+    branch: '', headSha: '', model: '', reasoningEffort: '', archived: false, createdAt: at('00'), updatedAt: at('42'), turns: [
+      nativeTurn(first.codexTurnId, '00', first.objective, first.result),
+      nativeTurn('old-native', '10', wrapped),
+      nativeTurn('desktop', '18', objective, '桌面独立回复'),
+      nativeTurn(continuation.codexTurnId, '41', '续接原任务', ''),
+    ] };
+  const [conversation] = buildAgentConversationList([continuation, first], [], { [detail.id]: detail });
+  assert.deepEqual(conversation.runs.map(item => item.id), [first.id, continuation.id, 'desktop']);
+  assert.equal(conversation.runs[1].attachments?.[0]?.name, 'image.png');
+  assert.equal(conversation.latest.status, 'running');
+
+  const original = detail.turns.find(turn => turn.id === 'old-native')!;
+  original.agentMessage = '先前已保存的部分结果';
+  const linked = { ...continuation, codexPriorTurnIds: [original.id] };
+  const [withAliases] = buildAgentConversationList([linked, first], [], { [detail.id]: detail });
+  assert.deepEqual(withAliases.runs.map(item => item.id), [first.id, continuation.id, 'desktop']);
+
+  const [imported] = buildAgentConversationList([], [detail], { [detail.id]: detail });
+  assert.equal(imported.runs.find(item => item.id === original.id)?.objective, objective);
+  assert.equal(imported.runs.find(item => item.id === 'desktop')?.result, '桌面独立回复');
 });
 
 test('两个本地会话共享原 Codex session 时不复制完整同步历史到每一行', () => {

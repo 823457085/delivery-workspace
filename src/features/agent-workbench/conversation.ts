@@ -2,7 +2,7 @@
  * 设计说明：后端按每次 CLI 运行保存记录，而会话窗口需要展示连续对话，因此这里优先按持久会话 ID
  * 聚合；旧记录才沿可见 parentRunId 链分组。它不修改运行状态，也不按 CLI session 合并独立会话。
  */
-import type { AgentConversationWorkspace, AgentRun, CodexSessionDetail, CodexSessionSummary } from '../../../shared/agent-runtime';
+import type { AgentConversationWorkspace, AgentRun, CodexSessionDetail, CodexSessionSummary, CodexSessionTurn } from '../../../shared/agent-runtime';
 import type { AgentContextUsage } from '../../../shared/agent-usage';
 import type { TeamTaskState } from '../../../shared/agent-team';
 import { codexRunningMessage, codexWriterHeldMessage } from '../../../shared/codex-session-error';
@@ -128,6 +128,20 @@ export function codexConversationContext(
 export function agentConversationContinuation(conversation: AgentConversation) {
   const submitted = [...conversation.runs].reverse().find(run => !run.syncedHistory) || conversation.latest;
   return conversation.latest.continuation && conversation.latest.provider === submitted.provider ? conversation.latest : submitted;
+}
+
+function codexHistoryIds(conversation: AgentConversation) {
+  const origin = conversation.runs.find(run => run.originSessionId)?.originSessionId;
+  const latest = agentConversationContinuation(conversation);
+  const current = latest.provider === 'codex' ? latest.continuation?.sessionId || latest.sessionId : '';
+  return { origin, current };
+}
+
+export function agentConversationCodexHistoryIds(conversation?: AgentConversation) {
+  if (!conversation || conversation.teamChat) return [];
+  if (conversation.source === 'codex') return [conversation.id];
+  const { origin, current } = codexHistoryIds(conversation);
+  return origin && origin !== current ? [origin, ...(current ? [current] : [])] : current ? [current] : [];
 }
 
 export function agentConversationForkSource(conversation?: AgentConversation, projectlessFork = false) {
@@ -282,6 +296,38 @@ export function buildAgentConversations(runs: AgentRun[]): AgentConversation[] {
   }).sort(compareAgentConversations);
 }
 
+function workbenchCodexObjective(source: string): string | undefined {
+  const context = [...source.matchAll(/(?:^|\r?\n\r?\n)工作台执行上下文：你由 Delivery Workspace 以(?: Agent |只读)模式调用。/g)].at(-1);
+  if (context) {
+    return source.slice(0, context.index).trim().replace(/^用户任务如下：\s*/, '')
+      .replace(/^用户已暂停并编辑上一条任务，本条内容替代被暂停的任务要求。[^\n]*\r?\n\r?\n/, '');
+  }
+  return source.match(/^你由 Delivery Workspace 以(?: Agent |只读)模式调用。[\s\S]*?用户任务如下：\s*([\s\S]+)$/)?.[1]?.trim();
+}
+
+function knownCodexHistoryTurnIds(runs: AgentRun[], sessionId: string, turns: CodexSessionTurn[]) {
+  const linked = runs.filter(run => run.provider === 'codex' && run.sessionId === sessionId);
+  const known = new Set(linked.flatMap(run => [...(run.codexPriorTurnIds || []), ...(run.codexTurnId ? [run.codexTurnId] : [])]));
+  const legacyResumes = linked.filter(run => !run.codexPriorTurnIds?.length && (run.continuedAt || run.workspaceRestartResumedAt));
+  if (!legacyResumes.length) return known;
+  const interrupted = turns.flatMap(turn => {
+    if (!turn.completedAt || turn.agentMessage || known.has(turn.id)) return [];
+    const objective = workbenchCodexObjective(turn.userMessage);
+    return objective === undefined ? [] : [{ id: turn.id, objective, start: Date.parse(turn.createdAt), end: Date.parse(turn.completedAt) }];
+  });
+  // 旧版续跑会覆盖前一个原生 ID。只折叠同线程、同原话、续跑前结束且没有回复的执行副本。
+  for (const run of legacyResumes) {
+    const restarted = Date.parse(run.continuedAt || run.workspaceRestartResumedAt || '');
+    const started = Date.parse(run.createdAt);
+    if (!(restarted >= started)) continue;
+    // Codex 的索引以秒为单位，工作台记录包含毫秒。
+    const matches = interrupted.filter(turn => turn.objective === run.objective.trim() &&
+      turn.start >= Math.floor(started / 1000) * 1000 && turn.end <= restarted);
+    if (matches.length === 1) known.add(matches[0].id);
+  }
+  return known;
+}
+
 function codexRun(session: CodexSessionSummary, id: string, objective: string, result: string, createdAt: string, updatedAt: string): AgentConversationRun {
   return {
     id,
@@ -291,7 +337,7 @@ function codexRun(session: CodexSessionSummary, id: string, objective: string, r
     accessMode: 'workspace',
     model: session.model,
     reasoningEffort: session.reasoningEffort,
-    objective,
+    objective: workbenchCodexObjective(objective) ?? objective,
     workspacePath: session.workspacePath,
     projectWorkspacePath: session.projectWorkspacePath,
     branch: session.branch,
@@ -309,9 +355,8 @@ function codexRun(session: CodexSessionSummary, id: string, objective: string, r
 
 function codexTitle(session: CodexSessionSummary, source = session.title) {
   const request = source.match(/## My request:\s*([\s\S]+)/)?.[1]?.trim();
-  const workspaceRequest = source.match(/^你由 Delivery Workspace 以[\s\S]*?用户任务如下：\s*([\s\S]+)$/)?.[1]?.trim();
   const reorderedRequest = source.match(/^用户任务如下：\s*([\s\S]+?)(?:\n\s*工作台执行上下文：|$)/)?.[1]?.trim();
-  const value = request || workspaceRequest || reorderedRequest || source;
+  const value = workbenchCodexObjective(source) ?? (request || reorderedRequest || source);
   return (jiraTaskPromptTitle(value) || value).replace(/\s+/g, ' ').trim().slice(0, 120) || '未命名 Codex 会话';
 }
 
@@ -332,24 +377,41 @@ export function buildAgentConversationList(runs: AgentRun[], sessions: CodexSess
   const importedSessionIds = new Set<string>();
   const localSessionIds = new Set<string>();
   const localConversations = buildAgentConversations(runs);
-  const originOwners = new Map<string, number>();
+  const owners = new Map<string, number>();
   localConversations.forEach((conversation) => {
-    const origin = conversation.runs.find((run) => run.originSessionId)?.originSessionId;
-    if (origin) originOwners.set(origin, (originOwners.get(origin) || 0) + 1);
+    const ids = new Set(conversation.runs.filter(run => run.provider === 'codex' || run.originSessionId).flatMap(run =>
+      [run.originSessionId, ...(run.provider === 'codex' ? [run.sessionId, run.continuation?.sessionId] : [])]));
+    for (const id of ids) if (id) owners.set(id, (owners.get(id) || 0) + 1);
   });
   const local = localConversations.map((conversation) => {
     conversation.runs.forEach((run) => {
       if (run.sessionId) localSessionIds.add(run.sessionId);
       if (run.continuation?.sessionId) localSessionIds.add(run.continuation.sessionId);
     });
-    const originSessionId = conversation.runs.find((run) => run.originSessionId)?.originSessionId;
-    if (!originSessionId) return conversation;
-    importedSessionIds.add(originSessionId);
-    const session = sessionById.get(originSessionId);
-    if (!session || (originOwners.get(originSessionId) || 0) > 1) return conversation;
-    const history = buildSyncedCodexConversation(session, details[originSessionId]);
-    return { ...conversation, title: conversation.title || history.title,
-      runs: [...history.runs, ...conversation.runs], loaded: history.loaded };
+    const { origin, current } = codexHistoryIds(conversation);
+    if (origin) importedSessionIds.add(origin);
+    const originDetail = origin && owners.get(origin) === 1 ? details[origin] : undefined;
+    const originSummary = origin && owners.get(origin) === 1 ? originDetail || sessionById.get(origin) : undefined;
+    const originHistory: AgentConversationRun[] = [];
+    if (originSummary && !originSummary.archived) {
+      const known = knownCodexHistoryTurnIds(conversation.runs, originSummary.id, originDetail?.turns || []);
+      const pending = new Set(originDetail?.turns.filter(turn => turn.completedAt === null).map(turn => turn.id));
+      originHistory.push(...buildSyncedCodexConversation(originSummary, originDetail).runs.filter(run => !known.has(run.id) && !pending.has(run.id)));
+    }
+    const history = origin === current ? originHistory : [];
+    const currentDetail = current && current !== origin && owners.get(current) === 1 ? details[current] : undefined;
+    if (currentDetail && !currentDetail.archived) {
+      const known = knownCodexHistoryTurnIds(conversation.runs, currentDetail.id, currentDetail.turns);
+      // 分叉会复制早期历史。只从此工作台会话实际执行过的第一轮之后读取桌面新增轮次。
+      const anchor = currentDetail.turns.findIndex(turn => known.has(turn.id));
+      if (anchor >= 0) history.push(...currentDetail.turns.slice(anchor + 1).filter(turn => turn.completedAt && !known.has(turn.id))
+        .map(turn => codexRun(currentDetail, turn.id, turn.userMessage, turn.agentMessage, turn.createdAt, turn.updatedAt)));
+    }
+    const loaded = !originSummary || !!originDetail;
+    if (!originHistory.length && !history.length && loaded) return conversation;
+    const ordered = history.length
+      ? [...history, ...conversation.runs].sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt)) : conversation.runs;
+    return { ...conversation, runs: origin === current ? ordered : [...originHistory, ...ordered], loaded };
   });
   const synced = sessions.filter((session) => !localSessionIds.has(session.id) && !importedSessionIds.has(session.id))
     .map((session) => buildSyncedCodexConversation(session, details[session.id]));

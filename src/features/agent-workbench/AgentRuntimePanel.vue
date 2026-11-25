@@ -5,7 +5,7 @@
  */
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, reactive, shallowRef, useTemplateRef, watch } from 'vue';
 import { useQuery } from '@tanstack/vue-query';
-import { GitFork, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Plus, X } from '@lucide/vue';
+import { GitFork, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Plus, Quote, X } from '@lucide/vue';
 import { ElMessage } from 'element-plus';
 import type { AgentAccessMode, AgentApiProvider, AgentAttachment, AgentProvider, AgentQueuePlacement, AgentReasoningEffort, AgentRun, AgentRunMode, AgentServiceTier, SpawnAgentTaskInput, StartAgentRunInput, StartAgentTaskWorkflowInput, AgentWorkflowAction } from '../../../shared/agent-runtime';
 import type { AgentTeamRequest } from './AgentTeamDialog.vue';
@@ -16,6 +16,7 @@ import { useWorkspacePicker } from '../../shared/useWorkspacePicker';
 import AgentConversation from './AgentConversation.vue';
 import AgentInitialLoading from './AgentInitialLoading.vue';
 import AgentConnectionStatus from './AgentConnectionStatus.vue';
+import AgentMergeRequestWatch from './AgentMergeRequestWatch.vue';
 import AgentNewConversation, { type AgentWorkspaceOption } from './AgentNewConversation.vue';
 const WorkspaceBrowserDialog = defineAsyncComponent(() => import('../../shared/ui/WorkspaceBrowserDialog.vue'));
 const AgentGroupChat = defineAsyncComponent(() => import('./AgentGroupChat.vue'));
@@ -34,9 +35,10 @@ const AgentProjectLaunch = defineAsyncComponent(() => import('./AgentProjectLaun
 import AgentPanelResize from './AgentPanelResize.vue';
 import AgentResponsivePanel from './AgentResponsivePanel.vue';
 import { useAgentViewport } from './useAgentViewport';
-import { agentRunStatus, agentConversationBranch, agentConversationContinuation, agentConversationForkSource, agentConversationInsertRun, agentConversationRunRounds, agentConversationWorkspacePaths, agentRunContextPath, agentRunProjectPath, agentConversationProjectPath, buildAgentConversationList, findAgentConversation, reconcileAgentConversation, resumedConversationId, compareAgentConversations,
+import { agentRunStatus, agentConversationBranch, agentConversationCodePaths, agentConversationCodexHistoryIds, agentConversationContinuation, agentConversationForkSource, agentConversationInsertRun, agentConversationRunRounds, agentConversationWorkspacePaths, agentRunContextPath, agentRunProjectPath, agentConversationProjectPath, buildAgentConversationList, findAgentConversation, reconcileAgentConversation, resumedConversationId, compareAgentConversations,
   type AgentConversation as AgentConversationModel } from './conversation';
-import { readableRunTask } from './execution-summary';
+import { agentReplyText, readableRunTask } from './execution-summary';
+import { formatQuoteReply } from './conversation-outline';
 import { readLastAgentSessionId, saveLastAgentSessionId } from './last-session-state';
 import { isPinnedAgentSession, migratePinnedAgentSessionIds, readPinnedAgentSessionIds, savePinnedAgentSessionIds,
   togglePinnedAgentSession } from './session-pins';
@@ -46,6 +48,8 @@ import { withTeamChatConversations, type TeamQuestionTarget } from './team-chat'
 import { AgentAttachmentDraft, removePendingAgentAttachments } from './useAgentAttachments';
 import { useAgentBusinessContext } from './useAgentBusinessContext';
 import { useAgentConversationDrafts } from './useAgentConversationDrafts';
+import { useAgentUnreadSessions } from './useAgentUnreadSessions';
+import { useMergeRequestWatch } from './useMergeRequestWatch';
 import { createDailyReportInput, dailyReportDate, findDailyReportRun } from './daily-report';
 import { providerSwitchInput } from './provider-switch';
 import { codexServiceTier } from './model-speed';
@@ -63,8 +67,8 @@ const props = defineProps<{ workbenchOpen?: boolean }>();
 const emit = defineEmits<{ chat: []; ready: [hasSession: boolean]; group: [id: string]; session: [id: string] }>();
 
 const { query, refreshStatus, refreshing, changing, streamStatus, codexDetails, start, spawn, orchestrate, decideWorkflow, stop, pauseForEdit, revise, steer, deleteQueuedRun, retry, resume, resumeCodexSession, fork, syncCodexSessions, loadCodexSession,
-  removeConversation, removeConversations, updateConversationTitle, updateConversationWorkspace, addCustomModel, removeCustomModel } = useAgentRuntimes();
-const { data, dataUpdatedAt, error, isPending } = query;
+  removeConversation, removeConversations, updateConversationTitle, updateConversationWorkspace, addCustomModel, removeCustomModel, useConversationHistory } = useAgentRuntimes();
+const { data, error, isPending } = query;
 const acceptanceQuery = useQuery({ queryKey: deliveryAcceptanceQueryKey, retry: false,
   queryFn: ({ signal }) => readDeliveryAcceptances(signal),
   refetchInterval: () => props.workbenchOpen ? false : 15_000,
@@ -140,7 +144,23 @@ watch([selectedConversationId, creating], () => { mobilePanel.value = ''; });
 const conversationPane = useTemplateRef<InstanceType<typeof AgentConversation>>('conversationPane');
 const newConversationPane = useTemplateRef<InstanceType<typeof AgentNewConversation>>('newConversationPane');
 const pinnedConversationIds = shallowRef(readPinnedAgentSessionIds(window.localStorage));
-const detailDrawer = computed({ get: () => !!detail.value, set: (open: boolean) => { if (!open) detail.value = undefined; } });
+let inspectionRevision = 0;
+const detailDrawer = computed({ get: () => !!detail.value, set: (open: boolean) => {
+  if (!open) { inspectionRevision++; detail.value = undefined; }
+} });
+async function inspectRun(run?: AgentRun) {
+  if (!run) return;
+  const revision = ++inspectionRevision;
+  if (!run.summaryOnly) { detail.value = run; return; }
+  try {
+    const response = await fetch(`/api/agent-runtimes/runs/${encodeURIComponent(run.id)}`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.message);
+    if (!panelDisposed && inspectionRevision === revision) detail.value = data as AgentRun;
+  } catch (error) {
+    if (inspectionRevision === revision) ElMessage.error(error instanceof Error ? error.message : String(error));
+  }
+}
 const detailTask = computed(() => readableRunTask(detail.value?.objective || ''));
 let savedNewServiceTier: string | null = null;
 try { savedNewServiceTier = window.localStorage.getItem('agent-service-tier:v2:new'); }
@@ -189,7 +209,7 @@ const conversations = computed(() => {
   const groupRunIds = new Set(groupRuns.map(run => run.id));
   const groupSessionIds = new Set(groupRuns.flatMap(run => [run.sessionId, run.originSessionId].filter(Boolean)));
   return withTeamChatConversations(buildAgentConversationList(runs.value.filter(run => !groupRunIds.has(run.id)),
-    (data.value?.codexSessions || []).filter(session => !groupSessionIds.has(session.id)), codexDetails.value,
+    (data.value?.codexSessions || []).filter(session => !groupSessionIds.has(session.id)), {},
     data.value?.conversationTitles || {}, data.value?.conversationWorkspaces), teamChat.allTasks.value.filter(task => !task.groupRoomId), data.value?.conversationTitles || {}).sort(compareAgentConversations);
 });
 const workspaceStore = useConversationWorkspaces(() => conversations.value);
@@ -229,23 +249,89 @@ function workspaceName(conversation?: AgentConversationModel) {
   return conversationWorkspace(conversation)?.name || '未分组';
 }
 async function createNamedWorkspace() { openCreate(); await nextTick(); newConversationPane.value?.createWorkspace(); }
-const selectedConversation = computed(() => findAgentConversation(conversations.value, selectedConversationId.value));
+const selectedSummary = computed(() => findAgentConversation(conversations.value, selectedConversationId.value));
+const mergeRequestWatch = useMergeRequestWatch();
 const sideChatOpen = shallowRef(false);
 const sideChatVisible = computed(() => sideChatOpen.value && !mobile.value && !props.workbenchOpen);
 const sideTabIds = shallowRef<string[]>([]);
 const activeSideId = shallowRef('');
 const choosingSide = shallowRef(false);
-const sideSending = shallowRef(false);
-const sideChoices = computed(() => conversations.value.filter(item => !item.teamChat && (creating.value || item.id !== selectedConversation.value?.id)));
+const sendingConversationIds = shallowRef<ReadonlySet<string>>(new Set());
+function trackConversationSend(id: string, submitting: boolean) {
+  const next = new Set(sendingConversationIds.value);
+  if (submitting) next.add(id);
+  else next.delete(id);
+  sendingConversationIds.value = next;
+}
+const sideChoices = computed(() => conversations.value.filter(item => !item.teamChat && (creating.value || item.id !== selectedSummary.value?.id)));
 const sideTabs = computed(() => sideTabIds.value
   .map(id => findAgentConversation(conversations.value, id))
   .filter((item): item is AgentConversationModel => !!item && !item.teamChat));
-const sideConversation = computed(() => {
-  const available = sideTabs.value.filter(item => creating.value || item.id !== selectedConversation.value?.id);
+const sideSummary = computed(() => {
+  const available = sideTabs.value.filter(item => creating.value || item.id !== selectedSummary.value?.id);
   return available.find(item => item.id === activeSideId.value) || available[0];
 });
-const sideConversationId = computed(() => sideConversation.value?.id || '');
+const sideConversationId = computed(() => sideSummary.value?.id || '');
+const sideSending = computed(() => sendingConversationIds.value.has(sideConversationId.value));
+const needsLocalHistory = (summary?: AgentConversationModel) => summary?.source === 'workspace'
+  && summary.runs.some(run => !run.syncedHistory && !run.id.startsWith('optimistic') && !run.id.startsWith('team-chat:'));
+const mainHistory = useConversationHistory(() => !creating.value && !props.workbenchOpen && !groupMode.value
+  && needsLocalHistory(selectedSummary.value) ? selectedSummary.value?.id : undefined);
+const sideHistory = useConversationHistory(() => sideChatVisible.value && !groupMode.value
+  && needsLocalHistory(sideSummary.value) ? sideSummary.value?.id : undefined);
+
+const codexHistoryOwners = computed(() => {
+  const owners = new Map<string, number>();
+  for (const conversation of conversations.value) {
+    const ids = new Set(conversation.runs.flatMap(run =>
+      !run.syncedHistory && (run.provider === 'codex' || run.originSessionId)
+        ? [run.originSessionId, ...(run.provider === 'codex' ? [run.sessionId, run.continuation?.sessionId] : [])] : []));
+    for (const id of ids) if (id) owners.set(id, (owners.get(id) || 0) + 1);
+  }
+  return owners;
+});
+function loadConversationView(summary: AgentConversationModel | undefined, history: typeof mainHistory) {
+  if (!summary) return;
+  const optimistic = summary.runs.filter(run => run.id.startsWith('optimistic') && !run.syncedHistory);
+  if (needsLocalHistory(summary) && !history.ready.value)
+    return { ...summary, runs: optimistic, loaded: false };
+  if (summary.source === 'workspace' && !needsLocalHistory(summary)) return summary;
+  const nativeIds = agentConversationCodexHistoryIds(summary).filter(id => (codexHistoryOwners.value.get(id) || 0) <= 1);
+  const nativeSessions = (data.value?.codexSessions || []).filter(session => nativeIds.includes(session.id));
+  const nativeDetails = Object.fromEntries(nativeIds.flatMap(id => codexDetails.value[id] ? [[id, codexDetails.value[id]]] : []));
+  const loaded = findAgentConversation(buildAgentConversationList([...optimistic, ...history.runs.value], nativeSessions, nativeDetails), summary.id);
+  if (!loaded) return { ...summary, runs: optimistic, loaded: false };
+  return { ...summary, runs: loaded.runs, latest: loaded.latest, loaded: loaded.loaded };
+}
+const selectedConversation = computed(() => loadConversationView(selectedSummary.value, mainHistory));
+const mergeRequestPaths = computed(() => agentConversationCodePaths(selectedConversation.value));
+const sideConversation = computed(() => loadConversationView(sideSummary.value, sideHistory));
+const unreadConversationIds = useAgentUnreadSessions(conversations, computed(() => [
+  !creating.value && !props.workbenchOpen && !groupMode.value && selectedConversation.value?.loaded ? selectedConversation.value : undefined,
+  sideChatVisible.value && !groupMode.value && sideConversation.value?.loaded ? sideConversation.value : undefined,
+]));
 const { draft: sideDraft, attachments: sideAttachments, attachmentDraft: sideAttachmentDraft } = bindConversationDraft(sideConversationId);
+const sideConclusion = computed(() => {
+  const run = sideConversation.value?.runs.filter(item => item.status === 'completed' && item.result)
+    .reduce<AgentRun | undefined>((latest, item) => !latest || item.updatedAt > latest.updatedAt ? item : latest, undefined);
+  return run ? agentReplyText(run.result).trim() : '';
+});
+const canBringSideConclusion = computed(() => {
+  const main = selectedConversation.value;
+  return !creating.value && !!main?.loaded &&
+    !main.runs.some(run => run.pausedForEdit) && !!sideConversation.value?.loaded;
+});
+async function bringSideConclusion(text: string) {
+  const source = sideConversation.value;
+  if (!canBringSideConclusion.value || !source || !text.trim()) return;
+  const link = new URL('/agent', window.location.origin);
+  link.searchParams.set('session', source.id);
+  const title = source.title.replace(/[\r\n]+/g, ' ').replace(/[\\[\]]/g, '\\$&');
+  const block = `来自侧边会话 [${title}](${link.href})\n\n${formatQuoteReply(text, '', 12_000).trimEnd()}`;
+  if (!draft.value.includes(block)) draft.value += `${draft.value.trim() ? '\n\n' : ''}${block}\n\n`;
+  await nextTick();
+  conversationPane.value?.focusComposer();
+}
 const projectlessFork = computed(() => {
   const snapshot = data.value;
   return !!snapshot && 'projectlessFork' in snapshot && snapshot.projectlessFork === true;
@@ -313,12 +399,27 @@ const connectionStatusTarget = computed(() => groupMode.value && !props.workbenc
   : props.workbenchOpen ? '#workspace-connection-status' : creating.value ? '#new-connection-status' : '#conversation-connection-status');
 const { context: businessContext, mentions: businessMentions, loading: businessLoading, projectsData }
   = useAgentBusinessContext(() => creating.value ? undefined : selectedConversation.value, () => !props.workbenchOpen);
-const conversationChanging = computed(() => changing.value || teamChat.changing.value || pendingConversationId.value);
-const selectedCodexHistoryId = computed(() => selectedConversation.value?.runs.find((run) => run.originSessionId)?.originSessionId
-  || (selectedConversation.value?.source === 'codex' ? selectedConversation.value.id : ''));
-const sideCodexHistoryId = computed(() => sideChatVisible.value
-  ? sideConversation.value?.runs.find(run => run.originSessionId)?.originSessionId
-    || (sideConversation.value?.source === 'codex' ? sideConversation.value.id : '') : '');
+const conversationChanging = computed(() => changing.value || (automaticTeam.value ? teamChat.changing.value : '')
+  || (pendingConversationId.value === selectedConversationId.value ? pendingConversationId.value : '')
+  || (sendingConversationIds.value.has(selectedConversationId.value) ? 'send' : '')
+  || (needsLocalHistory(selectedSummary.value) && !mainHistory.ready.value ? 'history' : ''));
+const sideConversationChanging = computed(() => changing.value || (sideSending.value ? 'send' : '')
+  || (needsLocalHistory(sideSummary.value) && !sideHistory.ready.value ? 'history' : ''));
+const visibleCodexIds = computed(() => props.workbenchOpen || groupMode.value ? [] : [...new Set([
+  ...agentConversationCodexHistoryIds(creating.value ? undefined : selectedSummary.value),
+  ...agentConversationCodexHistoryIds(sideChatVisible.value ? sideSummary.value : undefined),
+])]);
+const codexHistoryQuery = useQuery({ queryKey: computed(() => ['agent-codex-history', ...visibleCodexIds.value]),
+  enabled: computed(() => visibleCodexIds.value.length > 0), retry: false,
+  refetchInterval: 15_000, refetchIntervalInBackground: false,
+  queryFn: async ({ signal, queryKey }) => {
+    await Promise.allSettled(queryKey.slice(1).map(id => loadCodexSession(id, signal)));
+    return true;
+  } });
+async function syncOpenCodexSessions() {
+  await syncCodexSessions();
+  if (visibleCodexIds.value.length) await codexHistoryQuery.refetch();
+}
 const selectedRuntime = computed(() => runtimes.value.find((runtime) => runtime.provider === form.provider));
 const modelOptions = computed(() => selectedRuntime.value?.models || []);
 const selectedModelOption = computed(() => modelOptions.value.find((model) => model.id === form.model));
@@ -399,15 +500,6 @@ watch(() => creating.value ? '' : selectedConversation.value?.id || '', id => {
     saveLastAgentSessionId(window.localStorage, id);
     if (!groupMode.value) emit('session', id);
   }
-});
-
-watch(() => [selectedCodexHistoryId.value, dataUpdatedAt.value] as const, async ([id]) => {
-  if (!id || codexDetails.value[id]) return;
-  try { await loadCodexSession(id); } catch { /* 下次运行时状态刷新后自动重试，摘要内容继续可用 */ }
-}, { immediate: true });
-watch([sideCodexHistoryId, dataUpdatedAt], async ([id]) => {
-  if (!id || codexDetails.value[id]) return;
-  try { await loadCodexSession(id); } catch { /* 快照刷新后重试，期间保留摘要。 */ }
 });
 
 watch(selectedRuntime, (runtime, previous) => {
@@ -604,13 +696,20 @@ async function sendMessage(selection: ConversationSendSelection, side?: {
 }) {
   const conversation = side ? side.conversation : selectedConversation.value;
   const objective = (side ? side.draft : draft.value).trim();
-  if (!conversation || changing.value || pendingConversationId.value || attachmentsPending(conversation.id)
+  if (!conversation || changing.value || pendingConversationId.value === conversation.id
+    || sendingConversationIds.value.has(conversation.id) || attachmentsPending(conversation.id)
+    || (needsLocalHistory(side ? sideSummary.value : selectedSummary.value) && !(side ? sideHistory.ready.value : mainHistory.ready.value))
     || (!objective && !(side ? side.attachments : draftAttachments.value).length)) return;
-  if (selection.question) { await sendQuestionAnswer(conversation, selection.question); return; }
+  if (selection.question) {
+    if (!pendingConversationId.value && !teamChat.changing.value) await sendQuestionAnswer(conversation, selection.question);
+    return;
+  }
   const continuation = agentConversationContinuation(conversation);
   const nativeBusy = conversation.runs.some(run => ['queued', 'running'].includes(run.status) && !run.team);
   if (conversation.teamChat && conversation.source !== 'codex' && !nativeBusy && !selection.workflow && !selection.team && selection.queuePlacement !== 'next') {
-    await sendChatMessage(conversation, objective, undefined, selection.accessMode); return;
+    if (!pendingConversationId.value && !teamChat.changing.value)
+      await sendChatMessage(conversation, objective, undefined, selection.accessMode);
+    return;
   }
   const targetProvider = selection.provider || continuation.provider;
   const switchingProvider = targetProvider !== continuation.provider;
@@ -625,10 +724,7 @@ async function sendMessage(selection: ConversationSendSelection, side?: {
   const attachmentIds = sentDraft.attachments.map((item) => item.id);
   const requestSelectionRevision = selectionRevision;
   const optimisticId = `optimistic:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
-  if (!side) {
-    pendingSelectionRevision = requestSelectionRevision;
-    pendingConversationId.value = conversation.id;
-  }
+  trackConversationSend(conversationId, true);
   if (typeof trackOptimisticRun === 'function' && conversation.source !== 'codex') {
     const now = new Date().toISOString();
     trackOptimisticRun('add', {
@@ -672,30 +768,29 @@ async function sendMessage(selection: ConversationSendSelection, side?: {
     if (!run) return;
     accepted = true;
     const targetId = resumedConversationId(conversation, run);
-    if (!side) pendingConversationId.value = targetId;
     // 新服务在受理响应内返回已保存的运行，旧服务仍由快照补齐。
     if (!findAgentConversation(conversations.value, run.id)?.runs.some(item => item.id === run.id)) {
       await query.refetch({ cancelRefetch: false });
     }
     const target = findAgentConversation(conversations.value, targetId);
-    if (target) moveConversationDraft(conversationId, target.id);
+    if (target) {
+      moveConversationDraft(conversationId, target.id);
+      mergeRequestWatch.move(conversationId, target.id);
+    }
     if (side) side.accepted(target?.id || targetId);
     else if (target && selectionRevision === requestSelectionRevision) selectedConversationId.value = target.id;
   } finally {
     if (typeof trackOptimisticRun === 'function') trackOptimisticRun('remove', optimisticId);
     if (!accepted) restoreConversationDraft(
       reconcileAgentConversation(conversations.value, conversationId, [conversation])?.id || conversationId, sentDraft);
-    if (!side) pendingConversationId.value = '';
+    trackConversationSend(conversationId, false);
   }
 }
 async function sendSideMessage(selection: ConversationSendSelection) {
   const conversation = sideConversation.value;
-  if (!conversation || sideSending.value) return;
-  sideSending.value = true;
-  try {
-    await sendMessage(selection, { conversation, draft: sideDraft.value, attachments: sideAttachments.value,
-      accepted: id => replaceSideTab(conversation.id, id) });
-  } finally { sideSending.value = false; }
+  if (!conversation) return;
+  await sendMessage(selection, { conversation, draft: sideDraft.value, attachments: sideAttachments.value,
+    accepted: id => replaceSideTab(conversation.id, id) });
 }
 async function sendQuestionAnswer(conversation: AgentConversationModel, question: TeamQuestionTarget) {
   const conversationId = conversation.id;
@@ -797,11 +892,11 @@ function closeForkDialog() {
   forkAttachments.value = [];
   forkSource.value = undefined;
 }
-async function forkConversation(inSide = false, mode?: AgentRunMode) {
+async function forkConversation(inSide = false, mode?: AgentRunMode, isolateWorkspace = false) {
   const source = forkSource.value;
   if (!source || forkAttachmentDraft.value.pending) return;
   const requestSelectionRevision = selectionRevision;
-  const next = await fork(source, forkObjective.value, forkAttachments.value.map((item) => item.id), mode);
+  const next = await fork(source, forkObjective.value, forkAttachments.value.map((item) => item.id), mode, isolateWorkspace);
   if (!next) return;
   forkAttachmentDraft.value.discard();
   forkAttachments.value = [];
@@ -828,12 +923,14 @@ async function forkConversation(inSide = false, mode?: AgentRunMode) {
 async function removeAgentConversation(conversation: AgentConversationModel) {
   const removed = await removeConversation(conversation.id, conversation.source);
   if (!removed) return;
+  mergeRequestWatch.remove(conversation.id);
   const removedDraft = clearConversationDraft(conversation.id);
   if (removedDraft?.attachments.length) void removePendingAgentAttachments(removedDraft.attachments);
 }
 async function removeAgentConversations(conversations: AgentConversationModel[]) {
   const removed = await removeConversations(conversations);
   for (const conversation of removed) {
+    mergeRequestWatch.remove(conversation.id);
     const removedDraft = clearConversationDraft(conversation.id);
     if (removedDraft?.attachments.length) void removePendingAgentAttachments(removedDraft.attachments);
   }
@@ -976,10 +1073,10 @@ onBeforeUnmount(() => {
         </button>
         <AgentResponsivePanel id="studio-session-sidebar" class="session-column" :mobile="mobile" :open="mobile ? mobilePanel === 'sessions' : !sessionsCollapsed" side="left" title="会话列表" @close="mobilePanel = ''">
         <AgentSessionList :workspace-state="workspaceStore.state.value" :workspace-busy="workspaceStore.busy.value" @create-workspace="createNamedWorkspace" @manage-workspace="manageWorkspace" @create-workspace-conversation="createWorkspaceConversation" @rename-workspace="renameWorkspace" @remove-workspace="workspaceStore.remove" @duplicate-workspace="duplicateWorkspace" @move-workspace="workspaceStore.reorder" @move-conversation="workspaceStore.assign" :conversations="conversations" :selected-id="selectedConversationId"
-          :changing="changing" :pinned-ids="pinnedConversationIds" @select="mobilePanel = ''; selectConversation($event); emit('chat')" @create="mobilePanel = ''; openCreate(); emit('chat')"
-          @groups="openGroups" @sync="syncCodexSessions" @remove="removeAgentConversations" @rename="(id, title) => updateConversationTitle(id, title)">
+          :changing="changing" :pinned-ids="pinnedConversationIds" :unread-ids="unreadConversationIds" @select="mobilePanel = ''; selectConversation($event); emit('chat')" @create="mobilePanel = ''; openCreate(); emit('chat')"
+          @groups="openGroups" @sync="syncOpenCodexSessions" @remove="removeAgentConversations" @rename="(id, title) => updateConversationTitle(id, title)">
           <template #navigation><slot name="navigation" placement="sidebar" :close-navigation="() => { mobilePanel = ''; }" :toggle-sessions="toggleSessions" :sessions-collapsed="false" /></template>
-          <template #tools><AgentRecoveryDialog :changing="changing" @retry="retryRun" @inspect="detail = $event" /></template>
+          <template #tools><AgentRecoveryDialog :changing="changing" @retry="retryRun" @inspect="inspectRun" /></template>
           <template #navigation-footer><slot name="navigation" placement="footer" :close-navigation="() => { mobilePanel = ''; }" :toggle-sessions="toggleSessions" :sessions-collapsed="false" /></template>
         </AgentSessionList>
         </AgentResponsivePanel>
@@ -995,11 +1092,15 @@ onBeforeUnmount(() => {
           :attachment-draft="conversationAttachmentDraft" :team-tasks="teamChat.tasks.value" :team-room="teamChat.room.value" :team-attachments="teamChat.attachments.value" :jira-task="matchedJiraTask"
           :workspace-options="workspaceOptions" :choosing-workspace="picker.selecting.value" :save-workspace="saveConversationWorkspace" :browse-workspace="browseConversationWorkspace"
           :side-fork-available="!mobile && !!sideForkSource" :projectless-fork="projectlessFork" @fork-side="openForkConversation($event, true)"
+          :older-history="!!mainHistory.olderCursor.value" :loading-older="mainHistory.loadingOlder.value" :history-error="!!mainHistory.error.value"
+          :load-older="mainHistory.loadOlder" :retry-history="mainHistory.refresh"
           :business-options="businessMentions" @send="sendMessage" @access-change="automaticAccessMode = $event" @stop="stopConversation" @team-decision="teamChat.decide" @team-command="teamChat.command" @choose-team-workspace="chooseChatWorkspace" @steer="steer" @remove-queued="deleteQueuedRun" @retry="retryRun" @fork="openForkConversation"
-          @edit="openEditMessage" @pin="togglePinnedConversation" @rename-title="(conversation, title) => updateConversationTitle(conversation.id, title)" @remove="removeAgentConversation" @inspect="detail = $event" @configure-models="openModelSettings()"
+          @edit="openEditMessage" @pin="togglePinnedConversation" @rename-title="(conversation, title) => updateConversationTitle(conversation.id, title)" @remove="removeAgentConversation" @inspect="inspectRun" @configure-models="openModelSettings()"
           @open-group="openGroup($event); emit('group', $event)">
           <template #header-actions>
             <span id="conversation-connection-status"></span>
+            <AgentMergeRequestWatch v-if="selectedConversation && (mergeRequestPaths.length || mergeRequestWatch.lookup(selectedConversation.id).link)"
+              :key="selectedConversation.id" :conversation-id="selectedConversation.id" :paths="mergeRequestPaths" :model="mergeRequestWatch" />
             <button v-if="!mobile" type="button" class="side-chat-action" aria-controls="agent-side-chat"
               :aria-label="sideChatOpen ? '收起侧边聊天' : '打开侧边聊天'" :title="sideChatOpen ? '收起侧边聊天' : '打开侧边聊天'"
               :aria-expanded="sideChatOpen" @click="sideChatOpen = !sideChatOpen">
@@ -1023,6 +1124,8 @@ onBeforeUnmount(() => {
               :aria-expanded="choosingSide || !sideConversation" @click="choosingSide = !choosingSide"><Plus :size="17" /></button>
             <button v-if="sideForkSource" type="button" class="side-chat-action" aria-label="基于主会话新建" title="基于主会话新建"
               :disabled="!!changing" @click="openForkConversation(sideForkSource, true)"><GitFork :size="16" /></button>
+            <button v-if="canBringSideConclusion && sideConclusion" type="button" class="side-chat-action"
+              aria-label="将最新结论带回主会话" title="将最新结论带回主会话草稿" @click="bringSideConclusion(sideConclusion)"><Quote :size="16" /></button>
             <button type="button" class="side-chat-action" aria-label="关闭侧边聊天" title="关闭侧边聊天"
               @click="sideChatOpen = false"><X :size="17" /></button>
           </header>
@@ -1036,12 +1139,14 @@ onBeforeUnmount(() => {
             </el-button>
           </div>
           <AgentConversation v-if="sideConversation" v-model="sideDraft" v-model:attachments="sideAttachments" :conversation="sideConversation" :workspace-name="workspaceName(sideConversation)" :workspace="conversationWorkspace(sideConversation)" @manage-workspace="manageWorkspace"
-            :attachment-draft="sideAttachmentDraft" :business-options="[]" :runtimes="runtimes" :changing="conversationChanging || (sideSending ? 'side:send' : '')"
+            :attachment-draft="sideAttachmentDraft" :business-options="[]" :runtimes="runtimes" :can-bring-to-main="canBringSideConclusion"
+            :older-history="!!sideHistory.olderCursor.value" :loading-older="sideHistory.loadingOlder.value" :history-error="!!sideHistory.error.value"
+            :load-older="sideHistory.loadOlder" :retry-history="sideHistory.refresh" :changing="sideConversationChanging"
             :workspace-options="workspaceOptions" :choosing-workspace="picker.selecting.value" :save-workspace="saveConversationWorkspace" :browse-workspace="browseConversationWorkspace"
             :pinned="isPinnedAgentSession(pinnedConversationIds, sideConversation)" :jira-task="matchConversationJiraDevTask(sideConversation, jiraTasks)" :projectless-fork="projectlessFork"
             @send="sendSideMessage" @stop="stop" @steer="steer" @remove-queued="deleteQueuedRun" @retry="(run, selection) => retryRun(run, selection, true)"
-            @fork="openForkConversation($event, true)" @edit="openEditMessage($event, true)" @pin="togglePinnedConversation"
-            @rename-title="(conversation, title) => updateConversationTitle(conversation.id, title)" @remove="removeAgentConversation" @inspect="detail = $event" @configure-models="openModelSettings()"
+            @fork="openForkConversation($event, true)" @edit="openEditMessage($event, true)" @pin="togglePinnedConversation" @bring-to-main="bringSideConclusion"
+            @rename-title="(conversation, title) => updateConversationTitle(conversation.id, title)" @remove="removeAgentConversation" @inspect="inspectRun" @configure-models="openModelSettings()"
             @open-group="openGroup($event); emit('group', $event)" />
         </section>
         <button v-if="desktopSideControls && desktopDetailsAvailable" type="button" class="studio-side-toggle right"
@@ -1057,7 +1162,7 @@ onBeforeUnmount(() => {
           :workspace-path="sideWorkspacePath" :provider="sideProvider" :stream-status="streamStatus" :spawning="changing.startsWith('spawn:')"
           :changing="!!changing" :acceptances="acceptanceByConversationId" :acceptance-known="acceptanceKnown" :workflows="workflows" :delivery-record="selectedDeliveryRecord"
           :matched-jira-task="matchedJiraTask" :default-tab="matchedJiraTask ? 'delivery' : 'execution'" :panel-open="detailsPanelOpen" external-collapse
-          @inspect="detail = $event || selectedConversation?.latest" @compose="mobilePanel = ''; composeBusinessPrompt($event)" @select-conversation="mobilePanel = ''; selectConversation($event)"
+          @inspect="inspectRun($event || selectedConversation?.latest)" @compose="mobilePanel = ''; composeBusinessPrompt($event)" @select-conversation="mobilePanel = ''; selectConversation($event)"
           @spawn-agent="spawnAgentTask" @decide-workflow="decideTeamWorkflow" @focus="conversationPane?.focusComposer()" @stop="stop" @retry="retryRun"
           @open-group="openGroup($event); emit('group', $event)">
           <template v-if="launchWorkspacePaths.length" #project-launch><AgentProjectLaunch class="project-launch-sidebar" :workspace-paths="launchWorkspacePaths" /></template>
@@ -1070,7 +1175,7 @@ onBeforeUnmount(() => {
 
   <el-drawer v-model="detailDrawer" :title="detail ? `执行记录 · ${detailTask.role || providerLabel(detail.provider)}${detailRoundNumber ? ` · 第 ${detailRoundNumber} 轮` : ''}` : '执行记录'" size="min(760px, 94vw)" class="hub-drawer" append-to-body destroy-on-close>
     <AgentRunDetails v-if="detail" :run="detail" :runtimes="runtimes" />
-    <template #footer><el-button @click="detail = undefined">关闭</el-button></template>
+    <template #footer><el-button @click="detailDrawer = false">关闭</el-button></template>
   </el-drawer>
   <Teleport v-if="!isPending" defer :to="connectionStatusTarget">
     <AgentConnectionStatus :runtimes="runtimes" :usage-cards="usageCards" :antigravity-usage="data?.antigravityUsage" :refreshing="refreshing" @refresh="refreshStatus" @configure-models="openModelSettings" />
@@ -1079,7 +1184,8 @@ onBeforeUnmount(() => {
   <AgentModelSettings v-if="modelDialog" v-model="modelDialog" :runtimes="runtimes" :changing="changing" :initial-provider="modelDialogProvider" @add="addCustomModel" @remove="removeCustomModel" />
   <AgentForkDialog v-if="forkSource" :open="!!forkSource" v-model:objective="forkObjective" v-model:attachments="forkAttachments" :source="forkSource" :in-side="forkInSide"
     :attachment-draft="forkAttachmentDraft"
-    :submitting="!!forkSource && changing === `fork:${forkSource.id}`" @submit="forkConversation(forkInSide, $event)" @cancel="closeForkDialog" />
+    :submitting="!!forkSource && changing === `fork:${forkSource.id}`"
+    @submit="(mode, isolateWorkspace) => forkConversation(forkInSide, mode, isolateWorkspace)" @cancel="closeForkDialog" />
   <AgentEditMessageDialog v-if="editDialogOpen" v-model="editObjective" :open="editDialogOpen" :source="editSource"
     :submitting="!!changing" @submit="saveEditedMessage" @close="editDialogOpen = false" />
 </template>

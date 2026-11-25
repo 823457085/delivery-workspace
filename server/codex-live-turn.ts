@@ -9,6 +9,7 @@ import { codexChildEnvironment } from './cli-runtime.js';
 import { codexSessionErrorText, codexWriterThreadId } from '../shared/codex-session-error.js';
 import { createCodexRequestDiagnostics } from './codex-request-diagnostics.js';
 import { runCodexDesktopTurn } from './codex-desktop-turn.js';
+import { isMissingNativeSession, NativeSessionUnavailableError } from './native-session-return.js';
 import type { AgentRun, AgentRunEvent } from '../shared/agent-runtime.js';
 
 export type LiveInput = { text: string; imagePaths: string[]; id: string };
@@ -17,6 +18,7 @@ export interface LiveContext {
   run: AgentRun;
   browserConfig?: Record<string, unknown>;
   resumeSessionId?: string;
+  returningToNativeSession?: boolean;
   forkSessionId?: string;
   forkLastTurnId?: string;
   imagePaths: string[];
@@ -231,6 +233,8 @@ export function runCodexLiveTurn(binary: string, context: LiveContext, prompt: s
           return;
         }
         const diagnostic = error instanceof Error ? error.message : String(error);
+        if (method === 'thread/resume' && context.returningToNativeSession && context.resumeSessionId
+          && isMissingNativeSession(diagnostic, context.resumeSessionId, 'codex')) throw new NativeSessionUnavailableError();
         const archivedId = diagnostic.match(/^session ([0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}) is archived\b/i)?.[1];
         if (method !== 'thread/resume' || !archivedId || !context.resumeSessionId
           || archivedId.toLowerCase() !== context.resumeSessionId.toLowerCase()) throw error;
@@ -245,6 +249,9 @@ export function runCodexLiveTurn(binary: string, context: LiveContext, prompt: s
       }
       threadId = String(object(response.thread).id || '');
       if (!threadId) throw new Error('Codex 未返回会话 ID');
+      if (context.returningToNativeSession && threadId.toLowerCase() !== context.resumeSessionId?.toLowerCase()) {
+        throw new Error('Codex 续接返回的原生会话 ID 与请求不一致');
+      }
       if (method === 'thread/fork' && threadId === context.forkSessionId) throw new Error('Codex 分叉未返回独立会话 ID');
       await context.onSession(threadId);
       const started = await request('turn/start', { threadId, input: input(prompt, context.imagePaths),

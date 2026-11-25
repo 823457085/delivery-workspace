@@ -1110,7 +1110,7 @@ function scheduleGroupStreamRefresh() {
 onMounted(() => {
   if (typeof EventSource === 'undefined') return;
   const openStream = (globalThis as { __deliveryOpenEventSource?: (url: string) => EventSource }).__deliveryOpenEventSource;
-  const runStream = openStream ? openStream('/api/agent-runtimes/events?updates=runs') : new EventSource('/api/agent-runtimes/events?updates=runs');
+  const runStream = openStream ? openStream('/api/agent-runtimes/events?updates=summaries') : new EventSource('/api/agent-runtimes/events?updates=summaries');
   const teamStream = openStream ? openStream('/api/agent-runtimes/team-tasks/events') : new EventSource('/api/agent-runtimes/team-tasks/events');
   const syncSseState = () => { groupSseConnected.value = runStream.readyState === 1 || teamStream.readyState === 1; };
   for (const stream of [runStream, teamStream]) {

@@ -1,7 +1,27 @@
-"""Write full credentials in memory, without security(1)'s bounded stdin parser."""
+"""Write credentials without exposing them in process arguments."""
 import ctypes
 from pathlib import Path
 import subprocess
+
+
+def put_password_with_security(service, account, value, keychain_path=None):
+    """Keep security(1)'s reader and writer in the same macOS Keychain partition."""
+    if keychain_path is not None and not Path(keychain_path).is_file():
+        return -25294  # errSecNoSuchKeychain; security(1) can otherwise use the default.
+
+    def quote(text):
+        return '"' + text.replace('\\', '\\\\').replace('"', '\\"') + '"'
+
+    fields = [service, account, value]
+    command = 'add-generic-password -U -s %s -a %s -w %s' % tuple(map(quote, fields))
+    if keychain_path is not None:
+        command += ' ' + quote(str(keychain_path))
+    line = (command + '\n').encode('utf-8')
+    if len(line) >= 4096:  # security(1) has a fixed-size interactive input buffer.
+        return None
+    return subprocess.run(['/usr/bin/security', '-q', '-i'], input=line,
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                          timeout=30).returncode
 
 
 def put_password(service, account, value, keychain_path=None):

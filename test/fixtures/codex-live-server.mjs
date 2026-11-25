@@ -25,6 +25,9 @@ createInterface({ input: process.stdin }).on('line', line => {
     return output({ id, result: { thread: { id: recoverableId } } });
   }
   if (method === 'thread/resume') {
+    if (params.threadId === 'missing-native-session') {
+      return output({ id, error: { message: `no rollout found for thread id ${params.threadId}` } });
+    }
     if ([recoverableId, rejectedId, wrongRestoreId].includes(params.threadId) && !unarchived) {
       return output({ id, error: { message: `session ${params.threadId} is archived. Run codex unarchive first` } });
     }

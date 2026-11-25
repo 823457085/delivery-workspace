@@ -4,6 +4,7 @@ const integrations = useIntegrationPlugins();
 /** 统一工作台复用同一读模型；嵌入 Agent 时由顶部导航提供入口，独立页面保留快捷入口。 */
 import { computed, defineAsyncComponent, inject, onBeforeUnmount, onMounted, shallowRef, useTemplateRef, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import { useQuery } from '@tanstack/vue-query';
 import { ElMessage } from 'element-plus';
 import { CalendarDays, Terminal, FileCheck2, ArrowUpRight, Bot, Search, RefreshCw, Activity, CircleAlert, ClipboardCheck, Sun, ChevronRight, MessageSquare, Plug, GitBranch, LayoutGrid, List, Copy, Check } from '@lucide/vue';
 import { agentProviderLabels } from '../../../shared/agent-runtime';
@@ -32,7 +33,28 @@ type RecordTab = DeliveryRecordState | 'all';
 const route = useRoute(), router = useRouter();
 const workspace = inject(agentWorkspaceContext, undefined);
 const hgAsideActive = useHolyGrailAside(Boolean(workspace));
-const { records, errors, loading, fetching, incomplete, refresh, runtime, issues, automation } = useWorkbench({ applyDismissals: true });
+const { records, errors, loading, fetching, incomplete, refresh: refreshWorkbench, runtime, issues, automation } = useWorkbench({ applyDismissals: true });
+type TaskFlowDispatch = { id: string; jiraKey: string; title: string; status: string; phase: string | null; error: string | null; updatedAt: string; taskUrl: string };
+const dispatchLabels: Record<string, string> = {
+  QUEUED: '等待本机领取', CLAIMED: '本机已领取', EXECUTING: '本机执行中', RUNNING: '执行中',
+  SUCCEEDED: '已完成', FAILED: '失败', CANCELLED: '已取消', INTERRUPTED: '已中断',
+};
+const taskFlowDispatches = useQuery({
+  queryKey: ['workbench-taskflow-dispatches'],
+  queryFn: async ({ signal }): Promise<TaskFlowDispatch[] | null> => {
+    const response = await fetch('/api/workspace/taskflow-dispatches', { signal });
+    if (response.status === 404 || !response.headers.get('content-type')?.includes('application/json')) return null;
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error?.message);
+    return data.dispatches ?? null;
+  },
+  retry: false,
+  refetchOnWindowFocus: query => query.state.data !== null,
+  refetchInterval: query => query.state.data === null ? false : 15_000,
+  refetchIntervalInBackground: false,
+});
+watch(taskFlowDispatches.error, error => { if (error?.message) ElMessage.error(error.message); });
+const refresh = () => Promise.all([refreshWorkbench(), taskFlowDispatches.data.value === null ? undefined : taskFlowDispatches.refetch()]);
 const { search, filter, page, viewMode } = useWorkspacePanelState('today', () => ({ search: '', filter: 'all' as RecordTab, page: 1, viewMode: 'cards' as 'cards' | 'list' }));
 const focusedRecord = shallowRef<DeliveryRecord>();
 const selectedKey = computed(() => typeof route.query.issue === 'string' ? issueKey(route.query.issue) : '');
@@ -315,6 +337,21 @@ function agentGateLabel(run: { id: string; status: string; resultReady?: boolean
       <Teleport defer to="#hg-aside-slot" :disabled="!hgAsideActive">
         <aside id="workbench-today" class="wb-aside" :class="{ 'is-teleported': hgAsideActive }">
           <component v-for="widget in integrations.widgets.value" :is="widget.component" :key="widget.id" :today="today" :today-issues="todayIssues" :loading="issues.isPending.value" :error="issues.error.value" :jira-sync-status="jiraSyncStatus" @open-issue="openIssue" />
+          <section v-if="taskFlowDispatches.data.value" class="wb-card">
+            <div class="wb-card-head compact"><h2>TaskFlow 派发</h2></div>
+            <el-empty v-if="!taskFlowDispatches.data.value.length" description="暂无发给你的任务" :image-size="36" />
+            <div v-else class="wb-shortcuts">
+              <a v-for="dispatch in taskFlowDispatches.data.value" :key="dispatch.id" :href="safeUrl(dispatch.taskUrl)" target="_blank" rel="noreferrer">
+                <span class="wb-metric-icon"><Activity :size="16" /></span>
+                <span>
+                  <strong>{{ dispatch.jiraKey }} · {{ dispatch.title }}</strong>
+                  <small>{{ dispatchLabels[dispatch.status === 'RUNNING' ? dispatch.phase || dispatch.status : dispatch.status] || dispatch.status }} · {{ dateTime(dispatch.updatedAt) }}</small>
+                  <small v-if="dispatch.error">{{ dispatch.error }}</small>
+                </span>
+                <ArrowUpRight :size="14" />
+              </a>
+            </div>
+          </section>
           <TeamPendingTasks /><PersonalTodos />
 
           <section class="wb-card">

@@ -13,7 +13,8 @@ export function browserAgentRun(run: AgentRun): AgentRun {
   return visible;
 }
 
-export function createAgentRuntimeStream(write: (frame: string) => void, incremental: boolean) {
+export function createAgentRuntimeStream(write: (frame: string) => void, incremental: boolean,
+  summarize?: (run: AgentRun) => AgentRun) {
   const pending = new Map<string, AgentRun>();
   let latestRevision = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -24,7 +25,9 @@ export function createAgentRuntimeStream(write: (frame: string) => void, increme
     if (timer) clearTimeout(timer);
     timer = undefined;
     if (!pending.size) return;
-    send('runs', latestRevision, { runs: [...pending.values()].map(browserAgentRun) });
+    const runs = [...pending.values()].map(summarize || browserAgentRun);
+    send('runs', latestRevision, { runs,
+      ...(summarize ? { conversationIds: [...new Set(runs.map(run => run.conversationId || run.id))] } : {}) });
     pending.clear();
   };
   return {

@@ -44,7 +44,6 @@ import { parseMentionGroundingQuery, searchWorkspaceMentionGrounding } from './w
 import { createWorkspacePickerRoute } from './workspace-picker.js';
 import { createWorkspaceAppRoute, createWorkspaceTerminalRoute, openWorkspaceTerminal, openWorkspaceCursor } from './workspace-terminal.js';
 import { createIntegrationStore } from './api-integration.js';
-import { loadIntegrationCatalog } from './integration-catalog.js';
 import { createApexBffReviewStore } from './apex-bff-review.js';
 import { createWecomIntegration } from './wecom-integration.js';
 import { createWorkspaceTodos } from './workspace-todos.js';
@@ -69,6 +68,7 @@ import { assertIntegrationRequest } from './plugins/definitions.mjs';
 import { createPluginStore } from './plugins/store.mjs';
 import { createCustomPluginRuntime } from './plugins/custom-runtime.js';
 import { createPluginApplications } from './plugins/applications.js';
+import { discoverBundledPlugins } from './plugins/bundled-packages.js';
 import { createPluginDistribution } from './plugins/distribution.js';
 import { servePluginCenter } from './plugins/management-assets.js';
 import { createCustomPluginRoutes } from './plugins/custom-routes.js';
@@ -116,6 +116,7 @@ import {
 } from './project-git.js';
 import {
   listProjectMergeRequests,
+  readProjectMergeRequestWatch,
   prepareProjectMergeRequest,
   reconcileProjectMergeRequest,
   createProjectMergeRequest,
@@ -180,7 +181,6 @@ function scheduleInitialStateBackup() {
 const stopPeriodicBackup = startPeriodicStateBackup(stateBackup);
 const stopStateBackup = async () => { await stopPeriodicBackup(); await initialBackupTask; };
 const sourceBackend = await createSourceBackend(port);
-const integrationCatalog = await loadIntegrationCatalog();
 const [
   service,
   designExecutor,
@@ -299,7 +299,7 @@ const pluginDistribution = createPluginDistribution(customPlugins, path.join(cus
   () => integrationPlugins.catalogSources(), id => pluginApplications.stop(id));
 const customPluginRoutes = createCustomPluginRoutes(customPlugins, pluginJira, {
   json, body, port, applications: pluginApplications,
-  examples: [], distribution: pluginDistribution,
+  examples: await discoverBundledPlugins(path.join(root, 'plugins')), distribution: pluginDistribution,
   citations: reference => agentRuntimes.knowledgeCitations(reference),
 });
 const desktopAccounts = createDesktopAccountsService();
@@ -390,14 +390,13 @@ const jiraFixHandoff = await createJiraFixHandoffService(path.join(dataDirectory
   return record ? { record, run: jiraRuntime.findJiraFix(id), history: group ? group.runs.map(run => ({ objective: run.objective, result: run.result, status: run.status })) : agentRuntimes.jiraFixResults(id) } : undefined;
 }, createJiraHandoffClient(sourceBackend.jiraFixHandoffRequest), undefined, agentRuntimes);
 const [integration, apexBffReview, wecomIntegration, overseasRequirements, reportBot] = await Promise.all([
-  createIntegrationStore(dataDirectory, integrationCatalog),
-  createApexBffReviewStore(dataDirectory, integrationCatalog),
-  createWecomIntegration(dataDirectory, { catalog: integrationCatalog }),
+  createIntegrationStore(dataDirectory),
+  createApexBffReviewStore(dataDirectory),
+  createWecomIntegration(dataDirectory),
   createOverseasRequirements(path.join(dataDirectory, 'overseas-requirements'),
     id => requirementDevelopment.list().some(record => record.id === id)),
   createWecomIntegration(path.join(dataDirectory, 'workspace-reports'), {
     configFile: path.join(dataDirectory, 'workspace-reports', 'bot.json'),
-    catalog: integrationCatalog,
   }),
 ]);
 const integrationPlugins = await createPluginStore({
@@ -580,6 +579,7 @@ const agentResumeSchema = z.object({ objective: z.string().max(200_000), attachm
   queuePlacement: z.enum(['append', 'next']).default('append') }).strict()
   .refine((input) => !!input.objective.trim() || !!input.attachmentIds.length, { message: '请填写消息或添加附件' });
 const agentContinueSchema = agentResumeSchema.safeExtend({ mode: z.enum(['agent', 'plan', 'ask']).optional() });
+const agentForkSchema = agentContinueSchema.safeExtend({ isolateWorkspace: z.boolean().optional() });
 const agentSpawnSchema = z.object({ title: z.string().trim().min(1).max(200), objective: z.string().trim().min(1).max(200_000),
   role: z.enum(['worker', 'reviewer']).default('worker'),
   dependsOnConversationIds: z.array(z.string().trim().min(1).max(200)).max(12).default([]) }).strict();
@@ -669,7 +669,7 @@ const workspaceRestartRoute = createWorkspaceRestartRoute(workspaceRestart);
 let refactorControl: Awaited<ReturnType<typeof createRefactorControl>>;
 const refactorWorkspace = await createRefactorWorkspace(root, path.join(dataDirectory, 'refactor-workspace'), { control: () => refactorControl });
 refactorControl = await createRefactorControl(root, path.join(dataDirectory, 'refactor-control'), agentRuntimes, {
-  teams: agentTeams, groups: groupChat, catalog: integrationCatalog,
+  teams: agentTeams, groups: groupChat,
   extraModules: () => refactorWorkspace.modules(), moduleConfig: module => refactorWorkspace.projectConfig(module),
   allowDispatch: async () => !['waiting', 'restarting'].includes((await workspaceRestart.dashboard()).status),
 });
@@ -683,7 +683,7 @@ function json(response: http.ServerResponse, code: number, value: unknown) {
 }
 
 const gzipJson = promisify(gzip);
-async function sendAgentSnapshot(request: http.IncomingMessage, response: http.ServerResponse, snapshot: ReturnType<typeof agentRuntimes.snapshot>) {
+async function sendAgentSnapshot<T extends { runs: AgentRun[] }>(request: http.IncomingMessage, response: http.ServerResponse, snapshot: T) {
   const visible = { ...snapshot, runs: snapshot.runs.map(browserAgentRun) };
   response.setHeader('Vary', 'Accept-Encoding');
   const encodings = (request.headers['accept-encoding'] || '').split(',');
@@ -789,6 +789,10 @@ const server = http.createServer(async (request, response) => {
         if (request.method === 'GET' && url.pathname === '/api/projects/git/commit-detail') {
           json(response, 200, await readProjectCommitDetail(url.searchParams.get('path') || '', url.searchParams.get('sha') || '')); return;
         }
+        if (request.method === 'POST' && url.pathname === '/api/projects/git/merge-request/watch') {
+          if (![`http://localhost:${port}`, `http://127.0.0.1:${port}`].includes(request.headers.origin || '')) { json(response, 403, { message: '请求来源不匹配' }); return; }
+          json(response, 200, await readProjectMergeRequestWatch(await body(request), { dataDirectory })); return;
+        }
         if (request.method === 'POST' && ['/api/projects/git/merge-request/list', '/api/projects/git/merge-request/prepare', '/api/projects/git/merge-request/reconcile', '/api/projects/git/merge-request/create', '/api/projects/git/merge-request/title', '/api/projects/git/merge-request/description', '/api/projects/git/merge-request/merge'].includes(url.pathname)) {
           if (![`http://localhost:${port}`, `http://127.0.0.1:${port}`].includes(request.headers.origin || '')) { json(response, 403, { message: '请求来源不匹配' }); return; }
           if (url.pathname.endsWith('/merge') && request.headers['x-delivery-confirmed'] !== 'yes') {
@@ -871,13 +875,15 @@ const server = http.createServer(async (request, response) => {
           if (response.destroyed) return;
           response.write(`event: envelope\ndata: ${JSON.stringify({ url: channelUrl, event, data, ...(id ? { id } : {}) })}\n\n`);
         };
-        writeEnvelope('/api/agent-runtimes/events?updates=runs', 'ready', JSON.stringify({ revision: agentRuntimes.revision() }));
+        const summaries = url.searchParams.get('agentRuns') === 'summaries';
+        const runtimeChannel = `/api/agent-runtimes/events?updates=${summaries ? 'summaries' : 'runs'}`;
+        writeEnvelope(runtimeChannel, 'ready', JSON.stringify({ revision: agentRuntimes.revision() }));
         writeEnvelope('/api/agent-runtimes/team-tasks/events', 'ready', JSON.stringify({ revision: agentTeams!.revision() }));
         writeEnvelope('/api/workflow/events', 'ready', JSON.stringify({ revision: service.revision() }));
         const runtimeStream = createAgentRuntimeStream(frame => {
           const match = /^id:\s*([^\n]+)\nevent:\s*([^\n]+)\ndata:\s*([\s\S]+?)\n\n$/.exec(frame);
-          if (match) writeEnvelope('/api/agent-runtimes/events?updates=runs', match[2]!, match[3]!, match[1]!);
-        }, true);
+          if (match) writeEnvelope(runtimeChannel, match[2]!, match[3]!, match[1]!);
+        }, true, summaries ? agentRuntimes.summarizeRun : undefined);
         const unsubRuntimes = agentRuntimes.subscribe(runtimeStream.update);
         const unsubTeams = agentTeams!.subscribe(event => {
           writeEnvelope('/api/agent-runtimes/team-tasks/events', event.type, JSON.stringify(event), String(event.eventId));
@@ -952,9 +958,6 @@ const server = http.createServer(async (request, response) => {
           json(response, 200, await wecomIntegration.send(await body(request, 60_000))); return;
         }
         json(response, 405, { message: '请求方法不支持' }); return;
-      }
-      if (url.pathname === '/api/integration-catalog' && request.method === 'GET') {
-        json(response, 200, integrationCatalog); return;
       }
       if (url.pathname === '/api/apex-bff-review') {
         if (![`localhost:${port}`, `127.0.0.1:${port}`].includes(request.headers.host || '')) { json(response, 403, { message: '仅接受本机看板请求' }); return; }
@@ -1194,7 +1197,8 @@ const server = http.createServer(async (request, response) => {
           json(response, 200, { deleted: true }); return;
         }
         if (request.method === 'GET' && url.pathname === '/api/agent-runtimes' && url.searchParams.get('status') === '0') {
-          await sendAgentSnapshot(request, response, agentRuntimes.snapshot()); return;
+          const snapshot = url.searchParams.get('view') === 'conversations' ? agentRuntimes.conversationSnapshot() : agentRuntimes.snapshot();
+          await sendAgentSnapshot(request, response, snapshot); return;
         }
         if (request.method === 'GET' && (url.pathname === '/api/agent-runtimes' || url.pathname === '/api/agent-runtimes/status')) {
           const force = url.searchParams.get('refresh') === '1';
@@ -1223,7 +1227,9 @@ const server = http.createServer(async (request, response) => {
           if (Number.isFinite(lastRevision) && lastRevision > 0 && lastRevision < currentRevision) {
             response.write(`id: ${currentRevision}\nevent: refresh\ndata: ${JSON.stringify({ revision: currentRevision, recovered: true })}\n\n`);
           }
-          const stream = createAgentRuntimeStream((frame) => { if (!response.destroyed) response.write(frame); }, url.searchParams.get('updates') === 'runs');
+          const updates = url.searchParams.get('updates');
+          const stream = createAgentRuntimeStream((frame) => { if (!response.destroyed) response.write(frame); },
+            updates === 'runs' || updates === 'summaries', updates === 'summaries' ? agentRuntimes.summarizeRun : undefined);
           const unsubscribe = agentRuntimes.subscribe(stream.update);
           const heartbeat = setInterval(() => { if (!response.destroyed) response.write(': keepalive\n\n'); }, 15_000);
           request.on('close', () => { clearInterval(heartbeat); stream.close(); unsubscribe(); });
@@ -1235,7 +1241,7 @@ const server = http.createServer(async (request, response) => {
         }
         const codexSession = url.pathname.match(/^\/api\/agent-runtimes\/codex-sessions\/([0-9a-f-]{36})$/);
         if (request.method === 'GET' && codexSession) {
-          json(response, 200, await agentRuntimes.codexSession(codexSession[1])); return;
+          json(response, 200, await agentRuntimes.codexSession(codexSession[1], url.searchParams.get('fresh') === '1')); return;
         }
         const resumeCodexSession = url.pathname.match(/^\/api\/agent-runtimes\/codex-sessions\/([0-9a-f-]{36})\/resume$/);
         if (request.method === 'POST' && resumeCodexSession) {
@@ -1351,6 +1357,14 @@ const server = http.createServer(async (request, response) => {
           const input = agentWorkflowDecisionSchema.parse(await body(request));
           json(response, 200, await agentRuntimes.decideWorkflow(decideAgentWorkflow[1], input.action, input.requestId)); return;
         }
+        const runDetails = url.pathname.match(/^\/api\/agent-runtimes\/runs\/([0-9a-f-]{36})$/i);
+        if (request.method === 'GET' && runDetails) {
+          const run = agentRuntimes.getRun(runDetails[1]);
+          if (!run) { json(response, 404, { message: '找不到该运行记录' }); return; }
+          response.setHeader('X-Agent-Revision', agentRuntimes.revision());
+          const conversationId = agentRuntimes.summarizeRun(run).conversationId;
+          json(response, 200, browserAgentRun({ ...run, conversationId })); return;
+        }
         const runContext = url.pathname.match(/^\/api\/agent-runtimes\/runs\/([0-9a-f-]{36})\/context-usage$/);
         if (request.method === 'GET' && runContext) {
           json(response, 200, { context: await agentRuntimes.getRunContextUsage(runContext[1]) || null }); return;
@@ -1404,12 +1418,23 @@ const server = http.createServer(async (request, response) => {
             json(response, 202, await agentRuntimes.retry(id, input.cursorTrustPath, input)); return;
           }
           if (action === 'fork') {
-            const input = agentContinueSchema.parse(await body(request));
-            json(response, 202, await agentRuntimes.fork(id, input.objective, input.model, input.reasoningEffort, input.attachmentIds, input.serviceTier, input.mode)); return;
+            const input = agentForkSchema.parse(await body(request));
+            json(response, 202, await agentRuntimes.fork(id, input.objective, input.model, input.reasoningEffort, input.attachmentIds,
+              input.serviceTier, input.mode, input.isolateWorkspace)); return;
           }
           const input = agentContinueSchema.parse(await body(request));
           sendAcceptedRun(response, await agentRuntimes.resume(id, input.objective, input.model, input.reasoningEffort, input.attachmentIds, input.accessMode,
             input.queuePlacement, input.serviceTier, input.mode)); return;
+        }
+        if (request.method === 'GET' && url.pathname === '/api/agent-runtimes/conversations/search') {
+          const query = z.string().trim().min(1).max(512).parse(url.searchParams.get('q'));
+          json(response, 200, agentRuntimes.searchConversationHistory(query)); return;
+        }
+        const conversationHistory = url.pathname.match(/^\/api\/agent-runtimes\/conversations\/([^/]+)\/history$/);
+        if (request.method === 'GET' && conversationHistory) {
+          const id = z.string().min(1).max(200).parse(decodeURIComponent(conversationHistory[1]));
+          const before = z.string().min(1).max(200).optional().parse(url.searchParams.get('before') ?? undefined);
+          await sendAgentSnapshot(request, response, agentRuntimes.conversationHistory(id, before)); return;
         }
         if (request.method === 'POST' && url.pathname === '/api/agent-runtimes/conversations/delete-batch') {
           const { targets } = agentConversationDeleteBatchSchema.parse(await body(request));
@@ -1507,7 +1532,7 @@ const server = http.createServer(async (request, response) => {
 server.listen(port, '127.0.0.1', () => {
   if (process.env.DELIVERY_SCHEDULER_DISABLED !== '1') sourceBackend.start();
   workspaceReports.start();
-  if (process.env.DELIVERY_SCHEDULER_DISABLED !== '1') { projectWorkspaces.start(); pluginApplications.startBackground(); }
+  if (process.env.DELIVERY_SCHEDULER_DISABLED !== '1') projectWorkspaces.start();
   setTimeout(scheduleInitialStateBackup, 500).unref();
   console.log(`Delivery Workspace: http://localhost:${port} · unified backend · Mastra lab /lab`);
 });

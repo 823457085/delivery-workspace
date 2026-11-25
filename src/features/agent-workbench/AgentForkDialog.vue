@@ -11,9 +11,9 @@ import type { AgentAttachmentDraft } from './useAgentAttachments';
 const props = defineProps<{ open: boolean; source?: AgentRun; submitting: boolean; inSide?: boolean; attachmentDraft?: AgentAttachmentDraft }>();
 const objective = defineModel<string>('objective', { required: true });
 const attachments = defineModel<AgentAttachment[]>('attachments', { required: true });
-const emit = defineEmits<{ submit: [mode?: AgentRunMode]; cancel: [] }>();
-const mode = shallowRef<AgentRunMode | ''>('');
-const editorMode = computed(() => mode.value || props.source?.mode || 'agent');
+const emit = defineEmits<{ submit: [mode?: AgentRunMode, isolateWorkspace?: boolean]; cancel: [] }>();
+const mode = shallowRef<AgentRunMode | 'parallel' | ''>('');
+const editorMode = computed(() => mode.value === 'parallel' ? 'agent' : mode.value || props.source?.mode || 'agent');
 const promptEditor = useTemplateRef<InstanceType<typeof AgentPromptEditor>>('promptEditor');
 const canSubmit = computed(() => (!!objective.value.trim() || !!attachments.value.length) && !props.attachmentDraft?.pending);
 
@@ -23,7 +23,7 @@ async function focusPrompt() {
 }
 
 function submit() {
-  if (canSubmit.value && !props.submitting) emit('submit', mode.value || undefined);
+  if (canSubmit.value && !props.submitting) emit('submit', mode.value === 'parallel' ? 'agent' : mode.value || undefined, mode.value === 'parallel');
 }
 </script>
 
@@ -31,7 +31,8 @@ function submit() {
   <el-dialog :model-value="open" :title="inSide ? '在侧边新建继承会话' : '基于此会话新建'" width="min(600px, 92vw)" class="agent-fork-dialog"
     :close-on-click-modal="false" :close-on-press-escape="!submitting" :show-close="!submitting"
     @opened="focusPrompt" @update:model-value="!$event && emit('cancel')">
-    <p class="fork-description">新会话与原会话共用工作区，有已完成的轮次时会继承其上下文。</p>
+    <p class="fork-description" v-if="mode === 'parallel'">从当前分支的已提交代码创建独立工作区，继承已完成轮次。原工作区的未提交改动留在原处。</p>
+    <p class="fork-description" v-else>新会话与原会话共用工作区，有已完成的轮次时会继承其上下文。</p>
     <label class="fork-mode">
       <span>执行模式</span>
       <el-select v-model="mode" size="small" aria-label="新会话执行模式" :empty-values="[null, undefined]" :disabled="submitting">
@@ -39,6 +40,7 @@ function submit() {
         <el-option value="ask" label="只读分析" />
         <el-option value="plan" label="先出方案" />
         <el-option value="agent" label="Agent（同目录写入中时排队）" />
+        <el-option v-if="source?.headSha && source?.branch" value="parallel" label="并行开发（独立 Git 工作区）" />
       </el-select>
     </label>
     <AgentPromptEditor v-if="source" ref="promptEditor" v-model="objective" v-model:attachments="attachments"

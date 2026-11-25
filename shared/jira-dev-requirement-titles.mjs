@@ -28,7 +28,7 @@ function scopeText(value) {
   const body = (Array.isArray(value.content) ? value.content : []).map(scopeText).join(['paragraph', 'heading'].includes(value.type) ? '' : '\n');
   return value.type === 'heading' ? `## ${body}` : value.type === 'listItem' ? `- ${body}` : body;
 }
-export function requirementScopes(details, description) {
+export function requirementScopes(details, description, { includeGoals = true } = {}) {
   const sections = [details, description].map(input => {
     let active = '', fence = false, wiki = false;
     const found = { frontend: [], scopes: [], goals: [] };
@@ -74,7 +74,7 @@ export function requirementScopes(details, description) {
     return found;
   });
   for (const section of sections) if (section.frontend.length || section.scopes.length) return section.frontend.length ? section.frontend : section.scopes;
-  for (const section of sections) if (section.goals.length) return section.goals;
+  if (includeGoals) for (const section of sections) if (section.goals.length) return section.goals;
   return [];
 }
 export function childScopeTitles(item, parts, scopes, title) {

@@ -31,14 +31,14 @@ test('同标签页与多订阅者共享单一聚合 SSE 连接，重启挂起时
   (globalThis as { EventSource?: unknown }).EventSource = MockEventSource;
   try {
     const mod = await import(`../src/shared/sse/sharedEventSource.ts?t=${Date.now()}`);
-    const runSubA = mod.openSharedEventSource('/api/agent-runtimes/events?updates=runs');
-    const runSubB = mod.openSharedEventSource('/api/agent-runtimes/events?updates=runs');
+    const runSubA = mod.openSharedEventSource('/api/agent-runtimes/events?updates=summaries');
+    const runSubB = mod.openSharedEventSource('/api/agent-runtimes/events?updates=summaries');
     const teamSub = mod.openSharedEventSource('/api/agent-runtimes/team-tasks/events');
     const workflowSub = mod.openSharedEventSource('/api/workflow/events');
 
     await new Promise(resolve => setTimeout(resolve, 10));
     assert.equal(created.length, 1, '4 个 SSE 订阅者应合并为唯一 1 条物理连接');
-    assert.equal(created[0]!.url, '/api/workspace/events');
+    assert.equal(created[0]!.url, '/api/workspace/events?agentRuns=summaries');
 
     const receivedRuns: string[] = [];
     const receivedTeam: string[] = [];
@@ -48,7 +48,7 @@ test('同标签页与多订阅者共享单一聚合 SSE 连接，重启挂起时
 
     created[0]!.dispatch('open', new Event('open'));
     created[0]!.dispatch('envelope', new MessageEvent('envelope', {
-      data: JSON.stringify({ url: '/api/agent-runtimes/events?updates=runs', event: 'runs', data: '{"revision":7,"runs":[]}', id: '7' }),
+      data: JSON.stringify({ url: '/api/agent-runtimes/events?updates=summaries', event: 'runs', data: '{"revision":7,"runs":[]}', id: '7' }),
     }));
     created[0]!.dispatch('envelope', new MessageEvent('envelope', {
       data: JSON.stringify({ url: '/api/agent-runtimes/team-tasks/events', event: 'workflow.updated', data: '{"taskId":"t1"}', id: '3' }),
@@ -66,7 +66,7 @@ test('同标签页与多订阅者共享单一聚合 SSE 连接，重启挂起时
     mod.resumeSharedEventSources();
     await new Promise(resolve => setTimeout(resolve, 10));
     assert.equal(created.length, 2, '恢复后自动重建唯一聚合连接');
-    assert.equal(created[1]!.url, '/api/workspace/events');
+    assert.equal(created[1]!.url, '/api/workspace/events?agentRuns=summaries');
     assert.equal(created[1]!.closed, false);
 
     runSubA.close();

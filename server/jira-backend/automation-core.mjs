@@ -4,7 +4,6 @@ import { frontendTechSolutionPrompt } from "../frontend-tech-solution.mjs";
 import { isJiraSubtask } from "../../shared/automation-policy.mjs";
 import { chinaWorkingDates, hasChinaWorkCalendarYear, isChinaWorkingDay, splitWorkingDates } from "../../shared/china-work-calendar.mjs";
 import { isJiraIssueDone, isJiraIssueTodo } from "../../shared/jira-status.mjs";
-import { hasDevelopmentDescriptionSections } from "../../shared/jira-development-description.mjs";
 import { requirementScopes } from "../../shared/jira-dev-requirement-titles.mjs";
 import {
   automationProjectRoutingProblem, issueWorkspaceCandidates, resolveAutomationProject,
@@ -300,49 +299,57 @@ export function buildTaskDateSegments(issue, maxDays = 3) {
   return segments.map((part, index) => ({ index: index + 1, total: segments.length, startDate: part[0], endDate: part.at(-1) }));
 }
 
+function explicitParentSplitItems(description) {
+  if (typeof description !== "string") return null;
+  const lines = description.split(/\r?\n/);
+  const heading = lines.findIndex(line => line.trim()
+    .replace(/^(?:h[1-6]\.\s*|#{1,6}\s+)/, "")
+    .replace(/\{\*\}|\*{1,2}/g, "")
+    .replace(/[:：]\s*$/, "").trim() === "子任务拆分");
+  if (heading === -1) return null;
+
+  const items = [];
+  for (const raw of lines.slice(heading + 1)) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (/^(?:h[1-6]\.\s*|#{2,6}\s+|\*{1,2}(?!\s).+?\*{1,2}$|\{\*\}.+?\{\*\}$)/u.test(line)) break;
+    const item = line.match(/^(?:[-*#]\s+|\d+[.)、）]\s*)(\S.*)$/u)?.[1];
+    if (!item) return [];
+    items.push(item.replace(/[（(]\s*(?:\d{4}-)?\d{1,2}[-/]\d{1,2}\s*(?:[-–—~～]|至)\s*(?:\d{4}-)?\d{1,2}[-/]\d{1,2}(?:\s*[，,]\s*\d+\s*(?:个?工作日|天))?\s*[）)]$/u, ""));
+  }
+  return items;
+}
+
 export function buildRequirementSegmentTitles(issue, total) {
   const count = Math.max(0, Math.floor(Number(total) || 0));
   if (count === 0) return [];
 
   const summary = String(issue?.summary || "").trim();
   const modulePrefix = summary.match(/^【[^】]+】/)?.[0] || "";
-  const object = summary
-    .replace(/^【[^】]+】/, "")
-    .replace(/^(?:完成|实现|编写|开发)\s*/, "")
-    .replace(/(?:前端)?开发交付$/, "")
-    .trim() || "需求";
-  const description = String(issue?.description || "");
-  const scopeBlock = description.match(/h2\.\s*前端范围([\s\S]*?)(?=\nh2\.|$)/)?.[1] || "";
-  const legacyScopeItems = scopeBlock
-    .split(/\r?\n/)
-    .map((line) => line.match(/^\s*(?:#|\*|\d+[.、])\s*(.+?)\s*$/)?.[1] || "")
-    .map((line) => line.replace(/[。；;]+$/, "").trim())
-    .filter(Boolean);
-  const scopeItems = legacyScopeItems.length || !hasDevelopmentDescriptionSections(description)
-    ? legacyScopeItems
-    : requirementScopes("", description).map(item => item.text);
-  const withModule = (text) => `${modulePrefix}${text}`.slice(0, 240);
-  const withObjectSuffix = (suffix) => `${object}${/[A-Za-z0-9]$/.test(object) ? " " : ""}${suffix}`;
-
-  if (count === 1) return [withModule(`完成 ${object}`)];
-  const titles = [withModule(`编写 ${withObjectSuffix("技术方案")}`)];
-  const functionalCount = Math.max(0, count - 2);
-  for (let index = 0; index < functionalCount; index += 1) {
-    const scope = scopeItems[index];
-    if (scope) {
-      titles.push(withModule(/^(?:实现|完成|接入|迁移|移除|验证|支持|补齐)/.test(scope) ? scope : `完成 ${scope}`));
-    } else {
-      titles.push(withModule(`实现 ${object}第 ${index + 1} 项功能`));
-    }
-  }
-  titles.push(withModule(`完成 ${withObjectSuffix("联调自测")}`));
-  return titles;
+  const explicitItems = explicitParentSplitItems(issue?.description);
+  const scopes = explicitItems ?? requirementScopes("", issue?.description, { includeGoals: false }).map(item => item.label);
+  const format = (scope) => {
+    const prefix = scope.match(/^【[^】]+】/)?.[0] || modulePrefix;
+    const text = scope.replace(/^【[^】]+】/, "").replace(/[。；;]+$/, "").trim();
+    const action = text.match(/^(?:实现|完成|接入|迁移|移除|验证|支持|补齐|编写|开发|新增|修复|联调)/u)?.[0] || "";
+    const object = text.slice(action.length).trim();
+    if (!object || /(?:第\s*[\d一二三四五六七八九十百]+\s*(?:阶段|段|项功能)|待确认|待补充|待定)$/u.test(object)
+      || /^(?:(?:相关|上述|对应)?功能(?:开发)?$|详见|具体(?:业务)?范围以|https?$)/iu.test(object)) return "";
+    return `${prefix}${action ? text : `完成${text}`}`.slice(0, 240);
+  };
+  const titles = scopes.map(format);
+  return titles.length === count && !titles.includes("") && new Set(titles).size === count ? titles : [];
 }
 
 export function isThreeDaySplitTask(issue) {
   return (Array.isArray(issue?.labels) && issue.labels.includes(THREE_DAY_SPLIT_LABEL))
     || /^【\d+天进度切片 \d+\/\d+】/.test(String(issue?.summary || ""))
     || String(issue?.description || "").includes(`${THREE_DAY_SPLIT_LABEL}/delivery-segment-`);
+}
+
+export function hasTaskSegmentDescriptionMarker(description, marker) {
+  return (String(description || "").match(/delivery-3-day-split\/delivery-segment-\d+-of-\d+/g) || [])
+    .includes(`${THREE_DAY_SPLIT_LABEL}/${marker}`);
 }
 
 /**
@@ -359,9 +366,8 @@ export function findMatchingManagedSegmentSubtask(
   return knownChildren.find((child) => {
     if (!child?.key || used.has(child.key)) return false;
     const labels = Array.isArray(child.labels) ? child.labels : [];
-    const description = String(child.description || "");
     if (labels.includes(marker)) return true;
-    if (description.includes(`${THREE_DAY_SPLIT_LABEL}/${marker}`)) return true;
+    if (hasTaskSegmentDescriptionMarker(child.description, marker)) return true;
     if (expectedSummary && child.summary === expectedSummary && isThreeDaySplitTask(child)) return true;
     return false;
   });
@@ -772,7 +778,7 @@ export function buildCodexPrompt(planItem, settings = DEFAULT_AUTOMATION_SETTING
     const runtimePolicy = [
       `本地运行和真实页面自测默认使用 \`${settings.runtimeEnvironment}\` 环境；仓库存在对应脚本时执行 \`${settings.runtimeCommand}\`。若脚本名称不同，先读取 package.json，使用等价的 ${settings.runtimeEnvironment} 开发服务命令，不得改用仅构建命令或其他环境。`,
       `浏览器操作统一使用 [@${settings.browser}](plugin://chrome@openai-bundled)，不要切换到其他浏览器或无登录态的浏览器会话。`,
-      `优先复用 Chrome 中已有的 ${settings.runtimeEnvironment} 登录态。用户必须明确授权当前任务所需的登录环境和账号。不得沿用其他任务的授权或凭据；授权范围不清、账号配置缺失或需要验证码等交互时，先请用户操作。不要把账号、密码或密钥写入提示词、日志或文件。`,
+      `优先复用 Chrome 中已有的 ${settings.runtimeEnvironment} 登录态。用户已明确授予的登录及验证权限在原任务、环境和账号范围内持续有效，续聊、重试或恢复执行时沿用，必要登录和会话续期无需逐次确认；登录授权不扩大提交、推送或外部业务写入范围。缺少真实授权、目标环境或账号发生变化，或确需验证码等用户交互时才询问。登录账号为 \`${settings.loginKeychainAccount}\`，密码保存在 macOS 钥匙串服务 \`${settings.loginKeychainService}\`；需要重新登录时，只允许在同一次浏览器工具调用中把钥匙串结果保存在局部内存变量并直接填入 Chrome 密码框，调用结束前立即清除变量。`,
       "禁止通过 pbcopy、系统剪贴板、shell stdout、命令行参数、日志、截图、文件、提示词、提交或回调传递、打印或回显密码、Token、Cookie 等凭据；原任务范围内的安全本地命令、项目开发服务和 tempdocs 证据操作不得主动请求 require_escalated。仅当登录请求被实际服务拒绝时才可按登录失败回传 blocked；工具调用、标签占用或剪贴板问题必须单列为运行环境问题，不得冒充业务 blocked。"
     ].join("\n");
 

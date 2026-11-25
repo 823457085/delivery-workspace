@@ -5,13 +5,82 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { listProjectMergeRequests, prepareProjectMergeRequest, reconcileProjectMergeRequest, createProjectMergeRequest, mergeProjectMergeRequest, updateProjectMergeRequestTitle } from '../server/project-merge-request.js';
+import { listProjectMergeRequests, prepareProjectMergeRequest, reconcileProjectMergeRequest, createProjectMergeRequest, mergeProjectMergeRequest, updateProjectMergeRequestTitle, readProjectMergeRequestWatch } from '../server/project-merge-request.js';
+import { mergeRequestNotice } from '../src/features/agent-workbench/useMergeRequestWatch.js';
 
 const exec = promisify(execFile);
 const git = async (directory: string, ...args: string[]) => (await exec('git', ['-C', directory, ...args])).stdout.trim();
 const organization = '64ad9c6e702c0cacad9a2168';
 const repositoryPath = `${organization}/team/project`;
 const repositoryUrl = `https://codeup.aliyun.com/${repositoryPath}`;
+
+test('会话跟踪 Codeup 合并请求，只读最新源版本的流水线并在合并后停止查询检查', async t => {
+  const f = await fixture(t);
+  const first = 'a'.repeat(40), latest = 'b'.repeat(40);
+  const input = { path: f.input.path, url: `${repositoryUrl}/change/12?from=home` };
+  let state = 'UNDER_REVIEW', pipeline = 'RUNNING', conflict = 'CHECKING';
+  const calls: string[] = [];
+  const fetcher: typeof fetch = async (url, init) => {
+    assert.equal(init?.method, 'GET');
+    const uri = new URL(String(url));
+    calls.push(uri.pathname);
+    if (uri.pathname.endsWith(encodeURIComponent(repositoryPath))) return Response.json({ id: 123, pathWithNamespace: repositoryPath });
+    if (uri.pathname.endsWith('/changeRequests/12')) return Response.json({ localId: 12, projectId: 123, title: '绑定的合并请求',
+      status: state, conflictCheckStatus: conflict, reviewers: [{ reviewOpinionStatus: 'PASS' }] });
+    if (uri.pathname.endsWith('/diffs/patches')) return Response.json([
+      { relatedMergeItemType: 'MERGE_SOURCE', versionNo: 1, commitId: first, patchSetBizId: 'old' },
+      { relatedMergeItemType: 'MERGE_TARGET', versionNo: 9, commitId: first, patchSetBizId: 'target' },
+      { relatedMergeItemType: 'MERGE_SOURCE', versionNo: 2, commitId: latest, patchSetBizId: 'latest' },
+    ]);
+    assert.equal(uri.searchParams.get('patchSetBizId'), 'latest');
+    return Response.json({ checkList: [{ ciTestCheckType: 'FLOW', state: pipeline }] });
+  };
+  const options = { ...f.options, fetcher };
+  await assert.rejects(readProjectMergeRequestWatch({ ...input, url: 'https://codeup.aliyun.com/other/change/12' }, options), /Git 远端/);
+  assert.deepEqual(calls, []);
+  const running = await readProjectMergeRequestWatch(input, options);
+  assert.equal(running.url, `${repositoryUrl}/change/12`);
+  assert.equal(running.headSha, latest);
+  assert.equal(running.checks, 'running');
+  assert.equal(running.review, 'approved');
+  pipeline = 'FAIL';
+  conflict = 'HAS_CONFLICT';
+  const failed = await readProjectMergeRequestWatch(input, options);
+  assert.deepEqual(mergeRequestNotice(running, failed), ['流水线失败', '发现冲突']);
+  assert.deepEqual(mergeRequestNotice(failed, failed), []);
+  state = 'MERGED';
+  calls.length = 0;
+  const merged = await readProjectMergeRequestWatch(input, options);
+  assert.deepEqual(mergeRequestNotice(failed, merged), ['已合并']);
+  assert.equal(calls.length, 2);
+});
+
+test('会话跟踪 GitLab 合并请求，只展示与 HEAD 匹配的流水线', async t => {
+  const f = await fixture(t, 'gitlab.example.com');
+  await fs.writeFile(path.join(f.options.dataDirectory, 'gitlab-credentials.json'), JSON.stringify({ token: 'fake-gitlab-test-token' }));
+  const url = `https://gitlab.example.com/${repositoryPath}/-/merge_requests/12`;
+  const head = 'c'.repeat(40);
+  let pipelineSha = 'd'.repeat(40), approved = false;
+  const fetcher: typeof fetch = async (raw, init) => {
+    const target = new URL(String(raw));
+    assert.equal(target.host, 'gitlab.example.com');
+    assert.equal(init?.method, 'GET');
+    if (target.pathname.endsWith('/approvals')) return Response.json({ approved });
+    return Response.json({ web_url: url, iid: 12, title: 'MR', state: 'opened', sha: head, has_conflicts: false,
+      detailed_merge_status: approved ? 'mergeable' : 'not_approved', source_branch: 'feature/test', target_branch: 'main',
+      head_pipeline: { sha: pipelineSha, status: 'failed' } });
+  };
+  const input = { path: f.input.path, url };
+  const options = { ...f.options, fetcher };
+  const stale = await readProjectMergeRequestWatch(input, options);
+  assert.equal(stale.checks, undefined);
+  assert.equal(stale.review, 'pending');
+  pipelineSha = head;
+  approved = true;
+  const current = await readProjectMergeRequestWatch(input, options);
+  assert.equal(current.checks, 'failed');
+  assert.deepEqual(mergeRequestNotice(stale, current), ['流水线失败', '评审已通过']);
+});
 
 async function fixture(t: TestContext, host = 'codeup.aliyun.com') {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'delivery-mr-')));

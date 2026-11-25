@@ -1184,8 +1184,13 @@ test('未绑定项目的 Codex 侧边会话共享原会话目录', async () => {
   }
 });
 
-test('Codex 执行中可继续新建共享工作区的会话，只读并行且写入显示等待原因', async () => {
+test('Codex 执行中在原工作区串行写入，在继承的独立工作区并行开发', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-running-fork-'));
+  const repository = path.join(directory, 'repository');
+  await exec('git', ['init', '-b', 'main', repository]);
+  await fs.writeFile(path.join(repository, 'tracked.txt'), 'committed');
+  await exec('git', ['-C', repository, 'add', 'tracked.txt']);
+  await exec('git', ['-C', repository, '-c', 'user.name=Delivery Test', '-c', 'user.email=delivery@example.test', 'commit', '-m', 'initial']);
   const gates = new Map(['原会话第一轮', '原会话第二轮', '并行只读一'].map(objective => {
     let release!: () => void;
     const wait = new Promise<void>(resolve => { release = resolve; });
@@ -1214,7 +1219,7 @@ test('Codex 执行中可继续新建共享工作区的会话，只读并行且�
   }
   try {
     const first = await service.start({ provider: 'codex', mode: 'agent', accessMode: 'full', model: 'test-model',
-      objective: '原会话第一轮', workspacePath: directory });
+      objective: '原会话第一轮', workspacePath: repository });
     assert.equal(first.status, 'running');
     assert.equal(first.sessionId, '');
     const fresh = await settled((await service.fork(first.id, '暂无已完成轮次，也能新建')).id);
@@ -1222,6 +1227,7 @@ test('Codex 执行中可继续新建共享工作区的会话，只读并行且�
     assert.notEqual(fresh.conversationId, first.conversationId);
     assert.equal(fresh.mode, 'ask');
     assert.deepEqual(calls.get(fresh.id), { forkSessionId: '', forkLastTurnId: '' });
+    await assert.rejects(service.fork(first.id, '不能丢失继承上下文', undefined, undefined, [], undefined, 'agent', true), /已完成的 Codex 轮次/);
     gates.get('原会话第一轮')!.release();
     const source = await settled(first.id);
 
@@ -1243,6 +1249,21 @@ test('Codex 执行中可继续新建共享工作区的会话，只读并行且�
     assert.equal(secondReader.workspacePath, source.workspacePath);
     assert.notEqual(secondReader.sessionId, source.sessionId);
     assert.notEqual(secondReader.sessionId, firstReader.sessionId);
+
+    await fs.writeFile(path.join(source.workspacePath, 'tracked.txt'), 'desktop uncommitted');
+    const parallel = await settled((await service.fork(running.id, '独立目录并行开发', undefined, undefined, [], undefined, 'agent', true)).id);
+    assert.equal(running.status, 'running');
+    assert.equal(writer.status, 'queued');
+    assert.deepEqual(calls.get(parallel.id), expectedAnchor);
+    assert.notEqual(parallel.sessionId, source.sessionId);
+    assert.notEqual(parallel.workspacePath, source.workspacePath);
+    assert.equal(parallel.sourceWorkspacePath, source.workspacePath);
+    assert.equal(parallel.isolatedWorkspace, true);
+    assert.match(parallel.branch, /^feature\//);
+    assert.equal(parallel.mode, 'agent');
+    assert.equal(parallel.accessMode, 'workspace');
+    assert.equal(await fs.readFile(path.join(parallel.workspacePath, 'tracked.txt'), 'utf8'), 'committed');
+    assert.equal(await fs.readFile(path.join(source.workspacePath, 'tracked.txt'), 'utf8'), 'desktop uncommitted');
 
     gates.get('原会话第二轮')!.release();
     await settled(writer.id);
@@ -2077,6 +2098,12 @@ test('Codex 同步仅保留已关联线程，启动清理旧摘要及孤立正�
     assert.deepEqual(Object.keys(cleaned.details).sort(), expected);
     await assert.rejects(service.codexSession(ids.personal), /尚未同步/);
     await assert.rejects(service.codexSession(ids.detailOnly), /尚未同步/);
+    for (const id of [ids.personal, ids.orphan, ids.cursor]) await assert.rejects(service.codexSession(id, true), /尚未同步/);
+    await assert.rejects(service.codexSession(ids.hidden, true), /已从 Delivery Workspace 删除/);
+    await assert.rejects(service.codexSession(ids.archived, true), /已归档/);
+    assert.equal((await service.codexSession(ids.session, true)).turns[0].id, 'new-turn');
+    assert.deepEqual(detailReads, [ids.archived, ids.session]);
+    detailReads.length = 0;
 
     await service.syncCodexSessions();
     assert.equal(listReads, 1);
@@ -2305,8 +2332,10 @@ test('会话内预览返回受限文件的 Git Diff 与内容，且终态运行�
   await exec('git', ['-C', workspacePath, 'config', 'user.name', 'Delivery Test']);
   await fs.writeFile(path.join(workspacePath, 'tracked.ts'), 'export const value = 1;\n');
   await fs.writeFile(path.join(workspacePath, 'gone.ts'), 'export const old = true;\n');
+  await fs.writeFile(path.join(workspacePath, 'move.ts'), 'committed move baseline\n');
   await exec('git', ['-C', workspacePath, 'add', '.']);
   await exec('git', ['-C', workspacePath, 'commit', '-m', 'init']);
+  await fs.writeFile(path.join(workspacePath, 'move.ts'), 'manual move baseline\n');
 
   const adapter: AgentRuntimeAdapter = {
     id: 'codex',
@@ -2315,6 +2344,8 @@ test('会话内预览返回受限文件的 Git Diff 与内容，且终态运行�
       await fs.writeFile(path.join(context.run.workspacePath, 'tracked.ts'), 'export const value = 2;\n');
       await fs.writeFile(path.join(context.run.workspacePath, 'created.ts'), 'export const fresh = "ok";\n');
       await fs.unlink(path.join(context.run.workspacePath, 'gone.ts'));
+      await exec('git', ['-C', context.run.workspacePath, 'mv', 'move.ts', 'moved.ts']);
+      await fs.writeFile(path.join(context.run.workspacePath, 'moved.ts'), 'this turn moved and edited\n');
       return '改动完成';
     },
   };
@@ -2350,6 +2381,12 @@ test('会话内预览返回受限文件的 Git Diff 与内容，且终态运行�
     assert.match(delPreview.patch, /-export const old = true;/);
     assert.equal(delPreview.content, '');
 
+    const renamePreview = await service.previewChangedFile(started.id, 'moved.ts');
+    assert.equal(renamePreview.status, 'renamed');
+    assert.match(renamePreview.patch, /rename from move\.ts\nrename to moved\.ts/);
+    assert.match(renamePreview.patch, /-manual move baseline\n\+this turn moved and edited/);
+    assert.equal(started.changedFiles?.some(file => file.path === 'move.ts'), false);
+
     await assert.rejects(service.previewChangedFile(started.id, '../outside.ts'), /不属于本轮改动|超出/);
   } finally {
     await service.close();
@@ -2358,4 +2395,58 @@ test('会话内预览返回受限文件的 Git Diff 与内容，且终态运行�
   const persisted = JSON.parse(await fs.readFile(path.join(directory, 'agent-runs.json'), 'utf8')) as AgentRun[];
   assert.equal(persisted[0]?.teamContext, undefined, '落盘账本剥离已完成轮次的冗余 teamContext');
   await fs.rm(root, { recursive: true, force: true });
+});
+
+test('本轮 Diff 使用运行前的脏文件，连续修改后和服务重新载入后仍可回看', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-frozen-file-test-'));
+  const directory = path.join(root, 'data');
+  const repository = path.join(root, 'repo');
+  const workspacePath = path.join(repository, 'src');
+  await fs.mkdir(workspacePath, { recursive: true });
+  const file = path.join(workspacePath, 'tracked.ts');
+  const reset = path.join(workspacePath, 'reset.ts');
+  await exec('git', ['init', '-b', 'main', repository]);
+  await exec('git', ['-C', repository, 'config', 'user.email', 'delivery@example.test']);
+  await exec('git', ['-C', repository, 'config', 'user.name', 'Delivery Test']);
+  await fs.writeFile(file, 'first line\ncommitted\n');
+  await fs.writeFile(reset, 'clean again\n');
+  await exec('git', ['-C', repository, 'add', '.']);
+  await exec('git', ['-C', repository, 'commit', '-m', 'init']);
+  await fs.writeFile(file, 'manual baseline\ncommitted\n');
+  await fs.writeFile(reset, 'dirty before turn\n');
+  const adapter: AgentRuntimeAdapter = { id: 'codex', health: async () => health('codex'),
+    execute: async ({ run }) => {
+      await fs.writeFile(file, `manual baseline\n${run.objective}\n`);
+      if (run.objective === 'turn one') await fs.writeFile(reset, 'clean again\n');
+      return '完成';
+    } };
+  let service = await createAgentRuntimeService(directory, { adapters: [adapter] });
+  async function complete(objective: string) {
+    const run = await service.start({ provider: 'codex', mode: 'agent', model: 'test-model', objective, workspacePath });
+    for (let count = 0; count < 100 && !run.resultReady; count++) await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(run.resultReady, true);
+    return run.id;
+  }
+  try {
+    const first = await complete('turn one');
+    const second = await complete('turn two');
+    const original = await service.previewChangedFile(first, 'src/tracked.ts');
+    assert.equal(original.content, 'manual baseline\nturn one\n');
+    assert.match(original.patch, /-committed\n\+turn one/);
+    assert.doesNotMatch(original.patch, /-first line|\+manual baseline|turn two/);
+    const replacement = await service.previewChangedFile(first, 'src/reset.ts');
+    assert.equal(replacement.status, 'modified');
+    assert.match(replacement.patch, /-dirty before turn\n\+clean again/);
+    const recent = await service.previewChangedFile(second, 'src/tracked.ts');
+    assert.match(recent.patch, /-turn one\n\+turn two/);
+
+    await fs.unlink(file);
+    await service.close();
+    service = await createAgentRuntimeService(directory, { adapters: [adapter] });
+    assert.deepEqual(await service.previewChangedFile(first, 'src/tracked.ts'), original);
+    assert.deepEqual(await service.previewChangedFile(second, 'src/tracked.ts'), recent);
+  } finally {
+    await service.close();
+    await fs.rm(root, { recursive: true, force: true });
+  }
 });
