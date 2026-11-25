@@ -87,8 +87,8 @@ test('Round 13 [P1-23]: 其他会话提交中时停止操作不再被全局锁�
   const tree = ts.createSourceFile('useAgentRuntimes.ts', raw, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   const pieces: string[] = [];
   const visit = (node: ts.Node) => {
-    if (ts.isFunctionDeclaration(node) && node.name && ['stop', 'start'].includes(node.name.text)) pieces.push(node.getText(tree));
-    else if (ts.isVariableStatement(node) && node.getText(tree).includes('stoppingRuns = new Set')) pieces.push(node.getText(tree));
+    if (ts.isFunctionDeclaration(node) && node.name && ['stop', 'start', 'claimConversationSubmission'].includes(node.name.text)) pieces.push(node.getText(tree));
+    else if (ts.isVariableStatement(node) && (node.getText(tree).includes('stoppingRuns = new Set') || node.getText(tree).includes('submittingConversations = new Set'))) pieces.push(node.getText(tree));
     else ts.forEachChild(node, visit);
   };
   visit(tree);
@@ -115,7 +115,7 @@ test('Round 13 [P1-23]: 其他会话提交中时停止操作不再被全局锁�
   // 发送被全局锁拒绝时提示用户，而不是静默丢弃
   assert.equal(await actions.start({ provider: 'codex', objective: 'x' }), undefined);
   assert.equal(warnings.length, 1);
-  assert.match(warnings[0], /稍候再发送/);
+  assert.match(warnings[0], /请稍候/);
 });
 
 test('Round 13 [第七节-5 & 第七节-7 & 第六节-12]: 打包扫描覆盖更多凭据类型、关闭流程不跳过租约释放、PM2 防崩溃循环', async () => {
